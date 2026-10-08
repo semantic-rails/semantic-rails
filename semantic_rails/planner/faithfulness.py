@@ -93,7 +93,16 @@ def _selectable_subjects(config: Any, candidate_ids: list[str] | None = None) ->
             and (wrapped[1] or other.default_aggregation) == other.default_aggregation
         ):
             mirrors.add(other.id)
-        elif other is not None and other.label == metric.label and other.name == metric.name:
+        elif (
+            wrapped is not None
+            and other is not None
+            and other.label == metric.label
+            and other.name == metric.name
+            and (
+                candidate_ids is None
+                or (wrapped[1] or other.default_aggregation) == other.default_aggregation
+            )
+        ):
             mirrors.add(metric.id)
     return [
         row
@@ -573,16 +582,17 @@ def named_subject_why(
     """A shared whole name cannot be settled by the ranking's label or score."""
 
     parts = _conjoined_subjects(runtime, question)
+    projected = set(_projected_subject_ids(partial_query or {}))
     rows = []
     for part in parts:
         rows = _selectable_subjects(runtime._config, part["candidate_ids"])
-        if len(rows) >= 2:
+        if len(rows) >= 2 and not any(row.id in projected for row in rows):
             rows = sorted(rows, key=lambda row: row.id)
             break
         rows = []
     if not parts:
         rows = _shared_subjects(runtime._config, question)
-    if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
+    if not rows or any(row.id in projected for row in rows):
         return None
     return _coverage_why(
         [

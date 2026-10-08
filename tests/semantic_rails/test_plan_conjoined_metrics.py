@@ -257,6 +257,130 @@ def test_ambiguous_piece_clarifies(subscriptions):
     ]
 
 
+@pytest.fixture()
+def shared_population_names(subscriptions):
+    metrics = {row.id: row for row in subscriptions._config.metric_recipes}
+    variants = []
+    for subject, label, original in [
+        ("starts", "Starts", "new_accounts"),
+        ("closures", "Account closures", "closures"),
+    ]:
+        row = metrics[f"metric.subscriptions.{original}"]
+        for population in ["customer", "internal"]:
+            variants.append(
+                replace(
+                    row,
+                    id=f"metric.subscriptions.{population}_{subject}",
+                    name=subject,
+                    label=label,
+                    aliases=[],
+                    expression=replace(
+                        row.expression,
+                        filter={
+                            "all": [
+                                row.expression.filter["all"][0],
+                                {**row.expression.filter["all"][1], "value": population},
+                            ]
+                        },
+                    ),
+                )
+            )
+    subscriptions._config = replace(subscriptions._config, metric_recipes=variants)
+    return subscriptions
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["Starts and account closures last week", "Account closures and starts last week"],
+)
+def test_selecting_one_piece_does_not_settle_another(shared_population_names, question):
+    payload = plan_payload(
+        shared_population_names,
+        intent=question,
+        partial_query={
+            "select": [
+                {"as": "starts", "expression": {"metric": "metric.subscriptions.customer_starts"}}
+            ],
+            "policy_context": NOW,
+        },
+    )
+    assert payload["status"] == "needs_clarification", payload.get("why")
+    [gap] = payload["why"]["details"]["gaps"]
+    assert gap["kind"] == "subject_ambiguous"
+    assert gap["expected"] == {
+        "candidates": [
+            "metric.subscriptions.customer_closures",
+            "metric.subscriptions.internal_closures",
+        ],
+        "candidate_count": 2,
+    }
+    assert "execute" not in payload.get("next", {}).get("ready_for", [])
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["Starts and account closures last week", "Account closures and starts last week"],
+)
+def test_each_settled_piece_matches_its_population_sql(shared_population_names, question):
+    selected = [
+        {"as": subject, "expression": {"metric": f"metric.subscriptions.customer_{subject}"}}
+        for subject in ["starts", "closures"]
+    ]
+    payload = plan_payload(
+        shared_population_names,
+        intent=question,
+        partial_query={"select": selected, "policy_context": NOW},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query_ir"]
+    assert query["select"] == selected
+    with duckdb.connect(shared_population_names.db_path, read_only=True) as connection:
+        reference = dict(
+            (population, (starts, closures))
+            for population, starts, closures in connection.execute("""
+SELECT a.segment,
+  COUNT(DISTINCT CASE WHEN e.kind = 'signup' THEN e.event_id END),
+  COUNT(DISTINCT CASE WHEN e.kind = 'close' THEN e.event_id END)
+FROM events e JOIN accounts a USING (account_id)
+WHERE e.occurred_at >= DATE '2026-09-28' AND e.occurred_at < DATE '2026-10-05'
+GROUP BY a.segment
+""").fetchall()
+        )
+    assert reference == {"customer": (1, 1), "internal": (4, 0)}
+    assert [
+        (row["starts"], row["closures"]) for row in shared_population_names.query(query)["rows"]
+    ] == [reference["customer"]]
+
+
+def test_same_name_with_different_aggregation_is_ambiguous(tmp_path):
+    package = write_single_file_package(tmp_path / "starter")
+    raw = yaml.safe_load(package.read_text())
+    raw["models"]["orders"]["measures"]["revenue_usd"]["label"] = "Revenue"
+    raw["metrics"]["revenue_usd"]["label"] = "Revenue"
+    raw["metrics"]["revenue_usd"]["aggregation"] = "avg"
+    package.write_text(yaml.safe_dump(raw))
+    runtime = Runtime.from_path(str(package))
+    try:
+        revenue = next(row for row in runtime._config.measures if row.id.endswith(".revenue_usd"))
+        metric = next(
+            row for row in runtime._config.metric_recipes if row.id.endswith(".revenue_usd")
+        )
+        assert revenue.name == metric.name
+        assert revenue.default_aggregation == "sum"
+        assert metric.expression.aggregation == "avg"
+        payload = plan_payload(runtime, intent="revenue and order count by month")
+        assert payload["status"] == "needs_clarification", payload.get("why")
+        [gap] = payload["why"]["details"]["gaps"]
+        assert gap["kind"] == "subject_ambiguous"
+        assert gap["expected"]["candidates"] == [
+            "measure.shop.revenue_usd",
+            "metric.shop.revenue_usd",
+        ]
+        assert "execute" not in payload.get("next", {}).get("ready_for", [])
+    finally:
+        runtime.close()
+
+
 def test_caller_grain_is_validated_after_the_merge(subscriptions):
     subscriptions._config = replace(
         subscriptions._config,
