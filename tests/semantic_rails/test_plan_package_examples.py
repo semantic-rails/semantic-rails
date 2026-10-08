@@ -266,16 +266,16 @@ def test_hidden_example_is_silent_even_alongside_visible_match(subscriptions, hi
 
 
 def test_examples_load_once_per_generation_and_have_no_source_fallback(subscriptions, monkeypatch):
-    from semantic_rails import package_tools
+    from semantic_rails import yaml_loader
 
     calls = []
-    original = package_tools._load_named_entries
+    original = yaml_loader.load_named_entries
 
     def load(*args, **kwargs):
         calls.append(args[0])
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(package_tools, "_load_named_entries", load)
+    monkeypatch.setattr(yaml_loader, "load_named_entries", load)
     assert _plan(subscriptions)["status"] == "ok"
     _write_examples(Path(subscriptions.package_root), {})
     assert _plan(subscriptions)["status"] == "ok"
@@ -446,9 +446,9 @@ def test_another_window_never_reuses_the_authored_one(subscriptions, time_phrase
 
 
 def _bundled_examples():
-    from semantic_rails.package_tools import _load_named_entries
+    from semantic_rails.yaml_loader import load_named_entries
 
-    return _load_named_entries(
+    return load_named_entries(
         Path("configs/semantic_rails/jaffle_shop/examples"),
         plural_key="examples",
         singular_key="example",

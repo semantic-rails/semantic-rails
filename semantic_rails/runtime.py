@@ -2025,12 +2025,12 @@ class Runtime:
         """Load the same authored entries project validation certifies, once per generation."""
         from pathlib import Path
 
-        from .package_tools import _load_named_entries
+        from .yaml_loader import load_named_entries
 
         with self._cache_lock:
             if self._package_examples is None:
                 self._package_examples = (
-                    _load_named_entries(
+                    load_named_entries(
                         Path(self.package_root) / "examples",
                         plural_key="examples",
                         singular_key="example",
