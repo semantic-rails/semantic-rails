@@ -378,10 +378,14 @@ def shape_snapshot(
         return query, None
     expected = _expected_read(runtime, question, query)
     window = _time_window(question)
-    if expected is None and not window.as_of and _unread_time_words(question, window.spans):
-        # Report the existing stock hold even when a day policy would fail validation first.
-        if gaps := _stock_as_of_gaps(config, query):
-            return query, _coverage_why(gaps)
+    # Report the existing stock hold even when a day policy would fail validation first.
+    if (
+        expected is None
+        and not window.as_of
+        and _unread_time_words(question, window.spans)
+        and (gaps := _stock_as_of_gaps(config, query))
+    ):
+        return query, _coverage_why(gaps)
     day_dimension = _day_dimension(config, balance.clock)
     per_day = day_dimension is not None and day_dimension in required
     if isinstance(expected, _Ask):

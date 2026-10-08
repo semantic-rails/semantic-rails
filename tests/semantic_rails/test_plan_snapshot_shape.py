@@ -12,6 +12,7 @@ is checked against plain SQL on the seed.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -283,6 +284,32 @@ def test_an_incomplete_balance_day_is_held(
     assert "isn't complete yet" in gap["message"]
     assert (start if start > "2026-10-05" else "2026-10-05") in gap["message"]
     assert any("2026-10-04" in hint["message"] for hint in plan["why"]["recovery_hints"])
+
+
+@pytest.mark.parametrize(("day", "complete"), [("2026-10-03", True), ("2026-10-04", False)])
+def test_day_completion_uses_the_balance_clock_zone(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, day: str, complete: bool
+) -> None:
+    roles = [replace(role, timezone="America/Los_Angeles") if role.id == CLOCK else role
+             for role in runtime._config.temporal_roles]  # fmt: skip
+    monkeypatch.setattr(runtime, "_config", replace(runtime._config, temporal_roles=roles))
+    end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    # NOW is October 4 on this clock, while UTC has already reached October 5.
+    plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "time": {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end},
+        **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
+    })  # fmt: skip
+    if complete:
+        assert plan["status"] == "ok", plan.get("why")
+        assert _answer(runtime, plan) == _reference(_balance("mrr", day)) == {(): 599}
+    else:
+        assert plan["status"] == "low_confidence", plan.get("why")
+        assert "execute" not in plan["next"].get("ready_for", [])
+        [gap] = plan["why"]["details"]["gaps"]
+        assert gap["kind"] == "stock_as_of_unrealized"
+        assert "2026-10-04 isn't complete yet" in gap["message"]
+        assert "2026-10-03" in plan["why"]["recovery_hints"][0]["message"]
 
 
 def test_a_value_named_with_the_balance_filters_it(runtime: Runtime) -> None:
