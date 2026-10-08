@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+
+
+def disable_planner_patterns(runtime: Any, *patterns: str) -> None:
+    """Exercise fallback guards when the named answer patterns are unavailable."""
+    config = runtime._config
+    package = config.package
+    planner = replace(
+        package.planner, disabled_patterns=[*package.planner.disabled_patterns, *patterns]
+    )
+    runtime._config = replace(config, package=replace(package, planner=planner))
 
 
 def assert_plan_held(payload: dict[str, Any], code: str) -> None:
