@@ -70,13 +70,8 @@ from .time_windows import _time_window
 from .visibility import visible_object_ids
 
 
-def _shared_subjects(config: Any, text: str) -> list[Any]:
-    """Whole analytic names that remain indistinguishable, independent of ranking.
-
-    A label without its parenthetical counts, so the shared base of two variants
-    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
-    """
-
+def _selectable_subjects(config: Any, candidate_ids: list[str] | None = None) -> list[Any]:
+    """Visible published subjects, with equivalent authored answers collapsed."""
     rows = [
         *config.metric_recipes,
         *(row for row in config.measures if getattr(row, "publish", True)),
@@ -89,9 +84,32 @@ def _shared_subjects(config: Any, text: str) -> list[Any]:
     for metric in config.metric_recipes:
         wrapped = whole_aggregate(metric)
         other = measures.get(wrapped[0]) if wrapped is not None and not wrapped[2] else None
-        if other is not None and other.label == metric.label and other.name == metric.name:
+        if wrapped is not None and (
+            candidate_ids is not None
+            and metric.id in candidate_ids
+            and metric.id in visible
+            and other is not None
+            and other.id in candidate_ids
+            and (wrapped[1] or other.default_aggregation) == other.default_aggregation
+        ):
+            mirrors.add(other.id)
+        elif other is not None and other.label == metric.label and other.name == metric.name:
             mirrors.add(metric.id)
-    rows = [row for row in rows if row.id not in mirrors]
+    return [
+        row
+        for row in rows
+        if row.id not in mirrors and (candidate_ids is None or row.id in candidate_ids)
+    ]
+
+
+def _shared_subjects(config: Any, text: str) -> list[Any]:
+    """Whole analytic names that remain indistinguishable, independent of ranking.
+
+    A label without its parenthetical counts, so the shared base of two variants
+    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
+    """
+
+    rows = _selectable_subjects(config)
     fits = {}
     for row in rows:
         spans = _name_matches(row, text)
@@ -554,13 +572,16 @@ def named_subject_why(
 ) -> dict[str, Any] | None:
     """A shared whole name cannot be settled by the ranking's label or score."""
 
-    rows = _shared_subjects(runtime._config, question)
-    if not rows:
-        # A longer name in another piece cannot settle this piece's own collision.
-        for part in _conjoined_subjects(runtime, question):
-            rows = _shared_subjects(runtime._config, part["phrase"])
-            if rows:
-                break
+    parts = _conjoined_subjects(runtime, question)
+    rows = []
+    for part in parts:
+        rows = _selectable_subjects(runtime._config, part["candidate_ids"])
+        if len(rows) >= 2:
+            rows = sorted(rows, key=lambda row: row.id)
+            break
+        rows = []
+    if not parts:
+        rows = _shared_subjects(runtime._config, question)
     if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
         return None
     return _coverage_why(

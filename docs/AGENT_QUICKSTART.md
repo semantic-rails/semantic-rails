@@ -202,7 +202,10 @@ Statuses are:
   Exact conjoined metric or measure names ("New accounts and closures last week")
   can produce one Query IR v1 draft with a select for every subject, in question order.
   The subjects must share a declared or compatible clock, a supported window, grouping,
-  and filters. Shared-name ambiguity asks for clarification; incompatible subjects remain
+  and filters. Equivalent measure/metric names resolve to the authored metric; different
+  shared-name candidates ask for clarification. A plain aggregate metric without its own
+  clock uses its measure's clock. Window support and validation use the final
+  query after merging the caller's `partial_query`. Structurally incompatible subjects remain
   held as `multiple_subjects_unrealized`, with visible subject ids and their declared clocks
   in `why.details.parts`. Disabling `conjoined_metrics` in `package.planner.disabled_patterns`
   keeps the coverage guard: a draft that omits a requested subject is never ready.

@@ -1340,6 +1340,15 @@ def test_a_second_measure_is_never_dropped_silently(
         runtime.close()
 
 
+def test_conjoined_store_grouping_stays_held_with_pattern_enabled(runtime_factory: Any) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="revenue and orders by store", detail="query")
+        assert_plan_held(payload, "VALIDATION_FAILED")
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     "intent",
     ["revenue in Q1 2017", "revenue by store for the first half of 2017"],

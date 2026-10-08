@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...config_parts.measure_governance import whole_aggregate
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -14,21 +15,21 @@ from .._base import (
     _tokens,
 )
 from ..coverage import CoverageGap, _coverage_why
-from ..faithfulness import _conjoined_filter_text, _conjoined_subjects
+from ..faithfulness import _conjoined_filter_text, _conjoined_subjects, _selectable_subjects
 from ..generators import _matched_value_rows, _normalize_value_filters
 from ..groupings import _explicit_grain, _maybe_group_by, _time_spec
-from ..plan_query import _validate_query
 from ..qualifiers import _add_order
-from ..time_checks import _subject_window_gaps
-from ..time_reference import time_policy_context
 from ..time_windows import _time_window
 from ._protocol import IntentPattern
 from .metric_by_dimension_rollup import _TIME_SERIES_PHRASES, _governed_target
 
 
-def _clock(row: Any) -> str:
-    # An object's own clock, never its model's default.
-    return str(getattr(row, "temporal_role", "") or getattr(row, "default_temporal_role", ""))
+def _clock(config: Any, row: Any) -> str:
+    # An object's own clock, or its plain aggregate's measure clock; never a model default.
+    role = str(getattr(row, "temporal_role", "") or getattr(row, "default_temporal_role", ""))
+    wrapped = whole_aggregate(row) if row.id.startswith("metric.") and not role else None
+    measure = _object_by_id(config.measures, wrapped[0]) if wrapped and not wrapped[2] else None
+    return role or str(getattr(measure, "default_temporal_role", ""))
 
 
 def _part_query(
@@ -36,7 +37,7 @@ def _part_query(
 ) -> tuple[Any, dict[str, Any]]:
     """Use the catch-all's time, grouping, value-filter and governance helpers."""
     config = runtime._config
-    role = _clock(target)
+    role = _clock(config, target)
     clock = _object_by_id(config.temporal_roles, role)
     clock_label = str(getattr(clock, "label", "") or "")
     group_by = _maybe_group_by(config, text, target_terms=_tokens(phrase), clock=clock_label)
@@ -82,10 +83,13 @@ def _part_query(
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
     subjects = _conjoined_subjects(runtime, text)
-    if len(subjects) < 2 or any(len(part["candidate_ids"]) != 1 for part in subjects):
-        # Whole-name collisions are clarified by the existing named-subject gate.
-        return None
     config = runtime._config
+    for part in subjects:
+        part["candidate_ids"] = [
+            row.id for row in _selectable_subjects(config, part["candidate_ids"])
+        ]
+    if len(subjects) < 2 or any(len(part["candidate_ids"]) != 1 for part in subjects):
+        return None
     objects = {row.id: row for row in [*config.measures, *config.metric_recipes]}
     # Names consume their own words; another selected subject is never a filter value.
     filter_text = _conjoined_filter_text(text, subjects)
@@ -105,7 +109,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         parts.append(
             {
                 **part,
-                "temporal_roles": [_clock(target)],
+                "temporal_roles": [_clock(config, target)],
                 "spans": [
                     [start + begin, start + end]
                     for _, begin, end in _name_matches(target, part["phrase"])
@@ -113,14 +117,14 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             }
         )
     # Compatibility is directional: every subject must allow the drafted clock.
-    roles = list(dict.fromkeys(_clock(target) for target in targets))
+    roles = list(dict.fromkeys(_clock(config, target) for target in targets))
     role = next(
         (
             candidate
             for candidate in roles
             if candidate
             and all(
-                candidate == _clock(target) or candidate in target.compatible_temporal_roles
+                candidate == _clock(config, target) or candidate in target.compatible_temporal_roles
                 for target in targets
             )
         ),
@@ -141,12 +145,6 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         )
         if query.get("time") and role:
             query["time"] = {**query["time"], "temporal_role": role}
-        shared = shared and not _subject_window_gaps(config, query)
-        # Compilation checks each subject's window, grouping and authored policies.
-        # It reads no warehouse data. A failure never admits a compound draft.
-        shared = shared and bool(
-            _validate_query(runtime, query, {"policy_context": time_policy_context()})["ok"]
-        )
     query = {**first, "select": []}
     aliases: set[str] = set()
     for part_query in queries:

@@ -60,6 +60,19 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
     assert payload["why"]["recovery_hints"]
 
 
+def test_conjoined_store_quarter_stays_held_with_pattern_enabled(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime,
+            intent="Revenue and order count by store last quarter",
+            partial_query={"policy_context": {"now": "2026-10-05T06:00:00Z"}},
+        )
+        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("intent", "pattern", "unasked"),
     [

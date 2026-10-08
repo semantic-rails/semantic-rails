@@ -11,6 +11,7 @@ import yaml
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.conftest import write_single_file_package
 from tests.semantic_rails.result_helpers import disable_planner_patterns
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -75,7 +76,7 @@ model:
   dimensions:
     plan: {kind: categorical, domain: [basic, pro]}
   measures:
-    mrr_all:
+    recurring_balance:
       expr: mrr
       accumulation: {kind: stock, snapshot: end_of_period}
       publish: false
@@ -114,7 +115,10 @@ model:
         "label": "MRR (USD)",
         "kind": "semi_additive",
         "temporal_role": DAY_CLOCK,
-        "expression": {"kind": "semi_additive", "measure": "measure.subscriptions.mrr_all"},
+        "expression": {
+            "kind": "semi_additive",
+            "measure": "measure.subscriptions.recurring_balance",
+        },
     }
     files["metrics/accounts.yml"] = yaml.safe_dump({"metrics": metrics})
     for name, contents in files.items():
@@ -129,7 +133,8 @@ INSERT INTO accounts VALUES ('a','Acme Data Co','customer'),('b','Globex','custo
 CREATE TABLE events (event_id INTEGER, account_id VARCHAR, kind VARCHAR, occurred_at DATE);
 INSERT INTO events VALUES (1,'a','signup','2026-09-02'),(2,'b','signup','2026-09-22'),
   (3,'c','signup','2026-09-29'),(4,'d','signup','2026-09-30'),
-  (5,'b','close','2026-10-01'),(6,'a','upgrade','2026-10-02');
+  (5,'b','close','2026-10-01'),(6,'a','upgrade','2026-10-02'),
+  (7,'c','signup','2026-09-28'),(8,'c','signup','2026-10-03'),(9,'c','signup','2026-10-04');
 CREATE TABLE account_day (account_id VARCHAR, day DATE, plan VARCHAR, mrr DOUBLE);
 INSERT INTO account_day SELECT a.account_id, d::DATE,
   CASE WHEN a.account_id='a' AND d >= DATE '2026-10-02' THEN 'pro' ELSE 'basic' END,
@@ -208,9 +213,10 @@ def test_different_clocks_are_held_with_parts(subscriptions):
     assert payload["status"] == "low_confidence"
     assert "execute" not in payload.get("next", {}).get("ready_for", [])
     assert "multiple_subjects_unrealized" in str(payload["why"])
-    assert [set(part["temporal_roles"]) for part in payload["why"]["details"]["parts"]] == [
-        {EVENT_CLOCK},
-        {DAY_CLOCK},
+    assert payload["best"]["pattern"] == "conjoined_metrics"
+    assert [part["temporal_roles"] for part in payload["why"]["details"]["parts"]] == [
+        [EVENT_CLOCK],
+        [DAY_CLOCK],
     ]
 
 
@@ -228,9 +234,15 @@ def test_disabled_pattern_keeps_missing_subject_guard(subscriptions):
 def test_ambiguous_piece_clarifies(subscriptions):
     metrics = subscriptions._config.metric_recipes
     new = next(row for row in metrics if row.id.endswith(".new_accounts"))
+    closures = next(row for row in metrics if row.id.endswith(".closures"))
     subscriptions._config = replace(
         subscriptions._config,
-        metric_recipes=[*metrics, replace(new, id="metric.subscriptions.other_new_accounts")],
+        metric_recipes=[
+            *metrics,
+            replace(
+                new, id="metric.subscriptions.other_new_accounts", expression=closures.expression
+            ),
+        ],
     )
     payload = plan_payload(
         subscriptions,
@@ -238,8 +250,100 @@ def test_ambiguous_piece_clarifies(subscriptions):
         partial_query={"policy_context": NOW},
     )
     assert payload["status"] == "needs_clarification", payload.get("why")
-    assert "metric.subscriptions.new_accounts" in str(payload["why"])
-    assert "metric.subscriptions.other_new_accounts" in str(payload["why"])
+    assert payload["why"]["details"]["gaps"][0]["kind"] == "subject_ambiguous"
+    assert payload["why"]["details"]["gaps"][0]["expected"]["candidates"] == [
+        "metric.subscriptions.new_accounts",
+        "metric.subscriptions.other_new_accounts",
+    ]
+
+
+def test_caller_grain_is_validated_after_the_merge(subscriptions):
+    subscriptions._config = replace(
+        subscriptions._config,
+        temporal_roles=[
+            replace(row, supported_grains=["day"]) for row in subscriptions._config.temporal_roles
+        ],
+    )
+    payload = plan_payload(
+        subscriptions,
+        intent="New accounts and closures last week",
+        partial_query={"time": {"grain": "day"}, "policy_context": NOW},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query_ir"]
+    assert payload["best"]["pattern"] == "conjoined_metrics"
+    rows = subscriptions.query(query)["rows"]
+    with duckdb.connect(subscriptions.db_path, read_only=True) as connection:
+        reference = connection.execute("""
+SELECT d::DATE,
+  COUNT(DISTINCT CASE WHEN a.segment = 'customer' AND e.kind = 'signup' THEN e.event_id END),
+  COUNT(DISTINCT CASE WHEN a.segment = 'customer' AND e.kind = 'close' THEN e.event_id END)
+FROM range(DATE '2026-09-28', DATE '2026-10-05', INTERVAL 1 DAY) days(d)
+LEFT JOIN events e ON e.occurred_at = d
+LEFT JOIN accounts a USING (account_id)
+GROUP BY 1 ORDER BY 1
+""").fetchall()
+    assert len(reference) == 7
+    assert [
+        (str(row[f"{EVENT_CLOCK}__day"])[:10], *[row[item["as"]] for item in query["select"]])
+        for row in rows
+    ] == [(str(day), new, closed) for day, new, closed in reference]
+
+
+def test_customer_count_uses_its_named_metric(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="customer count and lifetime order count by month")
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query_ir"]
+        assert [item["expression"] for item in query["select"]] == [
+            {"metric": "metric.sales.customer_count"},
+            {"measure": "measure.jaffle.lifetime_order_count", "aggregation": "sum"},
+        ]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute("""
+SELECT DATE_TRUNC('month', first_order_at), COUNT(DISTINCT customer_id), SUM(lifetime_order_count)
+FROM jaffle_customer GROUP BY 1 ORDER BY 1
+""").fetchall()
+        assert [
+            (
+                str(row["temporal_role.jaffle_customer_first_order_at__month"])[:10],
+                *[row[item["as"]] for item in query["select"]],
+            )
+            for row in runtime.query(query)["rows"]
+        ] == [(str(month)[:10], count, lifetime) for month, count, lifetime in reference]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("publish", [True, False])
+def test_starter_revenue_uses_its_named_metric(tmp_path, publish):
+    package = write_single_file_package(tmp_path / "starter")
+    raw = yaml.safe_load(package.read_text())
+    raw["models"]["orders"]["measures"]["revenue_usd"]["publish"] = publish
+    package.write_text(yaml.safe_dump(raw))
+    runtime = Runtime.from_path(str(package))
+    try:
+        payload = plan_payload(runtime, intent="revenue and order count by month")
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query_ir"]
+        assert query["select"][0]["expression"] == {"metric": "metric.shop.revenue_usd"}
+        assert query["select"][1]["expression"]["measure"] == "measure.shop.order_count"
+        rows = runtime.query(query)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute("""
+SELECT DATE_TRUNC('month', ordered_at), SUM(order_total_cents / 100.0), COUNT(DISTINCT order_id)
+FROM shop_order GROUP BY 1 ORDER BY 1
+""").fetchall()
+        assert [
+            (
+                str(row["temporal_role.shop_order_ordered_at__month"])[:10],
+                *[float(row[item["as"]]) for item in query["select"]],
+            )
+            for row in rows
+        ] == [(str(month)[:10], float(revenue), count) for month, revenue, count in reference]
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("compatible", [False, True])
@@ -290,9 +394,8 @@ def test_an_unsupported_shared_window_is_held(subscriptions):
         partial_query={"policy_context": NOW},
     )
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-    assert payload["why"]["details"]["gaps"][0]["kind"] == "multiple_subjects_unrealized"
-    assert len(payload["why"]["details"]["parts"]) == 2
+    assert payload["why"]["code"] == "VALIDATION_FAILED"
+    assert "execute" not in payload.get("next", {}).get("ready_for", [])
 
 
 def test_a_later_filter_value_is_not_consumed_as_a_subject(subscriptions):

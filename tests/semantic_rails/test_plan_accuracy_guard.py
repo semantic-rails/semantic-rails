@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import _named_metric
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.filter_checks import _filter_value_gaps
@@ -1209,6 +1210,15 @@ BROOKLYN_REVENUE = {
         "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
     },
 }
+
+
+def test_conjoined_along_with_stays_held_with_pattern_enabled(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="item revenue along with orders in 2017")
+        assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(
