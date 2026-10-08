@@ -110,7 +110,8 @@ def _package(root, policies):
     put("package.yml", {
         "schema_version": 1,
         "package": {"id": "rf", "name": "rf", "description": "Row filters", "warehouse": "duckdb",
-                    "default_db": "rf.duckdb", "seed": {"kind": "external"}, "schema_strict": True},
+                    "default_db": "rf.duckdb", "seed": {"kind": "external"},
+                    "schema_strict": True},
         "defaults": {"time": {"timezone": "UTC"}},
     })  # fmt: skip
     put("graph.yml", {"graph": {
@@ -148,8 +149,8 @@ def _package(root, policies):
     }})  # fmt: skip
     prior = {"kind": "prior_period", "input": REVENUE, "offset": {"unit": "month", "value": 1}}
     put("metrics/core.yml", {"metrics": {
-        "rf.revenue": {"as": "metric.rf.revenue", "name": "rf.revenue", "kind": "aggregate", "label": "Revenue",
-                       "measure": "measure.rf.revenue", "aggregation": "sum",
+        "rf.revenue": {"as": "metric.rf.revenue", "name": "rf.revenue", "kind": "aggregate",
+                       "label": "Revenue", "measure": "measure.rf.revenue", "aggregation": "sum",
                        "temporal_role": "temporal_role.rf_order_ordered_at", "value_type": "number"},
         "rf.revenue_per_order": {"as": "metric.rf.revenue_per_order", "kind": "ratio",
                                  "numerator": "measure.rf.revenue", "denominator": "order_count",
