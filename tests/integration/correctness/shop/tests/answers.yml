@@ -1776,17 +1776,11 @@ tests:
       - {temporal_role.shop_order_ordered_at__year: '2023-01-01T00:00:00', revenue: 22}
       - {temporal_role.shop_order_ordered_at__year: '2024-01-01T00:00:00', revenue: 52}
   shop/utc-fiscal_quarter:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for utc fiscal quarter.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -1801,29 +1795,12 @@ tests:
         end: '2024-11-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.quarter_start) lo, MAX(CASE WHEN o.ordered_at <= (CURRENT_TIMESTAMP
-      AT TIME ZONE 'UTC') THEN c.quarter_start END) hi FROM orders o JOIN dim_fiscal c ON c.date_day = CAST(o.ordered_at
-      AS DATE)) SELECT f.quarter_start, COALESCE(SUM(o.amount), CASE WHEN f.quarter_start BETWEEN (SELECT lo FROM coverage)
-      AND (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f LEFT JOIN orders AS o ON f.date_day = CAST(o.ordered_at
-      AS DATE) WHERE f.date_day >= DATE '2023-08-01' AND f.date_day < DATE '2024-11-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-08-01T00:00:00', revenue: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-11-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-02-01T00:00:00', revenue: 12}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-05-01T00:00:00', revenue: 18}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-08-01T00:00:00', revenue: 2}
   shop/ny-fiscal_quarter:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for ny fiscal quarter.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: ny_authored
     query:
@@ -1838,31 +1815,12 @@ tests:
         end: '2024-11-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.quarter_start) lo, MAX(CASE WHEN ((o.ordered_at AT TIME ZONE 'UTC')
-      AT TIME ZONE 'America/New_York') <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York') THEN c.quarter_start END)
-      hi FROM orders o JOIN dim_fiscal c ON c.date_day = CAST(((o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')
-      AS DATE)) SELECT f.quarter_start, COALESCE(SUM(o.amount), CASE WHEN f.quarter_start BETWEEN (SELECT lo FROM coverage)
-      AND (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f LEFT JOIN orders AS o ON f.date_day = CAST(((o.ordered_at
-      AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') AS DATE) WHERE f.date_day >= DATE '2023-08-01' AND f.date_day
-      < DATE '2024-11-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-08-01T00:00:00', revenue: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-11-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-02-01T00:00:00', revenue: 12}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-05-01T00:00:00', revenue: 20}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-08-01T00:00:00', revenue: null}
   shop/date-fiscal_quarter:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for date fiscal quarter.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: date_authored
     query:
@@ -1877,30 +1835,12 @@ tests:
         end: '2024-11-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.quarter_start) lo, MAX(CASE WHEN CAST(o.order_date AS TIMESTAMP) <=
-      (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') THEN c.quarter_start END) hi FROM orders o JOIN dim_fiscal c ON c.date_day
-      = CAST(CAST(o.order_date AS TIMESTAMP) AS DATE)) SELECT f.quarter_start, COALESCE(SUM(o.amount), CASE WHEN f.quarter_start
-      BETWEEN (SELECT lo FROM coverage) AND (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f LEFT JOIN orders
-      AS o ON f.date_day = CAST(CAST(o.order_date AS TIMESTAMP) AS DATE) WHERE f.date_day >= DATE '2023-08-01' AND f.date_day
-      < DATE '2024-11-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-08-01T00:00:00', revenue: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-11-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-02-01T00:00:00', revenue: 12}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-05-01T00:00:00', revenue: 18}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-08-01T00:00:00', revenue: 2}
   shop/tz-fiscal_quarter:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for tz fiscal quarter.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: tz_authored
     query:
@@ -1915,30 +1855,12 @@ tests:
         end: '2024-11-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.quarter_start) lo, MAX(CASE WHEN (o.ordered_at_tz AT TIME ZONE 'UTC')
-      <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') THEN c.quarter_start END) hi FROM orders o JOIN dim_fiscal c ON c.date_day
-      = CAST((o.ordered_at_tz AT TIME ZONE 'UTC') AS DATE)) SELECT f.quarter_start, COALESCE(SUM(o.amount), CASE WHEN
-      f.quarter_start BETWEEN (SELECT lo FROM coverage) AND (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS
-      f LEFT JOIN orders AS o ON f.date_day = CAST((o.ordered_at_tz AT TIME ZONE 'UTC') AS DATE) WHERE f.date_day >=
-      DATE '2023-08-01' AND f.date_day < DATE '2024-11-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-08-01T00:00:00', revenue: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-11-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-02-01T00:00:00', revenue: 12}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-05-01T00:00:00', revenue: 18}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-08-01T00:00:00', revenue: 2}
   shop/utc-fiscal_year:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for utc fiscal year.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.year_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -1953,14 +1875,6 @@ tests:
         end: '2025-02-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.year_start) lo, MAX(CASE WHEN o.ordered_at <= (CURRENT_TIMESTAMP AT
-      TIME ZONE 'UTC') THEN c.year_start END) hi FROM orders o JOIN dim_fiscal c ON c.date_day = CAST(o.ordered_at AS
-      DATE)) SELECT f.year_start, COALESCE(SUM(o.amount), CASE WHEN f.year_start BETWEEN (SELECT lo FROM coverage) AND
-      (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f LEFT JOIN orders AS o ON f.date_day = CAST(o.ordered_at
-      AS DATE) WHERE f.date_day >= DATE '2023-02-01' AND f.date_day < DATE '2025-02-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__year: '2023-02-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__year: '2024-02-01T00:00:00', revenue: 32}
   shop/null_store_group:
     kind: query_matches_snapshot
     expect: answer
@@ -6493,16 +6407,11 @@ tests:
       - {dimension.shop_order_store_id: b, temporal_role.shop_order_ordered_at__quarter: '2024-07-01T00:00:00', p80: 9}
       - {dimension.shop_order_store_id: null, temporal_role.shop_order_ordered_at__quarter: '2024-04-01T00:00:00', p80: 6}
   shop/distribution_and_rolling:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for distribution and rolling.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: A distribution beside a window compiles as sub-queries, which cannot hold the implicit calendar that every fill uses.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6528,35 +6437,12 @@ tests:
       time:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: month
-    reference_sql: |-
-      WITH m AS (
-                SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
-                FROM orders AS o GROUP BY 1
-              ),
-              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b), (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__month: '2023-11-01T00:00:00', p80: 9, trailing: 15}
-      - {temporal_role.shop_order_ordered_at__month: '2023-12-01T00:00:00', p80: 7, trailing: 22}
-      - {temporal_role.shop_order_ordered_at__month: '2024-01-01T00:00:00', p80: 20, trailing: 42}
-      - {temporal_role.shop_order_ordered_at__month: '2024-02-01T00:00:00', p80: null, trailing: 27}
-      - {temporal_role.shop_order_ordered_at__month: '2024-03-01T00:00:00', p80: 7.2, trailing: 32}
-      - {temporal_role.shop_order_ordered_at__month: '2024-04-01T00:00:00', p80: null, trailing: 12}
-      - {temporal_role.shop_order_ordered_at__month: '2024-05-01T00:00:00', p80: 6, trailing: 18}
-      - {temporal_role.shop_order_ordered_at__month: '2024-06-01T00:00:00', p80: 3, trailing: 9}
-      - {temporal_role.shop_order_ordered_at__month: '2024-07-01T00:00:00', p80: 9, trailing: 18}
-      - {temporal_role.shop_order_ordered_at__month: '2024-08-01T00:00:00', p80: 2, trailing: 14}
   shop/distribution_and_prior:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for distribution and prior.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: A distribution beside a window compiles as sub-queries, which cannot hold the implicit calendar that every fill uses.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6581,35 +6467,12 @@ tests:
       time:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: month
-    reference_sql: |-
-      WITH m AS (
-                SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
-                FROM orders AS o GROUP BY 1
-              ),
-              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b), CASE WHEN s.b - INTERVAL '1 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '1 month') END FROM s
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__month: '2023-11-01T00:00:00', median: 7.5, prior: null}
-      - {temporal_role.shop_order_ordered_at__month: '2023-12-01T00:00:00', median: 7, prior: 15}
-      - {temporal_role.shop_order_ordered_at__month: '2024-01-01T00:00:00', median: 20, prior: 7}
-      - {temporal_role.shop_order_ordered_at__month: '2024-02-01T00:00:00', median: null, prior: 20}
-      - {temporal_role.shop_order_ordered_at__month: '2024-03-01T00:00:00', median: 6, prior: 0}
-      - {temporal_role.shop_order_ordered_at__month: '2024-04-01T00:00:00', median: null, prior: 12}
-      - {temporal_role.shop_order_ordered_at__month: '2024-05-01T00:00:00', median: 6, prior: 0}
-      - {temporal_role.shop_order_ordered_at__month: '2024-06-01T00:00:00', median: 3, prior: 6}
-      - {temporal_role.shop_order_ordered_at__month: '2024-07-01T00:00:00', median: 9, prior: 3}
-      - {temporal_role.shop_order_ordered_at__month: '2024-08-01T00:00:00', median: 2, prior: 9}
   shop/rolling_and_distribution:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for rolling and distribution.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: A distribution beside a window compiles as sub-queries, which cannot hold the implicit calendar that every fill uses.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6635,35 +6498,12 @@ tests:
       time:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: month
-    reference_sql: |-
-      WITH m AS (
-                SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
-                FROM orders AS o GROUP BY 1
-              ),
-              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month'), (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b) FROM s
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__month: '2023-11-01T00:00:00', trailing: 15, p80: 9}
-      - {temporal_role.shop_order_ordered_at__month: '2023-12-01T00:00:00', trailing: 22, p80: 7}
-      - {temporal_role.shop_order_ordered_at__month: '2024-01-01T00:00:00', trailing: 42, p80: 20}
-      - {temporal_role.shop_order_ordered_at__month: '2024-02-01T00:00:00', trailing: 27, p80: null}
-      - {temporal_role.shop_order_ordered_at__month: '2024-03-01T00:00:00', trailing: 32, p80: 7.2}
-      - {temporal_role.shop_order_ordered_at__month: '2024-04-01T00:00:00', trailing: 12, p80: null}
-      - {temporal_role.shop_order_ordered_at__month: '2024-05-01T00:00:00', trailing: 18, p80: 6}
-      - {temporal_role.shop_order_ordered_at__month: '2024-06-01T00:00:00', trailing: 9, p80: 3}
-      - {temporal_role.shop_order_ordered_at__month: '2024-07-01T00:00:00', trailing: 18, p80: 9}
-      - {temporal_role.shop_order_ordered_at__month: '2024-08-01T00:00:00', trailing: 14, p80: 2}
   shop/distribution_revenue_and_prior:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for distribution revenue and prior.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: A distribution beside a window compiles as sub-queries, which cannot hold the implicit calendar that every fill uses.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6691,24 +6531,6 @@ tests:
       time:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: month
-    reference_sql: |-
-      WITH m AS (
-                SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
-                FROM orders AS o GROUP BY 1
-              ),
-              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b), (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b), CASE WHEN s.b - INTERVAL '1 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '1 month') END FROM s
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__month: '2023-11-01T00:00:00', revenue: 15, median: 7.5, prior: null}
-      - {temporal_role.shop_order_ordered_at__month: '2023-12-01T00:00:00', revenue: 7, median: 7, prior: 15}
-      - {temporal_role.shop_order_ordered_at__month: '2024-01-01T00:00:00', revenue: 20, median: 20, prior: 7}
-      - {temporal_role.shop_order_ordered_at__month: '2024-02-01T00:00:00', revenue: 0, median: null, prior: 20}
-      - {temporal_role.shop_order_ordered_at__month: '2024-03-01T00:00:00', revenue: 12, median: 6, prior: 0}
-      - {temporal_role.shop_order_ordered_at__month: '2024-04-01T00:00:00', revenue: 0, median: null, prior: 12}
-      - {temporal_role.shop_order_ordered_at__month: '2024-05-01T00:00:00', revenue: 6, median: 6, prior: 0}
-      - {temporal_role.shop_order_ordered_at__month: '2024-06-01T00:00:00', revenue: 3, median: 3, prior: 6}
-      - {temporal_role.shop_order_ordered_at__month: '2024-07-01T00:00:00', revenue: 9, median: 9, prior: 3}
-      - {temporal_role.shop_order_ordered_at__month: '2024-08-01T00:00:00', revenue: 2, median: 2, prior: 9}
   shop/cumulative_and_quarter_to_date:
     kind: query_matches_snapshot
     expect: answer
