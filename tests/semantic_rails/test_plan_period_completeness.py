@@ -20,7 +20,7 @@ import duckdb
 import pytest
 
 from semantic_rails.expressions import parse_semantic_expression
-from semantic_rails.period_completeness import incomplete_period_why
+from semantic_rails.period_completeness import compares_periods, incomplete_period_why
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner.orchestrator import compose
 from semantic_rails.planner.plan import plan_payload
@@ -296,7 +296,7 @@ def test_the_month_so_far_is_never_put_beside_a_full_month(
     assert "July 2024" in payload["why"]["message"]
     assert payload["why"]["recovery_hints"][0]["message"] == (
         "Compare complete months through June 2024: set query.time.end to 2024-07-01 "
-        "(end-exclusive), then validate."
+        "(end-exclusive), then plan again."
     )
     before = _unchecked(monkeypatch, runtime, intent, partial)
     assert before["status"] == "ok" and _ready(before)
@@ -333,7 +333,7 @@ def test_a_dropped_start_never_asks_to_execute_an_incomplete_comparison(
     [hint] = payload["why"]["recovery_hints"]
     assert hint["message"] == (
         "No month from 2024-07-01 on is complete yet. Compare complete months through June "
-        "2024 instead: set query.time.end to 2024-07-01 (end-exclusive), then validate."
+        "2024 instead: set query.time.end to 2024-07-01 (end-exclusive), then plan again."
     )
     assert "best.query_ir" not in str(payload["why"])
 
@@ -350,7 +350,7 @@ def test_a_window_holding_now_keeps_the_rows_from_its_start(
     assert details["requested_start"] == "2024-01-01"
     assert payload["why"]["recovery_hints"][0]["message"] == (
         "Compare complete months through June 2024: set query.time.end to 2024-07-01 "
-        "(end-exclusive), then validate; keep the rows dated 2024-01-01 or later."
+        "(end-exclusive), then plan again; keep the rows dated 2024-01-01 or later."
     )
 
 
@@ -396,6 +396,19 @@ _RATIO = [
         ),
         # A ratio over a shifted period compares periods too.
         pytest.param("utc_authored", NOW, "revenue by month", {"select": _RATIO}, False),
+        # Execution strips the padding around a kind, so the check reads the parsed query.
+        *(
+            pytest.param(
+                "utc_authored",
+                NOW,
+                "revenue by month",
+                {"select": [_CALLER_SELECT[0], {**_CALLER_SELECT[1], "expression": shifted}]},
+                False,
+                id=f"padded-kind-{side}",
+            )
+            for side, kind in (("leading", " prior_period"), ("trailing", "prior_period "))
+            for shifted in [{**PRIOR_MONTH, "kind": kind}]
+        ),
         # A week bucket crossing the month end is cut short by time.end.
         pytest.param(
             "utc_authored",
@@ -588,6 +601,37 @@ def test_a_metric_that_compares_periods_is_checked_on_every_plan_path(
     assert granted["best"]["pattern"] == "granted_metric"
 
 
+@pytest.mark.parametrize("metric", [f"{METRIC} ", f" {METRIC}"])
+def test_a_padded_metric_id_is_read_as_execution_reads_it(
+    runtime_factory: Callable[[str], Runtime], metric: str
+) -> None:
+    """Execution strips the padding around a granted metric's id, so the check does too."""
+
+    runtime = runtime_factory("jaffle_shop")
+    grant = RequestContext(
+        actor="subject",
+        roles=("analyst",),
+        audience="finance",
+        metric_allowlist=(METRIC,),
+        dimension_allowlist=(JAFFLE_ROLE,),
+    ).to_policy_context()
+    try:
+        granted = plan_payload(
+            runtime,
+            intent="month-over-month revenue growth",
+            partial_query={
+                "policy_context": grant,
+                "select": [{"expression": {"metric": metric}, "as": "value"}],
+                "time": {"temporal_role": JAFFLE_ROLE, "grain": "month"},
+            },
+        )
+    finally:
+        runtime.close()
+    assert granted["best"]["pattern"] == "granted_metric"
+    assert granted["best"]["query_ir"]["select"][0]["expression"]["metric"] == metric
+    _assert_held(granted)
+
+
 # Comparisons on the jaffle package, whose windows run to the wall clock's month, still in
 # progress, with what answered them before this check: ready (None) or the code that held them.
 JAFFLE_MOVES = [
@@ -718,3 +762,102 @@ def test_a_clock_that_cannot_be_read_holds_a_comparison() -> None:
     why = incomplete_period_why(_CONFIG, query, policy_context={"now": "next tuesday"})
     assert why is not None and why["code"] == HELD
     assert why["details"] == {"path": "policy_context.now"}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # Execution rejects each: an unsupported version, a select that isn't a list, an
+        # unknown kind.
+        {"version": 99, "select": [{"expression": {"measure": "m"}}]},
+        {"select": {"expression": {"measure": "m"}}},
+        {"select": [{"expression": {"kind": "prior_periods", "measure": "m"}}]},
+        # A metric whose definition can't be read.
+        {"select": [{"expression": {"metric": "metric.unknown"}}]},
+    ],
+)
+def test_a_draft_the_check_cannot_read_counts_as_a_comparison(query: dict[str, Any]) -> None:
+    assert compares_periods(_CONFIG, query)
+    why = incomplete_period_why(_CONFIG, query, policy_context={"now": NOW})
+    assert why is not None and why["code"] == HELD
+
+
+JAFFLE_NOW = "2018-07-15T12:00:00Z"
+
+
+def test_the_hint_says_plan_again_and_planning_again_gives_plans_own_answer(
+    runtime_factory: Callable[[str], Runtime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Validation doesn't run plan's holds: the hinted window validates, and planning again
+    with it answers as plan does without this check."""
+
+    intent, partial = "revenue year over year", {"policy_context": {"now": JAFFLE_NOW}}
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent=intent, partial_query=partial)
+        details = _assert_held(payload)
+        hinted = {**partial, "time": {"end": details["complete_end"]}}
+        query = payload["best"]["query_ir"]
+        validation = runtime.validate(
+            {**query, "time": {**query["time"], **hinted["time"]}, **partial}
+        )
+        again = plan_payload(runtime, intent=intent, partial_query=hinted)
+        unchecked = _unchecked(monkeypatch, runtime, intent, hinted)
+    finally:
+        runtime.close()
+    assert payload["why"]["recovery_hints"][0]["message"] == (
+        "Compare complete months through June 2018: set query.time.end to 2018-07-01 "
+        "(end-exclusive), then plan again."
+    )
+    assert validation["ok"], validation
+    assert again["why"]["code"] == "PLAN_UNASKED_GROUPING"
+    for key in ("status", "why", "next", "best", "warnings"):
+        assert again.get(key) == unchecked.get(key), key
+
+
+def test_a_range_gives_way_to_the_complete_end(live: Callable[..., Runtime]) -> None:
+    """A range takes no time.end beside it, so the hint replaces the range and keeps its rows."""
+
+    runtime = live(NOW)
+    time = {"temporal_role": ROLE, "grain": "month"}
+    ranged = {
+        "version": 1,
+        "select": _CALLER_SELECT,
+        "time": {**time, "range": {"last": {"unit": "day", "value": 90}}},
+    }
+    why = incomplete_period_why(runtime.package_config, ranged, policy_context={"now": NOW})
+    assert why is not None and why["code"] == HELD
+    assert why["details"]["complete_end"] == "2024-07-01"
+    assert why["recovery_hints"][0]["message"] == (
+        "Compare complete months through June 2024: replace query.time.range with "
+        "query.time.end set to 2024-07-01 (end-exclusive), then plan again; keep the rows "
+        "dated 2024-04-16 or later."
+    )
+    context = {"policy_context": {"now": NOW}}
+    beside = {**ranged, "time": {**ranged["time"], "end": "2024-07-01"}}
+    assert not runtime.validate({**beside, **context})["ok"]
+    hinted = {**ranged, "time": {**time, "end": "2024-07-01"}}
+    assert runtime.validate({**hinted, **context})["ok"]
+    _complete_rows(runtime, hinted, NOW)
+
+
+def test_a_dated_where_hold_never_asks_to_remove_the_filter(live: Callable[..., Runtime]) -> None:
+    where = [{"field": "dimension.shop_order_ordered_at", "op": "<", "value": "2024-06-15"}]
+    payload = plan_payload(
+        live(NOW),
+        intent="revenue month over month",
+        partial_query={
+            "time": {"end": "2024-07-01"},
+            "where": where,
+            "policy_context": {"now": NOW},
+        },
+    )
+    details = _assert_held(payload)
+    assert details["path"] == "where"
+    assert payload["best"]["query_ir"]["where"] == where
+    [hint] = payload["why"]["recovery_hints"]
+    assert "Remove the filter" not in hint["message"]
+    assert hint["message"] == (
+        "Compare complete months through June 2024: set query.time.end to 2024-07-01 "
+        "(end-exclusive), then plan again."
+    )
