@@ -26,6 +26,7 @@ def _write_demo_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": package_dir.name,
                 "namespace": "demo",
                 "name": "Demo",
@@ -53,10 +54,8 @@ def _write_demo_package(package_dir: Path) -> None:
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}},
                 "relation": "orders",
-                "grain": ["order_id"],
-                "keys": {"primary": ["order_id"]},
                 "dimensions": {
                     "store": {"label": "Store", "kind": "categorical"},
                 },
@@ -72,27 +71,44 @@ def _write_demo_package(package_dir: Path) -> None:
                 "default_time": "ordered_at",
                 "measures": {
                     "revenue": {
+                        "kind": "aggregate",
                         "label": "Revenue",
                         "expr": "revenue",
                         "accumulation": "flow",
                         "value_type": "currency",
                     },
                     "email_received": {
+                        "kind": "aggregate",
                         "label": "Email received",
                         "expr": "email_received",
                         "accumulation": "flow",
                     },
                     "sms_received": {
+                        "kind": "aggregate",
                         "label": "SMS received",
                         "expr": "sms_received",
                         "accumulation": "flow",
                     },
                     "push_received": {
+                        "kind": "aggregate",
                         "label": "Push received",
                         "expr": "push_received",
                         "accumulation": "flow",
                     },
                 },
+            }
+        },
+    )
+    _write_yaml(
+        package_dir / "metrics.yml",
+        {
+            "metrics": {
+                key: {
+                    "value_type": ("currency" if key == "revenue" else "number"),
+                    "kind": "aggregate",
+                    "measure": key,
+                }
+                for key in ("revenue", "email_received", "sms_received", "push_received")
             }
         },
     )

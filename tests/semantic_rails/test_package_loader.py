@@ -30,6 +30,7 @@ def _write_minimal_package(
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": "operational_demo",
                 "name": "operational_demo",
                 "description": "Operational metadata demo",
@@ -52,7 +53,7 @@ def _write_minimal_package(
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -67,9 +68,8 @@ def _write_minimal_package(
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}},
                 "relation": "order_fact",
-                "grain": ["order_id"],
                 "times": {
                     "ordered_at": {
                         "id": "temporal_role.demo_order_time",
@@ -83,7 +83,7 @@ def _write_minimal_package(
                 },
                 "measures": {
                     "order_count": {
-                        "id": "measure.demo.order_count",
+                        "as": "measure.demo.order_count",
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
@@ -100,7 +100,22 @@ def _write_minimal_package(
         package_dir / "metrics.yml",
         {
             "metrics": {
+                "sales.orders": {
+                    "value_type": "number",
+                    "id": "metric.sales.orders",
+                    "kind": "aggregate",
+                    "measure": "measure.demo.order_count",
+                    "label": "Orders",
+                    "operational": {
+                        **dict((model_extra or {}).get("operational_defaults") or {}),
+                        **dict((measure_extra or {}).get("operational") or {}),
+                        **dict(
+                            ((measure_extra or {}).get("publish") or {}).get("operational") or {}
+                        ),
+                    },
+                },
                 "sales.orders_copy": {
+                    "value_type": "number",
                     "id": "metric.sales.orders_copy",
                     "name": "sales.orders_copy",
                     "label": "Orders copy",
@@ -108,7 +123,7 @@ def _write_minimal_package(
                     "temporal_role": "temporal_role.demo_order_time",
                     "expression": {"kind": "metric", "metric": "metric.sales.orders"},
                     **dict(metric_extra or {}),
-                }
+                },
             }
         },
     )
@@ -122,6 +137,7 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": "recursive_demo",
                 "name": "recursive_demo",
                 "description": "Recursive loader demo",
@@ -143,14 +159,14 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
             "graph": {
                 "entities": {
                     "customer": {
-                        "id": "entity.demo_customer",
+                        "as": "entity.demo_customer",
                         "name": "demo.Customer",
                         "label": "Customer",
                         "key": ["customer_id"],
                         "model": "customers",
                     },
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -165,12 +181,11 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
         {
             "model": {
                 "id": "customers",
-                "entity": "customer",
+                "entities": {"customer": {}},
                 "relation": "customer_dim",
-                "grain": ["customer_id"],
                 "dimensions": {
                     "country": {
-                        "id": "dimension.demo_customer_country",
+                        "as": "dimension.demo_customer_country",
                         "name": "demo.Customer.country",
                         "label": "Customer country",
                         "kind": "categorical",
@@ -184,13 +199,8 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}, "customer": {}},
                 "relation": "order_fact",
-                "grain": ["order_id"],
-                "keys": {
-                    "primary": ["order_id"],
-                    "foreign": {"customer": ["customer_id"]},
-                },
                 "times": {
                     "ordered_at": {
                         "id": "temporal_role.demo_order_time",
@@ -204,7 +214,7 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
                 },
                 "measures": {
                     "order_count": {
-                        "id": "measure.demo.order_count",
+                        "as": "measure.demo.order_count",
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
@@ -212,7 +222,6 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
                         "publish": {"id": "metric.sales.orders"},
                     }
                 },
-                "joins": {"customer": {"to": "customer"}},
             }
         },
     )
@@ -220,7 +229,15 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
         package_dir / "metrics.yml",
         {
             "metrics": {
+                "sales.orders": {
+                    "value_type": "number",
+                    "id": "metric.sales.orders",
+                    "kind": "aggregate",
+                    "measure": "measure.demo.order_count",
+                    "label": "Orders",
+                },
                 "sales.orders_cumulative": {
+                    "value_type": "number",
                     "id": "metric.sales.orders_cumulative",
                     "name": "sales.orders_cumulative",
                     "label": "Cumulative orders",
@@ -230,7 +247,7 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
                         "kind": "cumulative",
                         "input": {"kind": "metric", "metric": "metric.sales.orders"},
                     },
-                }
+                },
             }
         },
     )
@@ -444,6 +461,7 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": "snowflake_loader_demo",
                 "name": "snowflake_loader_demo",
                 "description": "Snowflake loader demo",
@@ -465,7 +483,7 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["O_ORDERKEY"],
@@ -480,9 +498,8 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}},
                 "relation": "SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.ORDERS",
-                "grain": ["O_ORDERKEY"],
                 "times": {
                     "order_date": {
                         "id": "temporal_role.demo_order_date",
@@ -496,20 +513,32 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
                 },
                 "measures": {
                     "order_count": {
-                        "id": "measure.demo.order_count",
+                        "as": "measure.demo.order_count",
                         "name": "sales.orders",
                         "label": "Orders",
                         "description": "Orders",
                         "kind": "entity_count",
                         "time": "order_date",
-                        "topics": ["orders"],
                         "publish": {"id": "metric.sales.orders"},
                     }
                 },
             }
         },
     )
-    _write_yaml(package_dir / "metrics.yml", {"metrics": {}})
+    _write_yaml(
+        package_dir / "metrics.yml",
+        {
+            "metrics": {
+                "sales.orders": {
+                    "value_type": "number",
+                    "id": "metric.sales.orders",
+                    "kind": "aggregate",
+                    "measure": "measure.demo.order_count",
+                    "label": "Orders",
+                }
+            }
+        },
+    )
 
     config = load_package_config(str(package_dir))
 
@@ -658,7 +687,7 @@ def test_loader_rejects_duplicate_entity_ids(tmp_path: Path):
     graph_path = package_dir / "graph.yml"
     graph = yaml.safe_load(graph_path.read_text(encoding="utf-8"))
     graph["graph"]["entities"]["invoice"] = {
-        "id": "entity.demo_order",
+        "as": "entity.demo_order",
         "name": "demo.Invoice",
         "label": "Invoice",
         "key": ["order_id"],
@@ -667,7 +696,7 @@ def test_loader_rejects_duplicate_entity_ids(tmp_path: Path):
     _write_yaml(graph_path, graph)
     _write_yaml(
         package_dir / "models" / "invoices.yml",
-        {"models": {"invoices": {"entity": "invoice", "relation": "order_fact"}}},
+        {"models": {"invoices": {"entities": {"invoice": {}}, "relation": "order_fact"}}},
     )
 
     with pytest.raises(SemanticLayerError) as exc:
@@ -684,7 +713,7 @@ def test_loader_rejects_duplicate_object_ids_across_kinds(tmp_path: Path):
         model_extra={
             "dimensions": {
                 "bad_dimension": {
-                    "id": "entity.demo_order",
+                    "as": "entity.demo_order",
                     "name": "demo.Order.bad_dimension",
                     "label": "Bad dimension",
                     "kind": "categorical",

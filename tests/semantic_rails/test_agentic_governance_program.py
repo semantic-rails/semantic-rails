@@ -66,6 +66,7 @@ def _write_package(
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": package_dir.name,
                 "name": package_dir.name,
                 "description": f"{package_dir.name} demo package",
@@ -90,7 +91,7 @@ def _write_package(
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -105,10 +106,8 @@ def _write_package(
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}},
                 "relation": "order_fact",
-                "grain": ["order_id"],
-                "keys": {"primary": ["order_id"]},
                 "times": {
                     "ordered_at": {
                         "id": "temporal_role.demo_order_time",
@@ -122,13 +121,12 @@ def _write_package(
                 },
                 "measures": {
                     "order_count": {
-                        "id": "measure.demo.order_count",
+                        "as": "measure.demo.order_count",
                         "name": "sales.orders",
                         "label": "Orders",
                         "description": "Order count",
                         "kind": "entity_count",
                         "time": "ordered_at",
-                        "topics": ["orders"],
                         "meta": dict(measure_meta or {}),
                         "publish": {"id": "metric.sales.orders"},
                     },
@@ -137,7 +135,21 @@ def _write_package(
             }
         },
     )
-    _write_yaml(package_dir / "metrics.yml", {"metrics": {}})
+    _write_yaml(
+        package_dir / "metrics.yml",
+        {
+            "metrics": {
+                "sales.orders": {
+                    "id": "metric.sales.orders",
+                    "kind": "aggregate",
+                    "measure": "measure.demo.order_count",
+                    "label": "Orders",
+                    "description": "Order count",
+                    "value_type": "number",
+                }
+            }
+        },
+    )
     _write_seed_sql(package_dir / "data" / "seed_example.sql")
 
 
@@ -237,23 +249,21 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
         ],
         extra_measures={
             "secret_orders": {
-                "id": "measure.demo.secret_orders",
+                "as": "measure.demo.secret_orders",
                 "name": "sales.secret_orders",
                 "label": "Secret orders",
                 "description": "Hidden measure",
                 "kind": "entity_count",
                 "time": "ordered_at",
-                "topics": ["orders"],
                 "publish": False,
             },
             "production_secret_orders": {
-                "id": "measure.demo.production_secret_orders",
+                "as": "measure.demo.production_secret_orders",
                 "name": "sales.production_secret_orders",
                 "label": "Production secret orders",
                 "description": "Hidden only for production context",
                 "kind": "entity_count",
                 "time": "ordered_at",
-                "topics": ["orders"],
                 "publish": False,
             },
         },
