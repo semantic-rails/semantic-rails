@@ -427,11 +427,16 @@ def plan_payload(
     ready = best_ok and not (
         faithfulness_why or time_why or conversion_why or subject_why or value_why or shape_why
     )
+    time_details = (time_why or {}).get("details")
     payload = {
         "plan_version": _VERSION,
         "intent": intent,
         "intent_ir": intent_ir.to_dict(),
-        "status": "ok" if ready else "low_confidence",
+        "status": "ok"
+        if ready
+        else "needs_clarification"
+        if isinstance(time_details, dict) and time_details.get("possible_readings")
+        else "low_confidence",
         "best": _slim_best(
             best_draft,
             pattern=best["pattern"],

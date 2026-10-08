@@ -552,7 +552,24 @@ qualifies it ("year 2017", "the calendar year 2017"; "financial year 2017" and "
 are not calendar years and are reported), consecutive years, a quarter or half with a year ("the first half
 of 2017", "H2 2017"), a month or month range with a year, days with a year ("March 1 to March
 31, 2017", "Mar 1 - Mar 31 2017"), an ISO date or ISO range ("2017-03-01 to 2017-03-31"), or a
-relative window ("last 7 days"). A range's spoken end is included: the response's
+relative window ("last 7 days"). A single named month, quarter or half without a year
+("in September", "Q3", "the first half") uses the latest such period starting on or before
+`policy_context.now` (the package's time zone, or UTC), and `assumptions` names the year.
+Only a completed period resolves: if it contains the reference date, `plan` returns
+`needs_clarification` with `TIME_WINDOW_UNRESOLVED` and `why.details.possible_readings` naming
+that period through the last complete day and the same period a year earlier. A month and
+day without a year ("Sept 30", "September 1st") uses the latest such date; an optional weekday
+("Wed Sept 30") must match it, otherwise the same clarification names the stated weekday
+and the date's actual weekday. "Since September", "since Sept 22" and "since Q3" start at
+that inferred date and end at the start of the reference day, so they include only complete
+days. "Early", "late" and "mid" months and multiple named periods remain unresolved.
+"All time", "of all time", "ever", "in total", bare "to date", "since launch", "since the
+beginning" and "since we started" record their spans and add no start or end, with the
+assumption "all time: no start date". A caller's bounded window cannot silently narrow them.
+A balance such as "MRR of all time" remains held: a stock needs an as-of day. Period-to-date
+forms ("year to date", "month to date", "ytd", "mtd") retain their existing handling. Planning
+reads no warehouse data to establish coverage; the all-time assumption makes no claim about
+the first date with data. A range's spoken end is included: the response's
 `assumptions` says so, with the exclusive `time.end` it chose. A window restated right beside
 itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
 one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are a

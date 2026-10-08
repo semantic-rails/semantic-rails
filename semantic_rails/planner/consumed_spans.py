@@ -176,8 +176,7 @@ def _consumed_spans(
 
     spans: list[tuple[int, int]] = []
     time = _time_block(query)
-    if any(time.get(key) for key in ("start", "end", "range")):
-        spans.extend(_window_spans(lowered, time, query.get("policy_context")))
+    spans.extend(_window_spans(lowered, time, query.get("policy_context")))
     normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
     referenced = set(_referenced_ids(query))
     calendar_id = str(time.get("calendar_id") or "default")
@@ -340,6 +339,8 @@ def _window_spans(
     """
 
     windows, others = _question_time(lowered, policy_context, timezone=timezone)
+    if not windows and not any(time.get(key) for key in ("start", "end", "range")):
+        return []
     if not _window_agrees(windows, time, policy_context, timezone=timezone):
         return []
     return [span for span, _bounds in windows] + others

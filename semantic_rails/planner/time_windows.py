@@ -25,8 +25,10 @@ from .time_phrases import (
     _TIME_UNIT_ALT,
     _YEAR_SPAN_RE,
     _YEAR_TOKEN_RE,
+    _all_time_spans,
     _AsOfCue,
     _calendar_windows,
+    _named_calendar_windows,
     _overlaps,
     _relative_window,
     _time_cues,
@@ -170,6 +172,8 @@ class _TimeWindow:
     # another phrase left the question unresolved.
     windows: tuple[tuple[tuple[int, int], dict[str, Any]], ...] = ()
     as_of: tuple[_AsOfCue, ...] = ()
+    # Explicit alternatives for a named current period or a mismatched weekday.
+    readings: tuple[str, ...] = ()
 
 
 def _phrase(lowered: str, span: tuple[int, int]) -> str:
@@ -308,6 +312,15 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     for row in relative:
         if not _overlaps(row[0], [item[0] for item in windows]):
             windows.append(row)
+    named, named_rejected, assumptions, readings = _named_calendar_windows(
+        interval_text, today, [row[0] for row in windows] + rejected + [cue.span for cue in as_of]
+    )
+    windows.extend(named)
+    rejected.extend(named_rejected)
+    all_time = _all_time_spans(interval_text)
+    windows.extend((span, {}, "") for span in all_time)
+    if all_time:
+        assumptions.append("all time: no start date")
     windows.sort(key=lambda row: row[0])
     covered = [row[0] for row in windows]
     unread = [cue.span for cue in as_of] + [
@@ -321,7 +334,6 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             unresolved_spans.append((prior_start, max(prior_end, end)))
         else:
             unresolved_spans.append((start, end))
-    assumptions: list[str] = []
     if len(windows) > 1 and _is_restatement(lowered, windows):
         span = (windows[0][0][0], windows[-1][0][1])
         windows = [(span, windows[0][1], next((row[2] for row in windows if row[2]), ""))]
@@ -356,6 +368,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
             windows=tuple((row[0], dict(row[1])) for row in windows),
             as_of=as_of,
+            readings=tuple(readings),
         )
     if not windows:
         return _TimeWindow()
