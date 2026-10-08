@@ -638,8 +638,10 @@ built on one) is ready only when every period it returns has ended at the reques
 `low_confidence` with `why.code="PERIOD_COMPARISON_INCOMPLETE"`: `why.details.incomplete_period`
 names the period still in progress (or cut short by `time.end`), `why.details.complete_end` the
 end of the last complete one, and the hint offers comparing the complete periods ("Compare
-complete months through June 2024: set query.time.end to 2024-07-01"), keeping the rows from a
-dropped start (`why.details.requested_start`). That code takes the place of
+complete months through June 2024: set query.time.end to 2024-07-01 (end-exclusive), then plan
+again"), keeping the rows from a dropped start (`why.details.requested_start`). Plan again
+with that window rather than only validating it: validation doesn't run plan's holds. That code
+takes the place of
 `TIME_WINDOW_START_DROPPED`, whose rows would still hold the incomplete period. A comparison
 bucketed on another calendar, or bounded by a `where` filter on a date, is held the same way,
 since plan can't read where its periods end. A window that has ended ("revenue month over
