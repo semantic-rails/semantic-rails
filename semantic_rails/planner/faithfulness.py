@@ -46,7 +46,7 @@ from .coverage import (
     _query_contains_prior_period,
     _referenced_ids,
 )
-from .exclusions import declared_values, exclusion_clauses, unrealized
+from .exclusions import exclusion_gaps
 from .filter_checks import (
     _contradictory_filter_gaps,
     _filter_value_gaps,
@@ -273,14 +273,7 @@ def intent_faithfulness_why(
         )
 
     # Every item of every exclusion clause needs its own exact predicate.
-    gaps.extend(
-        unrealized(
-            exclusion_clauses(runtime._config, text, query.get("policy_context")),
-            query,
-            caller=partial_query,
-            valid_values=declared_values(runtime._config),
-        )
-    )
+    gaps.extend(exclusion_gaps(runtime._config, text, query, caller=partial_query))
 
     requested_subjects = _conjoined_subjects(runtime, text)
     if len(requested_subjects) >= 2:

@@ -28,7 +28,7 @@ from .coverage import CoverageGap, _dict_nodes, _is_number
 from .visibility import visible_value_domains
 
 _MARKER_RE = re.compile(
-    r"\b(?:excluding|except|without|but\s+not|not\b(?!\s+only\b)(?:\s+including)?|"
+    r"\b(?:excluding|except|without|but\s+not|not\b(?!\s+only\b)(?:\s+includ(?:ing|es?))?|"
     r"other\s+than|apart\s+from|aside\s+from|minus|outside\s+of)\b"
 )
 # "for all stores but Brooklyn": "but" excludes after all/every/each/any.
@@ -94,6 +94,7 @@ class ExclusionClause:
     marker: Span
     text: str
     items: tuple[ExcludedItem, ...]
+    end: int = 0  # where the clause ends: the next marker, an "including", or the question's end
 
 
 @dataclass(frozen=True)
@@ -226,6 +227,10 @@ class _Lists:
                 index += taken
             elif tokens[index].text in _LEADS:
                 index += 1
+                # "on Tue. June 25": a weekday's own mark leads in too.
+                weekday = tokens[index - 1].text in _WEEKDAYS
+                if weekday and index < len(tokens) and tokens[index].text in {".", ","}:
+                    index += 1
             else:
                 break
         if index < len(tokens) and tokens[index].start < limit and _word(tokens[index]):
@@ -312,6 +317,12 @@ def excluded_time_spans(lowered: str, time_spans: list[Span]) -> list[Span]:
     )
 
 
+def exclusion_markers(text: str) -> list[Span]:
+    """Where each exclusion marker sits ("excluding", "other than")."""
+
+    return _markers(str(text or "").lower())
+
+
 def exclusion_regions(text: str) -> list[Span]:
     """Where each exclusion clause sits, from its marker to its end."""
 
@@ -363,7 +374,8 @@ def exclusion_clauses(
         return []
     if len(lowered) != len(text):
         # Lowercasing moved the offsets: nothing in the question can be read safely.
-        return [ExclusionClause((0, 0), text, (ExcludedItem("unknown", (0, len(text)), text),))]
+        unread = ExcludedItem("unknown", (0, len(text)), text)
+        return [ExclusionClause((0, 0), text, (unread,), len(text))]
     window = _time_window(text, policy_context=policy_context)
     time_spans = list(window.spans)
     excluded = {*window.excluded, *excluded_time_spans(lowered, time_spans)}
@@ -408,6 +420,7 @@ def exclusion_clauses(
                     )
                     for item in sorted(items, key=lambda item: item.span)
                 ),
+                region.end,
             )
         )
     return clauses
@@ -456,15 +469,15 @@ def _read_filter(row: dict[str, Any]) -> tuple[str, list[Any]] | None:
 
 
 def _scoped_fields(query: dict[str, Any]) -> set[str]:
-    """Fields a child group or a selected expression conditions in a scope of its own."""
+    """Fields a child group, a selected expression or any other compound condition reads in a
+    scope of its own."""
 
     out: set[str] = set()
     for node in list(query.get("where") or []):
-        if is_child_group(node):
+        plain = isinstance(node, dict) and isinstance(node.get("field"), str)
+        if is_child_group(node) or not plain:
             out.update(
-                row["field"]
-                for row in _dict_nodes(list(node.get("where") or []))
-                if isinstance(row.get("field"), str)
+                row["field"] for row in _dict_nodes(node) if isinstance(row.get("field"), str)
             )
     nested = {key: value for key, value in query.items() if key != "where"}
     for node in _dict_nodes(nested):
@@ -473,19 +486,61 @@ def _scoped_fields(query: dict[str, Any]) -> set[str]:
     return out
 
 
+def _positive_values(
+    config: Any, text: str, clauses: list[ExclusionClause]
+) -> dict[str, list[Any]]:
+    """The values the question names outside every exclusion clause, by dimension."""
+
+    tokens = _tokenize(str(text or "").lower())
+    lists = _Lists(tokens, [], _value_names(config))
+    out: dict[str, list[Any]] = {}
+    index = 0
+    while index < len(tokens):
+        start = tokens[index].start
+        found = None
+        if not any(clause.marker[0] <= start < clause.end for clause in clauses):
+            found = lists.value_at(index, len(tokens))
+        if found is None:
+            index += 1
+            continue
+        index, dimensions = found
+        for dimension, values in dimensions.items():
+            out.setdefault(dimension, []).extend(values)
+    return out
+
+
+def exclusion_gaps(
+    config: Any, text: str, query: dict[str, Any], *, caller: dict[str, Any] | None = None
+) -> list[CoverageGap]:
+    """The question's exclusion clauses that the draft doesn't realize item by item."""
+
+    clauses = exclusion_clauses(config, text, query.get("policy_context"))
+    if not clauses:
+        return []
+    return unrealized(
+        clauses,
+        query,
+        caller=caller,
+        positive=_positive_values(config, text, clauses),
+        valid_values=declared_values(config),
+    )
+
+
 def unrealized(
     clauses: list[ExclusionClause],
     query: dict[str, Any],
     *,
     caller: dict[str, Any] | None = None,
-    valid_values: dict[str, list[str]] | None = None,
+    positive: dict[str, list[Any]] | None = None,
+    valid_values: dict[str, list[Any]] | None = None,
 ) -> list[CoverageGap]:
     """One gap for each clause the draft doesn't realize item by item.
 
     A value item needs an outer ``IS DISTINCT FROM`` filter on its value, on its one bound
-    dimension, which no other filter scopes or narrows; no outer negative filter may exclude a
-    value the question doesn't name. The caller's own ``partial_query`` filters may exclude
-    other values, but realize an item only by dropping that very value.
+    dimension, which no other scope conditions. No outer filter may exclude a value the question
+    doesn't name, and on an item's dimension a filter that keeps values keeps only values the
+    question names (``positive``, outside its exclusions). The caller's own ``partial_query``
+    filters may exclude or keep other values, but realize an item only by dropping that value.
     """
 
     if not clauses:
@@ -497,6 +552,7 @@ def unrealized(
         for item in clause.items:
             if item.binding is not None:
                 named.setdefault(item.binding[0], []).append(item.binding[1])
+    positive = positive or {}
     scoped = _scoped_fields(query)
     filters = [
         (f"where[{index}]", row, _read_filter(row))
@@ -506,9 +562,12 @@ def unrealized(
     excess = [
         {"path": path, "field": row["field"], "value": literal}
         for path, row, read in filters
-        if read is not None and read[0] not in _KEEPING and row not in caller_rows
+        if read is not None
+        and row not in caller_rows
+        and (read[0] not in _KEEPING or row["field"] in named)
         for literal in read[1]
         if not _contains_literal(named.get(row["field"], []), literal)
+        and not (read[0] in _KEEPING and _contains_literal(positive.get(row["field"], []), literal))
     ]
     gaps: list[CoverageGap] = []
     for number, clause in enumerate(clauses):
@@ -531,19 +590,24 @@ def unrealized(
             if field_id in scoped or any(read is None for _path, _row, read in rows):
                 report["missing"].append(item.text)
                 continue
+            readable = [(path, row, *read) for path, row, read in rows if read is not None]
+            keeping = [(row, literals) for _p, row, op, literals in readable if op in _KEEPING]
             on_value = [
-                (path, row, read[0])
-                for path, row, read in rows
-                if read is not None and _contains_literal(read[1], canonical)
+                (path, op)
+                for path, _row, op, literals in readable
+                if _contains_literal(literals, canonical)
             ]
-            kept = [row for _path, row, read in rows if read is not None and read[0] in _KEEPING]
-            report["positive_matches"] += [row for _p, row, op in on_value if op in _KEEPING]
-            dropped = [path for path, _row, op in on_value if op in _DROPPING]
-            realized = [path for path, _row, op in on_value if op == _KEEPS_UNRECORDED]
-            report["drops_rows_without_a_value"] += dropped
-            if realized and not dropped and all(row in caller_rows for row in kept):
+            dropped = [path for path, op in on_value if op in _DROPPING]
+            realized = [path for path, op in on_value if op == _KEEPS_UNRECORDED]
+            kept = bool(keeping) and all(_contains_literal(lits, canonical) for _r, lits in keeping)
+            if kept and not (dropped or realized):
+                # Every filter that keeps values keeps this one: the request reversed.
+                report["positive_matches"] += [row for row, _literals in keeping]
+            elif dropped:
+                report["drops_rows_without_a_value"] += dropped
+            elif realized:
                 report["matched"] += realized
-            elif not dropped:
+            else:
                 report["missing"].append(item.text)
         extra = [
             row
@@ -607,8 +671,11 @@ def _clause_gap(
 __all__ = [
     "ExcludedItem",
     "ExclusionClause",
+    "declared_values",
     "excluded_time_spans",
     "exclusion_clauses",
+    "exclusion_gaps",
+    "exclusion_markers",
     "exclusion_regions",
     "unrealized",
 ]
