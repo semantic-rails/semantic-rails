@@ -124,8 +124,10 @@ def _unasked_grouping_why(
 
     A group_by dimension traces when a grouping the question asks for reads it
     (``_asked_grouping_terms``, read as ``_dropped_grouping_why`` reads a listed one), when the
-    caller's ``partial_query`` group_by has it, or when the draft's own ``=`` or ``IN`` filter
-    keeps only values of it the question names. The time block's grain traces when the
+    caller's ``partial_query`` group_by has it, when the draft's own ``=`` or ``IN`` filter
+    keeps only values of it the question names, or when it is the clock's own date dimension
+    beside a day grain on that clock: it adds no row (a metric constraint may require it on a
+    balance, ``snapshot.shape_snapshot``). The time block's grain traces when the
     question's words outside its windows name it (``_names_grain``), when the caller's
     ``partial_query`` time has it, or when it can't split the rows because the window fits in
     one bucket (``_grain_splits``). The package declares no default grain, so a grain plan
@@ -154,11 +156,9 @@ def _unasked_grouping_why(
         if (row.get("op") == "=" and not isinstance(row.get("value"), (list, tuple, dict)))
         or (str(row.get("op")).lower() == "in" and isinstance(row.get("value"), list))
     }
-    from .snapshot import as_of_groupings  # noqa: WPS433 (snapshot reads _names_grain)
-
-    # The caller's grouping, and a balance's own day beside its day grain (a metric constraint
-    # may require it; it adds no row).
-    chosen = set(caller.get("group_by") or []) | as_of_groupings(config, query)
+    chosen = set(caller.get("group_by") or [])
+    clock = _object_by_id(config.temporal_roles, str(time.get("temporal_role") or ""))
+    clock_day = str(getattr(clock, "dimension", "") or "") if grain == "day" else ""
     grouped = [
         row
         for item in dict.fromkeys(query.get("group_by") or [])
@@ -169,6 +169,7 @@ def _unasked_grouping_why(
         for row in grouped
         if row.id not in chosen
         and row.id not in pinned
+        and not (row.id == clock_day and row.data_type == "date")
         and not any(
             _reads_grouping(term, ids, row) for term, ids in zip(terms, stand_ins, strict=True)
         )

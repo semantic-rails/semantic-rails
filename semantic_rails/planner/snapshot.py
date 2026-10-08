@@ -25,7 +25,14 @@ from typing import Any
 
 from ..expressions import AggregateExpr
 from ._base import _object_by_id, _semantic_token
-from .coverage import CoverageGap, _coverage_why, _query_contains_prior_period, _time_block
+from .coverage import (
+    _COMPARISON_PHRASE_RE,
+    _COMPARISON_WORDS,
+    CoverageGap,
+    _coverage_why,
+    _query_contains_prior_period,
+    _time_block,
+)
 from .generators import _target_focus_text
 from .grouping_checks import _declared_name_spans
 from .patterns.metric_by_dimension_rollup import _governed_target
@@ -138,8 +145,6 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
 
 def _compares(config: Any, question: str) -> bool:
     """Whether the question compares, as ``_answer_shape_why`` reads a comparison."""
-
-    from .answer_shape import _COMPARISON_PHRASE_RE, _COMPARISON_WORDS  # noqa: WPS433 (cycle)
 
     lowered = question.lower()
     names = list(_declared_name_spans(config, lowered))
@@ -418,15 +423,3 @@ def snapshot_day_gaps(
             },
         )
     ]
-
-
-def as_of_groupings(config: Any, query: dict[str, Any]) -> set[str]:
-    """The balance clock's own date dimension, when the draft reads the balance at day grain on
-    that clock: grouped beside the day it adds no row (a metric constraint may require it)."""
-
-    balance = _balance(config, query)
-    time = _time_block(query)
-    if balance is None or time.get("grain") != "day" or time.get("temporal_role") != balance.clock:
-        return set()
-    dimension = _day_dimension(config, balance.clock)
-    return {dimension} if dimension else set()
