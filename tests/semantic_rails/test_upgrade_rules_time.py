@@ -66,3 +66,11 @@ def test_axis_edit_preserves_comments(tmp_path):
     assert not plan(
         PackageFiles(source, contents={**files.contents, **result.files}), RULES, {}
     ).findings
+
+
+def test_required_axis_without_declared_time_stops(tmp_path):
+    source = tmp_path / "pkg.yml"
+    source.write_text("defaults: {time: {default_query_axis: true}}\n")
+    result = plan(PackageFiles(source), RULES, {})
+    assert len(result.pending) == 1 and not result.files
+    assert "Declare a times: entry" in result.pending[0].message

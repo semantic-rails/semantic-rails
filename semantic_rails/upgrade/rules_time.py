@@ -7,12 +7,13 @@ from .model import Edit, Finding, PackageFiles, Rule
 
 
 def _axis(files: PackageFiles) -> Iterator[Finding]:
+    times = list(files.times())
     defaults = (
         (file, (*path, "time"), row["time"])
         for file, path, row in files.defaults()
         if isinstance(row.get("time"), dict)
     )
-    for file, path, row in chain(files.times(), defaults):
+    for file, path, row in chain(times, defaults):
         if "default_query_axis" in row:
             key = (*path, "default_query_axis")
             yield Finding(
@@ -20,8 +21,12 @@ def _axis(files: PackageFiles) -> Iterator[Finding]:
                 file,
                 files.line(file, key),
                 key,
-                "Remove default_query_axis; default: true declares the model's default time.",
-                (Edit(file, "delete", key),),
+                "Declare a times: entry before removing a required time axis."
+                if not times and bool(row["default_query_axis"])
+                else "Remove default_query_axis; default: true declares the model's default time.",
+                ()
+                if not times and bool(row["default_query_axis"])
+                else (Edit(file, "delete", key),),
             )
 
 
