@@ -968,7 +968,10 @@ def test_a_never_matched_operand_reads_null_beyond_the_loaded_range(
         gold = _gold(rt, FUTURE_GOLD.format(value=FUTURE_B[shape], where=""))
         assert gold == [{"b": None}]
         assert [{"b": row["b"]} for row in typed_rows(response)] == gold
-        assert _warnings(response)[0]["details"]["outputs"] == ["b"]
+        code = "NO_DATA_YET" if fill else "NO_DATA_IN_SCOPE"
+        assert _warnings(response, code)[0]["details"]["outputs"] == ["b"]
+        if fill:
+            assert _warnings(response) == []
     finally:
         if rt is not future_shop:
             rt.close()
