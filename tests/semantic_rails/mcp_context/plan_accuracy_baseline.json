@@ -1,6 +1,6 @@
 {
- "eval_set_sha256": "229ec75f95cd7f1c1b7bf19a54babf02fddfa50da8eb2e0fd37345af981b3d76",
- "summary": {"cases": 40, "pass": 18, "pass_flagged": 1, "wrong_flagged": 21, "wrong_warned": 0, "wrong_silent": 0},
+ "eval_set_sha256": "0a6c78c7d763aee94d1dcdd2e9bfb13941b5cf6d4059e6b03bdeecc8f3fdbfcd",
+ "summary": {"cases": 40, "pass": 17, "pass_flagged": 1, "wrong_flagged": 22, "wrong_warned": 0, "wrong_silent": 0},
  "cases": {
   "J01": {"outcome": "wrong_flagged", "mismatched": ["group_by"]},
   "J02": {"outcome": "pass", "mismatched": []},
@@ -40,7 +40,7 @@
   "J36": {"outcome": "wrong_flagged", "mismatched": ["answered"]},
   "J37": {"outcome": "wrong_flagged", "mismatched": ["refused"]},
   "J38": {"outcome": "pass_flagged", "mismatched": []},
-  "J39": {"outcome": "pass", "mismatched": []},
-  "J40": {"outcome": "wrong_flagged", "mismatched": ["select", "group_by", "fill", "calendar_id"]}
+  "J39": {"outcome": "wrong_flagged", "mismatched": ["answered"]},
+  "J40": {"outcome": "wrong_flagged", "mismatched": ["answered"]}
  }
 }
