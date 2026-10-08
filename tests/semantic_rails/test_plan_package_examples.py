@@ -342,6 +342,10 @@ def test_time_slot_requires_literal_agreement_and_matches_reference(subscription
     query = result["best"]["query_ir"]
     assert query["time"]["start"] == day
     assert query["limit"] == limit
+    # Only the window bounds change: the authored grain, role and groupings stay.
+    assert query["time"]["grain"] == QUERY["time"]["grain"]
+    assert query["time"]["temporal_role"] == ROLE
+    assert query["group_by"] == QUERY["group_by"]
     rows = subscriptions.query(query)["rows"]
     assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, day, limit)
 
@@ -401,17 +405,181 @@ def test_invalid_example_time_shape_does_not_crash_slot_matching(subscriptions, 
     assert (result.get("best") or {}).get("pattern") != "package_example"
 
 
-def test_time_slot_remains_held_when_snapshot_grain_is_unsupported(subscriptions):
+@pytest.mark.parametrize("phrase", ["last 7 days", "this week", "this year", "last month", "today"])
+def test_time_slot_needs_one_elapsed_bucket_of_the_authored_grain(subscriptions, phrase):
+    # A range of days, another grain's bucket, or the day still in progress: never one
+    # complete day, so neither the authored day grain nor its rows answer it.
     _replace_entries(
         subscriptions,
         {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
     )
-    result = _plan(subscriptions, QUESTION.replace("today", "this year"))
-    assert result["status"] == "low_confidence"
-    assert result["best"]["pattern"] == "package_example"
-    assert result["best"]["validation_ok"] is False
-    assert result["best"]["query_ir"]["time"]["grain"] == "year"
-    assert "execute" not in result["next"]["ready_for"]
+    result = _plan(subscriptions, QUESTION.replace("today", phrase))
+    assert (result.get("best") or {}).get("pattern") != "package_example"
+
+
+def test_time_slot_needs_a_one_bucket_authored_window(subscriptions):
+    week = {**QUERY, "time": {**QUERY["time"], "range": {"last": {"unit": "day", "value": 7}}}}
+    _replace_entries(
+        subscriptions,
+        {"top_mrr": {"question": QUESTION.replace("today", "last 7 days"), "query": week}},
+    )
+    result = _plan(subscriptions, QUESTION.replace("today", "last 14 days"))
+    assert (result.get("best") or {}).get("pattern") != "package_example"
+
+
+_AUGUST = {"temporal_role": ROLE, "grain": "month", "start": "2026-08-01", "end": "2026-09-01"}
+_LAST_MONTH = {
+    "temporal_role": ROLE,
+    "grain": "month",
+    "range": {"last": {"unit": "month", "value": 1}},
+}
+_JULY = {"start": "2026-07-01", "end": "2026-08-01"}
+
+
+@pytest.mark.parametrize(
+    "time,authored,asked,window",
+    [
+        (_AUGUST, "August 2026", "July 2026", _JULY),
+        (_AUGUST, "August 2026", "last month", {"range": _LAST_MONTH["range"]}),
+        ({**_LAST_MONTH, "fill": True}, "last month", "July 2026", _JULY),
+        (_LAST_MONTH, "last month", "2026-07-15", None),
+        (_LAST_MONTH, "last month", "Q3 2026", None),
+        (_LAST_MONTH, "last month", "last 2 months", None),
+        (_LAST_MONTH, "last month", "this month", None),
+        ({**_AUGUST, "calendar_id": "fiscal"}, "August 2026", "July 2026", None),
+        (
+            {**_LAST_MONTH, "range": {"last": {"unit": "month", "value": 2}}},
+            "last 2 months",
+            "last 3 months",
+            None,
+        ),
+    ],
+)
+def test_time_slot_keeps_every_authored_time_key(time, authored, asked, window):
+    from semantic_rails.planner.examples import _match
+
+    query = {**QUERY, "time": time}
+    matched = _match(f"MRR by account {asked}", f"MRR by account {authored}", query)
+    if window is None:
+        assert matched is None
+        return
+    kept = {key: value for key, value in time.items() if key not in {"range", "start", "end"}}
+    assert matched == {**query, "time": {**kept, **window}}
+
+
+@pytest.mark.parametrize(
+    "authored,asked",
+    [
+        ("pay more than 2.5 MRR", "pay more than 25 MRR"),
+        ("pay more than 25 MRR", "pay more than 2.5 MRR"),
+        ("changed MRR by -5", "changed MRR by 5"),
+        ("pay 1-5 MRR", "pay 15 MRR"),
+        ("pay more than .5 MRR", "pay more than 5 MRR"),
+        ("pay 9.0 MRR", "pay 90 MRR"),
+    ],
+)
+def test_numbers_compare_whole_in_exact_and_slot_matches(subscriptions, authored, asked):
+    _replace_entries(
+        subscriptions,
+        {"threshold": {"question": f"Which 2 accounts {authored} yesterday?", "query": QUERY}},
+    )
+    verbatim = _plan(subscriptions, f"Which 2 accounts {authored} yesterday?")
+    assert verbatim["best"]["pattern"] == "package_example"
+    # Neither the exact path nor the count and time slots read one number as another.
+    for count, phrase in [("2", "yesterday"), ("3", "yesterday"), ("2", "on 2026-09-30")]:
+        result = _plan(subscriptions, f"Which {count} accounts {asked} {phrase}?")
+        assert (result.get("best") or {}).get("pattern") != "package_example"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        QUESTION.replace("today", "yesterday").replace("2", "-2"),
+        QUESTION.replace("today", "-2026-09-30"),
+    ],
+)
+def test_a_slot_never_cuts_a_signed_number(subscriptions, question):
+    _replace_entries(
+        subscriptions,
+        {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
+    )
+    result = _plan(subscriptions, question)
+    assert (result.get("best") or {}).get("pattern") != "package_example"
+
+
+def _values(node):
+    if isinstance(node, dict):
+        for key, child in node.items():
+            if key == "value":
+                yield child
+            yield from _values(child)
+    elif isinstance(node, list):
+        for child in node:
+            yield from _values(child)
+
+
+def test_bundled_decimal_threshold_is_not_its_whole_number_neighbour(runtime_factory):
+    entry = dict(_bundled_examples())["signup_to_send_28d_for_high_order_rate_stores"]
+    assert "above 90 percent" in entry["question"]
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        result = plan_payload(
+            runtime, intent=entry["question"].replace("above 90 percent", "above 9.0 percent")
+        )
+    finally:
+        runtime.close()
+    assert (result.get("best") or {}).get("pattern") != "package_example"
+    assert 0.9 not in list(_values(result))
+
+
+@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
+def test_hidden_id_in_a_mapping_key_skips_the_example_unnamed(runtime_factory, detail):
+    import json
+    from dataclasses import replace
+
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    hidden = "measure.jaffle.drink_revenue_usd"
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        _replace_entries(
+            runtime,
+            {
+                "keyed_override": {
+                    "question": "Total revenue",
+                    "query": {
+                        "version": 1,
+                        "select": [
+                            {
+                                "expression": {
+                                    "measure": "measure.jaffle.revenue_usd",
+                                    "aggregation": "sum",
+                                },
+                                "as": "revenue_usd",
+                            }
+                        ],
+                        "temporal_role_overrides": {hidden: "temporal_role.jaffle_order_time"},
+                    },
+                }
+            },
+        )
+        runtime._config = replace(
+            runtime._config,
+            semantic_policies=[
+                *runtime._config.semantic_policies,
+                SemanticPolicyConfig(
+                    id="policy.hidden",
+                    kind="object_visibility",
+                    object_ids=[hidden],
+                    action="hidden",
+                ),
+            ],
+        )
+        payload = json.dumps(plan_payload(runtime, intent="Total revenue", detail=detail))
+    finally:
+        runtime.close()
+    assert hidden not in payload
+    assert "keyed_override" not in payload
 
 
 def test_example_draft_cannot_bypass_shared_planned_row_validation(subscriptions, monkeypatch):
