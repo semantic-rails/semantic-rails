@@ -494,6 +494,9 @@ Important planner behaviors:
   `REWRITE_NOT_SUPPORTED` if the shortcut's eligibility check is bypassed
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
+- the default fill spine buckets `date_day` with the leaf's dialect `DATE_TRUNC` (ISO Monday
+  weeks); a non-default spine uses the authored period column and refuses centrally with
+  `calendar_leaf_unbound` if the leaf cannot bind that same calendar column
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
 - query-time predicates default to contextual scope
 - package-authored predicates must declare `scope_mode`

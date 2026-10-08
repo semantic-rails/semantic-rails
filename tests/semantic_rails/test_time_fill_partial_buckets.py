@@ -888,9 +888,9 @@ def test_a_windowed_fill_binds_the_calendar_day_it_reads():
 @pytest.mark.parametrize(
     ("bounds", "reads_day"),
     [
-        ({}, False),
-        ({"start": "2017-07-01"}, False),
-        ({"end": "2017-08-01"}, False),
+        ({}, True),
+        ({"start": "2017-07-01"}, True),
+        ({"end": "2017-08-01"}, True),
         ({"start": "2017-07-01", "end": "2017-08-01"}, True),
     ],
     ids=["unbounded", "start-only", "end-only", "both-bounds"],

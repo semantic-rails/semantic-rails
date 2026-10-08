@@ -1300,8 +1300,8 @@ dense rows (for example, the inline `prior_period` LAG window in the
 
 ### Which calendar fills
 
-- A calendar the package authors for the requested `calendar_id` always
-  fills (the `default` one when the query names none).
+- A calendar the package authors for the requested `calendar_id` supplies
+  the fill's days (the `default` one when the query names none).
   Its requested grain column and `date_day` column must have
   `kind: date`, and the calendar entity must declare `key: [date_day]`.
   These declarations prove one calendar row per day for calendar joins;
@@ -1316,6 +1316,15 @@ dense rows (for example, the inline `prior_period` LAG window in the
   asks the author to declare `key: [date_day]`. The same preconditions apply
   to filled series and non-default calendar joins through another calendar's
   temporal role.
+  For an authored `default` calendar, every grain uses the engine's
+  `DATE_TRUNC` of `date_day`, matching the leaf's buckets: weeks start on ISO
+  Monday even if the authored `week_start` names Sunday. Use a non-default
+  calendar for non-ISO weeks. A physical `TIMESTAMPTZ` `date_day` built in
+  another time zone is unsupported; author day keys in the query role's zone.
+  Non-default fills use the authored period column in both the spine and leaf.
+  If the leaf cannot bind that calendar join (including a role already bound
+  to the requested calendar), execution refuses with `REWRITE_NOT_SUPPORTED`,
+  `details.reason: calendar_leaf_unbound`, naming `calendar_id` and `temporal_role`.
 - With no authored `default` calendar, the **implicit calendar** fills a
   `default` query: a Gregorian day spine the engine generates in SQL, bucketed
   with the same truncation as the query's time column (calendar months,
@@ -1333,7 +1342,7 @@ dense rows (for example, the inline `prior_period` LAG window in the
   10,000 days (about 27 years); past that the warehouse refuses the query.
   A query whose parts compile as separate sub-queries (for example with a
   `distribution` expression) is refused too. Author a calendar for those, for
-  Sunday weeks, and for holidays or business days.
+  non-default Sunday weeks, and for holidays or business days.
 
 Two consequences apply to any calendar. The first rows of a `rolling` window
 cover only the periods the series has (a 3-month window at the first month

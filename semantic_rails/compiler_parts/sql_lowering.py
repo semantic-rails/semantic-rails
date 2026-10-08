@@ -5285,15 +5285,14 @@ def _calendar_join_for_leaf(
     calendar_join_column: str,
 ) -> SqlJoin:
     """Build the LEFT JOIN that aligns a Gregorian-frame role timestamp
-    with a non-default calendar's date_day. The cast to DATE is required
-    because role columns may be timestamp/datetime while calendar tables
-    key on DATE.
+    with a non-default calendar's date_day. Both declared day keys and role
+    columns may physically be timestamps, so compare their DATE projections.
     """
     return SqlJoin(
         join_type="LEFT",
         table=SqlTableRef(name=calendar_table),
         on=SqlBinary(
-            SqlIdentifier(parts=[calendar_table, calendar_join_column]),
+            SqlCast(_column_ref(calendar_table, calendar_join_column), "DATE"),
             "=",
             SqlCast(expr=raw_role_expr, type_name="DATE"),
         ),
@@ -5367,8 +5366,9 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
     shape unless `time.fill: true` is set, which routes through the
     calendar entity. This helper returns the calendar table, the grain
     column to GROUP BY, and the calendar's date_day column to JOIN on.
-    Returns None when no rewrite is needed (default calendar, or the
-    role is itself bound to the requested calendar).
+    Returns None for the default calendar or a role already bound to the
+    requested calendar; the fill binding refuses the latter because its
+    leaf does not read the authored period column.
 
     Without this binding, the leaf groups by Gregorian DATE_TRUNC while
     the dense_time scaffold returns fiscal grain anchors — the equality
@@ -5390,9 +5390,8 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
     }
     if grain not in column_by_grain:
         return None
-    # Only rewrite when the role's underlying entity is on a different
-    # calendar — otherwise the source column is already in the requested
-    # calendar's frame and DATE_TRUNC is correct.
+    # Same-calendar roles have no join binding here. The fill binding refuses
+    # them because DATE_TRUNC cannot prove the authored calendar's bucket.
     temporal_roles = _temporal_role_index(config)
     role = temporal_roles.get(str(plan.time.get("temporal_role") or ""))
     if role is None:
@@ -5490,9 +5489,25 @@ def _calendar_fill_binding(
             f"time.fill requires calendar dimension '{calendar_column}' on '{calendar_entity.id}'",
         )
     _require_calendar_date_columns(config, calendar_entity.id, requested_calendar, calendar_column)
+    # Non-default spines must read exactly the authored bucket used by the leaf.
+    if requested_calendar != "default" and _leaf_calendar_binding(plan, config) != (
+        calendar_entity.table,
+        calendar_column,
+        "date_day",
+    ):
+        role_id = str(plan.time.get("temporal_role") or "")
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"Calendar '{requested_calendar}' cannot bind the leaf bucket for role '{role_id}'",
+            details={
+                "reason": "calendar_leaf_unbound",
+                "calendar_id": requested_calendar,
+                "temporal_role": role_id,
+            },
+        )
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(dimension.id)
-    return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)
+    return calendar_entity.table, calendar_column, _day_column(config, dimension)
 
 
 _IMPLICIT_CALENDAR = "implicit_calendar"
@@ -5561,13 +5576,8 @@ def _implicit_calendar_ctes(plan: LogicalPlan, config: PackageConfig) -> list[Sq
     return ctes
 
 
-def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, Any]) -> str | None:
-    """Return the calendar's declared date_day when both bounds are set, else None.
-
-    On None, _bounded_calendar_window keeps the raw bucket bounds.
-    """
-    if time.get("start") is None or time.get("end") is None:
-        return None
+def _day_column(config: PackageConfig, bucket: DimensionConfig) -> str | None:
+    """Return the calendar's declared date_day for bounded and unbounded fills."""
     day = next(
         (
             row
@@ -5802,6 +5812,11 @@ def _dense_time_ctes(
     dense_time_where: list[Any] = []
     dense_time_joins: list[SqlJoin] = []
     implicit = calendar_table == _IMPLICIT_CALENDAR
+    if not implicit and _normalized_calendar_id(plan.time.get("calendar_id")) == "default":
+        assert day is not None  # Authored bindings require a declared date_day.
+        calendar_expr = _dialect(config).date_trunc(
+            str(plan.time["grain"]).lower(), _column_ref(calendar_table, day)
+        )
     if plan.time.get("start") is not None and plan.time.get("end") is not None:
         dense_time_where = _bounded_calendar_window(
             calendar_expr, _column_ref(calendar_table, day) if day else None, plan.time, config
