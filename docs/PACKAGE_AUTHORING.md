@@ -2777,6 +2777,7 @@ named definition by hand before upgrading.
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
+| `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 
 ## Reference
 
