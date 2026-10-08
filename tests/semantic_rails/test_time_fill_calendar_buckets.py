@@ -1,13 +1,18 @@
-"""Calendar fills preserve the leaf's buckets and their coverage semantics."""
+"""The default calendar buckets like the implicit Gregorian one; any other calendar refuses.
+
+An authored default calendar's period columns and ``date_day`` take no part in bucketing or
+filling: the spine and the leaf both use the engine's ``DATE_TRUNC``. A non-default calendar,
+or a grain on a clock bound to one, refuses where the query's calendar resolves, before any
+SQL runs, whatever the leaf path or fill.
+"""
 
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from semantic_rails.compiler import compile_query
+from semantic_rails.compiler import compile_query, lower_to_sql
 from semantic_rails.compiler_parts.sql_lowering import _calendar_fill_binding
 from semantic_rails.config import load_package_config
 from semantic_rails.db import Database, DuckDBAdapter
@@ -16,18 +21,25 @@ from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SeedSpec
 
+ROOT = Path(__file__).resolve().parents[2] / "configs/semantic_rails/jaffle_shop"
 ROLE = "temporal_role.jaffle_order_time"
-ALIAS = f"{ROLE}__week"
+ORDERS = {"expression": {"measure": "measure.jaffle.order_count"}, "as": "value"}
+CALENDAR = "entity.jaffle_time"
 
 
-def _calendar_runtime(adapter, zone="UTC", warehouse="duckdb"):
-    root = Path(__file__).resolve().parents[2] / "configs/semantic_rails/jaffle_shop"
-    config = load_package_config(str(root))
+def _calendar_runtime(adapter, zone="UTC", warehouse="duckdb", declared="date"):
+    config = load_package_config(str(ROOT))
     config = replace(
         config,
         package=replace(config.package, warehouse=warehouse, seed=SeedSpec()),
         temporal_roles=[
             replace(row, timezone=zone) if row.id == ROLE else row for row in config.temporal_roles
+        ],
+        dimensions=[
+            replace(row, data_type=declared)
+            if row.entity == CALENDAR and row.column in {"date_day", "week_start"}
+            else row
+            for row in config.dimensions
         ],
     )
     adapter.query("SET TimeZone='UTC'")
@@ -46,60 +58,49 @@ def _calendar_runtime(adapter, zone="UTC", warehouse="duckdb"):
         "INTERVAL '1 day') AS days(d)"
     )
     adapter.query(f"CREATE {table} jaffle_calendar_fiscal AS SELECT * FROM jaffle_calendar")
-    runtime = Runtime.from_config(config, source_path=str(root))
+    runtime = Runtime.from_config(config, source_path=str(ROOT))
     runtime.set_adapter(adapter)
     return runtime
 
 
-@pytest.fixture
-def calendar_runtime(request):
+def _duckdb_runtime(**options):
     adapter = DuckDBAdapter.__new__(DuckDBAdapter)
     adapter._db = Database.connect_in_memory()
-    runtime = _calendar_runtime(adapter, zone=getattr(request, "param", "UTC"))
+    return _calendar_runtime(adapter, **options)
+
+
+@pytest.fixture
+def calendar_runtime(request):
+    runtime = _duckdb_runtime(zone=getattr(request, "param", "UTC"))
     try:
         yield runtime
     finally:
         runtime.close()
 
 
-def _query_buckets(runtime, *, calendar="default", bounded=True, wide=False, revenue=False):
-    time = {"temporal_role": ROLE, "grain": "week", "fill": True, "calendar_id": calendar}
-    if bounded:
+def _query_buckets(runtime, *, bounded=True, wide=False, revenue=False, grain="week", window=None):
+    time = {"temporal_role": ROLE, "grain": grain, "fill": True}
+    if window:
+        time.update(start=window[0], end=window[1])
+    elif bounded:
         time.update(
             start="2024-04-29" if wide else "2024-05-06", end="2024-06-03" if wide else "2024-05-20"
         )
-    rows = runtime.query(
-        {
-            "version": 1,
-            "select": [
-                {
-                    "expression": {
-                        "measure": "measure.jaffle.revenue_usd"
-                        if revenue
-                        else "measure.jaffle.order_count"
-                    },
-                    "as": "value",
-                }
-            ],
-            "time": time,
-        }
-    )["rows"]
-    return [(datetime.fromisoformat(str(row[ALIAS])).date(), row["value"]) for row in rows]
+    select = {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "value"}
+    rows = runtime.query({"version": 1, "select": [select if revenue else ORDERS], "time": time})[
+        "rows"
+    ]
+    alias = f"{ROLE}__{grain}"
+    return [(datetime.fromisoformat(str(row[alias])).date(), row["value"]) for row in rows]
 
 
-def _reference(adapter, *, first="2024-05-06", last="2024-05-13", fiscal=False, revenue=False):
-    # Independently group source rows, then add explicit weekly buckets. Coverage
-    # comes from the source, never from the calendar or the compiled query.
-    bucket = "c.week_start" if fiscal else "DATE_TRUNC('week', o.ordered_at)"
-    join = (
-        "JOIN jaffle_calendar_fiscal c ON CAST(c.date_day AS DATE) = CAST(o.ordered_at AS DATE)"
-        if fiscal
-        else ""
-    )
+def _reference(adapter, *, first="2024-05-06", last="2024-05-13", revenue=False):
+    # Independently group source rows by DATE_TRUNC, then add explicit weekly buckets.
+    # Coverage comes from the source, never from the calendar or the compiled query.
     aggregate = "SUM(o.order_total_cents / 100.0)" if revenue else "COUNT(o.order_id)"
     rows = adapter.query(
-        f"WITH counts AS (SELECT {bucket} AS bucket, {aggregate} AS n FROM jaffle_order o "
-        f"{join} GROUP BY 1), weeks AS (SELECT d AS bucket FROM generate_series("
+        f"WITH counts AS (SELECT DATE_TRUNC('week', o.ordered_at) AS bucket, {aggregate} AS n "
+        "FROM jaffle_order o GROUP BY 1), weeks AS (SELECT d AS bucket FROM generate_series("
         f"TIMESTAMP '{first}', TIMESTAMP '{last}', INTERVAL '7 days') AS days(d)) "
         "SELECT w.bucket, CASE WHEN w.bucket BETWEEN (SELECT MIN(bucket) FROM counts) "
         "AND (SELECT MAX(bucket) FROM counts) THEN CASE WHEN c.bucket IS NULL THEN 0 "
@@ -126,45 +127,56 @@ def test_default_fill_uses_leaf_buckets(calendar_runtime, physical, shift, colum
     assert _query_buckets(runtime) == expected
 
 
+@pytest.mark.parametrize("declared", ["date", "timestamp"])
 @pytest.mark.parametrize("anchor", ["date", "noon", "sunday"])
 @pytest.mark.parametrize("bounded", [True, False])
-def test_default_fill_ignores_authored_week_anchor(calendar_runtime, anchor, bounded):
-    adapter = calendar_runtime._get_adapter()
-    if anchor != "date":
-        if anchor == "noon":
+def test_default_fill_ignores_authored_week_anchor(declared, anchor, bounded):
+    # A Sunday-week (or noon) authored default calendar still answers ISO weeks.
+    runtime = _duckdb_runtime(declared=declared)
+    adapter = runtime._get_adapter()
+    try:
+        if anchor != "date":
+            if anchor == "noon":
+                adapter.query(
+                    "ALTER TABLE jaffle_calendar ALTER COLUMN week_start SET DATA TYPE TIMESTAMP"
+                )
             adapter.query(
-                "ALTER TABLE jaffle_calendar ALTER COLUMN week_start SET DATA TYPE TIMESTAMP"
+                "UPDATE jaffle_calendar SET week_start = week_start + INTERVAL '12 hours'"
+                if anchor == "noon"
+                else "UPDATE jaffle_calendar SET week_start = week_start - INTERVAL '1 day'"
             )
-        adapter.query(
-            "UPDATE jaffle_calendar SET week_start = week_start + INTERVAL '12 hours'"
-            if anchor == "noon"
-            else "UPDATE jaffle_calendar SET week_start = week_start - INTERVAL '1 day'"
-        )
-        if anchor == "noon":
-            adapter.query(
-                "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP"
-            )
-            adapter.query("UPDATE jaffle_calendar SET date_day = date_day + INTERVAL '12 hours'")
-    expected = _reference(adapter, last="2024-05-13" if bounded else "2024-05-20")
-    assert _query_buckets(calendar_runtime, bounded=bounded) == expected
+            if anchor == "noon":
+                adapter.query(
+                    "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP"
+                )
+                adapter.query(
+                    "UPDATE jaffle_calendar SET date_day = date_day + INTERVAL '12 hours'"
+                )
+        expected = _reference(adapter, last="2024-05-13" if bounded else "2024-05-20")
+        assert _query_buckets(runtime, bounded=bounded) == expected
+    finally:
+        runtime.close()
     assert expected[:2] == [(date(2024, 5, 6), 2), (date(2024, 5, 13), 0)]
 
 
-@pytest.mark.parametrize("noon_day", [False, True])
-def test_fiscal_fill_keeps_authored_noon_buckets(calendar_runtime, noon_day):
+@pytest.mark.parametrize("physical", ["TIMESTAMP", "TIMESTAMPTZ"])
+@pytest.mark.parametrize(
+    ("grain", "bucket"), [("day", date(2024, 5, 7)), ("week", date(2024, 5, 6))]
+)
+def test_noon_day_keys_keep_an_intraday_window(calendar_runtime, physical, grain, bucket):
+    # The order at May 7 noon falls inside [11:00, 13:00); noon calendar days don't move it.
     adapter = calendar_runtime._get_adapter()
-    for column in ("week_start", "date_day") if noon_day else ("week_start",):
-        adapter.query(
-            f"ALTER TABLE jaffle_calendar_fiscal ALTER COLUMN {column} SET DATA TYPE TIMESTAMP"
-        )
-        adapter.query(
-            f"UPDATE jaffle_calendar_fiscal SET {column} = {column} + INTERVAL '12 hours'"
-        )
-    expected = _reference(
-        adapter, fiscal=True, first="2024-05-06 12:00:00", last="2024-05-13 12:00:00"
+    adapter.query(f"ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE {physical}")
+    adapter.query("UPDATE jaffle_calendar SET date_day = date_day + INTERVAL '12 hours'")
+    window = ("2024-05-07T11:00:00", "2024-05-07T13:00:00")
+    reference = adapter.query(
+        f"SELECT DATE_TRUNC('{grain}', ordered_at) AS b, COUNT(order_id) AS n "
+        f"FROM jaffle_order WHERE ordered_at >= TIMESTAMP '{window[0]}' "
+        f"AND ordered_at < TIMESTAMP '{window[1]}' GROUP BY 1"
     )
-    assert expected == [(date(2024, 5, 6), 2), (date(2024, 5, 13), 0)]
-    assert _query_buckets(calendar_runtime, calendar="fiscal") == expected
+
+    assert [(row["b"].date(), row["n"]) for row in reference] == [(bucket, 1)]
+    assert _query_buckets(calendar_runtime, grain=grain, window=window) == [(bucket, 1)]
 
 
 @pytest.mark.parametrize("revenue", [False, True])
@@ -176,56 +188,90 @@ def test_fill_preserves_observed_zero_and_absent_coverage(calendar_runtime, reve
     assert _query_buckets(calendar_runtime, wide=True, revenue=revenue) == expected
 
 
-@pytest.mark.parametrize("path", ["runtime", "forced_fill", "missing_leaf_binding"])
-def test_nondefault_fill_refuses_a_different_leaf_bucket(calendar_runtime, path):
-    runtime = calendar_runtime
-    adapter = runtime._get_adapter()
-    adapter.query("UPDATE jaffle_calendar_fiscal SET week_start = week_start - INTERVAL '1 day'")
-    expected = _reference(adapter, fiscal=True, first="2024-05-05", last="2024-05-12")
-    assert expected == [(date(2024, 5, 5), 2), (date(2024, 5, 12), 0)]
+def test_an_authored_default_calendar_never_binds_the_fill():
+    config = load_package_config(str(ROOT))
+    query = {"version": 1, "select": [ORDERS], "time": {"temporal_role": ROLE, "grain": "week"}}
+    plan = compile_query(config, Registry(config), query)["logical_plan"]
+    for bounds, day in (({}, None), ({"start": "2024-05-06", "end": "2024-05-20"}, "date_day")):
+        filled = replace(plan, time={**plan.time, **bounds, "fill": True})
+        assert _calendar_fill_binding(filled, config) == ("implicit_calendar", "bucket", day)
+
+
+def _bound_to_fiscal(config):
+    return replace(
+        config,
+        entities=[
+            replace(row, calendar_id="fiscal") if row.id == "entity.jaffle_order" else row
+            for row in config.entities
+        ],
+    )
+
+
+ENTITY_IN_TERMS_OF = {"group_by": ["dimension.jaffle_item_product_type"]}
+WINDOW = {"start": "2017-02-01", "end": "2017-08-01"}
+
+
+@pytest.mark.parametrize(
+    ("bound", "time", "shape"),
+    [
+        (False, {"grain": "quarter", "calendar_id": "fiscal", "fill": True}, {}),
+        (False, {"grain": "quarter", "calendar_id": "fiscal", "fill": False}, {}),
+        (False, {"grain": "week", "calendar_id": "Fiscal", "fill": True, **WINDOW}, {}),
+        (False, {"calendar_id": "fiscal", **WINDOW}, {}),
+        (False, {"grain": "quarter", "calendar_id": "fiscal", "fill": True}, ENTITY_IN_TERMS_OF),
+        (False, {"grain": "quarter", "calendar_id": "fiscal"}, ENTITY_IN_TERMS_OF),
+        (True, {"grain": "quarter", "fill": False}, {}),
+        (True, {"grain": "week", "fill": True, **WINDOW}, {}),
+        (True, {"grain": "quarter", "calendar_id": "default"}, ENTITY_IN_TERMS_OF),
+    ],
+    ids=[
+        "fiscal-filled",
+        "fiscal-unfilled",
+        "fiscal-mixed-case",
+        "fiscal-no-grain",
+        "fiscal-entity-in-terms-of-filled",
+        "fiscal-entity-in-terms-of",
+        "bound-unfilled",
+        "bound-filled",
+        "bound-entity-in-terms-of",
+    ],
+)
+def test_a_non_default_calendar_refuses_on_every_leaf_path(bound, time, shape):
+    config = load_package_config(str(ROOT))
+    config = _bound_to_fiscal(config) if bound else config
+    query = {"version": 1, "select": [ORDERS], "time": {"temporal_role": ROLE, **time}, **shape}
+    with pytest.raises(SemanticLayerError) as refused:
+        compile_query(config, Registry(config), query)  # compiles no SQL, so none runs
+
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["reason"] == "calendar_not_supported_yet"
+    assert refused.value.details["calendar_id"] == "fiscal"
+    assert "fiscal calendars return in a later release" in str(refused.value)
+
+
+def test_a_bound_clock_without_a_grain_does_not_bucket():
+    config = _bound_to_fiscal(load_package_config(str(ROOT)))
+    query = {"version": 1, "select": [ORDERS], "time": {"temporal_role": ROLE, **WINDOW}}
+
+    assert compile_query(config, Registry(config), query)["sql"]
+
+
+@pytest.mark.parametrize("bypass", ["calendar_id", "bound_clock"])
+def test_lowering_refuses_a_plan_that_skipped_validation(bypass):
+    config = load_package_config(str(ROOT))
     query = {
         "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "value"}],
-        "time": {"temporal_role": ROLE, "grain": "week", "fill": True, "calendar_id": "fiscal"},
+        "select": [ORDERS],
+        "time": {"temporal_role": ROLE, "grain": "quarter", "fill": True},
     }
-    config = runtime.config
     plan = compile_query(config, Registry(config), query)["logical_plan"]
-    if path != "missing_leaf_binding":
-        config = replace(
-            config,
-            entities=[
-                replace(row, calendar_id="fiscal") if row.id == "entity.jaffle_order" else row
-                for row in config.entities
-            ],
-        )
-    with patch.object(adapter, "query", wraps=adapter.query) as execute:
-        with pytest.raises(SemanticLayerError) as refused:
-            if path == "runtime":
-                changed_runtime = Runtime.from_config(
-                    config,
-                    source_path=str(
-                        Path(__file__).resolve().parents[2] / "configs/semantic_rails/jaffle_shop"
-                    ),
-                )
-                changed_runtime.set_adapter(adapter)
-                try:
-                    _query_buckets(changed_runtime, calendar="fiscal")
-                finally:
-                    changed_runtime.close()
-            elif path == "forced_fill":
-                _calendar_fill_binding(
-                    replace(plan, time={**plan.time, "fill": False}), config, force=True
-                )
-            else:
-                with patch(
-                    "semantic_rails.compiler_parts.sql_lowering._leaf_calendar_binding",
-                    return_value=None,
-                ):
-                    _calendar_fill_binding(plan, config)
-        execute.assert_not_called()
+    assert lower_to_sql(plan, config)  # the default plan lowers
+    if bypass == "calendar_id":
+        plan = replace(plan, time={**plan.time, "calendar_id": "fiscal"})
+    else:
+        config = _bound_to_fiscal(config)
+    with pytest.raises(SemanticLayerError) as refused:
+        lower_to_sql(plan, config)
+
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details == {
-        "reason": "calendar_leaf_unbound",
-        "calendar_id": "fiscal",
-        "temporal_role": ROLE,
-    }
+    assert refused.value.details["reason"] == "calendar_not_supported_yet"
