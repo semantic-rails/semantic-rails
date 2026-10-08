@@ -650,8 +650,9 @@ A generated governed balance must be named in full: "pro accounts" cannot stand 
 accounts". Time words without a single-day reading ("all time", "ever", "to date", "since
 launch", "trend") keep the `stock_as_of_unrealized` hold. A day that isn't complete (today,
 the end of this week) isn't ready to execute, and no earlier day stands in for one. A
-day-grain balance window that includes today or a later day, including a caller's `query.time`,
-has a `stock_as_of_unrealized` gap with a hint naming the last complete day. When that day has no rows,
+day-grain balance window is read only when both bounds are whole days and it ends on or
+before the last complete day; otherwise `stock_as_of_unrealized`. This includes a caller's
+`query.time`; the gap hints at the last complete day. When that day has no rows,
 `execute` returns none with `EMPTY_RESULT_WINDOW`. When a `metric_constraint` requires the
 clock's date dimension in `group_by`, `plan` adds it (beside the day grain it adds no row) and
 counts it as asked; any other required field, or one hidden from the caller, keeps the
@@ -660,7 +661,9 @@ ago"), or asks for by week, month, quarter or year where the clock or a constrai
 day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of_unrealized`
 gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
 weeks are allowed), a stock on an event clock, a ratio, or a balance beside a flow keep the
-holds above, and a window in `query.time` is used as passed, subject to the complete-day check.
+holds above, and a window in `query.time` is used as passed: a day-grain balance window is read
+only when both bounds are whole days and it ends on or before the last complete day;
+otherwise `stock_as_of_unrealized`.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.

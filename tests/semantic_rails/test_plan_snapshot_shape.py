@@ -23,6 +23,7 @@ import yaml
 
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner import snapshot as snapshot_module
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -286,6 +287,61 @@ def test_an_incomplete_balance_day_is_held(
     assert "isn't complete yet" in gap["message"]
     assert (start if start > "2026-10-05" else "2026-10-05") in gap["message"]
     assert any("2026-10-04" in hint["message"] for hint in plan["why"]["recovery_hints"])
+
+
+@pytest.mark.parametrize("bounds", [
+    {"start": "2026-10-05"},
+    {"end": "2026-10-06"},
+    {"start": "2026-10-05T00:00:00", "end": "2026-10-05T06:00:00"},
+    {},
+])  # fmt: skip
+def test_a_balance_window_without_proven_complete_days_is_held(
+    runtime: Runtime, bounds: dict[str, str]
+) -> None:
+    plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "time": {"temporal_role": CLOCK, "grain": "day", **bounds},
+        **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
+    })  # fmt: skip
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan["next"].get("ready_for", [])
+    [gap] = [gap for gap in plan["why"]["details"]["gaps"]
+             if gap["kind"] == "stock_as_of_unrealized"]  # fmt: skip
+    assert "isn't proven to end on a complete day" in gap["message"]
+    assert any("2026-10-04" in hint["message"] for hint in plan["why"]["recovery_hints"])
+
+
+def test_a_balance_window_without_a_clock_reading_is_held(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    days = snapshot_module._days
+    monkeypatch.setattr(
+        snapshot_module,
+        "_days",
+        lambda bounds, clock: None if bounds is snapshot_module._LAST_DAY else days(bounds, clock),
+    )
+    query = {
+        "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "time": {"temporal_role": CLOCK, "grain": "day",
+                 "start": "2026-10-04", "end": "2026-10-05"},
+    }  # fmt: skip
+    [gap] = snapshot_module.snapshot_day_gaps(runtime, "What's our MRR?", query, query)
+    assert gap.kind == "stock_as_of_unrealized"
+    assert "isn't proven to end on a complete day" in gap.message
+    assert gap.recovery_hint is not None
+    assert "last complete day" in gap.recovery_hint["message"]
+
+
+def test_a_caller_balance_window_on_a_complete_day_executes(runtime: Runtime) -> None:
+    plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "time": {"temporal_role": CLOCK, "grain": "day",
+                 "start": "2026-10-04", "end": "2026-10-05"},
+        **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
+    })  # fmt: skip
+    assert plan["status"] == "ok", plan.get("why")
+    assert plan["next"]["ready_for"] == ["execute"]
+    assert _answer(runtime, plan) == _reference(_balance("mrr", "2026-10-04")) == {(): 599}
 
 
 @pytest.mark.parametrize(("day", "complete"), [("2026-10-03", True), ("2026-10-04", False)])

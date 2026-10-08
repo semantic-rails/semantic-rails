@@ -422,24 +422,34 @@ def snapshot_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read |
 def snapshot_day_gaps(
     runtime: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None
 ) -> list[CoverageGap]:
-    """Hold incomplete days, unnamed generated balances, and an unasked earlier day."""
+    """Hold unproven complete days, unnamed generated balances, and an unasked earlier day."""
 
     time = _time_block(query)
     balance = _balance(runtime._config, query)
     if balance is not None and time.get("grain") == "day":
         days, latest = _days(time, balance.clock), _days(_LAST_DAY, balance.clock)
-        if days is not None and latest is not None and days[0] < days[1] and days[1] > latest[1]:
-            day = max(days[0], latest[1])
+        if not (days is not None and latest is not None and days[0] < days[1] <= latest[1]):
+            message = (
+                f"{max(days[0], latest[1])} isn't complete yet, so this draft can't read "
+                f"{balance.label}."
+                if days is not None and latest is not None and days[1] > latest[1]
+                else f"This draft's window isn't proven to end on a complete day, so it can't "
+                f"read {balance.label}."
+            )
             return [
                 CoverageGap(
                     kind="stock_as_of_unrealized",
                     clause=balance.label,
-                    message=f"{day} isn't complete yet, so this draft can't read {balance.label}.",
+                    message=message,
                     expected={"grain": "day", "stocks": list(balance.stocks)},
                     actual={"grain": "day"},
                     recovery_hint={
                         "kind": "ask_for_one_day",
-                        "message": f"Read {latest[0]}, the last complete day, or an earlier day.",
+                        "message": (
+                            f"Read {latest[0]}, the last complete day, or an earlier day."
+                            if latest is not None
+                            else "Read the last complete day, or an earlier day."
+                        ),
                     },
                 )
             ]
