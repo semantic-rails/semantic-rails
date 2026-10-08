@@ -59,6 +59,7 @@ def _write_package(
     package_environments: list[str] | None = None,
     semantic_policies: list[dict] | None = None,
     extra_measures: dict | None = None,
+    extra_metrics: dict | None = None,
     measure_meta: dict | None = None,
 ) -> None:
     _write_yaml(
@@ -146,7 +147,8 @@ def _write_package(
                     "label": "Orders",
                     "description": "Order count",
                     "value_type": "number",
-                }
+                },
+                **dict(extra_metrics or {}),
             }
         },
     )
@@ -227,14 +229,17 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
             {
                 "id": "policy.demo.hidden_secret",
                 "kind": "object_visibility",
-                "object_ids": ["measure.demo.secret_orders"],
+                "object_ids": ["measure.demo.secret_orders", "metric.sales.secret_orders"],
                 "action": "hidden",
                 "rationale": "internal only",
             },
             {
                 "id": "policy.demo.production_hidden_secret",
                 "kind": "object_visibility",
-                "object_ids": ["measure.demo.production_secret_orders"],
+                "object_ids": [
+                    "measure.demo.production_secret_orders",
+                    "metric.sales.production_secret_orders",
+                ],
                 "action": "hidden",
                 "environments": ["production"],
                 "rationale": "production only",
@@ -267,14 +272,33 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
                 "publish": False,
             },
         },
+        extra_metrics={
+            "sales.secret_orders": {
+                "id": "metric.sales.secret_orders",
+                "kind": "aggregate",
+                "measure": "measure.demo.secret_orders",
+                "label": "Secret orders",
+                "description": "Hidden metric",
+                "value_type": "number",
+            },
+            "sales.production_secret_orders": {
+                "id": "metric.sales.production_secret_orders",
+                "kind": "aggregate",
+                "measure": "measure.demo.production_secret_orders",
+                "label": "Production secret orders",
+                "description": "Hidden only for production context",
+                "value_type": "number",
+            },
+        },
         measure_meta={"owner_team": "finance", "review_priority": "high", "change_risk": "medium"},
     )
     runtime = Runtime.from_path(str(package_dir))
     try:
         discovery = discover_payload(runtime, terms="secret", stage="initial", limit=5)
         assert all(row["id"] != "measure.demo.secret_orders" for row in discovery["measures"])
+        assert all(row["id"] != "metric.sales.secret_orders" for row in discovery["metrics"])
         assert any(
-            row["id"] == "measure.demo.production_secret_orders" for row in discovery["measures"]
+            row["id"] == "metric.sales.production_secret_orders" for row in discovery["metrics"]
         )
         production_discovery = discover_payload(
             runtime,
@@ -282,6 +306,10 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
             stage="initial",
             limit=5,
             partial_query={"policy_context": {"environment": "production"}},
+        )
+        assert all(
+            row["id"] != "metric.sales.production_secret_orders"
+            for row in production_discovery["metrics"]
         )
         assert all(
             row["id"] != "measure.demo.production_secret_orders"
@@ -298,6 +326,9 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
             assert exc.code == "OBJECT_NOT_FOUND"
         else:  # pragma: no cover - defensive branch
             raise AssertionError("hidden objects should not be inspectable")
+        with pytest.raises(SemanticLayerError) as exc:
+            inspect_payload(runtime, object_id="metric.sales.secret_orders")
+        assert exc.value.code == "OBJECT_NOT_FOUND"
         denied = runtime.validate(
             {
                 "version": 1,

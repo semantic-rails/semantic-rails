@@ -576,7 +576,7 @@ _SHIP_TO_KEY = {
             id="distinct-buyers-composite-key",
         ),
         pytest.param(
-            ({"monthly": _MONTHLY}, {"entity": {"key": ["customer_id"]}}),
+            ({"monthly": _MONTHLY}, {"ship_to": None}),
             _rollup_query(_BUYERS, "count_distinct", "quarter"),
             "aggregation_not_reaggregable",
             id="distinct-entity-key-not-row-grain",

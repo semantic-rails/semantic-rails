@@ -258,6 +258,7 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
                 "id": "metric.sales.orders_copy",
                 "name": "sales.orders_copy",
                 "label": "Orders copy",
+                "value_type": "number",
                 "kind": "derived",
                 "temporal_role": "temporal_role.demo_order_time",
                 "expression": {"kind": "metric", "metric": "metric.sales.orders"},
