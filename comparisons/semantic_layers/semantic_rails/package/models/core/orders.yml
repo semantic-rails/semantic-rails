@@ -14,7 +14,6 @@ model:
       column: ordered_at
       kind: timestamp
       class: event_time
-      default_query_axis: true
       as: temporal_role.jaffle_order_time
       default: true
   dimensions:
