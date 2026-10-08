@@ -46,7 +46,7 @@ uv run semantic-rails init my_semantic_package
 uv run semantic-rails project validate --path ./my_semantic_package
 uv run semantic-rails serve --package jaffle_shop --port 8081
 uv run semantic-rails mcp stdio --package jaffle_shop
-uv run semantic-rails mcp http --package jaffle_shop --host 127.0.0.1 --port 8091
+uv run semantic-rails serve --package jaffle_shop --host 127.0.0.1 --port 8091
 ```
 
 ## HTTP Routes

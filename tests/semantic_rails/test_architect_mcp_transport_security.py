@@ -18,7 +18,6 @@ import httpx
 import pytest
 import uvicorn
 from mcp import ClientSession
-from mcp.client.sse import sse_client
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 from semantic_rails import architect_mcp
@@ -83,7 +82,7 @@ def _architect(
     tmp_path: Path, token: str, *, transport: str = "streamable-http", host: str = "127.0.0.1"
 ) -> Iterator[tuple[httpx.Client, str]]:
     server = create_architect_mcp_server(workspace_root=tmp_path, host=host)
-    app = architect_http_app(server, transport, token)  # type: ignore[arg-type]
+    app = architect_http_app(server, token)
     with _serve(app) as base_url, httpx.Client(base_url=base_url, timeout=10) as client:
         yield client, base_url
 
@@ -110,7 +109,7 @@ def test_default_bind_is_loopback_and_default_transport_is_stdio(monkeypatch) ->
     assert seen["transport"] == "stdio"
 
 
-@pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+@pytest.mark.parametrize("transport", ["streamable-http"])
 def test_entry_point_serves_only_the_gated_app_on_loopback(
     monkeypatch, tmp_path: Path, token: str, transport: str
 ) -> None:
@@ -128,12 +127,12 @@ def test_entry_point_serves_only_the_gated_app_on_loopback(
     async def unauthenticated() -> httpx.Response:
         transport_ = httpx.ASGITransport(app=served["app"])
         async with httpx.AsyncClient(transport=transport_, base_url="http://127.0.0.1:8010") as c:
-            return await c.get("/sse" if transport == "sse" else "/mcp")
+            return await c.get("/mcp")
 
     assert asyncio.run(unauthenticated()).status_code == 401
 
 
-@pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+@pytest.mark.parametrize("transport", ["streamable-http"])
 def test_network_transport_refuses_to_start_without_a_token(
     monkeypatch, capsys, tmp_path: Path, transport: str
 ) -> None:
@@ -179,7 +178,7 @@ def test_server_apps_refuse_to_build_without_a_token(monkeypatch, tmp_path: Path
     monkeypatch.setattr(uvicorn.Server, "serve", _must_not_serve)
     server = create_architect_mcp_server(workspace_root=tmp_path, host="0.0.0.0")
 
-    for build in (server.sse_app, server.streamable_http_app):
+    for build in (server.streamable_http_app,):
         with pytest.raises(SemanticLayerError, match="require a bearer token"):
             build()
     with pytest.raises(SemanticLayerError, match="require a bearer token"):
@@ -193,7 +192,7 @@ def test_gate_refuses_an_empty_short_or_unsendable_token(tmp_path: Path, bad: st
     with pytest.raises(SemanticLayerError):
         _BearerTokenGate(server.streamable_http_app, bad)  # type: ignore[arg-type]
     with pytest.raises(SemanticLayerError):
-        architect_http_app(server, "streamable-http", bad)
+        architect_http_app(server, bad)
 
 
 # -- authentication ----------------------------------------------------------------
@@ -267,15 +266,6 @@ def test_request_with_the_token_initializes(tmp_path: Path, token: str) -> None:
     assert "Semantic Rails Architect MCP" in response.text
 
 
-def test_sse_endpoints_require_the_token(tmp_path: Path, token: str) -> None:
-    with _architect(tmp_path, token, transport="sse") as (client, _):
-        stream = client.get("/sse")
-        message = client.post("/messages/?session_id=0", json=INITIALIZE)
-
-    assert stream.status_code == 401
-    assert message.status_code == 401
-
-
 # -- Host and Origin checks (DNS-rebinding protection) ------------------------------
 
 
@@ -338,7 +328,7 @@ def test_an_ipv6_wildcard_server_is_reachable_at_its_advertised_url(
     _, config = asyncio.run(
         server.call_tool("mcp_client_config", {"transport": "streamable-http", "host": "::"})
     )
-    app = architect_http_app(server, "streamable-http", token)
+    app = architect_http_app(server, token)
 
     with _serve(app, family=socket.AF_INET6) as base_url:
         advertised = config["http"]["url"].replace(":8010", ":" + base_url.rsplit(":", 1)[1])
@@ -445,7 +435,7 @@ def test_client_config_names_the_token_but_never_carries_it(
     _, result = asyncio.run(server.call_tool("mcp_client_config", {"transport": "streamable-http"}))
 
     assert result["http"]["headers"] == {"Authorization": f"Bearer ${{{ARCHITECT_TOKEN_ENV}}}"}
-    assert result["sse"]["headers"] == result["http"]["headers"]
+    assert "sse" not in result
     assert result["auth"]["token_env"] == ARCHITECT_TOKEN_ENV
     assert token not in json.dumps(result)
 
@@ -474,24 +464,17 @@ def test_client_config_urls_are_dialable(tmp_path: Path, host: str, url: str) ->
 
 
 async def _tools_over(transport: str, url: str, headers: dict[str, str]) -> set[str]:
-    if transport == "streamable-http":
-        http_client = create_mcp_http_client(headers=headers)
-        async with (
-            http_client,
-            streamable_http_client(url, http_client=http_client) as streams,
-            ClientSession(streams[0], streams[1]) as session,
-        ):
-            await session.initialize()
-            return {tool.name for tool in (await session.list_tools()).tools}
+    http_client = create_mcp_http_client(headers=headers)
     async with (
-        sse_client(url, headers=headers) as streams,
+        http_client,
+        streamable_http_client(url, http_client=http_client) as streams,
         ClientSession(streams[0], streams[1]) as session,
     ):
         await session.initialize()
         return {tool.name for tool in (await session.list_tools()).tools}
 
 
-@pytest.mark.parametrize(("transport", "path"), [("streamable-http", "/mcp"), ("sse", "/sse")])
+@pytest.mark.parametrize(("transport", "path"), [("streamable-http", "/mcp")])
 def test_mcp_client_session_over_the_network_transport(
     tmp_path: Path, token: str, transport: str, path: str
 ) -> None:
@@ -506,3 +489,26 @@ def test_mcp_client_session_over_the_network_transport(
         error for error in excinfo.value.exceptions if isinstance(error, httpx.HTTPStatusError)
     ]
     assert rejected and rejected[0].response.status_code == 401
+
+
+@pytest.mark.parametrize("entry", ["cli", "runner", "sdk-app", "sdk-run", "client-config"])
+def test_architect_refuses_removed_sse_transport(tmp_path, monkeypatch, entry):
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    if entry == "cli":
+        monkeypatch.setattr(sys, "argv", ["semantic-rails-architect-mcp", "--transport", "sse"])
+        with pytest.raises(SystemExit) as exc:
+            architect_mcp.main()
+        assert exc.value.code == 2
+    elif entry == "client-config":
+        _, result = asyncio.run(server.call_tool("mcp_client_config", {"transport": "sse"}))
+        assert result["error"]["code"] == "INVALID_CONFIG"
+    else:
+        with pytest.raises(SemanticLayerError, match="unsupported|Unsupported"):
+            if entry == "runner":
+                architect_mcp.run_architect_mcp_server(
+                    transport="sse", workspace_root=str(tmp_path)
+                )
+            elif entry == "sdk-run":
+                server.run("sse")
+            else:
+                server.sse_app()
