@@ -39,7 +39,6 @@ def _write_minimal_package(
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 },
                 **dict(defaults_extra or {}),
@@ -90,7 +89,6 @@ def _write_minimal_package(
                         "column": "ordered_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "measures": measures,

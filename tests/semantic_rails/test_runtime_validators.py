@@ -1,6 +1,6 @@
 """Tests for the two new compiled-package validators:
 
-- at-most-one default_query_axis per entity
+- at-most-one default: true time per model
 - disallowed-name guard on dimensions and measures
 """
 
@@ -56,7 +56,7 @@ def test_disallowed_names_validation(tmp_path, disallowed_name, collision):
         assert "disallowed" not in errors.lower() or "an_unused_column_name" not in errors
 
 
-def test_multiple_default_query_axis_rejected(tmp_path):
+def test_multiple_default_times_rejected(tmp_path):
     pkg = copy_package_config(tmp_path, "jaffle_shop")
 
     # Add a second `times:` entry (also marked default) to the orders model.
@@ -66,7 +66,7 @@ def test_multiple_default_query_axis_rejected(tmp_path):
 
     def mutate(raw):
         times = raw["model"]["times"]
-        # The first entry (ordered_at) already has default_query_axis: true.
+        # The first entry (ordered_at) already has default: true.
         # Add fulfilled_at as a second default temporal axis on the same model.
         times["fulfilled_at"] = {
             "id": "temporal_role.jaffle_order_fulfilled_time",
@@ -75,7 +75,7 @@ def test_multiple_default_query_axis_rejected(tmp_path):
             "column": "fulfilled_at",
             "kind": "timestamp",
             "class": "event_time",
-            "default_query_axis": True,
+            "default": True,
         }
 
     _patch_yaml(orders, mutate)
@@ -86,6 +86,4 @@ def test_multiple_default_query_axis_rejected(tmp_path):
         err.get("message", "") if isinstance(err, dict) else str(err)
         for err in (report.get("errors") or [])
     )
-    assert "default_query_axis" in errors or "default time axis" in errors.lower(), (
-        f"expected validator to fire; got errors: {errors!r}"
-    )
+    assert "multiple default: true" in errors, f"expected validator to fire; got errors: {errors!r}"

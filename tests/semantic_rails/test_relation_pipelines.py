@@ -21,6 +21,42 @@ def _allow_external_package_paths(monkeypatch):
     monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
 
 
+def _write_relation_package(package_dir: Path, package: dict) -> None:
+    """Write relation pipelines in their authored directory layout."""
+    documents = {
+        "package.yml": {
+            key: value
+            for key, value in package.items()
+            if key not in {"graph", "models", "relations"}
+        },
+        "graph.yml": {"graph": package["graph"]},
+        "metrics.yml": {
+            "metrics": {
+                key: {
+                    "value_type": measure["value_type"],
+                    "kind": "aggregate",
+                    "measure": key,
+                    "label": measure["label"],
+                }
+                for model in package["models"].values()
+                for key, measure in model.get("measures", {}).items()
+            }
+        },
+        **{
+            f"models/{key}.yml": {"model": {"id": key, **model}}
+            for key, model in package["models"].items()
+        },
+        **{
+            f"relations/{key}.yml": {"relation": {"id": key, **relation}}
+            for key, relation in package["relations"].items()
+        },
+    }
+    for name, body in documents.items():
+        path = package_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
+
+
 def _write_relation_demo(tmp_path: Path) -> Path:
     package_dir = tmp_path / "relation_demo"
     package_dir.mkdir()
@@ -61,6 +97,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
     package = {
         "schema_version": 1,
         "package": {
+            "schema_strict": True,
             "id": "relation_demo",
             "namespace": "reldemo",
             "warehouse": "duckdb",
@@ -238,17 +275,15 @@ def _write_relation_demo(tmp_path: Path) -> Path:
         "models": {
             "account_state_raw": {
                 "relation": "account_state",
-                "grain": ["account_id", "valid_from"],
-                "keys": {"primary": ["account_id", "valid_from"]},
+                "entities": {"account_state": {}},
                 "times": {
                     "valid_from": {
                         "label": "Valid from",
                         "kind": "date",
                         "class": "snapshot_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "valid_from",
                 "measures": {
                     "raw_account_rows": {
                         "label": "Raw account rows",
@@ -263,8 +298,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
             },
             "account_tag_daily": {
                 "relation": "account_tag_daily",
-                "grain": ["account_id", "tag", "date_day"],
-                "keys": {"primary": ["account_id", "tag", "date_day"]},
+                "entities": {"account_tag_day": {}},
                 "dimensions": {
                     "tag": {"label": "Tag", "kind": "categorical"},
                     "sms_enabled": {"label": "SMS enabled", "kind": "categorical"},
@@ -274,10 +308,9 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "label": "Date day",
                         "kind": "date",
                         "class": "snapshot_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "date_day",
                 "measures": {
                     "account_tag_rows": {
                         "label": "Account tag rows",
@@ -287,24 +320,21 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "value_type": "count",
                         "entity_key": ["account_id"],
                         "time": "date_day",
-                        "topics": ["relations"],
                     }
                 },
             },
             "eligible_account_states": {
                 "relation": "eligible_account_states",
-                "grain": ["account_id", "next_valid_from"],
-                "keys": {"primary": ["account_id", "next_valid_from"]},
+                "entities": {"eligible_account_state": {}},
                 "dimensions": {"status": {"label": "Status", "kind": "categorical"}},
                 "times": {
                     "next_valid_from": {
                         "label": "Next valid from",
                         "kind": "date",
                         "class": "snapshot_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "next_valid_from",
                 "measures": {
                     "eligible_account_rows": {
                         "label": "Eligible account rows",
@@ -319,18 +349,16 @@ def _write_relation_demo(tmp_path: Path) -> Path:
             },
             "send_feed": {
                 "relation": "send_feed",
-                "grain": ["send_id"],
-                "keys": {"primary": ["send_id"]},
+                "entities": {"send": {}},
                 "dimensions": {"channel": {"label": "Channel", "kind": "categorical"}},
                 "times": {
                     "sent_at": {
                         "label": "Sent at",
                         "kind": "date",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "sent_at",
                 "measures": {
                     "sends": {
                         "label": "Sends",
@@ -340,24 +368,21 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "value_type": "count",
                         "entity_key": ["send_id"],
                         "time": "sent_at",
-                        "topics": ["relations"],
                     }
                 },
             },
             "signup_send_matches": {
                 "relation": "signup_send_matches",
-                "grain": ["signup_id"],
-                "keys": {"primary": ["signup_id"]},
+                "entities": {"signup_match": {}},
                 "dimensions": {"account_id": {"label": "Account ID", "kind": "categorical"}},
                 "times": {
                     "signed_at": {
                         "label": "Signed at",
                         "kind": "date",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "signed_at",
                 "measures": {
                     "matched_signups": {
                         "label": "Matched signups",
@@ -367,15 +392,12 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "value_type": "count",
                         "entity_key": ["signup_id"],
                         "time": "signed_at",
-                        "topics": ["relations"],
                     }
                 },
             },
         },
     }
-    (package_dir / "package.yml").write_text(
-        yaml.safe_dump(package, sort_keys=False), encoding="utf-8"
-    )
+    _write_relation_package(package_dir, package)
     return package_dir
 
 
@@ -548,6 +570,7 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
     package = {
         "schema_version": 1,
         "package": {
+            "schema_strict": True,
             "id": "cycle_demo",
             "namespace": "cycle",
             "warehouse": "duckdb",
@@ -567,8 +590,7 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
         "models": {
             "cycle_a": {
                 "relation": "a",
-                "grain": ["id"],
-                "keys": {"primary": ["id"]},
+                "entities": {"cycle_a": {}},
                 "measures": {
                     "cycle_rows": {
                         "label": "Cycle rows",
@@ -581,8 +603,7 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
             },
             "physical_rows": {
                 "relation": "physical_rows",
-                "grain": ["id"],
-                "keys": {"primary": ["id"]},
+                "entities": {"physical": {}},
                 "measures": {
                     "physical_rows": {
                         "label": "Physical rows",
@@ -595,9 +616,7 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
             },
         },
     }
-    (package_dir / "package.yml").write_text(
-        yaml.safe_dump(package, sort_keys=False), encoding="utf-8"
-    )
+    _write_relation_package(package_dir, package)
     monkeypatch.setattr(
         config_module, "list_package_paths", lambda: {"cycle_demo": str(package_dir)}
     )
@@ -630,6 +649,7 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
     package = {
         "schema_version": 1,
         "package": {
+            "schema_strict": True,
             "id": "preagg_demo",
             "namespace": "preagg",
             "warehouse": "duckdb",
@@ -687,8 +707,7 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
         "models": {
             "aligned": {
                 "relation": "aligned",
-                "grain": ["account_id"],
-                "keys": {"primary": ["account_id"]},
+                "entities": {"aligned": {}},
                 "measures": {
                     "aligned_rows": {
                         "label": "Aligned rows",
@@ -705,9 +724,7 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
         "CREATE TABLE left_events (account_id INTEGER, value INTEGER); CREATE TABLE right_events (account_id INTEGER, value INTEGER);",
         encoding="utf-8",
     )
-    (package_dir / "package.yml").write_text(
-        yaml.safe_dump(package, sort_keys=False), encoding="utf-8"
-    )
+    _write_relation_package(package_dir, package)
     config = load_package_config(str(package_dir))
     relation = next(row for row in config.relations if row.id == "relation.preagg.aligned")
     ctes, _ = lower_relation(relation, warehouse=config.package.warehouse)
@@ -720,7 +737,7 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
 
     bad = yaml.safe_load(yaml.safe_dump(package))
     bad["relations"]["aligned"]["steps"][0]["join"].pop("pre_aggregate")
-    (package_dir / "package.yml").write_text(yaml.safe_dump(bad, sort_keys=False), encoding="utf-8")
+    _write_relation_package(package_dir, bad)
     bad_config = load_package_config(str(package_dir))
     bad_relation = next(row for row in bad_config.relations if row.id == "relation.preagg.aligned")
     with pytest.raises(SemanticLayerError) as exc:

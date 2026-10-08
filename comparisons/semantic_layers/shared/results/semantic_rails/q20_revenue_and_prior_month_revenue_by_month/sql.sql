@@ -1,7 +1,8 @@
 WITH leaf_1 AS (
 SELECT
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
-  SUM(comparison_orders.order_total_cents / 100.0) AS m1
+  SUM(comparison_orders.order_total_cents / 100.0) AS m1,
+  COUNT(1) AS m1_rows
 FROM comparison_orders
 GROUP BY
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
@@ -9,7 +10,8 @@ GROUP BY
 leaf_base AS (
 SELECT
   base.t AS t,
-  base.m1 AS m1
+  base.m1 AS m1,
+  base.m1_rows AS m1_rows
 FROM leaf_1 AS base
 ),
 dense_bounds AS (
@@ -62,7 +64,8 @@ GROUP BY
 series_base AS (
 SELECT
   dense_time.t AS t,
-  leaf_base.m1 AS m1
+  leaf_base.m1 AS m1,
+  leaf_base.m1_rows AS m1_rows
 FROM dense_time
 LEFT JOIN leaf_base ON dense_time.t = leaf_base.t
 ),
@@ -75,7 +78,7 @@ FROM comparison_orders
 guarded_base AS (
 SELECT
   base.t AS t,
-  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
 FROM series_base AS base
 CROSS JOIN coverage_1
 )

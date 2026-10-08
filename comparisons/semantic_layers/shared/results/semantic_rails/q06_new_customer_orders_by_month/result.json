@@ -29,8 +29,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.546,
-      "compile_ms": 0.222,
+      "cache_lookup_ms": 0.607,
+      "compile_ms": 0.249,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -704,7 +704,8 @@
             "parts": [
               "t"
             ]
-          }
+          },
+          "nulls_last": false
         }
       ],
       "qualify": [],
@@ -1064,8 +1065,8 @@
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:738a3e0d5ee52d27dd5b0d9ef53e670cc3a541c155a7a5a1f20888a94e619e87",
-  "source_fingerprint": "3be89439f14f4fbad2d7b21c52678ca261ead872cf6db820220d6a0bfa6ab055",
+  "semantic_fingerprint": "sha256:aac5e6deeae332b480c8e782df0d02116bab1711e756c910af6b285efd73f4de",
+  "source_fingerprint": "92a7dc155b7dfd213985fbfb14af23e8857dab2ebcbbca2b073e4f949609d910",
   "sql_plan": {
     "ctes": [
       {
@@ -1261,7 +1262,8 @@
           "parts": [
             "t"
           ]
-        }
+        },
+        "nulls_last": false
       }
     ],
     "qualify": [],

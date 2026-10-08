@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import _named_metric
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.filter_checks import _filter_value_gaps
@@ -30,7 +31,7 @@ from semantic_rails.planner.unmatched_words import unmatched_intent_terms
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
 from tests.semantic_rails.conftest import copy_package_config
-from tests.semantic_rails.result_helpers import assert_plan_held
+from tests.semantic_rails.result_helpers import assert_plan_held, disable_planner_patterns
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
@@ -1211,6 +1212,15 @@ BROOKLYN_REVENUE = {
 }
 
 
+def test_conjoined_along_with_stays_held_with_pattern_enabled(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="item revenue along with orders in 2017")
+        assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("text", "draft", "status"),
     [
@@ -1572,6 +1582,7 @@ def test_plan_answers_or_flags_the_metric_a_question_names(
     status: str,
     gap: str | None,
 ) -> None:
+    disable_planner_patterns(named_metrics.runtime, "conjoined_metrics")
     payload = named_metrics.call_tool("plan", {"intent": text, "detail": "full"})
     query = payload["best"]["query_ir"]
     assert payload["status"] == status
@@ -1721,3 +1732,36 @@ def test_another_clocks_date_is_not_the_order_clock(adapter: SemanticLayerMCPAda
     assert "dimension.jaffle_customer_first_order_at" in plan["best"]["query_ir"]["group_by"]
     codes = {w["code"]: w["details"]["terms"] for w in plan["warnings"]}
     assert "grain" in codes["PLAN_UNMATCHED_TERMS"]
+
+
+def test_conjoined_filtered_metric_and_measure_match_reference_sql(named_metrics):
+    payload = named_metrics.call_tool(
+        "plan", {"intent": "large order revenue and orders by month", "detail": "full"}
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query_ir"]
+    assert [item["expression"] for item in query["select"]] == [
+        {"metric": "metric.sales.large_order_revenue"},
+        {"measure": "measure.jaffle.order_count", "aggregation": "count_distinct"},
+    ]
+    runtime = named_metrics.runtime
+    rows = runtime.query(query)["rows"]
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        reference = {
+            str(month)[:10]: (revenue, count)
+            for month, revenue, count in connection.execute(
+                "SELECT DATE_TRUNC('month', ordered_at), "
+                "SUM(CASE WHEN is_large_order THEN order_total_cents / 100.0 END), "
+                "COUNT(DISTINCT order_id) FROM jaffle_order GROUP BY 1 ORDER BY 1"
+            ).fetchall()
+        }
+    actual = {
+        row["temporal_role.jaffle_order_time__month"][:10]: tuple(
+            float(row[item["as"]]) if row[item["as"]] is not None else None
+            for item in query["select"]
+        )
+        for row in rows
+    }
+    assert actual.keys() == reference.keys()
+    for month in actual:
+        assert actual[month] == pytest.approx(reference[month])

@@ -77,7 +77,6 @@ def _minimal_package_payload(package_id: str) -> dict:
         "defaults": {
             "time": {
                 "timezone": "UTC",
-                "default_query_axis": False,
                 "supported_grains": ["day", "week", "month", "quarter", "year"],
             }
         },
@@ -97,7 +96,6 @@ def _minimal_snowflake_package_payload(package_id: str) -> dict:
         "defaults": {
             "time": {
                 "timezone": "UTC",
-                "default_query_axis": False,
                 "supported_grains": ["day", "week", "month", "quarter", "year"],
             }
         },
@@ -167,7 +165,6 @@ def _write_minimal_package(
                     "column": "ordered_at",
                     "kind": "timestamp",
                     "class": "event_time",
-                    "default_query_axis": True,
                 },
                 **dict(extra_times or {}),
             },
@@ -542,7 +539,6 @@ def _write_monolithic_package(path: Path, package_id: str) -> None:
                     "column": "ordered_at",
                     "kind": "timestamp",
                     "class": "event_time",
-                    "default_query_axis": True,
                 }
             },
             "measures": {
@@ -607,7 +603,6 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
                         "column": "O_ORDERDATE",
                         "kind": "date",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "measures": {
@@ -870,7 +865,6 @@ package:
 defaults:
   time:
     timezone: UTC
-    default_query_axis: true
     supported_grains: [day]
 """.lstrip(),
         encoding="utf-8",
@@ -2946,7 +2940,7 @@ def test_directory_validation_accepts_every_membership_key_the_loader_reads(
     ("kind", "key", "expected"),
     [
         ("metric", "preferred_filter_ops", "has unknown key 'preferred_filter_ops'"),
-        ("metric", "clock_variants", "clock_variants is metadata-only and dropped"),
+        ("metric", "clock_variants", "has unknown key 'clock_variants'"),
         ("segment", "clock_variants", "has unknown key 'clock_variants'"),
     ],
 )

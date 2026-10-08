@@ -30,6 +30,7 @@ def _write_yaml(path: Path, payload: dict) -> None:
 
 def _write_package(package_dir: Path, *, package_overrides: dict) -> Path:
     package = {
+        "schema_strict": True,
         "id": "containment_demo",
         "name": "containment_demo",
         "description": "Path containment fixture",
@@ -45,7 +46,6 @@ def _write_package(package_dir: Path, *, package_overrides: dict) -> Path:
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 }
             },
@@ -57,7 +57,7 @@ def _write_package(package_dir: Path, *, package_overrides: dict) -> Path:
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -72,9 +72,8 @@ def _write_package(package_dir: Path, *, package_overrides: dict) -> Path:
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}},
                 "relation": "order_fact",
-                "grain": ["order_id"],
                 "times": {
                     "ordered_at": {
                         "id": "temporal_role.demo_order_time",

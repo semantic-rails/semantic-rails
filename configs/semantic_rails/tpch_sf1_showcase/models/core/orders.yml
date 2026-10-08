@@ -13,7 +13,6 @@ model:
       column: O_ORDERDATE
       kind: date
       class: event_time
-      default_query_axis: true
       default: true
   dimensions:
     order_priority:
