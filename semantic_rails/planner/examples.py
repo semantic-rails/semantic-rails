@@ -1,48 +1,19 @@
-"""Reuse an author's certified question only on a complete, deterministic text match."""
+"""Reuse an author's certified query: an example answers only its own question (case and
+whitespace aside)."""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Iterator
 from copy import deepcopy
 from typing import Any
 
 from ..expressions import collect_object_references
 from ..visible_view import pinned_view
-from ._base import RuntimeCompositionDraft, _singular
-from .consumed_spans import _ranking_count_spans
+from ._base import RuntimeCompositionDraft
 from .intent_holds import _with_query_clock
 from .intent_ir import IntentIR, ResolvedTerm, compose_hints
 from .plan_query import _merge_partial_query, _trim_why_errors, _validate_query
 from .plan_trace import _slim_best
-from .ranking_checks import _ranking_request
-
-# A number is one token with its sign, decimal point and separators ("-5", "2.5", "1,000",
-# "2026-09-30"), so two different numbers never compare equal. Only the sentence separators
-# below are dropped; any other mark ("$", "%", "<", "/") is a token of its own.
-_TOKEN_RE = re.compile(
-    r"[-+\N{MINUS SIGN}]?[.,]?\d+(?:[^\w\s]\d+)*|[^\W\d]+"
-    r"|[^\w\s.,;:?!'\"()\-\N{LEFT SINGLE QUOTATION MARK}\N{RIGHT SINGLE QUOTATION MARK}"
-    r"\N{LEFT DOUBLE QUOTATION MARK}\N{RIGHT DOUBLE QUOTATION MARK}]"
-)
-_COUNT_SLOT = " examples_count_slot "
-
-
-def _text(text: str) -> str:
-    return " ".join(_singular(token) for token in _TOKEN_RE.findall(text.lower()))
-
-
-def _cuts_token(text: str, span: tuple[int, int]) -> bool:
-    """Whether masking ``span`` would cut a word or number ("2" in "-2" or "2.5")."""
-    return any(
-        low < cut < high
-        for low, high in (match.span() for match in _TOKEN_RE.finditer(text))
-        for cut in span
-    )
-
-
-def _masked(text: str, span: tuple[int, int], mark: str) -> str:
-    return text[: span[0]] + mark + text[span[1] :]
 
 
 def _strings(node: Any) -> Iterator[str]:
@@ -68,36 +39,12 @@ def _references(query: dict[str, Any]) -> set[str] | None:
     return set(_strings(query)) | set(keys)
 
 
-def _count_slot(text: str) -> tuple[tuple[int, int], int] | None:
-    request = _ranking_request(text)
-    if request is None or not request["limit"] or request["limit"] <= 0:
-        return None
-    spans = set(_ranking_count_spans(text, request["limit"], frozenset()))
-    if len(spans) != 1:
-        return None
-    span = next(iter(spans))
-    if _cuts_token(text, span):
-        return None
-    return span, request["limit"]
-
-
 def _match(question: str, authored: str, query: dict[str, Any]) -> dict[str, Any] | None:
-    """The authored query for its exact question, or with only ``limit`` changed for the same
-    question with a different top-N count; the authored ``time`` block is never edited."""
-    if _text(question) == _text(authored):
-        return deepcopy(query)
-    question, authored = question.lower(), authored.lower()
-    # Reuse the existing span parser: a threshold equal to limit is not a count.
-    count, asked_count = _count_slot(authored), _count_slot(question)
-    if count is None or asked_count is None or count[1] != query.get("limit"):
+    """The authored query, unedited, when the question is the authored one (case and whitespace
+    aside); anything else gets normal planning."""
+    if " ".join(question.casefold().split()) != " ".join(authored.casefold().split()):
         return None
-    if _text(_masked(authored, count[0], _COUNT_SLOT)) != _text(
-        _masked(question, asked_count[0], _COUNT_SLOT)
-    ):
-        return None
-    candidate = deepcopy(query)
-    candidate["limit"] = asked_count[1]
-    return candidate
+    return deepcopy(query)
 
 
 def example_plan(
@@ -128,7 +75,7 @@ def example_plan(
         matched = _match(question, normalize(authored), query)
         if matched is None:
             continue
-        # Validate the original before any substitution or planner repair can rescue it.
+        # Validate the original before any planner repair can rescue it.
         if not _validate_query(runtime, query, partial)["ok"]:
             invalid.append(example_id)
             continue

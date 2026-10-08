@@ -150,26 +150,18 @@ def test_authored_snapshot_question_answers_reference(subscriptions):
 
 
 @pytest.mark.parametrize(
-    "question,limit",
-    [
-        (QUESTION + " ", 2),
-        ("‘Which 2 accounts pay the most MRR today?’ ", 2),
-        ("WHICH 2 ACCOUNT PAY THE MOST MRR TODAY", 2),
-        (QUESTION.replace("2", "3"), 3),
-    ],
+    "question", [QUESTION + " ", QUESTION.upper(), QUESTION.replace(" ", "  ")]
 )
-def test_normalization_and_count_slot_match_reference(subscriptions, question, limit):
+def test_case_and_whitespace_variants_match_reference(subscriptions, question):
     result = _plan(subscriptions, question)
     assert result["status"] == "ok", result.get("why")
     assert result["best"]["pattern"] == "package_example"
     query = result["best"]["query_ir"]
-    assert query["limit"] == limit
+    assert query["limit"] == 2
     assert query["time"]["start"] == "2026-10-04"
     assert query["time"]["end"] == "2026-10-05"
     rows = subscriptions.query(query)["rows"]
-    assert [(row[NAME], row["mrr"]) for row in rows] == _reference(
-        subscriptions, "2026-10-04", limit
-    )
+    assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, "2026-10-04", 2)
     assert result["best"]["interpreted_intent"]["consumed_spans"] == [[0, len(result["intent"])]]
 
 
@@ -200,6 +192,9 @@ def test_contractions_use_the_same_normalizer(subscriptions, question):
         QUESTION.replace("today", "today for Acme"),
         QUESTION.replace("2", "2.5"),
         QUESTION.replace("2", "0"),
+        "‘Which 2 accounts pay the most MRR today?’ ",
+        "WHICH 2 ACCOUNT PAY THE MOST MRR TODAY",
+        QUESTION.replace("2", "3"),
     ],
 )
 def test_other_differences_have_no_example_effect(subscriptions, question):
@@ -320,7 +315,7 @@ def test_caller_fields_survive_and_resolved_ids_come_from_the_query(subscription
 
 
 @pytest.mark.parametrize("limit", [1, 3])
-def test_authored_count_must_equal_query_limit_before_substitution(subscriptions, limit):
+def test_another_count_has_no_example_effect_whatever_the_limit(subscriptions, limit):
     _replace_entries(
         subscriptions, {"top_mrr": {"question": QUESTION, "query": {**QUERY, "limit": limit}}}
     )
@@ -404,6 +399,43 @@ def test_an_example_answers_only_its_own_day(runtime_factory, day, end, other_da
         assert float(actual[0]) == pytest.approx(float(gold))
 
 
+def _jaffle_revenue_above(value: float) -> dict:
+    total = {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
+    return {
+        "version": 1,
+        "select": [{"expression": total, "as": "revenue_usd"}],
+        "metric_filters": [{"expression": total, "op": ">", "value": value}],
+    }
+
+
+def test_a_signed_currency_threshold_answers_only_its_own_sign(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        runtime._package_examples = [
+            ("negative", {"question": "Total revenue above -$5", "query": _jaffle_revenue_above(-5)})
+        ]
+        verbatim = plan_payload(runtime, intent="Total revenue above -$5")
+        unsigned = plan_payload(runtime, intent="Total revenue above $5")
+        assert verbatim["status"] == "ok", verbatim.get("why")
+        assert verbatim["best"]["pattern"] == "package_example"
+        rows = runtime.query(verbatim["best"]["query_ir"])["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as conn:
+            gold = conn.execute(
+                "SELECT SUM(order_total_cents / 100.0) FROM jaffle_order "
+                "HAVING SUM(order_total_cents / 100.0) > -5"
+            ).fetchall()
+        runtime._package_examples = [
+            ("positive", {"question": "Total revenue above $5", "query": _jaffle_revenue_above(5)})
+        ]
+        signed = plan_payload(runtime, intent="Total revenue above -$5")
+    finally:
+        runtime.close()
+    assert len(gold) == 1
+    assert [float(row["revenue_usd"]) for row in rows] == pytest.approx([float(gold[0][0])])
+    assert (unsigned.get("best") or {}).get("pattern") != "package_example"
+    assert (signed.get("best") or {}).get("pattern") != "package_example"
+
+
 @pytest.mark.parametrize("time_phrase", ["on 2026-09-30", "yesterday"])
 def test_another_window_never_reuses_the_authored_one(subscriptions, time_phrase):
     result = _plan(subscriptions, QUESTION.replace("today", time_phrase))
@@ -439,7 +471,7 @@ def test_bundled_examples_verbatim_equal_authored_results(runtime_factory, examp
 
 
 @pytest.mark.parametrize("question", ["Revenue above 2 dollars", "Revenue above 3 dollars"])
-def test_threshold_equal_to_limit_is_not_a_count_slot(subscriptions, question):
+def test_threshold_equal_to_limit_is_not_a_count(subscriptions, question):
     _replace_entries(
         subscriptions, {"threshold": {"question": "Revenue above 2 dollars", "query": QUERY}}
     )
@@ -451,7 +483,7 @@ def test_threshold_equal_to_limit_is_not_a_count_slot(subscriptions, question):
 
 
 @pytest.mark.parametrize("time", ["invalid", 2])
-def test_invalid_example_time_shape_does_not_crash_slot_matching(subscriptions, time):
+def test_invalid_example_time_shape_does_not_crash_matching(subscriptions, time):
     _replace_entries(
         subscriptions, {"bad_time": {"question": QUESTION, "query": {**QUERY, "time": time}}}
     )
@@ -524,14 +556,14 @@ def test_the_authored_time_block_is_never_edited(time, authored, asked):
         ("pay 9.0 MRR", "pay 90 MRR"),
     ],
 )
-def test_numbers_compare_whole_in_exact_and_slot_matches(subscriptions, authored, asked):
+def test_numbers_compare_whole(subscriptions, authored, asked):
     _replace_entries(
         subscriptions,
         {"threshold": {"question": f"Which 2 accounts {authored} yesterday?", "query": QUERY}},
     )
     verbatim = _plan(subscriptions, f"Which 2 accounts {authored} yesterday?")
     assert verbatim["best"]["pattern"] == "package_example"
-    # Neither the exact path nor the count slot reads one number as another.
+    # One number is never read as another, whatever the count or day asked.
     for count, phrase in [("2", "yesterday"), ("3", "yesterday"), ("2", "on 2026-09-30")]:
         result = _plan(subscriptions, f"Which {count} accounts {asked} {phrase}?")
         assert (result.get("best") or {}).get("pattern") != "package_example"
@@ -539,7 +571,20 @@ def test_numbers_compare_whole_in_exact_and_slot_matches(subscriptions, authored
 
 @pytest.mark.parametrize(
     "authored,asked",
-    [("5%", "$5"), ("5%", "5"), ("$5", "5%"), ("$5", "5"), ("5", "5%"), ("$5", "€5")],
+    [
+        ("5%", "$5"),
+        ("5%", "5"),
+        ("$5", "5%"),
+        ("$5", "5"),
+        ("5", "5%"),
+        ("$5", "€5"),
+        ("-$5", "$5"),
+        ("$5", "-$5"),
+        ("-€5", "€5"),
+        ("€5", "-€5"),
+        ("- 5", "5"),
+        ("5", "- 5"),
+    ],
 )
 def test_symbols_keep_their_meaning(subscriptions, authored, asked):
     question = "Which orders have a discount above {}?"
@@ -559,7 +604,7 @@ def test_symbols_keep_their_meaning(subscriptions, authored, asked):
         QUESTION.replace("today", "-2026-09-30"),
     ],
 )
-def test_a_slot_never_cuts_a_signed_number(subscriptions, question):
+def test_a_signed_number_never_matches_its_unsigned_form(subscriptions, question):
     _replace_entries(
         subscriptions,
         {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
