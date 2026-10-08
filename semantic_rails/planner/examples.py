@@ -44,7 +44,7 @@ def _slots(question: str, query: dict[str, Any], *, clock: bool) -> tuple[str, d
         and len(window.spans) == len(window.windows) == 1
         and not window.unresolved
         and _window_agrees(
-            window.windows, time, timezone=time_timezone(str(time.get("temporal_role") or ""))
+            list(window.windows), time, timezone=time_timezone(str(time.get("temporal_role") or ""))
         )
     ):
         start, end = window.spans[0]

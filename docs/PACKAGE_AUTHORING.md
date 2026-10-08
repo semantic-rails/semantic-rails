@@ -2463,6 +2463,25 @@ metrics often span entities.
 
 ## Examples and tests
 
+Examples also teach `plan` the package's own questions. A complete normalized
+match (contractions expanded, lowercase, punctuation removed, regular plurals
+singular, and whitespace collapsed) uses the authored Query IR with pattern
+`package_example`. The author's groupings, filters, ordering and limit count as
+requested, and the whole matched question is recorded as a consumed span.
+The query still passes the normal validation and caller visibility checks.
+
+A question may change one count when it equals the example's `limit`, or one
+fully resolved time phrase when the example's phrase resolves to its query's
+window, or both. Only those slots change; every other word must match. There is
+no fuzzy matching. Several valid, visible examples matching the same question
+require clarification with their IDs. Invalid examples fall through to normal
+planning with their IDs in `why.details.invalid_examples`; examples referring
+to hidden objects are skipped without naming them.
+
+The runtime loads the same `examples/` entries that package validation checks,
+once per runtime generation. `reload` refreshes them. A runtime without a
+source path has no package examples.
+
 Package-local review assets:
 
 - `examples/` — runnable example queries surfaced through discovery and inspect.

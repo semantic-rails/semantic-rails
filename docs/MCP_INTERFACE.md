@@ -117,7 +117,17 @@ tool/schema drift cannot be merged silently.
 - `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values.
-- `plan`: draft Query IR from a natural-language question.
+- `plan`: draft Query IR from a natural-language question. A fully matched
+  package example uses its validated authored query (`best.pattern:
+  package_example`), including its groupings, filters and limit. Matching
+  expands contractions, ignores case and punctuation, singularizes regular
+  plurals and collapses whitespace. One count equal to the authored limit and
+  one fully resolved time phrase agreeing with the authored window may change;
+  other differences use normal planning. Multiple valid visible matches return
+  `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
+  `why.details.example_ids`. Invalid examples fall through with
+  `why.details.invalid_examples`; hidden examples are skipped silently.
+  Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
