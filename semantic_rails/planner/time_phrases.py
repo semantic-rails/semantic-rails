@@ -518,10 +518,11 @@ _NAMED_PERIOD_RE = re.compile(
     rf"(?:\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?)?"
     r"|q(?P<quarter>[1-4])|h(?P<half>[12])"
     r"|(?P<ordinal>first|second|third|fourth|1st|2nd|3rd|4th)\s+"
-    r"(?P<unit>quarter|half))\b"
+    r"(?P<unit>quarter|half)(?!\s+hours?\b))\b"
 )
 _ALL_TIME_RE = re.compile(
     r"\b(?:(?:of\s+)?all\s+time|ever|in\s+total|since\s+(?:launch|the\s+beginning|we\s+started)"
+    r"(?!\s+of\b)"
     r"|(?:(?P<to_date_unit>day|week|month|quarter|year)[\s-]+)?to[\s-]+date)\b"
 )
 _NAMED_QUALIFIER_RE = re.compile(r"\b(?:early|late|mid)[\s-]*$")
@@ -579,8 +580,13 @@ def _named_calendar_windows(
         ):
             rejected.append((boundary.start() if boundary else span[0], span[1]))
             continue
-        # Bare May and March may be verbs. Only a scoped phrase or the entire input is a date.
-        if match["month"] in {"may", "march"} and not match["lead"] and lowered.strip() != match[0]:
+        # A month alone may name a person or promotion. Dates with a day need no lead.
+        if (
+            match["month"]
+            and not match["day"]
+            and not match["lead"]
+            and lowered.strip() != match[0]
+        ):
             continue
         bounds: dict[str, str] = {}
         # Four prior years cover leap-day dates as well as ordinary dates.

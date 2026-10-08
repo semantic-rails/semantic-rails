@@ -555,6 +555,10 @@ of 2017", "H2 2017"), a month or month range with a year, days with a year ("Mar
 relative window ("last 7 days"). A single named month, quarter or half without a year
 ("in September", "Q3", "the first half") uses the latest such period starting on or before
 `policy_context.now` (the package's time zone, or UTC), and `assumptions` names the year.
+Without a day, every month name needs a scoping word ("in", "for", "during", "on" or
+"since") or must be the whole input: "customer April", "Jan's revenue" and "the June
+promotion" do not resolve a month. "First half hour" and "first quarter hour" do not name
+calendar periods.
 Only a completed period resolves: if it contains the reference date, `plan` returns
 `needs_clarification` with `TIME_WINDOW_UNRESOLVED` and `why.details.possible_readings` naming
 that period through the last complete day and the same period a year earlier. A month and
@@ -566,6 +570,12 @@ days. "Early", "late" and "mid" months and multiple named periods remain unresol
 "All time", "of all time", "ever", "in total", bare "to date", "since launch", "since the
 beginning" and "since we started" record their spans and add no start or end, with the
 assumption "all time: no start date". A caller's bounded window cannot silently narrow them.
+Beside exactly one bounded window, "ever" and "in total" instead emphasize that window
+and add no all-time assumption ("signups in total last month"). The other all-time forms
+still conflict with a stated bounded window. "Since launch of …" and "since the beginning
+of …" are not all-time readings. A time phrase inside an
+exclusion clause ("not in June", "excluding Q2") never becomes a positive window:
+`plan` holds it with `TIME_WINDOW_UNRESOLVED` and no execute readiness.
 A balance such as "MRR of all time" remains held: a stock needs an as-of day. Period-to-date
 forms ("year to date", "month to date", "ytd", "mtd") retain their existing handling. Planning
 reads no warehouse data to establish coverage; the all-time assumption makes no claim about

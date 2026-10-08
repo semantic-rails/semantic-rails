@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
+from shutil import copytree
 
 import duckdb
 import pytest
@@ -121,6 +123,7 @@ ANSWER_CASES = [
     ("in December", "2025-12-01", "2026-01-01", 0),
     ("in the first half", "2026-01-01", "2026-07-01", 0),
     ("since September", "2026-09-01", "2026-10-05", 3),
+    ("ever since September", "2026-09-01", "2026-10-05", 3),
     ("since Sept 22", "2026-09-22", "2026-10-05", 2),
     ("since Q3", "2026-07-01", "2026-10-05", 3),
     ("on Wed Sept 30", "2026-09-30", "2026-10-01", 1),
@@ -210,7 +213,6 @@ def test_all_time_stock_stays_held(subscriptions, phrase):
         "on February 30",
         "since early September",
         "all time in September",
-        "ever since September",
         "ytd",
         "mtd",
     ],
@@ -326,3 +328,210 @@ def test_current_named_day_clarification_has_no_reversed_range(phrase, now):
     assert not read.bounds and len(read.readings) == 2
     assert "not a complete day yet" in read.readings[0]
     assert "to" in read.readings[1]
+
+
+SHOP_NOW = {"now": "2024-07-05T06:00:00Z"}
+
+
+@pytest.fixture(scope="module")
+def shop(tmp_path_factory):
+    source = Path(__file__).resolve().parents[1] / "integration/correctness/shop"
+    package = tmp_path_factory.mktemp("named-shop") / "shop"
+    copytree(source, package)
+    runtime = Runtime.from_path(str(package))
+    runtime._get_adapter()  # the module fixture owns its connection
+    try:
+        yield runtime
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("phrase", "start", "end", "expected"),
+    [
+        ("not in June", "2024-06-01", "2024-07-01", 2),
+        ("excluding Q2", "2024-04-01", "2024-07-01", 2),
+        ("except in December", "2023-12-01", "2024-01-01", 3),
+    ],
+)
+def test_excluded_period_never_becomes_a_positive_window(shop, phrase, start, end, expected):
+    reference = (
+        "SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel <> 'store' "
+        f"AND (signed_up_at < TIMESTAMP '{start}' OR signed_up_at >= TIMESTAMP '{end}')"
+    )
+    with duckdb.connect(shop.db_path, read_only=True) as connection:
+        assert connection.execute(reference).fetchone()[0] == expected
+    intent = f"signups {phrase}"
+    plan = plan_payload(
+        shop,
+        intent=intent,
+        partial_query={
+            "policy_context": SHOP_NOW,
+            "where": [{"field": "dimension.shop_customer_channel", "op": "!=", "value": "store"}],
+        },
+    )
+    assert plan["status"] != "ok", plan
+    assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+    assert "execute" not in plan["next"].get("ready_for", [])
+    read = _time_window(intent, SHOP_NOW)
+    assert read.unresolved and not read.windows and not read.bounds
+
+
+@pytest.mark.parametrize(
+    "phrase", ["not in 2024", "not last month", "not all time", "all periods but in June"]
+)
+def test_exclusion_guard_covers_every_window_parser(phrase):
+    read = _time_window(f"signups {phrase}", SHOP_NOW)
+    assert read.unresolved and not read.windows and not read.bounds
+    assert "all time: no start date" not in read.assumptions
+
+
+@pytest.mark.parametrize(
+    "phrase", ["since the beginning of the year", "since launch of the new plan"]
+)
+def test_scoped_beginning_is_not_all_time(shop, phrase):
+    plan = plan_payload(
+        shop, intent=f"signups {phrase}", partial_query={"policy_context": SHOP_NOW}
+    )
+    assert plan["status"] != "ok", plan
+    assert "execute" not in plan["next"].get("ready_for", [])
+    assert "all time: no start date" not in plan.get("assumptions", [])
+    read = _time_window(f"signups {phrase}", SHOP_NOW)
+    assert not any(not bounds for _span, bounds in read.windows)
+
+
+@pytest.mark.parametrize(
+    ("intent", "table", "key", "clock", "start", "end", "expected"),
+    [
+        (
+            "signups in total last month",
+            "signups",
+            "DISTINCT customer_id",
+            "signed_up_at",
+            "2024-06-01",
+            "2024-07-01",
+            2,
+        ),
+        (
+            "signups ever last month",
+            "signups",
+            "DISTINCT customer_id",
+            "signed_up_at",
+            "2024-06-01",
+            "2024-07-01",
+            2,
+        ),
+        (
+            "orders in total in 2017",
+            "orders",
+            "order_id",
+            "ordered_at",
+            "2017-01-01",
+            "2018-01-01",
+            0,
+        ),
+        (
+            "signups March 2",
+            "signups",
+            "DISTINCT customer_id",
+            "signed_up_at",
+            "2024-03-02",
+            "2024-03-03",
+            1,
+        ),
+        (
+            "signups Mon May 6",
+            "signups",
+            "DISTINCT customer_id",
+            "signed_up_at",
+            "2024-05-06",
+            "2024-05-07",
+            1,
+        ),
+    ],
+)
+def test_bounded_reading_matches_shop_reference_sql(
+    shop, intent, table, key, clock, start, end, expected
+):
+    plan = plan_payload(shop, intent=intent, partial_query={"policy_context": SHOP_NOW})
+    assert plan["status"] == "ok", plan.get("why")
+    assert "execute" in plan["next"]["ready_for"]
+    query = plan["best"]["query_ir"]
+    read = _time_window(intent, SHOP_NOW)
+    from semantic_rails.ast import _relative_range_bounds
+
+    bounds = read.bounds
+    if "range" in bounds:
+        bounds = _relative_range_bounds(bounds["range"], policy_context=SHOP_NOW)
+    assert bounds == {"start": start, "end": end}
+    time = query["time"]
+    carried = (
+        _relative_range_bounds(time["range"], policy_context=SHOP_NOW)
+        if "range" in time
+        else {"start": time["start"], "end": time["end"]}
+    )
+    assert carried == bounds
+    assert "all time: no start date" not in plan.get("assumptions", [])
+    reference = (
+        f"SELECT COUNT({key}) FROM {table} "
+        f"WHERE {clock} >= TIMESTAMP '{start}' AND {clock} < TIMESTAMP '{end}'"
+    )
+    with duckdb.connect(shop.db_path, read_only=True) as connection:
+        gold = connection.execute(reference).fetchone()[0]
+    assert gold == expected
+    rows = shop.query(query)["rows"]
+    assert sum(row[query["select"][0]["as"]] or 0 for row in rows) == gold
+    for word in ("ever", "in total"):
+        if word in intent:
+            assert any(intent[start:end] == word for start, end in read.spans)
+
+
+@pytest.mark.parametrize(
+    "phrase", ["all time", "since launch", "to date", "since the beginning", "since we started"]
+)
+def test_explicit_all_time_still_conflicts_with_a_bounded_window(shop, phrase):
+    plan = plan_payload(
+        shop, intent=f"signups {phrase} in September", partial_query={"policy_context": SHOP_NOW}
+    )
+    assert plan["status"] != "ok", plan
+    assert "execute" not in plan["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "revenue for customer April",
+        "Jan's revenue",
+        "signups from the June promotion",
+        "signups first half hour",
+        "signups first quarter hour",
+        *[
+            f"signups from the {month} promotion"
+            for month in (
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            )
+        ],
+    ],
+)
+def test_non_time_month_or_fraction_does_not_resolve_a_window(intent):
+    read = _time_window(intent, SHOP_NOW)
+    assert not read.windows and not read.bounds
+
+
+def test_unscoped_day_still_checks_its_weekday(shop):
+    plan = plan_payload(
+        shop, intent="signups Tue May 6", partial_query={"policy_context": SHOP_NOW}
+    )
+    assert plan["status"] == "needs_clarification", plan
+    assert "execute" not in plan["next"].get("ready_for", [])

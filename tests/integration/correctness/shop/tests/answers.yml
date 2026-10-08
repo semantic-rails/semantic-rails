@@ -7450,3 +7450,23 @@ tests:
       select: [{as: signups, expression: {measure: measure.shop.signup_count}}]
     expected_rows: [{signups: 7}]
     reference_sql: SELECT COUNT(DISTINCT customer_id) FROM signups
+  shop/plan-signups-outside-june-excluding-store:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Non-store signups outside June are customers 101 and 103; a positive June window would incorrectly count only 106.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [planner, time-window]
+    intent: signups not in June
+    known_wrong: {planner: "The planner holds excluded time periods until it can represent their complement."}
+    partial_query:
+      policy_context: {now: '2024-07-05T06:00:00Z'}
+      where: [{field: dimension.shop_customer_channel, op: '!=', value: store}]
+    query:
+      select: [{as: signups, expression: {measure: measure.shop.signup_count}}]
+      where:
+        - {field: dimension.shop_customer_channel, op: '!=', value: store}
+        - {field: dimension.shop_customer_signed_up_at, op: NOT BETWEEN, value: ['2024-06-01', '2024-06-30T23:59:59.999999']}
+    expected_rows: [{signups: 2}]
+    reference_sql: |
+      SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel <> 'store'
+      AND (signed_up_at < TIMESTAMP '2024-06-01' OR signed_up_at >= TIMESTAMP '2024-07-01')

@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from ..ast import _parse_now, _relative_range_bounds
 from ..errors import SemanticLayerError
 from ._base import _tokens
+from .filter_checks import _excluded_value_spans
 from .time_phrases import (
     _BOUNDARY_BEFORE_RE,
     _COMPARISON_GUARD,
@@ -319,7 +320,26 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     rejected.extend(named_rejected)
     all_time = _all_time_spans(interval_text)
     windows.extend((span, {}, "") for span in all_time)
-    if all_time:
+    # Every parser passes through the same exclusion grammar: a negative clause
+    # cannot become a positive date window, even with unrelated negative filters.
+    excluded = _excluded_value_spans(lowered)
+    rejected.extend(
+        span
+        for span, _bounds, _unit in windows
+        if any(start <= span[0] and span[1] <= end for start, end in excluded)
+    )
+    windows = [row for row in windows if row[0] not in rejected]
+    # "Ever" and "in total" emphasize one bounded window; other all-time forms
+    # still conflict with it. Record the intensifiers' exact spans for consumption.
+    intensifiers = []
+    if sum(bool(row[1]) for row in windows) == 1:
+        intensifiers = [
+            span
+            for span, bounds, _unit in windows
+            if not bounds and lowered[span[0] : span[1]] in {"ever", "in total"}
+        ]
+        windows = [row for row in windows if row[0] not in intensifiers]
+    if any(not row[1] for row in windows):
         assumptions.append("all time: no start date")
     windows.sort(key=lambda row: row[0])
     covered = [row[0] for row in windows]
@@ -341,7 +361,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     unresolved_spans += [match.span() for match in _YEAR_COMPARISON_RE.finditer(lowered)]
     # Longest cues first, so a year inside "4/3/2017" isn't reported twice.
     for span in sorted(_time_cues(lowered), key=lambda item: item[0] - item[1]):
-        if not _overlaps(span, covered + unresolved_spans):
+        if not _overlaps(span, covered + intensifiers + unresolved_spans):
             unresolved_spans.append(span)
     # A window shorter than a day is reported, never dropped to all time.
     sub_day = [
@@ -350,7 +370,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         if not _overlaps(match.span(), covered)
     ]
     unresolved_spans += [span for span in sub_day if not _overlaps(span, unresolved_spans)]
-    time_spans = tuple(sorted(covered + unresolved_spans))
+    time_spans = tuple(sorted(covered + intensifiers + unresolved_spans))
     if unresolved_spans or len(windows) > 1:
         # Report every time phrase, resolved or not: resolving part of an
         # ambiguous question would answer a different one.
