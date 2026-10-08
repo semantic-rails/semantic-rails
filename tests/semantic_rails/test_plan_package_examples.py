@@ -563,6 +563,8 @@ def test_hidden_id_in_a_mapping_key_skips_the_example_unnamed(runtime_factory, d
                 }
             },
         )
+        visible = plan_payload(runtime, intent="Total revenue")
+        assert visible["best"]["pattern"] == "package_example"
         runtime._config = replace(
             runtime._config,
             semantic_policies=[

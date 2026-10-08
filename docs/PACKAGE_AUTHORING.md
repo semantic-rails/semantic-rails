@@ -2464,19 +2464,28 @@ metrics often span entities.
 ## Examples and tests
 
 Examples also teach `plan` the package's own questions. A complete normalized
-match (contractions expanded, lowercase, punctuation removed, regular plurals
-singular, and whitespace collapsed) uses the authored Query IR with pattern
-`package_example`. The author's groupings, filters, ordering and limit count as
-requested, and the whole matched question is recorded as a consumed span.
+match (contractions expanded, lowercase, other punctuation read as a space,
+regular plurals singular, and whitespace collapsed) uses the authored Query IR
+with pattern `package_example`. A number keeps its sign, decimal point and
+separators and must match exactly: `2.5` is not `25`, `9.0` is not `90` or `9`,
+and `-5` is not `5`. The author's groupings, filters, ordering and limit count
+as requested, and the whole matched question is recorded as a consumed span.
 The query still passes the normal validation and caller visibility checks.
 
-A question may change one count when it equals the example's `limit`, or one
-fully resolved time phrase when the example's phrase resolves to its query's
-window, or both. Only those slots change; every other word must match. There is
-no fuzzy matching. Several valid, visible examples matching the same question
-require clarification with their IDs. Invalid examples fall through to normal
-planning with their IDs in `why.details.invalid_examples`; examples referring
-to hidden objects are skipped without naming them.
+A question may change one count when it equals the example's `limit`, one time
+phrase, or both. A time phrase is a slot only when the example's phrase resolves
+to its query's window and that window is exactly one complete bucket of the
+query's `grain` on the default calendar (one past day for `grain: day`, one past
+month for `grain: month`). The question's phrase must then also resolve to one
+complete bucket of that grain: from a "yesterday" example, "on 2026-09-30" is a
+slot, while "last 7 days", "this week", "last month" and "today" are not. The
+query keeps every authored time key, including `grain`; only the window bounds
+change. Every other word must match, and there is no fuzzy matching. Several
+valid, visible examples matching the same question require clarification with
+their IDs. Invalid examples fall through to normal planning with their IDs in
+`why.details.invalid_examples`; examples referring to hidden objects, in a value
+or in a mapping key such as `temporal_role_overrides`, are skipped without
+naming them.
 
 The runtime loads the same `examples/` entries that package validation checks,
 once per runtime generation. `reload` refreshes them. A runtime without a

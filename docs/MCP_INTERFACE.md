@@ -120,10 +120,13 @@ tool/schema drift cannot be merged silently.
 - `plan`: draft Query IR from a natural-language question. A fully matched
   package example uses its validated authored query (`best.pattern:
   package_example`), including its groupings, filters and limit. Matching
-  expands contractions, ignores case and punctuation, singularizes regular
-  plurals and collapses whitespace. One count equal to the authored limit and
-  one fully resolved time phrase agreeing with the authored window may change;
-  other differences use normal planning. Multiple valid visible matches return
+  expands contractions, ignores case, reads punctuation outside numbers as a
+  space, singularizes regular plurals and collapses whitespace; numbers must
+  match exactly. One count equal to the authored limit may change, and so may
+  one time phrase when the authored window is one complete bucket of the
+  authored grain and the new phrase is one complete bucket of that same grain
+  (only the window changes); other differences use normal planning. Multiple
+  valid visible matches return
   `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
   `why.details.example_ids`. Invalid examples fall through with
   `why.details.invalid_examples`; hidden examples are skipped silently.
