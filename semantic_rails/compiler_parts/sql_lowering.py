@@ -5305,18 +5305,20 @@ def _require_calendar_date_columns(
     calendar_entity_id: str,
     calendar_id: str,
     grain_column: str,
-    *,
-    require_day: bool,
 ) -> None:
-    """Authored calendar anchors and their day join column must declare dates."""
-    if require_day and not any(
+    """Authored calendars declare date anchors and a single-column date_day key."""
+    if not any(
         row.entity == calendar_entity_id and row.column == "date_day" for row in config.dimensions
     ):
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
-            f"Calendar '{calendar_id}' requires a declared date_day for its join; "
-            "declare `date_day` as a date",
-            details={"calendar_id": calendar_id, "column": "date_day", "declared_type": None},
+            f"Calendar '{calendar_id}' requires a declared date_day; declare `date_day` as a date",
+            details={
+                "reason": "calendar_day_key_unproven",
+                "calendar_id": calendar_id,
+                "column": "date_day",
+                "declared_type": None,
+            },
         )
     for dimension in config.dimensions:
         if dimension.entity != calendar_entity_id or dimension.column not in {
@@ -5330,11 +5332,29 @@ def _require_calendar_date_columns(
                 f"Calendar '{calendar_id}' column '{dimension.column}' must be declared as a date; "
                 f"declare `{dimension.column}` as a date",
                 details={
+                    **(
+                        {"reason": "calendar_day_key_unproven"}
+                        if dimension.column == "date_day"
+                        else {}
+                    ),
                     "calendar_id": calendar_id,
                     "column": dimension.column,
                     "declared_type": dimension.data_type,
                 },
             )
+    declared_key = next((row.key for row in config.entities if row.id == calendar_entity_id), None)
+    if declared_key != ["date_day"]:
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"Calendar '{calendar_id}' requires date_day as its declared single-column key; "
+            f"declare `key: [date_day]` on '{calendar_entity_id}'",
+            details={
+                "reason": "calendar_day_key_unproven",
+                "calendar_id": calendar_id,
+                "column": "date_day",
+                "declared_key": declared_key,
+            },
+        )
 
 
 def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[str, str, str] | None:
@@ -5407,9 +5427,7 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
     )
     if grain_dim is None:
         return None
-    _require_calendar_date_columns(
-        config, calendar_entity.id, requested_calendar, grain_column, require_day=True
-    )
+    _require_calendar_date_columns(config, calendar_entity.id, requested_calendar, grain_column)
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(grain_dim.id)
     return calendar_entity.table, grain_dim.column, "date_day"
@@ -5471,9 +5489,7 @@ def _calendar_fill_binding(
             "REWRITE_NOT_SUPPORTED",
             f"time.fill requires calendar dimension '{calendar_column}' on '{calendar_entity.id}'",
         )
-    _require_calendar_date_columns(
-        config, calendar_entity.id, requested_calendar, calendar_column, require_day=False
-    )
+    _require_calendar_date_columns(config, calendar_entity.id, requested_calendar, calendar_column)
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(dimension.id)
     return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)

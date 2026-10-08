@@ -141,34 +141,30 @@ def _with_calendar(config, *, key=None, keep_date_day=True):
 
 
 @pytest.mark.parametrize("key", [["date_id"], ["date_key"]], ids=["integer-id", "text-key"])
-def test_fill_bounds_the_window_by_date_day_not_the_calendar_key(runtime_factory, key):
-    # A calendar can be keyed by a surrogate. The window must still be bounded by its
-    # date_day column; the surrogate column doesn't even exist here.
+def test_fill_refuses_a_surrogate_calendar_key(runtime_factory, key):
     runtime = runtime_factory("jaffle_shop")
     try:
         config = _with_calendar(runtime.config, key=key)
-        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
-        rows = runtime._get_adapter().query(sql)
+        with pytest.raises(SemanticLayerError) as refused:
+            compile_query(config, Registry(config), _JULY_BY_WEEK)
+        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+        assert refused.value.details["reason"] == "calendar_day_key_unproven"
+        assert refused.value.details["declared_key"] == key
     finally:
         runtime.close()
 
-    assert key[0] not in sql
-    alias = "temporal_role.jaffle_order_time__week"
-    assert min(_as_date(row[alias]) for row in rows) == date(2017, 6, 26)
-    assert sum(row["orders"] or 0 for row in rows) == 7438
 
-
-def test_fill_without_a_date_day_column_bounds_the_window_by_bucket(runtime_factory):
-    # Without a date_day dimension there is no day to bound by, so the series keeps
-    # the earlier behavior and filters the bucket column.
+def test_fill_refuses_an_undeclared_day(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         config = _with_calendar(runtime.config, keep_date_day=False)
-        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
+        with pytest.raises(SemanticLayerError) as refused:
+            compile_query(config, Registry(config), _JULY_BY_WEEK)
+        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+        assert refused.value.details["reason"] == "calendar_day_key_unproven"
+        assert refused.value.details["declared_type"] is None
     finally:
         runtime.close()
-
-    assert "jaffle_calendar.week_start >= '2017-07-01'" in sql
 
 
 def _bucket_counts(runtime, grain: str, start: str, end: str, *, fill: bool, group_by=None):

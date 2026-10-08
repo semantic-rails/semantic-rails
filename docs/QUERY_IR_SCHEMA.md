@@ -1302,13 +1302,20 @@ dense rows (for example, the inline `prior_period` LAG window in the
 
 - A calendar the package authors for the requested `calendar_id` always
   fills (the `default` one when the query names none).
-  Its requested grain column and any declared `date_day` column must have
-  `kind: date`. Other declared types refuse before execution with
+  Its requested grain column and `date_day` column must have
+  `kind: date`, and the calendar entity must declare `key: [date_day]`.
+  These declarations prove one calendar row per day for calendar joins;
+  the engine trusts declared keys and does not probe physical uniqueness.
+  Other declared types refuse before execution with
   `REWRITE_NOT_SUPPORTED`; `details` names `calendar_id`, `column` and
   `declared_type`, and the message asks the author to declare that column as
-  a date. A non-default calendar requested through another calendar's
-  temporal role must also declare `date_day` as a date for the join; a missing
-  declaration refuses with `declared_type: null`.
+  a date. A missing or non-date `date_day`, or any key other than the
+  single-column `[date_day]`, refuses with
+  `details.reason: calendar_day_key_unproven`. A missing day declaration
+  reports `declared_type: null`; an unproven key reports `declared_key` and
+  asks the author to declare `key: [date_day]`. The same preconditions apply
+  to filled series and non-default calendar joins through another calendar's
+  temporal role.
 - With no authored `default` calendar, the **implicit calendar** fills a
   `default` query: a Gregorian day spine the engine generates in SQL, bucketed
   with the same truncation as the query's time column (calendar months,
@@ -1339,9 +1346,7 @@ including buckets without source rows.
 So the first bucket's label can come before `start`: a week
 that begins on the Monday before a mid-week `start`, or the month of a
 mid-month `start`. Only rows inside `[start, end)` count toward any
-bucket. When `date_day` is absent on a fill calendar, the calendar
-retains its original bucket-start bounds; a bucket that starts before `start`
-can therefore be absent even when it contains source rows.
+bucket.
 For the `date` expansion, offset-bearing bounds use the temporal role's zone.
 The series also keeps any populated bucket selected by the source
 filter, since packages do not distinguish physical `TIMESTAMP` from

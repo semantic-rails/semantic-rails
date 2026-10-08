@@ -144,15 +144,18 @@ def test_calendar_anchor_refuses_before_execution(calendar_id, column, declared_
             }.items()
         )
         assert f"declare `{column}` as a date" in str(refused.value)
+        if column == "date_day":
+            assert refused.value.details["reason"] == "calendar_day_key_unproven"
     finally:
         runtime.close()
 
 
-def test_unchanged_shop_calendar_matches_reference():
-    runtime = _runtime()
+@pytest.mark.parametrize("calendar_id", ["default", "fiscal"])
+def test_unchanged_shop_calendar_matches_reference(calendar_id):
+    runtime = _runtime(calendar_id)
     try:
         reference = runtime.adapter._db.conn.execute(REFERENCE).fetchall()
-        result = runtime.query(_query())
+        result = runtime.query(_query(calendar_id))
         assert result["status"] == "ok"
         assert [
             (datetime.fromisoformat(row[f"{ROLE}__week"]).date(), row["orders"])
@@ -184,11 +187,6 @@ def test_cross_calendar_join_refuses_an_undeclared_day(path):
                     resolve_repo_path("configs/semantic_rails/jaffle_shop")
                 )
                 plan = compile_query(config, Registry(config), _query("fiscal"))["logical_plan"]
-                assert _calendar_fill_binding(plan, runtime.config) == (
-                    "jaffle_calendar_fiscal",
-                    "week_start",
-                    None,
-                )
             with pytest.raises(SemanticLayerError) as refused:
                 if path == "runtime":
                     runtime.query(_query("fiscal"))
@@ -197,11 +195,60 @@ def test_cross_calendar_join_refuses_an_undeclared_day(path):
             execute.assert_not_called()
         assert refused.value.code == "REWRITE_NOT_SUPPORTED"
         assert refused.value.details == {
+            "reason": "calendar_day_key_unproven",
             "calendar_id": "fiscal",
             "column": "date_day",
             "declared_type": None,
         }
         assert "declare `date_day` as a date" in str(refused.value)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("key", [["date_id"], ["date_day", "date_id"], []])
+@pytest.mark.parametrize("path", ["runtime", "leaf_binding", "fill_binding", "forced_fill"])
+def test_calendar_binding_requires_the_declared_single_day_key(key, path):
+    runtime = _runtime("fiscal")
+    try:
+        config = runtime.config
+        plan = compile_query(config, Registry(config), _query("fiscal"))["logical_plan"]
+        changed = replace(
+            config,
+            entities=[
+                replace(row, key=key) if row.calendar_id == "fiscal" else row
+                for row in config.entities
+            ],
+        )
+        assert runtime.adapter._db.conn.execute(REFERENCE).fetchall() == EXPECTED
+        with patch.object(runtime.adapter, "query", wraps=runtime.adapter.query) as execute:
+            with pytest.raises(SemanticLayerError) as refused:
+                if path == "runtime":
+                    changed_runtime = Runtime.from_config(
+                        changed, source_path=resolve_repo_path("configs/semantic_rails/jaffle_shop")
+                    )
+                    changed_runtime.set_aggregate_routing(False)
+                    changed_runtime.set_adapter(runtime.adapter)
+                    try:
+                        changed_runtime.query(_query("fiscal"))
+                    finally:
+                        changed_runtime.close()
+                elif path == "leaf_binding":
+                    _leaf_calendar_binding(plan, changed)
+                elif path == "fill_binding":
+                    _calendar_fill_binding(plan, changed)
+                else:
+                    _calendar_fill_binding(
+                        replace(plan, time={**plan.time, "fill": False}), changed, force=True
+                    )
+            execute.assert_not_called()
+        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+        assert refused.value.details == {
+            "reason": "calendar_day_key_unproven",
+            "calendar_id": "fiscal",
+            "column": "date_day",
+            "declared_key": key,
+        }
+        assert "key: [date_day]" in str(refused.value)
     finally:
         runtime.close()
 
