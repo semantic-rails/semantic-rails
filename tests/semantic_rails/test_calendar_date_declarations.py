@@ -11,7 +11,13 @@ from semantic_rails.compiler_parts.sql_lowering import (
     _calendar_fill_binding,
     _leaf_calendar_binding,
 )
-from semantic_rails.config import load_package_config, resolve_repo_path
+from semantic_rails.config import (
+    _load_package_source,
+    _parse_package,
+    load_package_config,
+    resolve_repo_path,
+)
+from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.db import Database, DuckDBAdapter
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
@@ -44,9 +50,18 @@ def _query(calendar_id="default"):
     }
 
 
-def _runtime(calendar_id="default", column="week_start", declared_type="date"):
+def _runtime(
+    calendar_id="default", column="week_start", declared_type="date", *, missing_day=False
+):
     source = resolve_repo_path("configs/semantic_rails/jaffle_shop")
-    config = load_package_config(source)
+    if missing_day:
+        raw = _load_package_source(source)
+        model = raw["graph"]["entities"]["fiscal_calendar"]["model"]
+        raw["graph"]["entities"]["fiscal_calendar"]["key"] = ["date_id"]
+        del raw["models"][model]["times"]["date_day"]
+        config = _parse_package(normalize_package(raw), path=source)
+    else:
+        config = load_package_config(source)
     calendar = next(
         row for row in config.entities if row.kind == "time" and row.calendar_id == calendar_id
     )
@@ -76,6 +91,17 @@ def _runtime(calendar_id="default", column="week_start", declared_type="date"):
         FROM range(DATE '2024-05-01', DATE '2024-06-01', INTERVAL 1 DAY) AS days(d);
         CREATE TABLE jaffle_calendar_fiscal AS SELECT * FROM jaffle_calendar;
     """)
+    if missing_day:
+        adapter._db.conn.execute(f"ALTER TABLE {calendar.table} ADD COLUMN date_id BIGINT")
+        adapter._db.conn.execute(
+            f"UPDATE {calendar.table} SET date_id = date_diff('day', DATE '2024-05-01', date_day)"
+        )
+        adapter._db.conn.execute(
+            f"ALTER TABLE {calendar.table} ALTER COLUMN date_day SET DATA TYPE TIMESTAMP"
+        )
+        adapter._db.conn.execute(
+            f"UPDATE {calendar.table} SET date_day = date_day + INTERVAL '12 hours'"
+        )
     if declared_type == "timestamp":
         adapter._db.conn.execute(
             f"ALTER TABLE {calendar.table} ALTER COLUMN {column} SET DATA TYPE TIMESTAMP"
@@ -133,6 +159,49 @@ def test_unchanged_shop_calendar_matches_reference():
             for row in result["rows"]
         ] == reference
         assert reference == EXPECTED
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["runtime", "leaf_binding"])
+def test_cross_calendar_join_refuses_an_undeclared_day(path):
+    runtime = _runtime("fiscal", missing_day=True)
+    try:
+        assert runtime.adapter._db.conn.execute(REFERENCE).fetchall() == EXPECTED
+        calendar = next(row for row in runtime.config.entities if row.calendar_id == "fiscal")
+        assert calendar.key == ["date_id"]
+        assert not any(
+            row.entity == calendar.id and row.column == "date_day"
+            for row in runtime.config.dimensions
+        )
+        assert runtime.adapter._db.conn.execute(
+            "SELECT COUNT(*) = COUNT(DISTINCT date_id), MIN(date_day)::TIME "
+            "FROM jaffle_calendar_fiscal"
+        ).fetchone() == (True, datetime(2024, 5, 1, 12).time())
+        with patch.object(runtime.adapter, "query", wraps=runtime.adapter.query) as execute:
+            if path == "leaf_binding":
+                config = load_package_config(
+                    resolve_repo_path("configs/semantic_rails/jaffle_shop")
+                )
+                plan = compile_query(config, Registry(config), _query("fiscal"))["logical_plan"]
+                assert _calendar_fill_binding(plan, runtime.config) == (
+                    "jaffle_calendar_fiscal",
+                    "week_start",
+                    None,
+                )
+            with pytest.raises(SemanticLayerError) as refused:
+                if path == "runtime":
+                    runtime.query(_query("fiscal"))
+                else:
+                    _leaf_calendar_binding(plan, runtime.config)
+            execute.assert_not_called()
+        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+        assert refused.value.details == {
+            "calendar_id": "fiscal",
+            "column": "date_day",
+            "declared_type": None,
+        }
+        assert "declare `date_day` as a date" in str(refused.value)
     finally:
         runtime.close()
 

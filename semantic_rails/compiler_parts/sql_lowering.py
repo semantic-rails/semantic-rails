@@ -5301,9 +5301,23 @@ def _calendar_join_for_leaf(
 
 
 def _require_calendar_date_columns(
-    config: PackageConfig, calendar_entity_id: str, calendar_id: str, grain_column: str
+    config: PackageConfig,
+    calendar_entity_id: str,
+    calendar_id: str,
+    grain_column: str,
+    *,
+    require_day: bool,
 ) -> None:
     """Authored calendar anchors and their day join column must declare dates."""
+    if require_day and not any(
+        row.entity == calendar_entity_id and row.column == "date_day" for row in config.dimensions
+    ):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"Calendar '{calendar_id}' requires a declared date_day for its join; "
+            "declare `date_day` as a date",
+            details={"calendar_id": calendar_id, "column": "date_day", "declared_type": None},
+        )
     for dimension in config.dimensions:
         if dimension.entity != calendar_entity_id or dimension.column not in {
             grain_column,
@@ -5393,7 +5407,9 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
     )
     if grain_dim is None:
         return None
-    _require_calendar_date_columns(config, calendar_entity.id, requested_calendar, grain_column)
+    _require_calendar_date_columns(
+        config, calendar_entity.id, requested_calendar, grain_column, require_day=True
+    )
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(grain_dim.id)
     return calendar_entity.table, grain_dim.column, "date_day"
@@ -5455,7 +5471,9 @@ def _calendar_fill_binding(
             "REWRITE_NOT_SUPPORTED",
             f"time.fill requires calendar dimension '{calendar_column}' on '{calendar_entity.id}'",
         )
-    _require_calendar_date_columns(config, calendar_entity.id, requested_calendar, calendar_column)
+    _require_calendar_date_columns(
+        config, calendar_entity.id, requested_calendar, calendar_column, require_day=False
+    )
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(dimension.id)
     return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)
@@ -5528,10 +5546,9 @@ def _implicit_calendar_ctes(plan: LogicalPlan, config: PackageConfig) -> list[Sq
 
 
 def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, Any]) -> str | None:
-    """Return a DATE day column eligible for bounded day expansion.
+    """Return the calendar's declared date_day when both bounds are set, else None.
 
-    A timestamp day column may be zoned or unzoned; metadata cannot distinguish
-    the two, so its calendar predicate retains the original bucket bounds.
+    On None, _bounded_calendar_window keeps the raw bucket bounds.
     """
     if time.get("start") is None or time.get("end") is None:
         return None
@@ -5539,7 +5556,7 @@ def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, 
         (
             row
             for row in config.dimensions
-            if row.entity == bucket.entity and row.column == "date_day" and row.data_type == "date"
+            if row.entity == bucket.entity and row.column == "date_day"
         ),
         None,
     )

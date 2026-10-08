@@ -1306,7 +1306,9 @@ dense rows (for example, the inline `prior_period` LAG window in the
   `kind: date`. Other declared types refuse before execution with
   `REWRITE_NOT_SUPPORTED`; `details` names `calendar_id`, `column` and
   `declared_type`, and the message asks the author to declare that column as
-  a date. The same rule applies to non-default calendar grain bindings.
+  a date. A non-default calendar requested through another calendar's
+  temporal role must also declare `date_day` as a date for the join; a missing
+  declaration refuses with `declared_type: null`.
 - With no authored `default` calendar, the **implicit calendar** fills a
   `default` query: a Gregorian day spine the engine generates in SQL, bucketed
   with the same truncation as the query's time column (calendar months,
@@ -1337,11 +1339,9 @@ including buckets without source rows.
 So the first bucket's label can come before `start`: a week
 that begins on the Monday before a mid-week `start`, or the month of a
 mid-month `start`. Only rows inside `[start, end)` count toward any
-bucket. When `date_day` is declared as `timestamp` or absent, the calendar
+bucket. When `date_day` is absent on a fill calendar, the calendar
 retains its original bucket-start bounds; a bucket that starts before `start`
-can therefore be absent even when it contains source rows. Timestamp metadata
-does not distinguish timezone-aware from timezone-naive storage, so changing
-its bounds without a storage-type contract could shift empty calendar days.
+can therefore be absent even when it contains source rows.
 For the `date` expansion, offset-bearing bounds use the temporal role's zone.
 The series also keeps any populated bucket selected by the source
 filter, since packages do not distinguish physical `TIMESTAMP` from
