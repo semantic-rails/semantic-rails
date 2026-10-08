@@ -51,8 +51,8 @@ from .filter_checks import (
     _excluded_value_spans,
     _exclusion_matches,
     _filter_value_gaps,
+    _negative_filter_evidence,
     _positive_filter_evidence,
-    _query_has_negative_semantics,
     _where_clause_gaps,
 )
 from .generators import _target_focus_text
@@ -66,6 +66,7 @@ from .time_checks import (
     _subject_window_gaps,
     _time_window_gaps,
 )
+from .time_phrases import _overlaps, _time_cues
 from .time_windows import _time_window
 from .visibility import visible_object_ids
 
@@ -279,15 +280,25 @@ def intent_faithfulness_why(
     # so every exclusion clause must be inspected, not only the first one.
     negation_matches = _exclusion_matches(text)
     excluded_spans = _excluded_value_spans(text)
+    time_spans = []
+    if negation_matches:
+        window = _time_window(text, policy_context=query.get("policy_context"))
+        time_spans = [*_time_cues(text.lower()), *(span for span, _ in window.windows)]
     for negation_match in negation_matches:
         excluded_span = next(
             (span for span in excluded_spans if span[0] == negation_match.start("value")),
             negation_match.span("value"),
         )
         excluded_text = text[excluded_span[0] : excluded_span[1]].strip()
-        positive_filters = _positive_filter_evidence(runtime, query, excluded_text)
+        temporal_exclusion = _overlaps(excluded_span, time_spans)
+        # Query IR's positive window cannot represent a temporal exclusion.
+        positive_filters = (
+            [] if temporal_exclusion else _positive_filter_evidence(runtime, query, excluded_text)
+        )
         reversed_clause = bool(positive_filters)
-        negative_present = _query_has_negative_semantics(query)
+        negative_present = not temporal_exclusion and _negative_filter_evidence(
+            runtime, query, excluded_text
+        )
         # A matching positive predicate is still a reversal when an unrelated
         # (or even contradictory) negative predicate also happens to exist.
         if reversed_clause or not negative_present:
@@ -298,7 +309,7 @@ def intent_faithfulness_why(
                     message=(
                         "The excluded value is encoded by a positive filter, reversing the request."
                         if reversed_clause
-                        else "The question contains an exclusion, but the draft has no negative predicate."
+                        else "The draft does not prove a negative predicate on the excluded value."
                     ),
                     expected={"filter_polarity": "negative", "excluded_text": excluded_text},
                     actual={

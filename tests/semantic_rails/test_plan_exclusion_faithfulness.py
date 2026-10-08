@@ -11,6 +11,7 @@ import pytest
 
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
+from semantic_rails.planner.filter_checks import _negative_filter_evidence
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
@@ -103,9 +104,10 @@ def test_temporal_exclusion_is_not_realized_by_an_unrelated_negative_filter(
     [
         ("signups not from the store channel", "!=", "store", 3),
         ("signups not from the store channel", "NOT IN", ["store"], 3),
-        ("signups excluding store", "!=", "store", 3),
+        ("signups excluding web", "!=", "web", 3),
         ("signups excluding web", "!=", "store", 0),
         ("signups excluding partner", "!=", "store", 3),
+        ("signups excluding partner", "!=", "partner", 6),
     ],
 )
 def test_only_a_matching_negative_predicate_realizes_an_exclusion(
@@ -115,14 +117,15 @@ def test_only_a_matching_negative_predicate_realizes_an_exclusion(
     draft = {**_draft(), "where": [{"field": CHANNEL, "op": op, "value": value}]}
     _draft_plan(monkeypatch, draft)
     excluded = "store" if "store channel" in question else question.split()[-1]
+    matching = value == excluded or value == [excluded]
     reference = _reference(
         shop,
-        "SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel != 'store' "
-        f"AND channel != '{excluded}'",
+        f"SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel != '{excluded}'"
+        + (" AND channel != 'store'" if not matching else ""),
     )
     assert reference == expected
     payload = plan_payload(shop, intent=question, partial_query={"policy_context": NOW})
-    if excluded == "store":
+    if matching and excluded in {"store", "web"}:
         assert (
             intent_faithfulness_why(
                 shop, question=question, intent_ir=parse_intent(shop, question), query=draft
@@ -140,8 +143,26 @@ def test_only_a_matching_negative_predicate_realizes_an_exclusion(
         _assert_unrealized(payload)
 
 
-@pytest.mark.parametrize("phrase", ["June 2024", "in 2024", "last month", "today"])
-def test_temporal_exclusion_holds_even_when_a_catalog_value_matches(shop, monkeypatch, phrase):
+@pytest.mark.parametrize(
+    ("phrase", "start", "end", "expected"),
+    [
+        ("June 2024", "2024-06-01", "2024-07-01", 2),
+        ("in 2024", "2024-01-01", "2025-01-01", 1),
+        ("last month", "2024-06-01", "2024-07-01", 2),
+        ("today", "2024-07-05", "2024-07-06", 3),
+    ],
+)
+def test_temporal_exclusion_holds_even_when_a_catalog_value_matches(
+    shop, monkeypatch, phrase, start, end, expected
+):
+    assert (
+        _reference(
+            shop,
+            "SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel != 'store' "
+            f"AND NOT (signed_up_at >= TIMESTAMP '{start}' AND signed_up_at < TIMESTAMP '{end}')",
+        )
+        == expected
+    )
     domain = shop._config.value_domains[0]
     store = domain.values[0]
     shop._config = replace(
@@ -150,6 +171,7 @@ def test_temporal_exclusion_holds_even_when_a_catalog_value_matches(shop, monkey
             replace(domain, values=[replace(store, aliases=[phrase]), *domain.values[1:]])
         ],
     )
+    assert _negative_filter_evidence(shop, _draft(), phrase)
     _draft_plan(monkeypatch, _draft())
     payload = plan_payload(
         shop, intent=f"signups excluding {phrase}", partial_query={"policy_context": NOW}

@@ -384,8 +384,11 @@ A draft that validates can still leave out part of the question. `plan` returns
   holds.
 
 When a question has several exclusion clauses, `plan` checks each clause. A
-negative filter for one value does not make a later excluded value safe if the
-draft includes it.
+clause needs a negative predicate on its excluded value; an unrelated negative
+filter cannot realize it. Unknown or unproven value matches hold with
+`negation_unrealized`. A temporal exclusion such as "signups not in June 2024"
+also holds with `negation_unrealized`: the Query IR's positive time window cannot
+express that exclusion, even when the draft has other negative filters.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),

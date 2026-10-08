@@ -642,7 +642,10 @@ def test_positive_requested_value_cannot_be_excluded(
 
 def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapter) -> None:
     wrong = _query(where=[{"field": STORE, "op": "!=", "value": "Philadelphia"}])
-    assert _gap_kinds(adapter, "revenue excluding Brooklyn", wrong) == ["filter_values_unrealized"]
+    assert _gap_kinds(adapter, "revenue excluding Brooklyn", wrong) == [
+        "negation_unrealized",
+        "filter_values_unrealized",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -823,7 +826,7 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
             "revenue excluding Brooklyn; except New Orleans",
             [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]}],
             "v NOT IN ('Brooklyn')",
-            ["filter_values_unrealized"],
+            ["negation_unrealized", "filter_values_unrealized"],
             True,
         ),
         (
