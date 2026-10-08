@@ -361,15 +361,17 @@ def intent_faithfulness_why(
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
-    if (
-        read is not None
-        or not _time_window(question, policy_context=query.get("policy_context")).as_of
-    ):
-        # As-of cues no balance read consumes already hold as TIME_WINDOW_UNRESOLVED.
-        gaps.extend(
-            _stock_as_of_gaps(runtime._config, query)
-            or snapshot_day_gaps(runtime, question, query, partial_query)
+    # Unconsumed as-of cues have their own TIME_WINDOW_UNRESOLVED hold; the balance's
+    # independent completion/subject checks still apply, including to caller windows.
+    stock_gaps = (
+        _stock_as_of_gaps(runtime._config, query)
+        if (
+            read is not None
+            or not _time_window(question, policy_context=query.get("policy_context")).as_of
         )
+        else []
+    )
+    gaps.extend(stock_gaps or snapshot_day_gaps(runtime, question, query, partial_query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))

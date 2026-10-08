@@ -264,6 +264,8 @@ def test_time_words_without_one_day_stay_held(runtime: Runtime, intent: str) -> 
 
 @pytest.mark.parametrize(("intent", "start", "end"), [
     ("MRR today", "", ""),
+    ("MRR right now", "2026-10-05", "2026-10-06"),
+    ("MRR as of 2026-10-05", "2026-10-05", "2026-10-06"),
     ("What's our MRR?", "2026-10-05", "2026-10-06"),
     ("What's our MRR?", "2026-10-06", "2026-10-07"),
     ("What's our MRR?", "2026-10-04", "2026-10-06"),
