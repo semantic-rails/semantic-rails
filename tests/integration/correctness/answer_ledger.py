@@ -39,6 +39,7 @@ KINDS = {
     "answer": "query_matches_snapshot",
     "clarify": "validate_fails_with_code",
     "refuse": "validate_fails_with_code",
+    "error": "query_fails_with_code",
 }
 
 

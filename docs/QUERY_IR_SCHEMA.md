@@ -1300,6 +1300,10 @@ dense rows (for example, the inline `prior_period` LAG window in the
 
 ### Which calendar fills
 
+An ungrouped filled bounded series on the default calendar that comes back short is
+an error (`FILL_INCOMPLETE`) naming the periods, never an answer, unless metric filters,
+a query limit or result truncation can remove periods.
+
 - A calendar the package authors for the requested `calendar_id` always
   fills (the `default` one when the query names none).
 - With no authored `default` calendar, the **implicit calendar** fills a

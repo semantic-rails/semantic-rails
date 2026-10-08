@@ -7421,3 +7421,55 @@ tests:
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-01T00:00:00', seats: 1006}
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-08T00:00:00', seats: null}
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-15T00:00:00', seats: 0}
+  shop/filled_pair_at_calendar_boundary:
+    kind: query_fails_with_code
+    expect: error
+    code: FILL_INCOMPLETE
+    why: The authored default calendar ends before the second week; a missing comparison period is an execution error even when its value would be NULL.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
+      - tests/integration/correctness/shop/models/default_calendar.yml#model.calendar_id
+      - docs/QUERY_IR_SCHEMA.md#timeblock
+    tags: [clock, time-window, refusal]
+    variant: utc_authored
+    query:
+      select: [{expression: {measure: measure.shop.order_count}, as: orders}]
+      time:
+        temporal_role: temporal_role.shop_order_ordered_at
+        grain: week
+        start: '2024-12-30'
+        end: '2025-01-13'
+        fill: true
+      order_by: [{field: time, direction: ASC}]
+  shop/filled_pair_inside_calendar_coverage:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Both calendar weeks exist past the loaded data edge, so two dated NULL counts remain two present comparison periods.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
+      - tests/integration/correctness/shop/models/default_calendar.yml#model.calendar_id
+      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
+    tags: [clock, time-window, null-vs-zero]
+    variant: utc_authored
+    query:
+      select: [{expression: {measure: measure.shop.order_count}, as: orders}]
+      time:
+        temporal_role: temporal_role.shop_order_ordered_at
+        grain: week
+        start: '2024-12-16'
+        end: '2024-12-30'
+        fill: true
+      order_by: [{field: time, direction: ASC}]
+    reference_sql: |-
+      WITH periods(bucket) AS (VALUES (DATE '2024-12-16'), (DATE '2024-12-23')),
+      coverage AS (SELECT date_trunc('week', MIN(ordered_at)) lo,
+        date_trunc('week', MAX(CASE WHEN ordered_at <= CURRENT_TIMESTAMP THEN ordered_at END)) hi
+        FROM orders)
+      SELECT p.bucket, CASE WHEN p.bucket BETWEEN c.lo AND c.hi
+        THEN COUNT(DISTINCT o.order_id) END
+      FROM periods p CROSS JOIN coverage c LEFT JOIN orders o
+        ON o.ordered_at >= p.bucket AND o.ordered_at < p.bucket + INTERVAL '1 week'
+      GROUP BY p.bucket, c.lo, c.hi ORDER BY p.bucket
+    expected_rows:
+      - {temporal_role.shop_order_ordered_at__week: '2024-12-16T00:00:00', orders: null}
+      - {temporal_role.shop_order_ordered_at__week: '2024-12-23T00:00:00', orders: null}

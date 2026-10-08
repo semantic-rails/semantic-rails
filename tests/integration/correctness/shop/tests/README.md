@@ -43,6 +43,8 @@ An `answer` must be execute-ready and return the frozen rows. A `clarify` must
 withhold execution, explain the unresolved choice, and fail validation with the
 declared first error code. Its `clarify.options` lists exact option IDs in order;
 the question must be nonempty and every option's replacement `where` must validate.
+An `error` (`kind: query_fails_with_code`) validates successfully but execution raises
+the declared error code and withholds rows, such as an incomplete bounded fill.
 A `refuse` must withhold execution and report the declared first error code;
 a supplied draft must fail validation with that code too. Merely returning low
 confidence cannot satisfy either expectation.

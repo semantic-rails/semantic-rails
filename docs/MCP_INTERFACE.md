@@ -515,8 +515,9 @@ period may be "the prior week" or "the week prior". "Last week, up or down" comp
 the immediately preceding week. The draft selects the named governed flow metric when
 available, carries two completed periods at their own grain, fills empty periods and orders
 the dated rows ascending. Readiness requires `time.fill: true` on the final draft;
-a draft with missing or disabled fill is held. A pair is ready only for the exact draft shape
-it builds: caller-added filters, metric filters, limits, groupings or other time keys hold.
+a draft with missing or disabled fill is held. A filled bounded pair that comes back
+short is an error (`FILL_INCOMPLETE`) naming the periods, never an answer. A pair is ready
+only for the exact draft shape it builds: caller-added filters, metric filters, limits, groupings or other time keys hold.
 An explicitly requested grain must match
 the pair's unit. The comparison phrase is consumed whole. A stock, mixed units, two named
 windows, the same period last year, or a current partial period such as "this month vs the

@@ -567,3 +567,68 @@ def test_inline_comparison_selects_a_metric_synonym_first(accounts: Runtime) -> 
 
     row = _resolve_side(accounts._config, "signups", prefer_share_metric=False)
     assert row and row[0].id == "metric.shop.new_accounts" and not row[1]
+
+
+@pytest.mark.parametrize(
+    ("edge", "missing"),
+    [
+        ("2018-08-27", ["2018-08-27"]),
+        ("2018-08-20", ["2018-08-20", "2018-08-27"]),
+        ("2018-09-03", []),
+    ],
+)
+def test_order_pair_at_authored_calendar_edge(
+    tmp_path: Path, edge: str, missing: list[str]
+) -> None:
+    from semantic_rails.errors import SemanticLayerError
+
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
+    with duckdb.connect(str(package / "jaffle_shop.duckdb")) as connection:
+        # The loaded orders end before both compared periods.
+        connection.execute(f"DELETE FROM jaffle_calendar WHERE date_day >= DATE '{edge}'")
+        if not missing:
+            connection.execute("""
+                INSERT INTO jaffle_calendar
+                SELECT CAST(d AS DATE), CAST(date_trunc('week', d) AS DATE),
+                  CAST(date_trunc('month', d) AS DATE), CAST(date_trunc('quarter', d) AS DATE),
+                  CAST(date_trunc('year', d) AS DATE)
+                FROM generate_series(TIMESTAMP '2018-08-27', TIMESTAMP '2018-09-02', INTERVAL '1 day') g(d)
+                WHERE CAST(d AS DATE) NOT IN (SELECT date_day FROM jaffle_calendar)
+            """)
+        reference = connection.execute("""
+            WITH periods(bucket) AS (VALUES (DATE '2018-08-20'), (DATE '2018-08-27')),
+            coverage AS (SELECT date_trunc('week', MIN(ordered_at)) lo,
+              date_trunc('week', MAX(CASE WHEN ordered_at <= CURRENT_TIMESTAMP THEN ordered_at END)) hi
+              FROM jaffle_order)
+            SELECT p.bucket, CASE WHEN p.bucket BETWEEN c.lo AND c.hi
+              THEN COUNT(DISTINCT o.order_id) END
+            FROM periods p CROSS JOIN coverage c LEFT JOIN jaffle_order o
+              ON o.ordered_at >= p.bucket AND o.ordered_at < p.bucket + INTERVAL '1 week'
+            GROUP BY p.bucket, c.lo, c.hi ORDER BY p.bucket
+        """).fetchall()
+    runtime = Runtime.from_path(str(package))
+    try:
+        planned = plan_payload(
+            runtime, intent=ORDER_QUESTION, partial_query={"policy_context": {"now": "2018-09-03"}}
+        )
+        assert planned["status"] == "ok", planned
+        query = planned["best"]["query_ir"]
+        assert [(str(bucket), count) for bucket, count in reference] == [
+            ("2018-08-20", None),
+            ("2018-08-27", None),
+        ]
+        if missing:
+            with pytest.raises(SemanticLayerError) as exc:
+                runtime.query(query)
+            assert exc.value.code == "FILL_INCOMPLETE"
+            assert exc.value.details["missing_periods"] == missing
+        else:
+            result = runtime.query(query)
+            alias = query["select"][0]["as"]
+            key = f"{query['time']['temporal_role']}__week"
+            assert [(str(r[key])[:10], r[alias]) for r in typed_rows(result)] == [
+                (str(bucket), count) for bucket, count in reference
+            ]
+            assert "NO_DATA_IN_SCOPE" in {w["code"] for w in result["warnings"]}
+    finally:
+        runtime.close()

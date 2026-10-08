@@ -47,6 +47,12 @@ def test_engine_answer(request, backend, case_id, spec):
     runtime = request.getfixturevalue(f"{backend}_backend").runtimes[
         spec.get("variant", "utc_authored")
     ]
+    if spec["expect"] == "error":
+        assert runtime.validate(spec["query"])["ok"]
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.query(spec["query"])
+        assert raised.value.code == spec["code"]
+        return
     report = package_tools._run_test(runtime, case_id, spec)
     assert report["ok"], report
     if spec["expect"] == "answer":

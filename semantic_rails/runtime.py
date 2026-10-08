@@ -119,6 +119,7 @@ from .request_context import (
 )
 from .result_values import result_rows
 from .runtime_parts.disclosures import mixed_time_role_warnings
+from .runtime_parts.fill_gaps import enforce_fill_contract
 from .runtime_parts.filtered_series import filtered_series_warnings
 from .runtime_parts.responses import (
     TIME_SHAPE_WINDOW_TOTAL,
@@ -2892,6 +2893,12 @@ class Runtime:
             filtered_series_warnings(
                 self, compiled, payload, out["rows"], truncated=out["truncated"]
             )
+        )
+        enforce_fill_contract(
+            out["normalized_query"],
+            out["rows"],
+            truncated=out["truncated"],
+            zone=_time_zone(self._config, compiled),
         )
         # Data-sparseness diagnostic: when a query returns zero rows AND
         # the request applied a time filter, the most common cause is
