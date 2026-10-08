@@ -172,8 +172,8 @@ def test_multi_value_draft_executes_combined_values_per_group(runtime_factory) -
         ),
         (
             "revenue not Brooklyn by month",
-            "low_confidence",
-            [{"field": STORE, "op": "=", "value": "Brooklyn"}],
+            "ok",
+            [{"field": STORE, "op": "IS DISTINCT FROM", "value": "Brooklyn"}],
             [],
         ),
         (

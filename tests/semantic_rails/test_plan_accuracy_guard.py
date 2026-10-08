@@ -22,6 +22,7 @@ import yaml
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner._base import _named_metric
+from semantic_rails.planner.exclusions import exclusion_gaps
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.filter_checks import _filter_value_gaps
 from semantic_rails.planner.intent_ir import parse_intent
@@ -44,6 +45,8 @@ ITEM_REVENUE = {
     "expression": {"measure": "measure.jaffle.item_revenue_usd"},
 }
 YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
+# The exclusion that keeps rows with no recorded value; '!=' and 'NOT IN' drop them.
+KEEPS = "IS DISTINCT FROM"
 
 
 @pytest.fixture()
@@ -392,7 +395,7 @@ def test_every_named_value_must_reach_a_filter(adapter: SemanticLayerMCPAdapter)
         (
             [
                 {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
             ],
             "revenue excluding Brooklyn, including Philadelphia",
             True,
@@ -458,16 +461,16 @@ def test_nested_value_scopes_do_not_supply_query_level_membership(
     [
         ("item revenue for food products", PRODUCT_TYPE, "jaffle", "jaffle", "=", True),
         ("item revenue for food products", PRODUCT_TYPE, "jaffle", "Food", "=", False),
-        ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "jaffle", "!=", True),
-        ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "Food", "!=", False),
+        ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "jaffle", KEEPS, True),
+        ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "Food", KEEPS, False),
         ("revenue for Brooklyn", STORE, "Brooklyn", "Brooklyn", "=", True),
         ("revenue for Brooklyn", STORE, "Brooklyn", "brooklyn", "=", False),
-        ("revenue excluding Brooklyn", STORE, "Brooklyn", "Brooklyn", "!=", True),
-        ("revenue excluding Brooklyn", STORE, "Brooklyn", "brooklyn", "!=", False),
+        ("revenue excluding Brooklyn", STORE, "Brooklyn", "Brooklyn", KEEPS, True),
+        ("revenue excluding Brooklyn", STORE, "Brooklyn", "brooklyn", KEEPS, False),
         ("revenue for New Orleans", STORE, "New Orleans", "New Orleans", "=", True),
         ("revenue for New Orleans", STORE, "New Orleans", "New-Orleans", "=", False),
-        ("revenue excluding New Orleans", STORE, "New Orleans", "New Orleans", "!=", True),
-        ("revenue excluding New Orleans", STORE, "New Orleans", "New-Orleans", "!=", False),
+        ("revenue excluding New Orleans", STORE, "New Orleans", "New Orleans", KEEPS, True),
+        ("revenue excluding New Orleans", STORE, "New Orleans", "New-Orleans", KEEPS, False),
     ],
 )
 def test_named_question_values_require_executable_canonical_literals(
@@ -485,11 +488,11 @@ def test_named_question_values_require_executable_canonical_literals(
     )
     assert (gaps == []) is honored
     if not honored:
+        # An included value's gap lists it; an excluded value's gap lists its item.
         assert canonical in [
             value["value"]
             for gap in gaps
-            if gap["kind"] == "filter_values_unrealized"
-            for value in gap["expected"]["values"]
+            for value in gap["expected"].get("values", gap["expected"].get("items", []))
         ]
 
 
@@ -533,16 +536,16 @@ def test_named_question_values_require_executable_canonical_literals(
             "revenue excluding Brooklyn",
             STORE,
             "Brooklyn",
-            [{"field": STORE, "op": "!=", "value": "brooklyn"}],
-            "v != 'brooklyn'",
+            [{"field": STORE, "op": KEEPS, "value": "brooklyn"}],
+            "v IS DISTINCT FROM 'brooklyn'",
             ("Brooklyn", "Philadelphia"),
         ),
         (
             "revenue excluding Brooklyn",
             STORE,
             "Brooklyn",
-            [{"field": STORE, "op": "!=", "value": "Brooklyn"}],
-            "v != 'Brooklyn'",
+            [{"field": STORE, "op": KEEPS, "value": "Brooklyn"}],
+            "v IS DISTINCT FROM 'Brooklyn'",
             ("Brooklyn", "Philadelphia"),
         ),
         (
@@ -606,16 +609,22 @@ def test_question_alias_maps_to_canonical_but_draft_alias_is_not_literal() -> No
     value = runtime._config.value_domains[0].values[0]
     value.aliases.append("Big Apple")
     query = _query({"as": "revenue", "expression": {"measure": "measure.shop.revenue"}})
-    for text, op in (("revenue in Big Apple", "="), ("revenue excluding Big Apple", "!=")):
+    for text, op, check, kind in (
+        ("revenue in Big Apple", "=", _filter_value_gaps, "filter_values_unrealized"),
+        (
+            "revenue excluding Big Apple",
+            KEEPS,
+            lambda runtime, text, query: exclusion_gaps(runtime._config, text, query),
+            "negation_unrealized",
+        ),
+    ):
         canonical = {
             **query,
             "where": [{"field": "dimension.region", "op": op, "value": "New York"}],
         }
         alias = {**query, "where": [{"field": "dimension.region", "op": op, "value": "Big Apple"}]}
-        assert _filter_value_gaps(runtime, text, canonical) == []
-        assert [gap.kind for gap in _filter_value_gaps(runtime, text, alias)] == [
-            "filter_values_unrealized"
-        ]
+        assert check(runtime, text, canonical) == []
+        assert [gap.kind for gap in check(runtime, text, alias)] == [kind]
 
 
 @pytest.mark.parametrize("op", ["!=", "NOT IN"])
@@ -637,12 +646,21 @@ def test_positive_requested_value_cannot_be_excluded(
     assert _gap_kinds(adapter, "revenue by store for Philadelphia and Brooklyn", both) == [
         "filter_values_unrealized"
     ]
-    assert _gap_kinds(adapter, "revenue excluding Brooklyn", excluded) == []
+    # The exclusion drops Brooklyn, but also every order with no recorded store.
+    assert _gap_kinds(adapter, "revenue excluding Brooklyn", excluded) == ["negation_unrealized"]
+    kept = _query(where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}])
+    assert _gap_kinds(adapter, "revenue excluding Brooklyn", kept) == []
 
 
-def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapter) -> None:
-    wrong = _query(where=[{"field": STORE, "op": "!=", "value": "Philadelphia"}])
-    assert _gap_kinds(adapter, "revenue excluding Brooklyn", wrong) == ["filter_values_unrealized"]
+@pytest.mark.parametrize("op", [KEEPS, "!="])
+def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapter, op: str) -> None:
+    wrong = _query(where=[{"field": STORE, "op": op, "value": "Philadelphia"}])
+    [gap] = _gaps(adapter, "revenue excluding Brooklyn", wrong)
+    assert gap["kind"] == "negation_unrealized"
+    assert gap["actual"]["missing"] == ["Brooklyn"]
+    assert gap["actual"]["excess"] == [
+        {"path": "where[0]", "field": STORE, "value": "Philadelphia"}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -659,8 +677,11 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
         ("revenue for Brooklyn", "NOT IN", ["Brooklyn"], False),
         ("revenue for Brooklyn", "LIKE", "Brook%", False),
         ("revenue for Brooklyn", ">", "Brooklyn", False),
-        ("revenue excluding Brooklyn", "!=", "Brooklyn", True),
-        ("revenue excluding Brooklyn", "NOT IN", "Brooklyn", True),
+        ("revenue excluding Brooklyn", KEEPS, "Brooklyn", True),
+        # These drop every row with no recorded store too.
+        ("revenue excluding Brooklyn", "!=", "Brooklyn", False),
+        ("revenue excluding Brooklyn", "NOT IN", "Brooklyn", False),
+        ("revenue excluding Brooklyn", KEEPS, ["Brooklyn"], False),
         # Dropping Philadelphia too changes the total and removes its row.
         ("revenue excluding Brooklyn", "NOT IN", ["Brooklyn", "Philadelphia"], False),
         ("revenue excluding Brooklyn", "NOT IN", [], False),
@@ -690,7 +711,7 @@ def test_named_value_coverage_respects_operator_and_value_shape(
         assert kinds == []
     else:
         assert kinds
-        assert "filter_values_unrealized" in kinds or "negation_reversed" in kinds
+        assert {"filter_values_unrealized", "negation_reversed", "negation_unrealized"} & set(kinds)
 
 
 @pytest.mark.parametrize(
@@ -750,19 +771,28 @@ def test_explicit_inclusion_ends_exclusion_scope(
     adapter: SemanticLayerMCPAdapter, text: str
 ) -> None:
     wrong = _query(where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}])
-    assert _gap_kinds(adapter, text, wrong) == ["filter_values_unrealized"]
-    for exclusion in ({"op": "!=", "value": "Brooklyn"}, {"op": "NOT IN", "value": ["Brooklyn"]}):
-        correct = _query(
+    assert _gap_kinds(adapter, text, wrong) == ["negation_unrealized", "filter_values_unrealized"]
+    for exclusion, kinds in (
+        ({"op": KEEPS, "value": "Brooklyn"}, []),
+        ({"op": "!=", "value": "Brooklyn"}, ["negation_unrealized"]),
+        ({"op": "NOT IN", "value": ["Brooklyn"]}, ["negation_unrealized"]),
+    ):
+        draft = _query(
             where=[
                 {"field": STORE, **exclusion},
                 {"field": STORE, "op": "=", "value": "Philadelphia"},
             ]
         )
-        assert _gap_kinds(adapter, text, correct) == []
+        assert _gap_kinds(adapter, text, draft) == kinds
 
 
 def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAdapter) -> None:
-    draft = _query(where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}])
+    draft = _query(
+        where=[
+            {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
+            {"field": STORE, "op": KEEPS, "value": "Philadelphia"},
+        ]
+    )
     assert _gap_kinds(adapter, "revenue excluding Brooklyn, Philadelphia", draft) == []
 
 
@@ -772,88 +802,99 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
         (
             "revenue excluding Brooklyn; excluding New Orleans",
             [
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
                 {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
             ],
-            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
-            ["negation_reversed"],
+            "v IS DISTINCT FROM 'Brooklyn' AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_unrealized", "negation_reversed"],
             True,
         ),
         (
             "revenue excluding Brooklyn, excluding New Orleans",
             [
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
                 {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
             ],
-            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
-            ["negation_reversed"],
+            "v IS DISTINCT FROM 'Brooklyn' AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_unrealized", "negation_reversed"],
             True,
         ),
         (
             "revenue excluding Brooklyn and excluding New Orleans",
             [
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
                 {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
             ],
-            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
-            ["negation_reversed"],
+            "v IS DISTINCT FROM 'Brooklyn' AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_unrealized", "negation_reversed"],
             True,
         ),
         (
             "revenue excluding Brooklyn, excluding New Orleans, including Philadelphia",
             [
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
                 {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
             ],
-            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
+            "v IS DISTINCT FROM 'Brooklyn' AND v IN ('Philadelphia', 'New Orleans')",
             ["negation_reversed"],
             True,
         ),
         (
             "revenue for all stores but Brooklyn; excluding New Orleans",
             [
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
                 {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
             ],
-            "v NOT IN ('Brooklyn') AND v IN ('Philadelphia', 'New Orleans')",
-            ["negation_reversed"],
+            "v IS DISTINCT FROM 'Brooklyn' AND v IN ('Philadelphia', 'New Orleans')",
+            ["negation_unrealized", "negation_reversed"],
             True,
         ),
         (
             "revenue excluding Brooklyn; except New Orleans",
-            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]}],
-            "v NOT IN ('Brooklyn')",
-            ["filter_values_unrealized"],
+            [{"field": STORE, "op": KEEPS, "value": "Brooklyn"}],
+            "v IS DISTINCT FROM 'Brooklyn'",
+            ["negation_unrealized"],
             True,
         ),
         (
             "revenue excluding Brooklyn; without New Orleans, including Philadelphia",
             [
-                {"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]},
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
+                {"field": STORE, "op": KEEPS, "value": "New Orleans"},
                 {"field": STORE, "op": "=", "value": "Philadelphia"},
             ],
-            "v NOT IN ('Brooklyn', 'New Orleans') AND v = 'Philadelphia'",
+            "v IS DISTINCT FROM 'Brooklyn' AND v IS DISTINCT FROM 'New Orleans' "
+            "AND v = 'Philadelphia'",
             [],
             False,
         ),
         (
             "revenue for all stores but Brooklyn; excluding New Orleans",
-            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]}],
-            "v NOT IN ('Brooklyn', 'New Orleans')",
+            [
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
+                {"field": STORE, "op": KEEPS, "value": "New Orleans"},
+            ],
+            "v IS DISTINCT FROM 'Brooklyn' AND v IS DISTINCT FROM 'New Orleans'",
             [],
             False,
         ),
         (
             "revenue excluding Brooklyn and excluding New Orleans",
-            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]}],
-            "v NOT IN ('Brooklyn', 'New Orleans')",
+            [
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
+                {"field": STORE, "op": KEEPS, "value": "New Orleans"},
+            ],
+            "v IS DISTINCT FROM 'Brooklyn' AND v IS DISTINCT FROM 'New Orleans'",
             [],
             False,
         ),
         (
             "revenue excluding Brooklyn and New Orleans",
-            [{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "New Orleans"]}],
-            "v NOT IN ('Brooklyn', 'New Orleans')",
+            [
+                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
+                {"field": STORE, "op": KEEPS, "value": "New Orleans"},
+            ],
+            "v IS DISTINCT FROM 'Brooklyn' AND v IS DISTINCT FROM 'New Orleans'",
             [],
             False,
         ),
@@ -871,8 +912,8 @@ def test_each_exclusion_clause_is_checked_against_executable_predicates(
     draft = _query(where=where)
     gaps = _gaps(adapter, text, draft)
     assert [gap["kind"] for gap in gaps] == expected_gaps
-    if expected_gaps == ["negation_reversed"]:
-        assert gaps[0]["clause"] == "excluding New Orleans"
+    if "negation_reversed" in expected_gaps:
+        assert gaps[-1]["clause"] == "excluding New Orleans"
     _draft_plan(monkeypatch, draft)
     payload = adapter.call_tool("plan", {"intent": text, "detail": "query"})
     assert payload["best"]["validation_ok"] is True
@@ -913,7 +954,7 @@ def test_disjunctive_or_nested_exclusion_evidence_is_not_credited(
             }
         ]
     )
-    assert "filter_values_unrealized" in _gap_kinds(
+    assert "negation_unrealized" in _gap_kinds(
         adapter, "revenue excluding Brooklyn; excluding New Orleans", disjunction
     )
     nested = _query(
@@ -922,19 +963,19 @@ def test_disjunctive_or_nested_exclusion_evidence_is_not_credited(
             "expression": {
                 "kind": "scoped_aggregate",
                 "measure": "measure.jaffle.revenue_usd",
-                "where": [{"field": STORE, "op": "NOT IN", "value": ["New Orleans"]}],
+                "where": [{"field": STORE, "op": KEEPS, "value": "New Orleans"}],
             },
         },
-        where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]}],
+        where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}],
     )
-    assert "filter_values_unrealized" in _gap_kinds(
+    assert "negation_unrealized" in _gap_kinds(
         adapter, "revenue excluding Brooklyn; excluding New Orleans", nested
     )
 
 
 @pytest.mark.parametrize("text", ["revenue not including Brooklyn", "revenue not include Brooklyn"])
 def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, text: str) -> None:
-    excluded = _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}])
+    excluded = _query(where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}])
     included = _query(where=[{"field": STORE, "op": "=", "value": "Brooklyn"}])
     assert _gap_kinds(adapter, text, excluded) == []
     assert _gap_kinds(adapter, text, included) == ["negation_reversed"]
@@ -954,7 +995,7 @@ def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, 
         ),
         (
             "revenue for all stores except New Orleans",
-            _query(group_by=[STORE], where=[{"field": STORE, "op": "!=", "value": "New Orleans"}]),
+            _query(group_by=[STORE], where=[{"field": STORE, "op": KEEPS, "value": "New Orleans"}]),
         ),
         # Grouping by a value's dimension shows it as a row.
         ("revenue by product type, food vs drink", _query(ITEM_REVENUE, group_by=[PRODUCT_TYPE])),
@@ -1221,8 +1262,13 @@ BROOKLYN_REVENUE = {
         ),
         (
             "revenue excluding Brooklyn",
-            _query(where=[{"field": STORE, "op": "NOT IN", "value": "Brooklyn"}]),
+            _query(where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}]),
             "ok",
+        ),
+        (
+            "revenue excluding Brooklyn",
+            _query(where=[{"field": STORE, "op": "NOT IN", "value": "Brooklyn"}]),
+            "low_confidence",
         ),
         # One total may keep, or drop, only the values the question names.
         (
@@ -1253,14 +1299,14 @@ BROOKLYN_REVENUE = {
         ),
         (
             "revenue not include Brooklyn",
-            _query(where=[{"field": STORE, "op": "!=", "value": "Brooklyn"}]),
+            _query(where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}]),
             "ok",
         ),
         (
             "revenue excluding Brooklyn but include Philadelphia",
             _query(
                 where=[
-                    {"field": STORE, "op": "NOT IN", "value": ["Brooklyn"]},
+                    {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
                     {"field": STORE, "op": "=", "value": "Philadelphia"},
                 ]
             ),
