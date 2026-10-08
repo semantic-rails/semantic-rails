@@ -106,7 +106,7 @@ def _monthly_orders(workspace: Path) -> tuple[list[tuple[Any, Any]], str]:
 
 
 def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
-    # Without a calendar the implicit Gregorian one fills; the authored one takes over below.
+    # The implicit Gregorian calendar fills with or without the authored default calendar.
     implicit_rows, implicit_sql = _monthly_orders(workspace)
     assert "implicit_calendar" in implicit_sql
     server = create_architect_mcp_server(workspace_root=workspace)
@@ -144,7 +144,7 @@ def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
     )
     assert _model(workspace, "calendar")["calendar_id"] == "default"
     rows, sql = _monthly_orders(workspace)
-    assert "main_marts.dim_date" in sql and "implicit_calendar" not in sql
+    assert "main_marts.dim_date" not in sql and "implicit_calendar" in sql
     # Orders are loaded from January to March 2024: the months either side have no data.
     assert rows == [
         (date(2023, 12, 1), None),
@@ -208,7 +208,7 @@ def _add_fiscal_table(workspace: Path) -> None:
         conn.close()
 
 
-def test_a_second_calendar_buckets_by_its_own_months(workspace: Path) -> None:
+def test_a_second_calendar_is_refused_in_this_release(workspace: Path) -> None:
     _add_fiscal_table(workspace)
     project = _project(workspace)
     assert project.upsert_model(**_calendar()).report["ok"] is True
@@ -216,29 +216,29 @@ def test_a_second_calendar_buckets_by_its_own_months(workspace: Path) -> None:
     month = "temporal_role.shop_order_ordered_at__month"
     engine = Runtime.from_path(str(workspace / "shop"))
     try:
-        rows = engine.query(
-            {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
-                "time": {
-                    "temporal_role": "temporal_role.shop_order_ordered_at",
-                    "grain": "month",
-                    "start": "2024-01-06 00:00:00",
-                    "end": "2024-04-06 00:00:00",
-                    "fill": True,
-                    "calendar_id": "fiscal",
-                },
-                "order_by": [{"field": month}],
-            }
-        )["rows"]
+        with pytest.raises(SemanticLayerError) as refused:
+            engine.query(
+                {
+                    "version": 1,
+                    "select": [
+                        {"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}
+                    ],
+                    "time": {
+                        "temporal_role": "temporal_role.shop_order_ordered_at",
+                        "grain": "month",
+                        "start": "2024-01-06 00:00:00",
+                        "end": "2024-04-06 00:00:00",
+                        "fill": True,
+                        "calendar_id": "fiscal",
+                    },
+                    "order_by": [{"field": month}],
+                }
+            )
     finally:
         engine.close()
 
-    assert [(datetime.fromisoformat(row[month]).date(), row["orders"]) for row in rows] == [
-        (date(2024, 1, 6), 4),
-        (date(2024, 2, 6), 2),
-        (date(2024, 3, 6), 2),
-    ]
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
 def test_one_calendar_per_calendar_id(workspace: Path) -> None:
