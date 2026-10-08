@@ -401,12 +401,14 @@ Every item needs its own top-level `where` filter on its one dimension,
 `{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`, which keeps rows with no recorded
 value: "signups excluding web" counts the signups with no channel. `!=` and `NOT IN` drop
 those rows, so they don't realize an exclusion, and `plan` drafts `IS DISTINCT FROM` itself.
-No top-level filter may exclude a value the question doesn't name, and on an item's dimension
-a filter that keeps values may keep only values the question names; the caller's own
-`partial_query` filters may exclude or keep other values, but realize an item only by
-excluding that value. A filter inside a child group or a selected expression proves nothing,
-and a child group, compound condition or selected expression's filter that the caller's
-`partial_query` didn't supply is `excess` (`{"path": ..., "kind": "scoped"}`).
+Beside an exclusion the draft carries no other predicate, whether `plan` or the caller's
+`partial_query` supplied it. Each of these is `excess`: any other top-level filter, of any
+operator or field (`{"path", "field", "op", "value"}`); a child group, a compound condition
+or a selected expression's filter or condition (`{"path", "kind": "scoped"}`); a metric
+filter (`{"path", "kind": "metric_filter"}`); and a `time` bound other than the window the
+question states (`{"path": "time.start", "value"}`). A filter inside a child group or a
+selected expression never realizes an item. A question that both excludes and keeps values
+("web signups excluding Top", "excluding Brooklyn, including Philadelphia") holds for now.
 Query IR has no window complement, so a time exclusion ("signups not in June 2024") always
 holds, and its phrase is reported unresolved instead of being read as the window. A clause
 that misses any of this holds with `negation_unrealized`, or `negation_reversed` when every
