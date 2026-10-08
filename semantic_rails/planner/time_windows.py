@@ -290,6 +290,15 @@ def _as_of_cues(lowered: str, today: date) -> tuple[_AsOfCue, ...]:
 
 @lru_cache(maxsize=512)
 def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
+    from .patterns.period_pair import completed_period_pair  # noqa: WPS433
+
+    if pair := completed_period_pair(lowered, today=today):
+        return _TimeWindow(
+            bounds=pair.bounds,
+            relative_unit=pair.unit,
+            spans=(pair.span,),
+            windows=((pair.span, pair.bounds),),
+        )
     as_of = _as_of_cues(lowered, today)
     # Mask exactly the recorded spans: no parser may resolve part of an as-of phrase.
     interval_text = lowered

@@ -24,7 +24,8 @@ _NUMBER_WORD_ALT = "|".join(_NUMBER_WORDS)
 # prior-period lookback needs. Each lookbehind alternative is fixed
 # width as Python's ``re`` requires.
 _COMPARISON_GUARD = (
-    r"(?<!vs )(?<!vs\. )(?<!versus )(?<!compared to )(?<!relative to )(?<!than )(?<!since )"
+    r"(?<!vs )(?<!vs\. )(?<!versus )(?<!compared to )(?<!compared with )"
+    r"(?<!against )(?<!change from )(?<!relative to )(?<!than )(?<!since )"
 )
 
 # Relative trailing windows the planner resolves into the Query IR's

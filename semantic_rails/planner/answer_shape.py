@@ -144,7 +144,11 @@ def _answer_shape_why(
 
     values = [item for item in query.get("select") or [] if isinstance(item, dict)]
     split = bool(query.get("group_by")) or _grain_splits(_time_of(query))
-    compared = _query_contains_prior_period(runtime, query)
+    from .patterns.period_pair import completed_period_pair  # noqa: WPS433
+
+    compared = _query_contains_prior_period(runtime, query) or bool(
+        completed_period_pair(question, runtime=runtime, query=query)
+    )
     # (kind, the words asking, whether the draft's shape leaves them unanswered, message,
     # expected, hint kind, hint).
     shapes: list[tuple[str, list[str], bool, str, dict[str, Any], str, str]] = [

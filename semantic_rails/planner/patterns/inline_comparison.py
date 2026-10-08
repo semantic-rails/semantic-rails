@@ -21,6 +21,7 @@ from typing import Any
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
+    _named_metric,
     _preferred_measure,
     _preferred_metric,
     _resolved,
@@ -59,6 +60,8 @@ def _resolve_side(
     side_terms = _runtime_composition_terms(side_text)
     if not side_terms:
         return None
+    if named := _named_metric(config, side_text):
+        return named[0], False
     # Content tokens — strip the share/ratio hint words so the
     # "distinguishing" search uses just food / drink / email / etc.
     content = side_terms - _SHARE_HINT_TOKENS

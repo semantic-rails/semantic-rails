@@ -362,7 +362,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   entity lists them. "each" or "every" needs a row per item, a `group_by` or a grain that
   splits the rows (`each_unrealized`: "How many orders did each last week?"). "compare",
   "compared", "comparison", "versus", "vs", "against" or "up or down" needs a value to compare
-  with: a prior-period select. A second select (which may spell the first again), a
+  with: a prior-period select, or exactly two dated completed periods matching the whole
+  adjacent-period comparison phrase described below. A second select (which may spell the first again), a
   `group_by` or a time grain doesn't show what the question compares
   (`comparison_unrealized`: "Were orders up or down last week?", "Compare revenue by store
   last month", "Food revenue vs drink revenue last month"). Two or more questions for a
@@ -504,6 +505,20 @@ year") or a qualified ranking, and the unit of a window of several periods ("rev
 days" by day, "revenue by store in the last 3 months" by month, "revenue in 2016 and 2017" by
 year), are held: name the grain ("monthly revenue for the last 3 months by store", "revenue in
 2016 and 2017 by year") or follow the `remove_unasked_grouping` hint.
+
+Adjacent completed-period comparisons have a closed grammar: "last week compared with the
+week before", "last month vs the previous month", and "yesterday vs the day before".
+The connector may also be "compared to", "versus", "against" or "change from"; the second
+period may be "the prior week" or "the week prior". "Last week, up or down" compares with
+the immediately preceding week. The draft selects the named governed flow metric when
+available, carries two completed periods at their own grain, fills empty periods and orders
+the dated rows ascending. The comparison phrase is consumed whole. A stock, mixed units,
+two named windows, the same period last year, or a current partial period such as "this month
+vs the month before" stays held. Recognized pairs with mixed units, stocks or a partial
+current period carry `PLAN_INTENT_COVERAGE_GAP` inside `why.errors` and guidance to clarify;
+other unsupported comparisons retain the existing time or intent hold. An inline period
+shift preserves a stated window; a conflicting lookback stays
+held by the existing time-window validation rather than silently removing the window.
 
 A ranking (a draft with a `group_by`, a `limit` and a first `order_by` on a selected value) must
 also keep the top N of the entity the question ranks. It ranks the entity when the ranked noun

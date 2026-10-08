@@ -20,6 +20,7 @@ from .filtered_adoption_funnel import PATTERN as _FILTERED_ADOPTION_FUNNEL
 from .inline_comparison import PATTERN as _INLINE_COMPARISON
 from .inline_period_shift import PATTERN as _INLINE_PERIOD_SHIFT
 from .metric_by_dimension_rollup import PATTERN as _METRIC_BY_DIMENSION_ROLLUP
+from .period_pair import PATTERN as _PERIOD_PAIR
 from .qualified_metric_rollup import PATTERN as _QUALIFIED_METRIC_ROLLUP
 from .runtime_metric_arithmetic import PATTERN as _RUNTIME_METRIC_ARITHMETIC
 from .scoped_predicate_ratio import PATTERN as _SCOPED_PREDICATE_RATIO
@@ -30,6 +31,7 @@ from .scoped_predicate_ratio import PATTERN as _SCOPED_PREDICATE_RATIO
 PATTERNS: list[IntentPattern] = [
     _FILTERED_ADOPTION_FUNNEL,
     _QUALIFIED_METRIC_ROLLUP,
+    _PERIOD_PAIR,
     _INLINE_PERIOD_SHIFT,
     _DISTRIBUTION_ENTITY_VALUE,
     _SCOPED_PREDICATE_RATIO,

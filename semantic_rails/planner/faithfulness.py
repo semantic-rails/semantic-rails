@@ -254,7 +254,13 @@ def intent_faithfulness_why(
         )
 
     period_match = _PRIOR_PERIOD_RE.search(text)
-    if period_match and not _query_contains_prior_period(runtime, query):
+    from .patterns.period_pair import completed_period_pair  # noqa: WPS433
+
+    if (
+        period_match
+        and not _query_contains_prior_period(runtime, query)
+        and not completed_period_pair(text, runtime=runtime, query=query)
+    ):
         gaps.append(
             CoverageGap(
                 kind="prior_period_comparison_unrealized",
