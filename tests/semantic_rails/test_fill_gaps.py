@@ -49,21 +49,69 @@ def test_missing_periods(keys, missing):
         ["2018-08-20", "2018-08-27"],
         ["2018-08-20T00:00:00", "2018-08-27T00:00:00"],
         ["2018-08-20", "2018-08-27", "2018-08-27"],
-        ["2018-08-19", "2018-08-26"],  # Authored Sunday weeks have enough periods.
     ],
 )
-def test_present_null_rows_and_authored_bucket_conventions(keys):
+def test_present_null_rows(keys):
     enforce_fill_contract(
         QUERY, [{KEY: key, "value": None} for key in keys], truncated=False, zone="UTC"
     )
 
 
-@pytest.mark.parametrize("keys", [["2018-08-19"], [None, "2018-08-27"]])
-def test_non_gregorian_or_invalid_keys_report_period_counts(keys):
+@pytest.mark.parametrize(
+    "keys,missing,returned",
+    [
+        (["2018-08-19"], ["2018-08-20", "2018-08-27"], 1),
+        (["2018-08-19", "2018-08-26"], ["2018-08-20", "2018-08-27"], 2),  # Sunday weeks, short
+        (["2018-08-19", "2018-08-26", "2018-09-02"], ["2018-08-20", "2018-08-27"], 3),
+        ([None, "2018-08-27"], ["2018-08-20"], 1),
+        ([None, "2018-08-20", "2018-08-27"], [], 2),
+        (["2018-08-20", "2018-08-27", "2018-09-03"], [], 3),
+        (["not a date", "2018-08-20", "2018-08-27"], [], 2),
+    ],
+)
+def test_keys_other_than_the_computed_buckets_are_unverifiable(keys, missing, returned):
     with pytest.raises(SemanticLayerError) as raised:
         enforce_fill_contract(QUERY, [{KEY: key} for key in keys], truncated=False, zone="UTC")
+    assert raised.value.code == "FILL_INCOMPLETE"
+    assert raised.value.details["reason"] == "unverifiable"
+    assert raised.value.details["missing_periods"] == missing
     assert raised.value.details["expected_periods"] == 2
-    assert raised.value.details["returned_periods"] == 1
+    assert raised.value.details["returned_periods"] == returned
+
+
+@pytest.mark.parametrize(
+    "bounds,unverifiable",
+    [
+        ({"end": "2018-08-27T00:00:00.0000001"}, ["end"]),
+        ({"end": "2018-08-27T00:00:00,1234567+00:00"}, ["end"]),
+        ({"start": "2018-08-20T00:00:00.0000001"}, ["start"]),
+        ({"start": "2018-W34-1T00:00:00.0000001"}, ["start"]),
+        ({"start": "08/20/2018", "end": "next week"}, ["start", "end"]),
+    ],
+)
+def test_bounds_that_do_not_parse_exactly_refuse(bounds, unverifiable):
+    query = {"time": {**QUERY["time"], **bounds}}
+    # Even rows covering every bucket the truncated bounds would compute never answer.
+    rows = [{KEY: key} for key in ["2018-08-20", "2018-08-27"]]
+    with pytest.raises(SemanticLayerError) as raised:
+        enforce_fill_contract(query, rows, truncated=False, zone="UTC")
+    assert raised.value.code == "FILL_INCOMPLETE"
+    assert raised.value.details["reason"] == "unverifiable"
+    assert raised.value.details["bounds"] == unverifiable
+
+
+@pytest.mark.parametrize(
+    "end,keys",
+    [
+        ("2018-08-27T00:00:00.000001", ["2018-08-20", "2018-08-27"]),
+        ("2018-08-27T00:00:00.0000000", ["2018-08-20"]),
+    ],
+)
+def test_six_fractional_digits_are_exact(end, keys):
+    query = {"time": {**QUERY["time"], "end": end}}
+    enforce_fill_contract(query, [{KEY: key} for key in keys], truncated=False, zone="UTC")
+    with pytest.raises(SemanticLayerError):
+        enforce_fill_contract(query, [{KEY: key} for key in keys[:-1]], truncated=False, zone="UTC")
 
 
 @pytest.mark.parametrize(

@@ -81,6 +81,79 @@ def test_pair_checks_calendar_presence_against_independent_spine(calendar_runtim
         assert "NO_DATA_IN_SCOPE" in {w["code"] for w in result["warnings"]}
 
 
+def _weekly(start: str, end: str) -> dict:
+    return {
+        "select": [{"as": "orders", "expression": {"measure": "measure.shop.order_count"}}],
+        "time": {"temporal_role": ROLE, "grain": "week", "start": start, "end": end, "fill": True},
+        "order_by": [{"field": "time", "direction": "ASC"}],
+    }
+
+
+def _refused(runtime, query) -> dict:
+    result = SemanticLayerMCPAdapter(runtime).call_tool("execute", {"query": query, "mode": "run"})
+    assert result["status"] == "error" and not result["ok"], result
+    assert not result.get("rows"), result
+    with pytest.raises(SemanticLayerError) as exc:
+        runtime.query(query)
+    assert exc.value.code == "FILL_INCOMPLETE"
+    return exc.value.details
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("edge", ["2018-08-27", "2018-09-03"], ids=["short", "covered"])
+def test_sub_microsecond_end_never_answers(calendar_runtime, edge):
+    runtime = calendar_runtime(
+        "utc_authored", CALENDAR + f"DELETE FROM dim_date WHERE date_day >= DATE '{edge}'"
+    )
+    # The end keeps a tenth of a microsecond of August 27, so both weeks are required.
+    reference = [(str(bucket)[:10], count) for bucket, count in _rows(runtime, REFERENCE)]
+    assert reference == [("2018-08-20", None), ("2018-08-27", None)]
+    details = _refused(runtime, _weekly("2018-08-20", "2018-08-27T00:00:00.0000001"))
+    assert details["reason"] == "unverifiable" and details["bounds"] == ["end"]
+
+
+SUNDAY_CALENDAR = """
+DELETE FROM dim_date;
+INSERT INTO dim_date
+SELECT CAST(d AS DATE),
+  CAST(date_trunc('week', d + INTERVAL '1 day') - INTERVAL '1 day' AS DATE),
+  CAST(date_trunc('month', d) AS DATE), CAST(date_trunc('quarter', d) AS DATE),
+  CAST(date_trunc('year', d) AS DATE)
+FROM generate_series(TIMESTAMP '2018-08-19', TIMESTAMP '2018-09-08', INTERVAL '1 day') g(d);
+"""
+SUNDAY_REFERENCE = """
+WITH periods(bucket) AS (
+  VALUES (DATE '2018-08-19'), (DATE '2018-08-26'), (DATE '2018-09-02')),
+coverage AS (SELECT
+  date_trunc('week', MIN(ordered_at) + INTERVAL '1 day') - INTERVAL '1 day' lo,
+  date_trunc('week', MAX(CASE WHEN ordered_at <= CURRENT_TIMESTAMP THEN ordered_at END)
+    + INTERVAL '1 day') - INTERVAL '1 day' hi
+  FROM orders)
+SELECT p.bucket, CASE WHEN p.bucket BETWEEN c.lo AND c.hi
+  THEN COUNT(DISTINCT o.order_id) END
+FROM periods p CROSS JOIN coverage c LEFT JOIN orders o
+  ON o.ordered_at >= p.bucket AND o.ordered_at < p.bucket + INTERVAL '1 week'
+  AND o.ordered_at >= TIMESTAMP '2018-08-20' AND o.ordered_at < TIMESTAMP '2018-09-03'
+GROUP BY p.bucket, c.lo, c.hi ORDER BY p.bucket
+"""
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize(
+    "edge,returned", [("2018-09-02", 2), ("2018-09-09", 3)], ids=["short", "complete"]
+)
+def test_authored_sunday_weeks_are_unverifiable(calendar_runtime, edge, returned):
+    runtime = calendar_runtime(
+        "utc_authored", SUNDAY_CALENDAR + f"DELETE FROM dim_date WHERE date_day >= DATE '{edge}'"
+    )
+    reference = [(str(bucket)[:10], count) for bucket, count in _rows(runtime, SUNDAY_REFERENCE)]
+    assert reference == [("2018-08-19", None), ("2018-08-26", None), ("2018-09-02", None)]
+    # Even the complete three-week answer refuses: Monday buckets cannot prove Sunday ones.
+    details = _refused(runtime, _weekly("2018-08-20", "2018-09-03"))
+    assert details["reason"] == "unverifiable"
+    assert (details["expected_periods"], details["returned_periods"]) == (2, returned)
+
+
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize(
     "addition",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from datetime import time as clock_time
 from typing import Any
@@ -9,6 +10,9 @@ from zoneinfo import ZoneInfo
 
 from ..ast import _floor_period, _shift_period
 from ..errors import SemanticLayerError
+
+# ``datetime`` keeps six fractional digits and silently drops the rest.
+_FRACTION = re.compile(r"[.,](\d+)")
 
 
 def _local_datetime(value: Any, zone: str) -> datetime | None:
@@ -24,6 +28,12 @@ def _local_datetime(value: Any, zone: str) -> datetime | None:
     return datetime.combine(value, clock_time.min) if isinstance(value, date) else None
 
 
+def _exact_bound(value: Any, zone: str) -> datetime | None:
+    if isinstance(value, str) and any(d[6:].strip("0") for d in _FRACTION.findall(value)):
+        return None
+    return _local_datetime(value, zone)
+
+
 def _period_date(value: Any, zone: str) -> date | None:
     stamp = _local_datetime(value, zone)
     return stamp.date() if stamp is not None else None
@@ -32,10 +42,10 @@ def _period_date(value: Any, zone: str) -> date | None:
 def enforce_fill_contract(
     query: dict[str, Any], rows: list[dict[str, Any]], *, truncated: bool, zone: str
 ) -> None:
-    """Refuse incomplete fills; NULL metric values still constitute present rows.
+    """Return only when the period keys are exactly the computed buckets.
 
-    A different authored bucket convention uses distinct-period counts instead of
-    inventing Gregorian labels for missing authored periods.
+    NULL metric values still constitute present rows. Bounds that do not parse exactly
+    and keys outside the computed buckets (another bucket anchor, an invalid key) refuse.
     """
     time = query.get("time") or {}
     if (
@@ -48,32 +58,40 @@ def enforce_fill_contract(
         or truncated
     ):
         return
-    start = _period_date(time["start"], zone)
-    end = _local_datetime(time["end"], zone)
+    start = _exact_bound(time["start"], zone)
+    end = _exact_bound(time["end"], zone)
     if start is None or end is None:
-        return  # Query normalization owns validity of the bounds.
+        raise SemanticLayerError(
+            "FILL_INCOMPLETE",
+            "A filled bounded series could not be proved complete; send start and end as "
+            "ISO dates or datetimes with at most six fractional-second digits",
+            details={
+                "calendar": "default",
+                "reason": "unverifiable",
+                "bounds": [name for name, at in (("start", start), ("end", end)) if at is None],
+            },
+        )
     expected = set()
-    bucket = _floor_period(start, time["grain"])
+    bucket = _floor_period(start.date(), time["grain"])
     while datetime.combine(bucket, clock_time.min) < end:
         expected.add(bucket)
         bucket = _shift_period(bucket, time["grain"], 1)
     key = f"{time['temporal_role']}__{time['grain']}"
     returned = {_period_date(row.get(key), zone) for row in rows}
-    missing = expected - returned
+    if returned == expected:
+        return
     details: dict[str, Any] = {
         "calendar": "default",
-        "missing_periods": [period.isoformat() for period in sorted(missing)],
+        "missing_periods": [period.isoformat() for period in sorted(expected - returned)],
         "hint": f"extend the authored calendar through {time['end']}",
     }
+    message = "A filled bounded series returned incomplete periods; " + details["hint"]
     if not returned <= expected:
-        details.update(expected_periods=len(expected), returned_periods=len(returned - {None}))
-        # Invalid keys cannot establish row presence; alternative calendar labels can.
-        if None not in returned and len(returned) == len(expected):
-            return
-    elif not missing:
-        return
-    raise SemanticLayerError(
-        "FILL_INCOMPLETE",
-        "A filled bounded series returned incomplete periods; " + details["hint"],
-        details=details,
-    )
+        details.update(
+            reason="unverifiable",
+            expected_periods=len(expected),
+            returned_periods=len(returned - {None}),
+            hint=f"the returned periods are not the computed {time['grain']} buckets",
+        )
+        message = "A filled bounded series could not be proved complete; " + details["hint"]
+    raise SemanticLayerError("FILL_INCOMPLETE", message, details=details)
