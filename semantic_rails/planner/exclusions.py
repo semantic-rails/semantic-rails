@@ -319,35 +319,28 @@ def excluded_time_spans(lowered: str, time_spans: list[Span]) -> list[Span]:
     )
 
 
-def exclusion_words(text: str) -> list[Span]:
-    """Where each exclusion marker ("excluding", "other than") and each separator of its list
-    ("as well as") sits: words the exclusion check accounts for."""
-
+def _question_regions(text: str) -> list[_Region]:
     from .time_windows import _time_window  # noqa: WPS433 - time_windows reads this module
 
     lowered = str(text or "").lower()
     if not _markers(lowered):
         return []
     spans = list(_time_window(str(text or "")).spans)
-    return sorted(
-        span
-        for region in _regions(lowered, _tokenize(lowered), spans)
-        for span in (region.marker, *region.separators)
-    )
+    return _regions(lowered, _tokenize(lowered), spans)
+
+
+def exclusion_words(text: str) -> list[Span]:
+    """Where each exclusion marker ("excluding", "other than") and each separator of its list
+    ("as well as") sits: words the exclusion check accounts for."""
+
+    regions = _question_regions(text)
+    return sorted(span for region in regions for span in (region.marker, *region.separators))
 
 
 def exclusion_regions(text: str) -> list[Span]:
     """Where each exclusion clause sits, from its marker to its end."""
 
-    from .time_windows import _time_window  # noqa: WPS433 - time_windows reads this module
-
-    lowered = str(text or "").lower()
-    if not _markers(lowered):
-        return []
-    spans = list(_time_window(str(text or "")).spans)
-    return [
-        (region.marker[0], region.end) for region in _regions(lowered, _tokenize(lowered), spans)
-    ]
+    return [(region.marker[0], region.end) for region in _question_regions(text)]
 
 
 def _value_names(config: Any) -> Names:
@@ -439,7 +432,7 @@ def exclusion_clauses(
     return clauses
 
 
-def declared_values(config: Any, *, limit: int = 25) -> dict[str, list[Any]]:
+def _declared_values(config: Any, *, limit: int = 25) -> dict[str, list[Any]]:
     """Each dimension's declared values (at most ``limit`` each), for a gap to list."""
 
     out: dict[str, list[Any]] = {}
@@ -535,7 +528,7 @@ def exclusion_gaps(
         query,
         caller=caller,
         positive=_positive_values(config, text, clauses),
-        valid_values=declared_values(config),
+        valid_values=_declared_values(config),
     )
 
 
@@ -672,8 +665,8 @@ def _clause_gap(
         message=(
             "The excluded value is encoded by a positive filter, reversing the request."
             if positive
-            else "The draft doesn't drop exactly what the exclusion names, keeping rows with no "
-            "recorded value."
+            else "The draft doesn't exclude exactly what the exclusion names, each value with "
+            "a filter that keeps rows with no recorded value."
         ),
         expected=expected,
         actual={"where": where, **report, "excess": excess},
@@ -684,7 +677,6 @@ def _clause_gap(
 __all__ = [
     "ExcludedItem",
     "ExclusionClause",
-    "declared_values",
     "excluded_time_spans",
     "exclusion_clauses",
     "exclusion_gaps",
