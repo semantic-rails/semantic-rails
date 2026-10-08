@@ -73,7 +73,8 @@ def enforce_fill_contract(
         )
     expected = set()
     bucket = _floor_period(start.date(), time["grain"])
-    while datetime.combine(bucket, clock_time.min) < end:
+    # Buckets intersecting [start, end); an empty window intersects none.
+    while start < end and datetime.combine(bucket, clock_time.min) < end:
         expected.add(bucket)
         bucket = _shift_period(bucket, time["grain"], 1)
     key = f"{time['temporal_role']}__{time['grain']}"

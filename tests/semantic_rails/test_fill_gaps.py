@@ -148,6 +148,15 @@ def test_other_grains_and_partial_bounds(grain, start, end, keys):
         enforce_fill_contract(query, [{f"{ROLE}__{grain}": keys[0]}], truncated=False, zone="UTC")
 
 
+@pytest.mark.parametrize("end", ["2018-08-20T12:00:00", "2018-08-20T08:00:00"])
+def test_an_empty_window_requires_no_periods(end):
+    query = {"time": {**QUERY["time"], "start": "2018-08-20T12:00:00", "end": end}}
+    enforce_fill_contract(query, [], truncated=False, zone="UTC")
+    with pytest.raises(SemanticLayerError) as raised:
+        enforce_fill_contract(query, [{KEY: "2018-08-20"}], truncated=False, zone="UTC")
+    assert raised.value.details["reason"] == "unverifiable"
+
+
 def test_aware_keys_use_the_role_zone():
     enforce_fill_contract(
         QUERY,
