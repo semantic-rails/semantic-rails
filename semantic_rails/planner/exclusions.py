@@ -6,7 +6,7 @@ A marker from a closed list ("excluding", "except", "without", "not", "but not",
 ``lead? item (separator lead? item)*``. An item is one time phrase the time reader found, one
 quoted string, or one declared value name (its value, label or alias, longest first); any other
 word in an item's place is an ``unknown`` item. The list ends at the first token that is
-neither an item nor a separator. A time phrase that a time word introduces after it
+neither an item nor a separator. The first time phrase after it with only words between
 ("excluding web in June 2024") stays a positive window; every other value, quoted or time
 mention up to the clause's end (the next marker, an "including", or the end of the question)
 is an ``unknown`` item, and a clause with no item gets one.
@@ -50,13 +50,6 @@ _WEEKDAYS = frozenset(
     }
 )
 _LEADS = frozenset({"in", "on", "for", "during", "from", "the", *_WEEKDAYS})
-# The words that introduce a positive window after the list ("excluding web in June 2024").
-_TIME_LEADS = frozenset(
-    {
-        *("in", "on", "for", "during", "from", "over", "since", "between", "through"),
-        *("throughout", "within", "until", "till", "before", "after", "at", "of", "the"),
-    }
-)
 
 Span = tuple[int, int]
 Names = dict[str, list[tuple[tuple[str, ...], dict[str, tuple[Any, ...]]]]]
@@ -267,20 +260,15 @@ class _Lists:
 def _trailing_window(
     tokens: list[_Token], index: int, limit: int, time_spans: list[Span]
 ) -> Span | None:
-    """A time phrase a time word introduces after the list, with only words between."""
+    """The first time phrase after the list, with only words between ("excluding web in June
+    2024", "not from Brooklyn last month"); a separator or a mark first means there is none."""
 
     starts = {start: (start, end) for start, end in time_spans}
     while index < len(tokens) and tokens[index].start < limit:
         token = tokens[index]
-        if token.text in _TIME_LEADS:
-            while index < len(tokens) and tokens[index].text in _TIME_LEADS:
-                if tokens[index].start in starts:
-                    return starts[tokens[index].start]
-                index += 1
-            if index < len(tokens) and tokens[index].start in starts:
-                return starts[tokens[index].start]
-            continue
-        if token.start in starts or _separator_at(tokens, index) or not _word(token):
+        if token.start in starts:
+            return starts[token.start]
+        if _separator_at(tokens, index) or not _word(token):
             return None
         index += 1
     return None
