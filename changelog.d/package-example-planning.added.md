@@ -1,3 +1,3 @@
-- Plan answers fully matched package example questions with their validated authored
-  queries, supports proven count and time substitutions, and asks for clarification
-  when several visible examples match.
+- Plan answers package example questions asked exactly (or with a different top-N count
+  equal to the authored limit) with their validated authored queries, and asks for
+  clarification when several visible examples match.

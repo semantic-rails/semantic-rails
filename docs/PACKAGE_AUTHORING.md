@@ -2463,24 +2463,22 @@ metrics often span entities.
 
 ## Examples and tests
 
-Examples also teach `plan` the package's own questions. A complete normalized
-match (contractions expanded, lowercase, other punctuation read as a space,
-regular plurals singular, and whitespace collapsed) uses the authored Query IR
-with pattern `package_example`. A number keeps its sign, decimal point and
-separators and must match exactly: `2.5` is not `25`, `9.0` is not `90` or `9`,
-and `-5` is not `5`. The author's groupings, filters, ordering and limit count
-as requested, and the whole matched question is recorded as a consumed span.
-The query still passes the normal validation and caller visibility checks.
+Examples also teach `plan` the package's own questions. An example answers its
+exact question with the authored Query IR and pattern `package_example`. Words,
+numbers and symbols compare exactly; case, sentence punctuation (`. , ; : ? ! '
+" ( ) -` and curly quotes), contractions, regular plurals and whitespace are set
+aside. A number keeps its sign, decimal point and separators: `2.5` is not
+`25`, `9.0` is not `90` or `9`, and `-5` is not `5`. Any other mark is its own
+word, so "above 5%", "above $5" and "above 5" are three different questions.
+The author's groupings, filters, ordering and limit count as requested, and the
+whole matched question is recorded as a consumed span. The query still passes
+the normal validation and caller visibility checks.
 
-A question may change one count when it equals the example's `limit`, one time
-phrase, or both. A time phrase is a slot only when the example's phrase resolves
-to its query's window and that window is exactly one complete bucket of the
-query's `grain` on the default calendar (one past day for `grain: day`, one past
-month for `grain: month`). The question's phrase must then also resolve to one
-complete bucket of that grain: from a "yesterday" example, "on 2026-09-30" is a
-slot, while "last 7 days", "this week", "last month" and "today" are not. The
-query keeps every authored time key, including `grain`; only the window bounds
-change. Every other word must match, and there is no fuzzy matching. Several
+An example also answers the same question with a different top-N count when the
+count in its question equals the query's `limit`; only `limit` changes. Any
+other question gets normal planning: an example for "Revenue on 2026-09-30" or
+"yesterday" never answers another day, and the authored `time` block is never
+edited. There is no fuzzy matching. Several
 valid, visible examples matching the same question require clarification with
 their IDs. Invalid examples fall through to normal planning with their IDs in
 `why.details.invalid_examples`; examples referring to hidden objects, in a value

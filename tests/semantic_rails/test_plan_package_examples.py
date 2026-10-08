@@ -486,6 +486,7 @@ _LAST_MONTH = {
     "range": {"last": {"unit": "month", "value": 1}},
 }
 
+
 @pytest.mark.parametrize(
     "time,authored,asked",
     [
