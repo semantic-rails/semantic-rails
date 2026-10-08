@@ -823,7 +823,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve = sub.add_parser(
         "serve",
-        description="Start the local HTTP API server (foreground/blocking) on --host:--port.",
+        description="Start the local HTTP API and Streamable HTTP /mcp server (foreground/blocking) on --host:--port.",
     )
     _add_package_or_path_args(p_serve, package_choices)
     p_serve.add_argument(

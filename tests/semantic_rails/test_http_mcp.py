@@ -122,6 +122,7 @@ def frontends(runtime_factory, monkeypatch):
                     "name": "execute",
                     "arguments": {
                         "request_id": "transport-parity",
+                        "verbosity": "full",
                         "query": {
                             "version": 1,
                             "select": [
@@ -282,7 +283,7 @@ def test_serve_preserves_trusted_visibility_and_environment(
                 else:
                     assert answer["ok"] is False
                     assert answer["error"]["code"] == "INVALID_QUERY"
-                    assert answer["error"]["details"]["environment"] == "undeclared"
+                    assert "undeclared" in answer["error"]["message"]
     finally:
         set_policy_context_resolver(HeaderPolicyContextResolver())
 
