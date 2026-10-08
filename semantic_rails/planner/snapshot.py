@@ -18,10 +18,11 @@ from datetime import date, timedelta
 from typing import Any
 
 from ..expressions import AggregateExpr
-from ._base import _object_by_id, _semantic_token
+from ._base import _object_by_id, _said_name, _semantic_token
 from .coverage import (
     _COMPARISON_PHRASE_RE,
     _COMPARISON_WORDS,
+    _TIME_FRAMING_WORDS,
     CoverageGap,
     _coverage_why,
     _query_contains_prior_period,
@@ -30,7 +31,7 @@ from .coverage import (
 from .generators import _target_focus_text
 from .grouping_checks import _declared_name_spans
 from .patterns.metric_by_dimension_rollup import _governed_target
-from .time_checks import _multi_series_stocks, _window_days
+from .time_checks import _multi_series_stocks, _stock_as_of_gaps, _window_days
 from .time_reference import time_timezone
 from .time_windows import _RANGE_END_UNITS, _time_window
 from .unasked_groupings import _names_grain
@@ -38,6 +39,16 @@ from .unasked_groupings import _names_grain
 _DAY = timedelta(days=1)
 _LAST_DAY = {"range": {"last": {"unit": "day", "value": 1}}}
 _PLAIN_SELECT = frozenset({"measure", "metric", "aggregation"})
+_UNRESOLVED_TIME_WORDS = _TIME_FRAMING_WORDS | {
+    "since",
+    "history",
+    "historical",
+    "lifetime",
+    "peak",
+    "trend",
+    "trends",
+    "trending",
+}
 
 
 @dataclass(frozen=True)
@@ -206,6 +217,8 @@ def _expected_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read 
     if (cue is None and not window.spans) or (
         cue is not None and cue.kind == "latest_complete_day"
     ):
+        if cue is None and _unread_time_words(question, window.spans):
+            return None
         time = {"temporal_role": balance.clock, "grain": "day", **_LAST_DAY}
         said = f"'{phrase}' is read as" if phrase else "the question names no day, so it is read on"
         reading = f"{balance.label} is a balance: {said} {last_complete}, the last complete day."
@@ -239,6 +252,16 @@ def _expected_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read 
     return _Read(balance, day, time, window.spans, source, reading)
 
 
+def _unread_time_words(question: str, spans: tuple[tuple[int, int], ...]) -> bool:
+    """Whether a temporal word lies outside the question's resolved time spans."""
+
+    return any(
+        match.group() in _UNRESOLVED_TIME_WORDS
+        and not any(low <= match.start() and match.end() <= high for low, high in spans)
+        for match in re.finditer(r"[^\W_]+", question.lower())
+    )
+
+
 def _days(bounds: dict[str, Any], clock: str) -> tuple[date, date] | None:
     """The first day a window reads and the day after it, in the clock's zone, or None."""
 
@@ -265,13 +288,17 @@ def _day_dimension(config: Any, clock: str) -> str | None:
     return str(row.id) if row is not None and row.data_type == "date" else None
 
 
-def _governed(config: Any, question: str, query: dict[str, Any]) -> dict[str, Any]:
+def _governed(
+    config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> dict[str, Any]:
     """A building-block stock measure answers with its governed metric once read on the clock.
 
     The rule ``metric_by_dimension_rollup`` applies when a draft's time is on the metric's clock;
-    a balance read now has that time block.
+    a balance read now has that time block. A caller's select is never rewritten.
     """
 
+    if "select" in (partial_query or {}):
+        return query
     metric = _governed_target(config, _target_focus_text(question) or question, query)
     if metric is None or metric.temporal_role != _time_block(query).get("temporal_role"):
         return query
@@ -350,6 +377,11 @@ def shape_snapshot(
     if balance is None or (partial_query or {}).get("time"):
         return query, None
     expected = _expected_read(runtime, question, query)
+    window = _time_window(question)
+    if expected is None and not window.as_of and _unread_time_words(question, window.spans):
+        # Report the existing stock hold even when a day policy would fail validation first.
+        if gaps := _stock_as_of_gaps(config, query):
+            return query, _coverage_why(gaps)
     day_dimension = _day_dimension(config, balance.clock)
     per_day = day_dimension is not None and day_dimension in required
     if isinstance(expected, _Ask):
@@ -366,7 +398,7 @@ def shape_snapshot(
         # Daily values over a stated window each read one day already.
         and not (expected.source == "window" and _time_block(query).get("grain") == "day")
     ):
-        shaped = _governed(config, question, {**query, "time": expected.time})
+        shaped = _governed(config, question, {**query, "time": expected.time}, partial_query)
     if required:
         added = set(required) - {day_dimension}
         if not per_day or added or _time_block(shaped).get("grain") != "day":
@@ -386,15 +418,49 @@ def snapshot_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read |
 def snapshot_day_gaps(
     runtime: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None
 ) -> list[CoverageGap]:
-    """A one-day balance draft on another day than the last complete one, for a question that
-    names no time and a caller that states none."""
+    """Hold incomplete days, unnamed generated balances, and an unasked earlier day."""
 
+    time = _time_block(query)
+    balance = _balance(runtime._config, query)
+    if balance is not None and time.get("grain") == "day":
+        days, latest = _days(time, balance.clock), _days(_LAST_DAY, balance.clock)
+        if days is not None and latest is not None and days[0] < days[1] and days[1] > latest[1]:
+            day = max(days[0], latest[1])
+            return [
+                CoverageGap(
+                    kind="stock_as_of_unrealized",
+                    clause=balance.label,
+                    message=f"{day} isn't complete yet, so this draft can't read {balance.label}.",
+                    expected={"grain": "day", "stocks": list(balance.stocks)},
+                    actual={"grain": "day"},
+                    recovery_hint={
+                        "kind": "ask_for_one_day",
+                        "message": f"Read {latest[0]}, the last complete day, or an earlier day.",
+                    },
+                )
+            ]
+    if balance is not None and not (partial_query or {}).get("select"):
+        recipes = {row.id: row for row in runtime._config.metric_recipes}
+        for item in query.get("select") or []:
+            metric = recipes.get(str(item.get("expression", {}).get("metric") or ""))
+            if metric is not None and not _said_name(metric, question):
+                return [
+                    CoverageGap(
+                        kind="subject_ambiguous",
+                        clause=question,
+                        message=f"This draft reads {metric.label}, which the question doesn't name.",
+                        actual={"metric": metric.id},
+                        recovery_hint={
+                            "kind": "name_one_subject",
+                            "message": f"Name {metric.label} if that is the balance you mean.",
+                        },
+                    )
+                ]
     if (partial_query or {}).get("time"):
         return []
     read = _expected_read(runtime, question, query)
     if not isinstance(read, _Read) or read.spans or _reads(read, query):
         return []
-    time = _time_block(query)
     days = _days(time, read.balance.clock)
     if time.get("grain") != "day" or days is None or days[1] - days[0] != _DAY:
         return []

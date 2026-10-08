@@ -3,7 +3,8 @@
 A subscriptions package: accounts a, b and d are customers, c is internal. Every account has a
 daily row from 2026-09-01 to 2026-10-04: 99 a day on the basic plan, except that b pays 0 from
 2026-10-01 and a moves to pro at 500 from 2026-10-02. ``mrr`` and ``paying_accounts`` are
-balances filtered to customers. The policy variant reads them per day (a metric constraint
+balances filtered to customers. Account e is a nonpaying pro customer on 2026-10-04. The
+policy variant reads them per day (a metric constraint
 requires the day grouping, and the clock supports only days); the plain variant declares
 neither. The clock is 2026-10-05T06:00Z, so the last complete day is 2026-10-04. Every answer
 is checked against plain SQL on the seed.
@@ -45,6 +46,8 @@ SELECT account_id, day, plan, mrr, CAST(mrr > 0 AS INTEGER) AS paying FROM (
               WHEN a.account_id = 'a' AND d >= DATE '2026-10-02' THEN 500 ELSE 99 END AS DOUBLE)
       AS mrr
   FROM accounts a, range(DATE '2026-09-01', DATE '2026-10-05', INTERVAL 1 DAY) t(d));
+INSERT INTO accounts VALUES ('e', 'Nonpaying Pro', 'customer');
+INSERT INTO account_day VALUES ('e', DATE '2026-10-04', 'pro', 0, 0);
 """
 CUSTOMERS = {"field": f"dimension.{NS}_account_segment", "op": "=", "value": "customer"}
 DAY_POLICY = {
@@ -213,6 +216,7 @@ def test_the_numbers_are_the_customers_balance_on_that_day(runtime: Runtime) -> 
     assert _reference(_balance("mrr", "2026-09-30")) == {(): 297}
     assert _reference(_balance("mrr", "2026-10-04", "plan")) == {"basic": 99, "pro": 500}
     assert _reference(_balance("paying", "2026-10-04")) == {(): 2}
+    assert _reference(_balance("paying", "2026-10-04", "plan")) == {"basic": 1, "pro": 1}
     plan = _plan(runtime, "What's our MRR?")
     assert plan["best"]["query_ir"]["select"] == [{"as": "mrr", "expression": {"metric": MRR}}]
 
@@ -224,15 +228,86 @@ def test_right_now_is_the_same_read_as_no_time_words(runtime: Runtime) -> None:
     assert _answer(runtime, asked) == _answer(runtime, plain) == {(): 599}
 
 
-def test_a_value_named_with_the_balance_filters_it(runtime: Runtime) -> None:
-    plan = _plan(runtime, "pro accounts right now")
+def test_a_caller_select_keeps_its_measure_and_alias(runtime: Runtime) -> None:
+    select = [{"as": "all_mrr", "expression": {
+        "measure": f"measure.{NS}.mrr_all", "aggregation": "last_value",
+    }}]  # fmt: skip
+    plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
+        "policy_context": NOW, "select": select,
+        "order_by": [{"field": "all_mrr", "direction": "DESC"}],
+    })  # fmt: skip
     assert plan["status"] == "ok", plan.get("why")
-    assert plan["best"]["query_ir"]["where"] == [{"field": PLAN, "op": "=", "value": "pro"}]
+    assert plan["next"]["ready_for"] == ["execute"]
+    query = plan["best"]["query_ir"]
+    assert query["select"] == select
+    assert query["order_by"] == [{"field": "all_mrr", "direction": "DESC"}]
     assert (
         _answer(runtime, plan)
-        == {(): _reference(_balance("paying", "2026-10-04", "plan"))["pro"]}
-        == {(): 1}
+        == _reference("SELECT SUM(mrr) FROM account_day WHERE day = DATE '2026-10-04'")
+        == {(): 698}
     )
+    assert _answer(runtime, _plan(runtime, "What's our MRR?")) == {(): 599}
+
+
+@pytest.mark.parametrize("intent", [
+    "MRR all time", "all-time MRR", "MRR ever", "MRR to date", "MRR since launch",
+    "MRR trend", "MRR history", "MRR historical", "MRR lifetime", "MRR peak",
+    "MRR trends", "MRR trending",
+])  # fmt: skip
+def test_time_words_without_one_day_stay_held(runtime: Runtime, intent: str) -> None:
+    plan = _plan(runtime, intent)
+    assert plan["status"] in {"low_confidence", "needs_clarification"}, plan.get("why")
+    assert "execute" not in plan["next"].get("ready_for", [])
+    assert "stock_as_of_unrealized" in {gap["kind"] for gap in plan["why"]["details"]["gaps"]}
+
+
+@pytest.mark.parametrize(("intent", "start", "end"), [
+    ("MRR today", "", ""),
+    ("What's our MRR?", "2026-10-05", "2026-10-06"),
+    ("What's our MRR?", "2026-10-06", "2026-10-07"),
+    ("What's our MRR?", "2026-10-04", "2026-10-06"),
+])  # fmt: skip
+def test_an_incomplete_balance_day_is_held(
+    runtime: Runtime, intent: str, start: str, end: str
+) -> None:
+    partial: dict[str, Any] = {"policy_context": NOW}
+    if runtime._config.semantic_policies:
+        partial["group_by"] = [DAY]
+    if start:
+        partial["time"] = {"temporal_role": CLOCK, "grain": "day", "start": start, "end": end}
+    plan = plan_payload(runtime, intent=intent, partial_query=partial)
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan["next"].get("ready_for", [])
+    [gap] = [gap for gap in plan["why"]["details"]["gaps"]
+             if gap["kind"] == "stock_as_of_unrealized"]  # fmt: skip
+    assert "isn't complete yet" in gap["message"]
+    assert (start if start > "2026-10-05" else "2026-10-05") in gap["message"]
+    assert any("2026-10-04" in hint["message"] for hint in plan["why"]["recovery_hints"])
+
+
+def test_a_value_named_with_the_balance_filters_it(runtime: Runtime) -> None:
+    all_pro = _reference(
+        "SELECT COUNT(*) FROM account_day JOIN accounts USING (account_id) "
+        "WHERE segment = 'customer' AND day = DATE '2026-10-04' AND plan = 'pro'"
+    )
+    paying_pro = {(): _reference(_balance("paying", "2026-10-04", "plan"))["pro"]}
+    assert all_pro == {(): 2}
+    assert paying_pro == {(): 1}
+    ambiguous = _plan(runtime, "pro accounts right now")
+    assert ambiguous["status"] != "ok", ambiguous.get("why")
+    assert "execute" not in ambiguous["next"].get("ready_for", [])
+    assert "subject_ambiguous" in {gap["kind"] for gap in ambiguous["why"]["details"]["gaps"]}
+    plan = _plan(runtime, "pro paying accounts right now")
+    assert plan["status"] == "ok", plan.get("why")
+    assert plan["best"]["query_ir"]["where"] == [{"field": PLAN, "op": "=", "value": "pro"}]
+    assert "Paying accounts" in " ".join(plan["assumptions"])
+    assert _answer(runtime, plan) == paying_pro
+
+
+def test_trials_ending_this_week_stay_held(runtime: Runtime) -> None:
+    plan = _plan(runtime, "trials ending this week")
+    assert plan["status"] != "ok", plan.get("why")
+    assert "execute" not in plan["next"].get("ready_for", [])
 
 
 def test_a_series_is_asked_about_under_a_per_day_policy(runtime: Runtime) -> None:

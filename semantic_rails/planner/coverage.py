@@ -33,6 +33,48 @@ class CoverageGap:
         return out
 
 
+# Calendar vocabulary ignored by unmatched-word diagnostics, shared with balance readiness.
+_TIME_FRAMING_WORDS = frozenset(
+    {
+        "day",
+        "days",
+        "week",
+        "weeks",
+        "month",
+        "months",
+        "quarter",
+        "quarters",
+        "year",
+        "years",
+        "daily",
+        "weekly",
+        "monthly",
+        "quarterly",
+        "yearly",
+        "annual",
+        "annually",
+        "half",
+        "h1",
+        "h2",
+        "q1",
+        "q2",
+        "q3",
+        "q4",
+        "date",
+        "dates",
+        "time",
+        "period",
+        "periods",
+        "through",
+        "until",
+        "during",
+        "ever",
+        "first",
+        "second",
+        "last",
+    }
+)
+
 # Words and phrases asking for a comparison ("compared", "vs", "up or down").
 _COMPARISON_WORDS = frozenset(
     {"against", "compare", "compared", "compares", "comparing", "comparison", "versus", "vs"}

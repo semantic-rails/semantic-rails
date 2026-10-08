@@ -639,14 +639,19 @@ qualifier beyond the limit therefore cannot silently disappear from an otherwise
 **How plan reads a balance.** When every select reads a balance directly (a stock measure, or
 a metric that is one aggregate of it, on the stock's `as_of_time` clock), `plan` drafts it on
 one day: the last complete day before `policy_context.now` in the clock's zone when the question
-names no day or says "now", "right now", "currently", "current" or "at the moment"; the closing
+has no time words or says "now", "right now", "currently", "current" or "at the moment"; the closing
 day of the period an "end of" or "as of" phrase names ("at the end of last month" on 2026-10-05
 is 2026-09-30); a day the question states; or the closing day of one stated period ("MRR last
 month"; the opening day for a `start_of_period` stock). The draft carries `time.grain: day` on
 that clock with the day (`range.last` of one day for the last complete day), and `assumptions`
-names the day. A building-block stock measure is answered with the metric governing it, as for
-any draft on that metric's clock. A day that isn't complete (today, the end of this week) is
-never drafted, and no earlier day stands in for one: when the last complete day has no rows,
+names the day. A generated building-block stock measure is answered with the metric governing
+it, as for any draft on that metric's clock; a caller's select, expression and alias are kept.
+A generated governed balance must be named in full: "pro accounts" cannot stand for "Paying
+accounts". Time words without a single-day reading ("all time", "ever", "to date", "since
+launch", "trend") keep the `stock_as_of_unrealized` hold. A day that isn't complete (today,
+the end of this week) isn't ready to execute, and no earlier day stands in for one. A
+day-grain balance window that includes today or a later day, including a caller's `query.time`,
+has a `stock_as_of_unrealized` gap with a hint naming the last complete day. When that day has no rows,
 `execute` returns none with `EMPTY_RESULT_WINDOW`. When a `metric_constraint` requires the
 clock's date dimension in `group_by`, `plan` adds it (beside the day grain it adds no row) and
 counts it as asked; any other required field, or one hidden from the caller, keeps the
@@ -655,7 +660,7 @@ ago"), or asks for by week, month, quarter or year where the clock or a constrai
 day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of_unrealized`
 gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
 weeks are allowed), a stock on an event clock, a ratio, or a balance beside a flow keep the
-holds above, and a window in `query.time` is used as passed.
+holds above, and a window in `query.time` is used as passed, subject to the complete-day check.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.
