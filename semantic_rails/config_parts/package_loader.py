@@ -6,40 +6,20 @@ from ..errors import SemanticLayerError
 from ..naming import slug as _slug
 from ..naming import title as _titleize
 
-_JOIN_KEYS: frozenset[str] = frozenset(
-    {
-        "id",
-        "as",
-        "to",
-        "via",
-        "target",
-        "source_key_role",
-        "target_key_role",
-        "cardinality",
-        "safety",
-        "name",
-        "label",
-        "description",
-        "traversal",
-        "allowed_directions",
-        "temporal_validity",
-        "target_key_type",
-        "join_semantics",
-        "rollup_safe_aggregations_reverse",
-        "entities",
-    }
+# `graph.relationships` keys copied as they are onto the join a relationship projects.
+_RELATIONSHIP_PASSTHROUGH = (
+    "safety",
+    "temporal_validity",
+    "target_key_type",
+    "join_semantics",
+    "label",
+    "description",
+    "name",
+    "via",
+    "target",
+    "source_key_role",
+    "target_key_role",
 )
-
-
-def _check_binding_keys(binding: dict[str, Any], allowed: frozenset[str], *, label: str) -> None:
-    """Reject unknown authored keys before defaults or parsing can silently ignore them."""
-    unknown = sorted(key for key in set(binding) - allowed if not str(key).startswith("_"))
-    if unknown:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"{label} has unknown keys {unknown}; use {sorted(allowed)}",
-            details={"unknown_keys": unknown},
-        )
 
 
 def _with_default(mapping: dict[str, Any], key: str, value: Any) -> None:
@@ -101,22 +81,9 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         package["namespace"] = namespace
     out["package"] = package
 
-    defaults = dict(out.get("defaults", {}) or {})
-    relationship_defaults = dict(defaults.get("relationship", {}) or {})
-    _check_binding_keys(relationship_defaults, _JOIN_KEYS, label="defaults.relationship")
     graph = dict(out.get("graph", {}) or {})
     graph_entities = dict(graph.get("entities", {}) or {})
     models = _model_mapping(out)
-    # Validate authored joins before graph projection can replace their specs.
-    for model_id, model in models.items():
-        for join_key, join_raw in dict(model.get("joins", {}) or {}).items():
-            join = dict(join_raw or {})
-            rel_id = str(join.get("id", f"relationship.{_slug(model_id)}_{_slug(join_key)}"))
-            _check_binding_keys(
-                join,
-                _JOIN_KEYS,
-                label=f"models.{model_id}.joins.{join_key} (relationship '{rel_id}')",
-            )
     bound_entities: dict[str, str] = {}
     for entity_key, entity_raw in graph_entities.items():
         entity = dict(entity_raw or {})
@@ -623,7 +590,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             }
             cardinality = cardinality_map.get(cardinality, cardinality)
             rollup_safe = spec.get("rollup_safe", {})
-            if not isinstance(rollup_safe, dict) or any(key != "reverse" for key in rollup_safe):
+            if not isinstance(rollup_safe, dict):
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     f"graph relationship '{rel_name}' rollup_safe must be a mapping "
@@ -641,21 +608,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             }
             if cardinality:
                 edge_spec["cardinality"] = cardinality
-            for passthrough in (
-                "safety",
-                "temporal_validity",
-                "target_key_type",
-                "join_semantics",
-                "label",
-                "description",
-                "name",
-                "via",
-                "target",
-                "source_key_role",
-                "target_key_role",
-                # Removed; passed on so the parser refuses it, naming the relationship.
-                "path_preference",
-            ):
+            for passthrough in _RELATIONSHIP_PASSTHROUGH:
                 if passthrough in spec:
                     edge_spec[passthrough] = spec[passthrough]
             # `allowed_directions:` on the graph.relationships block maps

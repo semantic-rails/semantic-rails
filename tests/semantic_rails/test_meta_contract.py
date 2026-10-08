@@ -176,7 +176,7 @@ def test_model_meta_cascades_to_measures_with_override(tmp_path: Path):
                 "id": "measure.demo.order_total",
                 "name": "sales.order_total",
                 "label": "Order total",
-                "kind": "additive",
+                "kind": "aggregate",
                 "time": "ordered_at",
                 "expr": {"kind": "column", "column": "order_total"},
                 "meta": {"owner_team": "growth"},

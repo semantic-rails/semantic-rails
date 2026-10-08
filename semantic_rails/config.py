@@ -20,26 +20,12 @@ from typing import Any
 
 from .config_parts.lookup_measures import lookup_measure_spec, resolve_lookup_measures
 from .config_parts.measure_governance import with_published_flags
-from .config_parts.package_loader import _JOIN_KEYS, _check_binding_keys, normalize_package
+from .config_parts.package_loader import normalize_package
 from .config_parts.route_rows import (
     RouteRowError,
     check_route_row,
     entity_references,
     require_rows_agree,
-)
-from .config_parts.shape_checks import (
-    _DIMENSION_KEYS,
-    _MEASURE_KEYS,
-    _METRIC_KEYS,
-    _MODEL_KEYS,
-    _MODEL_VARIANT_EQUIVALENCE_KEYS,
-    _MODEL_VARIANT_EXCLUDES_KEYS,
-    _MODEL_VARIANT_GRAIN_KEYS,
-    _MODEL_VARIANT_KEYS,
-    _MODEL_VARIANT_SELECTION_KEYS,
-    _MODEL_VARIANT_TIME_KEYS,
-    _SEGMENT_KEYS,
-    _TIME_KEYS,
 )
 from .dialects import (
     connection_option_errors,
@@ -263,8 +249,6 @@ def _ensure_dict_list(value: Any) -> list[dict[str, Any]]:
 _TIME_GRAIN_ORDER = ["transaction", "minute", "hour", "day", "week", "month", "quarter", "year"]
 # What a rollup's measure column may hold per row (`holds:`); see acceleration/selection.py.
 _ROLLUP_HOLDS = frozenset({"sum", "min", "max", "count_distinct"})
-_MEASURE_BINDING_KEYS = frozenset({"column", "rollup", "aggregation", "holds"})
-_DIMENSION_BINDING_KEYS = frozenset({"column", "path"})
 
 
 def _coarser_time_grains(grain: str) -> list[str]:
@@ -314,18 +298,9 @@ def _resolve_variant_specs(
         resolving.add(name)
         spec = dict(raw[name])
         label = f"{path}: model '{model_id}' variant '{name}'"
-        _check_binding_keys(spec, _MODEL_VARIANT_KEYS, label=label)
-        for key, allowed in (
-            ("grain", _MODEL_VARIANT_GRAIN_KEYS),
-            ("time", _MODEL_VARIANT_TIME_KEYS),
-            ("excludes", _MODEL_VARIANT_EXCLUDES_KEYS),
-            ("selection", _MODEL_VARIANT_SELECTION_KEYS),
-            ("equivalence", _MODEL_VARIANT_EQUIVALENCE_KEYS),
-        ):
-            if key in spec:
-                if not isinstance(spec[key], dict):
-                    raise SemanticLayerError("INVALID_CONFIG", f"{label} {key} must be a mapping")
-                _check_binding_keys(spec[key], allowed, label=f"{label} {key}")
+        for key in ("grain", "time", "excludes", "selection", "equivalence"):
+            if key in spec and not isinstance(spec[key], dict):
+                raise SemanticLayerError("INVALID_CONFIG", f"{label} {key} must be a mapping")
         parent_name = str(spec.get("inherits_from", "") or "").strip()
         if parent_name:
             spec = _merge_variant_spec(resolve(parent_name), spec)
@@ -433,13 +408,6 @@ def _parse_caveat_time(value: Any, *, path: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise SemanticLayerError("INVALID_CONFIG", f"{path}.time must be an object")
     raw = dict(value or {})
-    allowed = {"at", "from", "to"}
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"{path}.time contains unsupported keys {unknown}; use at or from/to",
-        )
     has_point = "at" in raw and str(raw.get("at", "") or "").strip()
     has_range = any(str(raw.get(key, "") or "").strip() for key in ("from", "to"))
     if has_point and has_range:
@@ -502,24 +470,6 @@ def _parse_caveats(rows: Any, *, path: str) -> list[SemanticCaveatConfig]:
                 severity=severity,
                 owner=str(row_dict.get("owner", "") or ""),
                 references=_ensure_dict_list(row_dict.get("references")),
-                config={
-                    key: value
-                    for key, value in row_dict.items()
-                    if key
-                    not in {
-                        "id",
-                        "kind",
-                        "message",
-                        "object_ids",
-                        "entity_values",
-                        "time",
-                        "audiences",
-                        "environments",
-                        "severity",
-                        "owner",
-                        "references",
-                    }
-                },
             )
         )
     return caveats
@@ -1596,13 +1546,6 @@ def _parse_path_policy(raw: dict[str, Any], *, path: str) -> PathPolicyConfig:
             "INVALID_CONFIG",
             f"{path}: path_policy must be a mapping (got {type(policy_raw).__name__})",
         )
-    unknown = sorted(set(policy_raw) - {"max_hops"})
-    if unknown:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"{path}: path_policy contains unsupported keys: {', '.join(unknown)}",
-            details={"supported": ["max_hops"]},
-        )
     try:
         max_hops = int(policy_raw.get("max_hops", DEFAULT_PATH_HOP_LIMIT))
     except (TypeError, ValueError):
@@ -1728,8 +1671,6 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
 
 
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
-    if "aggregate_relations" in raw:
-        raise SemanticLayerError("INVALID_CONFIG", "declare rollups under the model's `variants:`")
     package_raw = dict(raw.get("package", {}) or {})
     namespace = str(package_raw.get("namespace", package_raw.get("id", "")) or "").strip()
     defaults = dict(raw.get("defaults", {}) or {})
@@ -1758,7 +1699,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     fact_models: dict[str, dict[str, Any]] = {}
     regular_model_rows: dict[str, dict[str, Any]] = {}
     for model_id, model in model_rows.items():
-        _check_binding_keys(model, _MODEL_KEYS, label=f"{path}: model '{model_id}'")
         model_kind = str(model.get("kind", "model") or "model").strip().lower()
         if model_kind == "fact":
             fact_models[model_id] = model
@@ -1891,10 +1831,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             "INVALID_CONFIG",
             f"{path}: defaults.time.default is not supported; declare default: true on a model's time role",
         )
-    _check_binding_keys(dim_defaults, _DIMENSION_KEYS, label=f"{path}: defaults.dimension")
-    _check_binding_keys(time_defaults, _TIME_KEYS, label=f"{path}: defaults.time")
     measure_defaults = dict(defaults.get("measure", {}) or {})
-    _check_binding_keys(measure_defaults, _MEASURE_KEYS, label=f"{path}: defaults.measure")
     relationship_defaults = dict(defaults.get("relationship", {}) or {})
     operational_contract = load_operational_contract(defaults, path=path)
     meta_contract = load_meta_contract(defaults, path=path)
@@ -1963,7 +1900,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
         for dim_key, dim_spec_raw in dims.items():
             dim_spec = {**dim_defaults, **dict(dim_spec_raw or {})}
-            _check_binding_keys(dim_spec, _DIMENSION_KEYS, label=f"{path}: dimension '{dim_key}'")
             dim_id = str(dim_spec.get("id", f"dimension.{_slug(entity_cfg.name)}_{_slug(dim_key)}"))
             label = str(dim_spec.get("label", _titleize(dim_key)))
             name = str(dim_spec.get("name", f"{entity_cfg.name}.{dim_key}"))
@@ -2029,7 +1965,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
         for time_key, time_spec_raw in times.items():
             time_spec = {**time_defaults, **dict(time_spec_raw or {})}
-            _check_binding_keys(time_spec, _TIME_KEYS, label=f"{path}: time '{time_key}'")
             dim_id = str(
                 time_spec.get(
                     "dimension_id", f"dimension.{_slug(entity_cfg.name)}_{_slug(time_key)}"
@@ -2090,9 +2025,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         for measure_key, measure_spec_raw in dict(model.get("measures", {}) or {}).items():
             raw_measure_spec = dict(measure_spec_raw or {})
             measure_spec = {**measure_defaults, **raw_measure_spec}
-            _check_binding_keys(
-                measure_spec, _MEASURE_KEYS, label=f"{path}: measure '{measure_key}'"
-            )
             measure_spec = lookup_measure_spec(
                 raw_measure_spec, measure_spec, f"{path}: measure '{measure_key}'"
             )
@@ -2313,11 +2245,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     f"{path}: join '{model_id}.{edge_key}' has invalid safety '{safety}' (must be 'safe', 'requires_rewrite', or 'unsafe')",
                 )
             rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
-            _check_binding_keys(
-                join_spec,
-                _JOIN_KEYS,
-                label=f"{path}: relationship '{rel_id}' (join '{model_id}.{edge_key}')",
-            )
             relationships.append(
                 RelationshipConfig(
                     id=rel_id,
@@ -2511,7 +2438,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     known_dimension_ids = frozenset(dimension_lookup.values())
     for metric_key, metric_spec_raw in metrics_rows.items():
         spec = dict(metric_spec_raw or {})
-        _check_binding_keys(spec, _METRIC_KEYS, label=f"{path}: metric '{metric_key}'")
 
         # Translate direct named fields per metric kind into the runtime
         # expression AST shape. Authors can still write the AST directly
@@ -2642,7 +2568,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     segments: list[SegmentConfig] = []
     for segment_key, segment_spec_raw in segments_rows.items():
         spec = dict(segment_spec_raw or {})
-        _check_binding_keys(spec, _SEGMENT_KEYS, label=f"{path}: segment '{segment_key}'")
         segment_id = str(spec.get("id", f"segment.{segment_key}"))
         entity_ref = str(spec.get("entity", "")).strip()
         entity_id = entity_lookup.get(entity_ref, entity_ref)
@@ -2764,9 +2689,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         dimension_columns: dict[str, str] = {}
         dimension_paths: dict[str, list[str]] = {}
         for dim_id, binding in raw_dimension_bindings.items():
-            _check_binding_keys(
-                binding, _DIMENSION_BINDING_KEYS, label=f"{path}: rollup dimension '{dim_id}'"
-            )
             column = str(binding.get("column", "") or "").strip()
             if column:
                 dimension_columns[dim_id] = column
@@ -2893,11 +2815,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     )
                     raw_column = columns.get(measure_id, columns.get(measure_key, measure_key))
                     if isinstance(raw_column, dict):
-                        _check_binding_keys(
-                            raw_column,
-                            _MEASURE_BINDING_KEYS,
-                            label=f"{path}: variant '{variant_id}' column '{measure_key}'",
-                        )
                         column = str(raw_column.get("column", "") or "").strip()
                         rollup = str(
                             raw_column.get("rollup", raw_measure_spec.get("rollup", "")) or ""

@@ -504,7 +504,7 @@ def _display_caveat(
     listed = [object_id for object_id in caveat.object_ids if object_id not in hidden]
     if caveat.object_ids and not listed:
         return None
-    named = [caveat.entity_values, caveat.time, caveat.references, caveat.config]
+    named = [caveat.entity_values, caveat.time, caveat.references]
     if _names(named, hidden) or _authored_mentions(caveat, tokens):
         return None
     return replace(caveat, object_ids=listed)

@@ -75,9 +75,9 @@ def test_invalid_package_returns_engine_error_over_stdio(tmp_path: Path, inferre
         load_package_config(str(package))
     engine_error = raised.value
     assert engine_error.code == "INVALID_CONFIG"
-    assert "relationship 'relationship.orders_customer'" in str(engine_error)
-    assert "join 'orders.customer'" in str(engine_error)
-    assert "['path_preference']" in str(engine_error)
+    assert "graph relationship 'orders_customer' has unknown key 'path_preference'" in str(
+        engine_error
+    )
 
     proc, replies = _stdio(package, inferred=inferred)
 

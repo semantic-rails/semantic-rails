@@ -2603,6 +2603,12 @@ CLI `segment-*` commands) could not serve:
 
 ### Unknown keys
 
+Loading a package runs the same authoring checks as `validate-config`, so `serve`, MCP, the
+Architect and `Runtime.from_path` refuse a package `validate-config` refuses, with one
+`INVALID_CONFIG` that lists every error in `details.errors`. Every block has a closed key set,
+including `graph.relationships` entries, `semantic_caveats` rows, `defaults:` and the document
+top level; a key that starts with `_` is an annotation.
+
 `parse-config`, `validate-config` and `check` reject a metric or segment key the
 loader doesn't read, in every layout it reads: files under `metrics/` and
 `segments/`, root `metrics.yml` and `segments.yml`, and `package.yml`. The loader

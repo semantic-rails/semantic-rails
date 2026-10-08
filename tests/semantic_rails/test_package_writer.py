@@ -75,6 +75,10 @@ def test_contracts_path_policy_and_authored_values_are_written(tmp_path) -> None
     )
     assert loaded.measures[0].suggested_aggregations == ["max"]
     assert loaded.package.observation_scope == "query"
+    # The loader reads the scope from defaults: only, so that is the one place it is written.
+    written = yaml.safe_load((directory / "package.yml").read_text(encoding="utf-8"))
+    assert "observation_scope" not in written["package"]
+    assert written["defaults"]["observation_scope"] == "query"
 
 
 @pytest.mark.parametrize("include_axis", [True, False])
