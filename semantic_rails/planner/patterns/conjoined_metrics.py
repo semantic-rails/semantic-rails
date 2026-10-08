@@ -8,6 +8,7 @@ from ...config_parts.measure_governance import whole_aggregate
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
+    _governed_target,
     _name_matches,
     _object_by_id,
     _resolved,
@@ -21,7 +22,7 @@ from ..groupings import _explicit_grain, _maybe_group_by, _time_spec
 from ..qualifiers import _add_order
 from ..time_windows import _time_window
 from ._protocol import IntentPattern
-from .metric_by_dimension_rollup import _TIME_SERIES_PHRASES, _governed_target
+from .metric_by_dimension_rollup import _TIME_SERIES_PHRASES
 
 
 def _clock(config: Any, row: Any) -> str:
