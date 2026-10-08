@@ -492,11 +492,10 @@ Important planner behaviors:
   Its anchor plan adds that same relationship; `_joins_for_paths` checks both the relationship
   and emitted joins, and refuses a missing, nullable or different parent check with
   `REWRITE_NOT_SUPPORTED` if the shortcut's eligibility check is bypassed
-- dense fill uses the declared calendar entity for the requested calendar id, or the implicit
-  Gregorian calendar for a default request in a package that declares no default calendar
-- the default fill spine buckets `date_day` with the leaf's dialect `DATE_TRUNC` (ISO Monday
-  weeks); a non-default spine uses the authored period column and refuses centrally with
-  `calendar_leaf_unbound` if the leaf cannot bind that same calendar column
+- dense fill always uses the implicit Gregorian calendar; an authored default calendar takes
+  no part in bucketing or filling. A non-default calendar, or a grain on a clock bound to one,
+  refuses where validation resolves the query's calendar (`_validate_calendar_id`,
+  `calendar_not_supported_yet`), and `lower_to_sql` refuses a plan that bypassed it
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
 - query-time predicates default to contextual scope
 - package-authored predicates must declare `scope_mode`
