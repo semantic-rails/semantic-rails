@@ -1409,7 +1409,7 @@ def test_growth_offers_the_units_its_calendar_can_fill(
     fiscal["dimensions"] = dict(fiscal["dimensions"])
     del doc["model"]["dimensions"]["month_start"]
     _write_yaml(calendar, doc)
-    # Another calendar has month_start, but time.fill reads the default one.
+    # Another calendar has month_start; the wizard reads the default one.
     _write_yaml(project / "models" / "core" / "fiscal.yml", {"model": fiscal})
     graph = yaml.safe_load((project / "graph.yml").read_text("utf-8"))
     entity = {**graph["graph"]["entities"]["time"], "label": "Fiscal", "model": "fiscal"}
@@ -1423,15 +1423,13 @@ def test_growth_offers_the_units_its_calendar_can_fill(
     assert script.options["Compare with how far back"] == ["Days", "Weeks", "Quarters", "Years"]
     assert script.offered["Compare with how far back"] == "Days"
     assert "columns on the calendar model: `month_start`." in capsys.readouterr().out
-    # One written by hand says why it cannot run, instead of returning nothing.
+    # One written by hand runs: every fill uses the implicit Gregorian calendar.
     growth = {"kind": "derived", "expression": _growth(REVENUE, "sum", "month")}
     _write_metric(project, "g", {**growth, "value_type": "percent", "temporal_role": ORDERED})
     report = ask_report(
         PackageReference(source_path=str(project)), question="g by month", execute=True
     )
-    assert [error["message"] for error in report["errors"]] == [
-        "time.fill requires calendar dimension 'month_start' on 'entity.shop_time'"
-    ]
+    assert not report.get("errors"), report.get("errors")
     # Its saved unit stays on offer, so an edit that keeps it still goes through.
     script, metric = _author(project, {"Metric key": "g", "Business definition": "Edited."})
     assert script.offered["Compare with how far back"] == "Months"

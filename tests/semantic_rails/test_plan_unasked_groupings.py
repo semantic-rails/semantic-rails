@@ -254,11 +254,11 @@ _TOP_3_STORES = {
 
 
 @pytest.mark.parametrize(
-    ("question", "time"),
+    ("question", "time", "valid"),
     [
         # The noun it ranks is the period.
-        ("which 3 months had the highest revenue by store", {"grain": "month"}),
-        # The months of a window on another calendar.
+        ("which 3 months had the highest revenue by store", {"grain": "month"}, True),
+        # The months of a window on another calendar (refused in this release).
         (
             "top 3 stores by monthly revenue",
             {
@@ -268,14 +268,15 @@ _TOP_3_STORES = {
                 "calendar_id": "fiscal",
                 "fill": True,
             },
+            False,
         ),
     ],
 )
 def test_a_ranking_of_a_period_or_on_another_calendar_offers_no_runnable_option(
-    jaffle: Runtime, question: str, time: dict[str, Any]
+    jaffle: Runtime, question: str, time: dict[str, Any], valid: bool
 ) -> None:
     query = {**_TOP_3_STORES, "time": {"temporal_role": ORDER_TIME, **time}}
-    assert jaffle.validate(query)["ok"] is True
+    assert jaffle.validate(query)["ok"] is valid
 
     why = unasked_groupings._unasked_grouping_why(jaffle, question, query)
 
