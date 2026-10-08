@@ -329,29 +329,83 @@ def test_authored_count_must_equal_query_limit_before_substitution(subscriptions
 
 
 @pytest.mark.parametrize("day,limit", [("2026-09-30", 2), ("2026-09-30", 3), ("2026-10-02", 2)])
-def test_time_slot_requires_literal_agreement_and_matches_reference(subscriptions, day, limit):
-    # Unlike the current today/trailing-day example, yesterday agrees with that query.
+def test_another_day_than_the_authored_one_has_no_example_effect(subscriptions, day, limit):
+    # Yesterday agrees with the query, but an example answers only its own day.
     _replace_entries(
         subscriptions,
         {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
     )
     question = QUESTION.replace("today", f"on {day}").replace("2 accounts", f"{limit} accounts")
     result = _plan(subscriptions, question)
-    assert result["status"] == "ok", result.get("why")
-    assert result["best"]["pattern"] == "package_example"
-    query = result["best"]["query_ir"]
-    assert query["time"]["start"] == day
-    assert query["limit"] == limit
-    # Only the window bounds change: the authored grain, role and groupings stay.
-    assert query["time"]["grain"] == QUERY["time"]["grain"]
-    assert query["time"]["temporal_role"] == ROLE
-    assert query["group_by"] == QUERY["group_by"]
-    rows = subscriptions.query(query)["rows"]
-    assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, day, limit)
+    assert (result.get("best") or {}).get("pattern") != "package_example"
+
+
+def _jaffle_day_revenue(day: str, end: str) -> dict:
+    return {
+        "version": 1,
+        "select": [
+            {
+                "expression": {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"},
+                "as": "revenue_usd",
+            }
+        ],
+        "time": {
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "grain": "day",
+            "start": day,
+            "end": end,
+        },
+        "where": [
+            {"field": "dimension.jaffle_order_ordered_at", "op": ">=", "value": day},
+            {"field": "dimension.jaffle_order_ordered_at", "op": "<", "value": end},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "day,end,other_day",
+    [
+        ("2026-09-30", "2026-10-01", "2026-09-29"),
+        # The fixture's orders end in 2017: this day has rows to sum.
+        ("2017-08-30", "2017-08-31", "2017-08-29"),
+    ],
+)
+def test_an_example_answers_only_its_own_day(runtime_factory, day, end, other_day):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        _replace_entries(
+            runtime,
+            {
+                "day_revenue": {
+                    "question": f"Revenue on {day}",
+                    "query": _jaffle_day_revenue(day, end),
+                }
+            },
+        )
+        other = plan_payload(runtime, intent=f"Revenue on {other_day}")
+        verbatim = plan_payload(runtime, intent=f"Revenue on {day}")
+        assert verbatim["status"] == "ok", verbatim.get("why")
+        assert verbatim["best"]["pattern"] == "package_example"
+        rows = runtime.query(verbatim["best"]["query_ir"])["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as conn:
+            (gold,) = conn.execute(
+                "SELECT SUM(order_total_cents / 100.0) FROM jaffle_order "
+                "WHERE ordered_at >= CAST(? AS DATE) AND ordered_at < CAST(? AS DATE)",
+                [day, end],
+            ).fetchone()
+    finally:
+        runtime.close()
+    assert (other.get("best") or {}).get("pattern") != "package_example"
+    actual = [row["revenue_usd"] for row in rows]
+    if gold is None:
+        assert actual in ([], [None])
+    else:
+        assert len(actual) == 1
+        assert float(actual[0]) == pytest.approx(float(gold))
 
 
 @pytest.mark.parametrize("time_phrase", ["on 2026-09-30", "yesterday"])
-def test_time_slot_never_rescues_disagreeing_authored_window(subscriptions, time_phrase):
+def test_another_window_never_reuses_the_authored_one(subscriptions, time_phrase):
     result = _plan(subscriptions, QUESTION.replace("today", time_phrase))
     assert (result.get("best") or {}).get("pattern") != "package_example"
 
@@ -406,9 +460,7 @@ def test_invalid_example_time_shape_does_not_crash_slot_matching(subscriptions, 
 
 
 @pytest.mark.parametrize("phrase", ["last 7 days", "this week", "this year", "last month", "today"])
-def test_time_slot_needs_one_elapsed_bucket_of_the_authored_grain(subscriptions, phrase):
-    # A range of days, another grain's bucket, or the day still in progress: never one
-    # complete day, so neither the authored day grain nor its rows answer it.
+def test_another_time_phrase_has_no_example_effect(subscriptions, phrase):
     _replace_entries(
         subscriptions,
         {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
@@ -417,7 +469,7 @@ def test_time_slot_needs_one_elapsed_bucket_of_the_authored_grain(subscriptions,
     assert (result.get("best") or {}).get("pattern") != "package_example"
 
 
-def test_time_slot_needs_a_one_bucket_authored_window(subscriptions):
+def test_a_longer_window_has_no_example_effect(subscriptions):
     week = {**QUERY, "time": {**QUERY["time"], "range": {"last": {"unit": "day", "value": 7}}}}
     _replace_entries(
         subscriptions,
@@ -433,38 +485,31 @@ _LAST_MONTH = {
     "grain": "month",
     "range": {"last": {"unit": "month", "value": 1}},
 }
-_JULY = {"start": "2026-07-01", "end": "2026-08-01"}
-
 
 @pytest.mark.parametrize(
-    "time,authored,asked,window",
+    "time,authored,asked",
     [
-        (_AUGUST, "August 2026", "July 2026", _JULY),
-        (_AUGUST, "August 2026", "last month", {"range": _LAST_MONTH["range"]}),
-        ({**_LAST_MONTH, "fill": True}, "last month", "July 2026", _JULY),
-        (_LAST_MONTH, "last month", "2026-07-15", None),
-        (_LAST_MONTH, "last month", "Q3 2026", None),
-        (_LAST_MONTH, "last month", "last 2 months", None),
-        (_LAST_MONTH, "last month", "this month", None),
-        ({**_AUGUST, "calendar_id": "fiscal"}, "August 2026", "July 2026", None),
+        (_AUGUST, "August 2026", "July 2026"),
+        (_AUGUST, "August 2026", "last month"),
+        ({**_LAST_MONTH, "fill": True}, "last month", "July 2026"),
+        (_LAST_MONTH, "last month", "2026-07-15"),
+        (_LAST_MONTH, "last month", "Q3 2026"),
+        (_LAST_MONTH, "last month", "last 2 months"),
+        (_LAST_MONTH, "last month", "this month"),
+        ({**_AUGUST, "calendar_id": "fiscal"}, "August 2026", "July 2026"),
         (
             {**_LAST_MONTH, "range": {"last": {"unit": "month", "value": 2}}},
             "last 2 months",
             "last 3 months",
-            None,
         ),
     ],
 )
-def test_time_slot_keeps_every_authored_time_key(time, authored, asked, window):
+def test_the_authored_time_block_is_never_edited(time, authored, asked):
     from semantic_rails.planner.examples import _match
 
     query = {**QUERY, "time": time}
-    matched = _match(f"MRR by account {asked}", f"MRR by account {authored}", query)
-    if window is None:
-        assert matched is None
-        return
-    kept = {key: value for key, value in time.items() if key not in {"range", "start", "end"}}
-    assert matched == {**query, "time": {**kept, **window}}
+    assert _match(f"MRR by account {asked}", f"MRR by account {authored}", query) is None
+    assert _match(f"MRR by account {authored}", f"MRR by account {authored}", query) == query
 
 
 @pytest.mark.parametrize(
@@ -485,10 +530,25 @@ def test_numbers_compare_whole_in_exact_and_slot_matches(subscriptions, authored
     )
     verbatim = _plan(subscriptions, f"Which 2 accounts {authored} yesterday?")
     assert verbatim["best"]["pattern"] == "package_example"
-    # Neither the exact path nor the count and time slots read one number as another.
+    # Neither the exact path nor the count slot reads one number as another.
     for count, phrase in [("2", "yesterday"), ("3", "yesterday"), ("2", "on 2026-09-30")]:
         result = _plan(subscriptions, f"Which {count} accounts {asked} {phrase}?")
         assert (result.get("best") or {}).get("pattern") != "package_example"
+
+
+@pytest.mark.parametrize(
+    "authored,asked",
+    [("5%", "$5"), ("5%", "5"), ("$5", "5%"), ("$5", "5"), ("5", "5%"), ("$5", "€5")],
+)
+def test_symbols_keep_their_meaning(subscriptions, authored, asked):
+    question = "Which orders have a discount above {}?"
+    _replace_entries(
+        subscriptions, {"discount": {"question": question.format(authored), "query": QUERY}}
+    )
+    verbatim = _plan(subscriptions, question.format(authored))
+    assert verbatim["best"]["pattern"] == "package_example"
+    result = _plan(subscriptions, question.format(asked))
+    assert (result.get("best") or {}).get("pattern") != "package_example"
 
 
 @pytest.mark.parametrize(

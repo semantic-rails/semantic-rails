@@ -7,7 +7,6 @@ from collections.abc import Callable, Iterator
 from copy import deepcopy
 from typing import Any
 
-from ..ast import _SUPPORTED_RELATIVE_UNITS, _floor_period, _shift_period
 from ..expressions import collect_object_references
 from ..visible_view import pinned_view
 from ._base import RuntimeCompositionDraft, _singular
@@ -17,17 +16,16 @@ from .intent_ir import IntentIR, ResolvedTerm, compose_hints
 from .plan_query import _merge_partial_query, _trim_why_errors, _validate_query
 from .plan_trace import _slim_best
 from .ranking_checks import _ranking_request
-from .time_checks import _window_agrees, _window_days
-from .time_reference import time_timezone
-from .time_windows import _time_window
 
 # A number is one token with its sign, decimal point and separators ("-5", "2.5", "1,000",
-# "2026-09-30"), so two different numbers never compare equal. Any other mark separates words.
-_TOKEN_RE = re.compile(r"[-+\N{MINUS SIGN}]?[.,]?\d+(?:[^\w\s]\d+)*|[^\W\d]+")
-# The only time keys a slot carries over: other keys (a fiscal calendar_id) bucket time in a
-# way the default calendar can't prove.
-_SLOT_TIME_KEYS = frozenset({"temporal_role", "grain", "range", "start", "end", "fill"})
-_TIME_SLOT, _COUNT_SLOT = " examples_time_slot ", " examples_count_slot "
+# "2026-09-30"), so two different numbers never compare equal. Only the sentence separators
+# below are dropped; any other mark ("$", "%", "<", "/") is a token of its own.
+_TOKEN_RE = re.compile(
+    r"[-+\N{MINUS SIGN}]?[.,]?\d+(?:[^\w\s]\d+)*|[^\W\d]+"
+    r"|[^\w\s.,;:?!'\"()\-\N{LEFT SINGLE QUOTATION MARK}\N{RIGHT SINGLE QUOTATION MARK}"
+    r"\N{LEFT DOUBLE QUOTATION MARK}\N{RIGHT DOUBLE QUOTATION MARK}]"
+)
+_COUNT_SLOT = " examples_count_slot "
 
 
 def _text(text: str) -> str:
@@ -43,8 +41,8 @@ def _cuts_token(text: str, span: tuple[int, int]) -> bool:
     )
 
 
-def _masked(text: str, span: tuple[int, int] | None, mark: str) -> str:
-    return text if span is None else text[: span[0]] + mark + text[span[1] :]
+def _masked(text: str, span: tuple[int, int], mark: str) -> str:
+    return text[: span[0]] + mark + text[span[1] :]
 
 
 def _strings(node: Any) -> Iterator[str]:
@@ -83,81 +81,23 @@ def _count_slot(text: str) -> tuple[tuple[int, int], int] | None:
     return span, request["limit"]
 
 
-def _one_bucket(bounds: dict[str, Any], grain: str, timezone: str) -> bool:
-    """Whether ``bounds`` read exactly one whole, elapsed ``grain`` bucket of the default
-    calendar ("yesterday" or "on 2026-09-30" for a day; not "last 7 days" or "today")."""
-    if grain not in _SUPPORTED_RELATIVE_UNITS:
-        return False
-    start, end = _window_days(bounds, timezone=timezone) or (None, None)
-    # Yesterday ends where today starts: a bucket ending later is still in progress.
-    yesterday = {"range": {"last": {"unit": "day", "value": 1}}}
-    _start, today = _window_days(yesterday, timezone=timezone) or (None, None)
-    if start is None or end is None or today is None:
-        return False
-    return (
-        _floor_period(start, grain) == start
-        and _shift_period(start, grain, 1) == end
-        and end <= today
-    )
-
-
-def _time_slot(text: str, time: dict[str, Any]) -> tuple[tuple[int, int], dict[str, Any]] | None:
-    """The text's one time phrase and its bounds, when they read one bucket of the authored
-    grain; ``None`` for any other phrase, several phrases, or an authored time block that
-    carries anything but a role, a grain, a window and ``fill``."""
-    if not set(time) <= _SLOT_TIME_KEYS:
-        return None
-    zone = time_timezone(str(time.get("temporal_role") or ""))
-    window = _time_window(text, timezone=zone)
-    if len(window.spans) != 1 or len(window.windows) != 1 or window.unresolved:
-        return None
-    span, bounds = window.windows[0]
-    if _cuts_token(text, span) or not _one_bucket(bounds, str(time.get("grain") or ""), zone):
-        return None
-    return span, bounds
-
-
 def _match(question: str, authored: str, query: dict[str, Any]) -> dict[str, Any] | None:
+    """The authored query for its exact question, or with only ``limit`` changed for the same
+    question with a different top-N count; the authored ``time`` block is never edited."""
     if _text(question) == _text(authored):
         return deepcopy(query)
     question, authored = question.lower(), authored.lower()
-    time = query.get("time")
-    time = time if isinstance(time, dict) else {}
-    # Try the count alone, then the one time phrase with an optional count. Agreeing with a
-    # one-bucket phrase makes the authored window that same bucket.
-    attempts: list[tuple[tuple[int, int] | None, tuple[int, int] | None, dict[str, Any] | None]]
-    attempts = [(None, None, None)]
-    slot = _time_slot(authored, time)
-    if slot is not None and _window_agrees(
-        [slot], time, timezone=time_timezone(str(time.get("temporal_role") or ""))
+    # Reuse the existing span parser: a threshold equal to limit is not a count.
+    count, asked_count = _count_slot(authored), _count_slot(question)
+    if count is None or asked_count is None or count[1] != query.get("limit"):
+        return None
+    if _text(_masked(authored, count[0], _COUNT_SLOT)) != _text(
+        _masked(question, asked_count[0], _COUNT_SLOT)
     ):
-        asked_slot = _time_slot(question, time)
-        if asked_slot is not None:
-            attempts.append((slot[0], *asked_slot))
-    for authored_span, asked_span, bounds in attempts:
-        text = _masked(authored, authored_span, _TIME_SLOT)
-        asked = _masked(question, asked_span, _TIME_SLOT)
-        # Reuse the existing span parser: a threshold equal to limit is not a count.
-        count, asked_count = _count_slot(text), _count_slot(asked)
-        if count is not None and count[1] != query.get("limit"):
-            count = None
-        if (count is None) != (asked_count is None) or (bounds is None and count is None):
-            continue
-        if _text(_masked(text, count and count[0], _COUNT_SLOT)) != _text(
-            _masked(asked, asked_count and asked_count[0], _COUNT_SLOT)
-        ):
-            continue
-        candidate = deepcopy(query)
-        if bounds is not None:
-            # Every authored time key, grain included, stays; only the window changes.
-            kept = {
-                key: value for key, value in time.items() if key not in {"range", "start", "end"}
-            }
-            candidate["time"] = {**kept, **bounds}
-        if asked_count is not None:
-            candidate["limit"] = asked_count[1]
-        return candidate
-    return None
+        return None
+    candidate = deepcopy(query)
+    candidate["limit"] = asked_count[1]
+    return candidate
 
 
 def example_plan(
