@@ -546,17 +546,45 @@ def _positive_filter_evidence(
 
 
 def _negative_filter_evidence(runtime: Any, query: dict[str, Any], excluded_text: str) -> bool:
-    """Every matched exclusion value is dropped by an exact outer predicate."""
+    """Every list item of the clause names a value an exact outer predicate drops,
+    and no matched value is left undropped."""
 
     constraints = _field_predicates(query)
     phrases = _value_phrases(runtime._config)
-    matches = _value_matches(_plain(excluded_text), phrases)
-    return bool(matches) and all(
-        any(
-            entry is not None and entry.drops(value.value)
-            for domain, value in phrases[phrase]
-            for dimension in domain.dimensions
-            for entry in [constraints.get(str(dimension))]
+    # The words of ``_plain``, kept with their raw positions so list marks survive.
+    lowered = str(excluded_text or "").lower()
+    tokens = list(re.finditer(r"[^\W_]+", lowered))
+    starts = [0]
+    for token in tokens:
+        starts.append(starts[-1] + len(token.group()) + 1)
+    matches = _value_matches(" ".join(token.group() for token in tokens), phrases)
+    owner: list[int | None] = [None] * len(tokens)
+    for number, ((start, end), _phrase) in enumerate(matches):
+        for index in range(len(tokens)):
+            if start <= starts[index] < end:
+                owner[index] = number
+    # A separator inside a matched value ("Food and Drink") does not split it.
+    items: list[list[int | None]] = [[]]
+    for index, token in enumerate(tokens):
+        inside = index > 0 and owner[index] is not None and owner[index] == owner[index - 1]
+        gap = lowered[tokens[index - 1].end() if index else 0 : token.start()]
+        if not inside and re.search(r"[,;/&]", gap):
+            items.append([])
+        if owner[index] is None and token.group() in {"and", "or", "nor"}:
+            items.append([])
+        else:
+            items[-1].append(owner[index])
+    items = [item for item in items if item]
+    return (
+        bool(items)
+        and all(any(number is not None for number in item) for item in items)
+        and all(
+            any(
+                entry is not None and entry.drops(value.value)
+                for domain, value in phrases[phrase]
+                for dimension in domain.dimensions
+                for entry in [constraints.get(str(dimension))]
+            )
+            for _span, phrase in matches
         )
-        for _span, phrase in matches
     )

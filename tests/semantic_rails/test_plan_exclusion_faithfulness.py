@@ -72,8 +72,7 @@ def _assert_unrealized(payload):
     assert gap["actual"]["negative_predicate_present"] is False
 
 
-@pytest.fixture()
-def listed_channels(shop):
+def _list_channels(shop, store_label):
     shop._config = replace(
         shop._config,
         value_domains=[
@@ -82,14 +81,16 @@ def listed_channels(shop):
                 dimensions=[CHANNEL],
                 values=[
                     ValueDomainValue(value="web", label="Web"),
-                    ValueDomainValue(value="store", label="Top"),
+                    ValueDomainValue(value="store", label=store_label),
                 ],
             )
         ],
         measures=[
             replace(
                 measure,
-                description="Count distinct customers signing up through web and Top channels.",
+                description=(
+                    f"Count distinct customers signing up through web and {store_label} channels."
+                ),
             )
             if measure.id == "measure.shop.signup_count"
             else measure
@@ -97,6 +98,11 @@ def listed_channels(shop):
         ],
     )
     return shop
+
+
+@pytest.fixture()
+def listed_channels(shop):
+    return _list_channels(shop, "Top")
 
 
 @pytest.mark.parametrize(
@@ -133,25 +139,82 @@ def test_every_named_exclusion_value_needs_a_negative_predicate(
         assert count != reference
 
 
-def test_an_unknown_exclusion_list_item_cannot_disappear(listed_channels):
+@pytest.mark.parametrize(
+    ("intent", "op", "value", "draft_count"),
+    [
+        ('signups excluding web and "A"', "!=", "web", 3),
+        ('signups excluding web, "A"', "!=", "web", 3),
+        # Accepted over-hold: the shared matcher skips one-letter names, so "A" stays unproven.
+        ('signups excluding web and "A"', "NOT IN", ["web", "store"], 0),
+    ],
+)
+def test_an_exclusion_list_item_the_catalog_cannot_match_holds(
+    shop, intent, op, value, draft_count
+):
+    channels = _list_channels(shop, "A")
+    reference = _reference(
+        channels,
+        "SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel NOT IN ('web', 'store')",
+    )
+    assert reference == 0
+    payload = plan_payload(
+        channels,
+        intent=intent,
+        partial_query={
+            "where": [{"field": CHANNEL, "op": op, "value": value}],
+            "policy_context": NOW,
+        },
+    )
+    count = channels.query(payload["best"]["query_ir"])["rows"][0]["signup_count"]
+    assert count == draft_count
+    _assert_unrealized(payload)
+
+
+@pytest.mark.parametrize(
+    ("store_label", "excluded_text", "op", "value", "expected"),
+    [
+        ("Top", 'web and "Top"', "NOT IN", ["web", "store"], True),
+        ("Top", 'web, "Top"', "NOT IN", ["web", "store"], True),
+        ("Top", 'web, and "Top"', "NOT IN", ["web", "store"], True),
+        ("Top", "web / Top", "NOT IN", ["web", "store"], True),
+        ("Top", "web & Top", "NOT IN", ["web", "store"], True),
+        ("Top", "web or Top", "NOT IN", ["web", "store"], True),
+        ("Top", 'web and "Top"', "!=", "web", False),
+        ("Top", "web and partner", "NOT IN", ["web", "partner"], False),
+        ("A", 'web and "A"', "NOT IN", ["web", "store"], False),
+        ("A", 'web, "A"', "!=", "web", False),
+        # A separator inside a declared name does not split it.
+        ("Click and Collect", "click and collect", "!=", "store", True),
+        ("Click & Collect", "web, click & collect", "NOT IN", ["web", "store"], True),
+    ],
+)
+def test_every_exclusion_list_item_needs_a_dropped_value(
+    shop, store_label, excluded_text, op, value, expected
+):
+    channels = _list_channels(shop, store_label)
+    query = {"where": [{"field": CHANNEL, "op": op, "value": value}]}
+    assert _negative_filter_evidence(channels, query, excluded_text) is expected
+
+
+def test_an_unmatched_list_item_is_no_negative_evidence_and_stays_held(listed_channels):
     reference = _reference(
         listed_channels,
         "SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel NOT IN ('web', 'partner')",
     )
     assert reference == 3
+    where = [{"field": CHANNEL, "op": "!=", "value": "web"}]
+    assert _negative_filter_evidence(listed_channels, {"where": where}, "web and partner") is False
     payload = plan_payload(
         listed_channels,
         intent="signups excluding web and partner",
-        partial_query={
-            "where": [{"field": CHANNEL, "op": "!=", "value": "web"}],
-            "policy_context": NOW,
-        },
+        partial_query={"where": where, "policy_context": NOW},
     )
     assert listed_channels.query(payload["best"]["query_ir"])["rows"] == [
         {"signup_count": reference}
     ]
-    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
-    assert payload["why"]["details"]["terms"] == ["partner"]
+    _assert_unrealized(payload)
+    terms = {row["code"]: row["details"]["terms"] for row in payload["warnings"]}
+    assert terms["PLAN_UNMATCHED_TERMS"] == ["partner"]
 
 
 @pytest.mark.parametrize(
