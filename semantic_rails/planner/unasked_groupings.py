@@ -141,8 +141,12 @@ def _unasked_grouping_why(
     time = _time_of(query)
     grain = str(time.get("grain") or "")
     splits = _grain_splits(time)
+    from .patterns.period_pair import completed_period_pair  # noqa: WPS433
+
     grain_traced = not splits or (
-        _time_of(caller).get("grain") == grain or _names_grain(config, question, query, grain)
+        _time_of(caller).get("grain") == grain
+        or _names_grain(config, question, query, grain)
+        or completed_period_pair(question, runtime=runtime, query=query)
     )
     terms = _asked_grouping_terms(config, question)
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]

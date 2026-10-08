@@ -3,7 +3,8 @@
 The invariant: plan calls a draft ready only if its result holds the part each of the
 question's shape words asks for. "who", "which" or "list" asks for the rows of the entity its
 clause names, so the group_by needs that entity's declared key; "each" needs a row per item; a
-comparison ("compared with", "vs", "up or down") needs a prior-period select; and two questions
+comparison ("compared with", "vs", "up or down") needs a prior-period select or exactly two
+completed periods matching the whole comparison phrase; and two questions
 for a value ("how many ... and how much ...") need a select of their own each, which names what
 the question asks about. A time grain, a category, a name (which can repeat), another entity's
 grouping or a second select never stands in. Each question below was `ok` without that part, and
@@ -75,7 +76,12 @@ def _gaps(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _hints(payload: dict[str, Any]) -> list[str]:
-    return [str(hint["message"]) for hint in (payload.get("why") or {}).get("recovery_hints", [])]
+    why = payload.get("why") or {}
+    return [
+        str(hint["message"])
+        for reason in [why, *why.get("errors", [])]
+        for hint in reason.get("recovery_hints", [])
+    ]
 
 
 def _without(question: str, terms: list[str]) -> str:
@@ -425,7 +431,7 @@ def test_an_answer_of_the_asked_shape_stays_ready(jaffle: Runtime, question: str
         ("Show orders by store last week.", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
         (
             "Orders by store last week compared with the week before?",
-            "PLAN_FALLBACK_SEMANTIC_DRIFT",
+            GAP,
         ),
         ("What's the store's revenue last month?", UNMATCHED),
     ],
@@ -439,7 +445,10 @@ def test_store_shortcut_removal_holds_before_the_shape_check(
 
     assert payload["status"] == "low_confidence"
     assert "ready_for" not in payload["next"]
-    assert payload["why"]["code"] == code
+    why = payload["why"]
+    if code == GAP and why["code"] == "VALIDATION_FAILED":
+        [why] = why["errors"]
+    assert why["code"] == code
     assert payload == unchecked
     assert not [hint for hint in _hints(payload) if DROP_HINT.search(hint)]
 
@@ -450,6 +459,33 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
         return connection.execute(sql).fetchall()
     finally:
         connection.close()
+
+
+def test_completed_order_comparison_equals_two_dated_weekly_counts(jaffle: Runtime) -> None:
+    payload = plan_payload(
+        jaffle,
+        intent="How many orders did we get last week compared with the week before?",
+        partial_query={"policy_context": NOW},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+    query = payload["best"]["query_ir"]
+    assert query["time"]["grain"] == "week"
+    assert query["order_by"] == [{"field": "time", "direction": "ASC"}]
+    rows = typed_rows(jaffle.query(query))
+    clock = f"{query['time']['temporal_role']}__week"
+    alias = query["select"][0]["as"]
+    reference = _reference(
+        jaffle,
+        "WITH periods(bucket) AS (VALUES (DATE '2017-08-07'), (DATE '2017-08-14')) "
+        "SELECT p.bucket, count(DISTINCT o.order_id) FROM periods p "
+        "LEFT JOIN jaffle_order o ON o.ordered_at >= p.bucket "
+        "AND o.ordered_at < p.bucket + INTERVAL '1 week' GROUP BY 1 ORDER BY 1",
+    )
+    assert len(rows) == len(reference) == 2
+    assert [(str(row[clock])[:10], row[alias]) for row in rows] == [
+        (str(bucket), count) for bucket, count in reference
+    ]
 
 
 @pytest.mark.parametrize(
@@ -547,7 +583,6 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
 MEANINGFUL = [
     "Which customers ordered last week?",
     "List the customers who ordered last week.",
-    "How many orders did we get last week compared with the week before?",
     "Orders by store name last week compared with the week before?",
     "How many orders did each store get last week?",
     "How many orders did each plan get last week?",
@@ -560,8 +595,13 @@ def test_no_hint_offers_to_drop_a_word_that_carries_meaning(jaffle: Runtime, que
     payload = plan_payload(jaffle, intent=question)
 
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == UNMATCHED
-    assert payload["why"]["details"]["terms"]
+    if question == "Orders by store name last week compared with the week before?":
+        assert payload["why"]["code"] == "VALIDATION_FAILED"
+        assert payload["why"]["errors"][0]["code"] == GAP
+        assert "ready_for" not in payload["next"]
+    else:
+        assert payload["why"]["code"] == UNMATCHED
+        assert payload["why"]["details"]["terms"]
     assert _hints(payload)
     assert not [hint for hint in _hints(payload) if DROP_HINT.search(hint)]
 
@@ -572,7 +612,12 @@ def test_dropping_those_words_anyway_is_still_held(jaffle: Runtime, question: st
     grouped or not."""
 
     held = plan_payload(jaffle, intent=question)
-    retry = plan_payload(jaffle, intent=_without(question, held["why"]["details"]["terms"]))
+    assert held["status"] == "low_confidence"
+    assert "ready_for" not in held["next"]
+    if question == "Orders by store name last week compared with the week before?":
+        assert held["why"]["errors"][0]["code"] == GAP
+    terms = held["why"].get("details", {}).get("terms", [])
+    retry = plan_payload(jaffle, intent=_without(question, terms))
 
     assert retry["status"] == "low_confidence"
     assert "ready_for" not in retry["next"]

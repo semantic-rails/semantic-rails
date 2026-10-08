@@ -30,7 +30,7 @@ from semantic_rails.planner.unmatched_words import unmatched_intent_terms
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
 from tests.semantic_rails.conftest import copy_package_config
-from tests.semantic_rails.result_helpers import assert_plan_held
+from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
@@ -1489,6 +1489,33 @@ def named_metrics(tmp_path: Path) -> Iterator[SemanticLayerMCPAdapter]:
         mcp.close()
 
 
+def test_named_filtered_monthly_comparison_equals_reference_sql(
+    named_metrics: SemanticLayerMCPAdapter,
+) -> None:
+    payload = named_metrics.call_tool(
+        "plan", {"intent": "large order revenue vs prior month by month", "detail": "full"}
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+    query = payload["best"]["query_ir"]
+    assert query["select"][0]["expression"] == {"metric": "metric.sales.large_order_revenue"}
+    rows = typed_rows(named_metrics.runtime.query(query))
+    clock = f"{ORDER_TIME}__month"
+    current, prior = [row["as"] for row in query["select"]]
+    with duckdb.connect(named_metrics.runtime.db_path, read_only=True) as connection:
+        reference = connection.execute(
+            "WITH months AS (SELECT date_trunc('month', ordered_at)::DATE AS bucket, "
+            "sum(order_total_cents / 100.0) FILTER (WHERE is_large_order IN (TRUE)) AS revenue "
+            "FROM jaffle_order GROUP BY 1) "
+            "SELECT m.bucket, m.revenue, p.revenue FROM months m LEFT JOIN months p "
+            "ON p.bucket = m.bucket - INTERVAL '1 month' ORDER BY m.bucket"
+        ).fetchall()
+    assert len(rows) == len(reference) > 1
+    assert [(str(row[clock])[:10], row[current], row[prior]) for row in rows] == [
+        (str(bucket), value, previous) for bucket, value, previous in reference
+    ]
+
+
 @pytest.mark.parametrize(
     ("text", "subject", "status", "gap"),
     [
@@ -1524,13 +1551,15 @@ def named_metrics(tmp_path: Path) -> Iterator[SemanticLayerMCPAdapter]:
             "subject_window_mismatch",
         ),
         ("Revenue QTD by day", "metric.sales.revenue_qtd", "ok", None),
-        # A draft without the named metric, or a second subject, isn't ready.
+        # Current and prior filtered revenue are proved by
+        # test_named_filtered_monthly_comparison_equals_reference_sql.
         (
             "large order revenue vs prior month by month",
             None,
-            "low_confidence",
-            "named_metric_unrealized",
+            "ok",
+            None,
         ),
+        # A draft without a second subject isn't ready.
         (
             "large order revenue and orders by month",
             None,

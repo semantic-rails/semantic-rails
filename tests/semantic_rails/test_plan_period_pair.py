@@ -19,6 +19,7 @@ from semantic_rails.planner.answer_shape import _answer_shape_why
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.time_windows import _time_window
+from semantic_rails.planner.unasked_groupings import _unasked_grouping_why
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.test_plan_metric_vocabulary import SEED, _package
 from tests.semantic_rails.test_plan_time_reference import subscriptions  # noqa: F401, F811
@@ -30,7 +31,8 @@ QUESTION = "How many new accounts last week compared with the week before?"
 COVERAGE_SEED = """
 INSERT INTO events VALUES (7, 'a', 'close', '2026-08-01'),
   (8, 'a', 'signup', '2026-07-01'), (9, 'a', 'signup', '2026-10-05'),
-  (10, 'a', 'close', '2026-10-05');
+  (10, 'a', 'close', '2026-10-05'), (11, 'a', 'signup', '2023-12-31'),
+  (12, 'a', 'close', '2023-12-31');
 """
 
 
@@ -153,6 +155,30 @@ def _draft() -> dict[str, Any]:
             "2026-10-05",
             [0, 0],
         ),
+        (
+            "new accounts last day vs the previous day",
+            "new_accounts",
+            "day",
+            "2026-10-03",
+            "2026-10-05",
+            [0, 0],
+        ),
+        (
+            "new accounts last quarter vs the quarter before",
+            "new_accounts",
+            "quarter",
+            "2026-04-01",
+            "2026-10-01",
+            [0, 4],
+        ),
+        (
+            "new accounts last year vs the prior year",
+            "new_accounts",
+            "year",
+            "2024-01-01",
+            "2026-01-01",
+            [0, 0],
+        ),
     ],
 )
 def test_completed_pairs_match_independent_sql(
@@ -263,6 +289,12 @@ def test_hand_authored_bypasses_keep_the_comparison_guard(
     query = deepcopy(_draft())
     for key, value in patch.items():
         query[key] = {**query[key], **value} if key == "time" else value
+    grouping_why = _unasked_grouping_why(accounts, question, query)
+    if question == QUESTION:
+        assert grouping_why and grouping_why["code"] == "PLAN_UNASKED_GROUPING"
+    else:
+        # These words already name a grain on main; the comparison guard still holds.
+        assert grouping_why is None
     why = _answer_shape_why(accounts, question, query)
     assert why and why["code"] == "PLAN_INTENT_COVERAGE_GAP"
     assert "comparison_unrealized" in {gap["kind"] for gap in why["details"]["gaps"]}

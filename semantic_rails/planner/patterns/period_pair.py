@@ -13,6 +13,7 @@ from ...expressions import collect_object_references, expr_to_dict
 from .._base import RuntimeCompositionDraft, _object_by_id, _resolved, _semantic_token
 from ..time_phrases import (
     _calendar_windows,
+    _period_shift_grain,
     _relative_window,
     _time_cues,
 )
@@ -154,13 +155,14 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     )
     from ..generators import _target_focus_text  # noqa: WPS433
     from ..groupings import _maybe_group_by  # noqa: WPS433
+    from ..qualifiers import _target_measure_terms  # noqa: WPS433
     from .metric_by_dimension_rollup import _governed_target  # noqa: WPS433
 
     if not _COMPARISON_RE.search(text):
         return None
     pair = completed_period_pair(text)
-    # Unknown comparison syntax retains the existing patterns and guards.
-    if pair is None and _PAIR.search(text) is None:
+    # Unknown syntax and already supported shifts retain their existing patterns and holds.
+    if pair is None and (_PAIR.search(text) is None or _period_shift_grain(text)):
         return None
     focus = _target_focus_text(text[: pair.span[0]] if pair else text)
     named = _named_metric(runtime._config, focus)
@@ -168,7 +170,9 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         named[0]
         if named
         else (
-            _preferred_measure(runtime._config, terms, _tokens(focus))
+            _preferred_measure(
+                runtime._config, _target_measure_terms(focus, terms) or terms, _tokens(focus)
+            )
             or _preferred_metric(runtime._config, _tokens(focus))
         )
     )

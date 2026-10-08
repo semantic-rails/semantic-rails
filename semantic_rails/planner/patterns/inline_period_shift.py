@@ -107,7 +107,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     base_alias = _semantic_token(subject.id, fallback="measure")
     prior_alias = f"{base_alias}_prior_{shift_grain}"
     prior = (
-        {"kind": "prior_period", "input": expression, "offset": {"unit": shift_grain, "value": -1}}
+        {"kind": "prior_period", "input": expression, "offset": {"unit": shift_grain, "value": 1}}
         if "metric" in expression
         else {"kind": "prior_period", **expression, "offset": -1, "grain": shift_grain}
     )
