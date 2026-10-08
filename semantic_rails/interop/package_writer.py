@@ -146,7 +146,10 @@ class _Writer:
                 for measure in self.config.measures
                 if role is not None
                 and measure.entity == entity.id
-                and measure.default_temporal_role == role.id
+                and (
+                    measure.default_temporal_role == role.id
+                    or role.id in measure.compatible_temporal_roles
+                )
                 and measure.source_relation
             }
             relation = next(iter(source_relations)) if len(source_relations) == 1 else ""
@@ -154,6 +157,20 @@ class _Writer:
             if role is None:
                 model.setdefault("dimensions", {})[key] = spec
                 continue
+            if role.default_query_time_axis:
+                untimed = [
+                    measure.id
+                    for measure in self.config.measures
+                    if measure.entity == entity.id
+                    and (measure.source_relation or entity.table) == (relation or entity.table)
+                    and not measure.compatible_temporal_roles
+                ]
+                if untimed:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"Cannot place default time '{role.id}': it would give a clock to "
+                        f"{', '.join(untimed)}; the declaring model cannot be recovered",
+                    )
             time = _described(role, "temporal_class", "supported_grains", skip={"dimension"})
             time["id"] = role.id
             if (dimension.name, dimension.label) == (role.name, role.label) and not (

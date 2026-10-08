@@ -17,6 +17,7 @@ REFUSED = [
     (("models", "orders"), "default_time", "ordered_at"),
     (("models", "orders", "times", "ordered_at"), "default_query_axis", True),
     (("defaults", "time"), "default_query_axis", False),
+    (("defaults", "time"), "default", True),
     (("defaults", "time"), "preferred_filter_ops", ["="]),
     (("defaults", "dimension"), "preferred_filter_ops", ["="]),
     (("models", "orders", "dimensions", "channel"), "preferred_filter_ops", ["="]),
@@ -29,6 +30,10 @@ REFUSED = [
             ("metrics", "revenue_usd"),
         ]
         for key in ("clock_variants", "comparison_peers")
+    ],
+    *[
+        (("models", "orders", "measures", "revenue_usd", "publish"), key, ["legacy"])
+        for key in ("clock_variants", "comparison_peers", "preferred_filter_ops")
     ],
 ]
 
@@ -46,6 +51,22 @@ def test_unsupported_forms_refuse_at_load(tmp_path, strict, layout, path, key, v
     row[key] = value
     package = _write_defaults(source, doc, doc.get("defaults", {}), layout)
     with pytest.raises(SemanticLayerError, match=key) as exc:
+        load_package_config(str(package))
+    assert exc.value.code == "INVALID_CONFIG"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("layout", ["single-file", "directory"])
+def test_inherited_default_refuses_with_two_unmarked_roles(tmp_path, strict, layout):
+    source = write_single_file_package(tmp_path / "project")
+    doc = safe_load(source.read_bytes())
+    doc["package"]["schema_strict"] = strict
+    times = doc["models"]["orders"]["times"]
+    times["ordered_at"].pop("default")
+    times["fulfilled_at"] = {**deepcopy(times["ordered_at"]), "column": "fulfilled_at"}
+    doc["defaults"]["time"]["default"] = True
+    package = _write_defaults(source, doc, doc["defaults"], layout)
+    with pytest.raises(SemanticLayerError, match="defaults.time.*default") as exc:
         load_package_config(str(package))
     assert exc.value.code == "INVALID_CONFIG"
 

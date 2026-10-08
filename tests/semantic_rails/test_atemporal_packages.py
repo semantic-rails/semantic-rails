@@ -163,7 +163,6 @@ TIME_REQUESTS = [
     {**BASE, "time": {"grain": "month"}},
     {**BASE, "time": {"temporal_role": "temporal_role.absent", "grain": "month"}},
     {**BASE, "grain": "month"},
-    {**BASE, "default_query_axis": True},
     {**BASE, "temporal_role_overrides": {COUNT: "temporal_role.absent"}},
     {
         **BASE,

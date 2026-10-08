@@ -9,7 +9,7 @@ import yaml
 from semantic_rails.config import load_package_snapshot
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.interop.package_writer import write_package
+from semantic_rails.interop.package_writer import package_documents, write_package
 from semantic_rails.meta_contract import load_meta_contract
 from semantic_rails.operational import load_operational_contract
 from semantic_rails.schema import (
@@ -75,6 +75,66 @@ def test_contracts_path_policy_and_authored_values_are_written(tmp_path) -> None
     )
     assert loaded.measures[0].suggested_aggregations == ["max"]
     assert loaded.package.observation_scope == "query"
+
+
+@pytest.mark.parametrize("include_axis", [True, False])
+def test_fact_axis_default_never_gives_calendar_measures_a_clock(tmp_path, include_axis) -> None:
+    raw = yaml.safe_load(PACKAGES[-1].read_text(encoding="utf-8"))
+    raw["graph"]["entities"]["day"] = {"key": "day_id", "kind": "time"}
+    raw["models"]["calendar"] = {
+        "relation": "calendar",
+        "grain": ["day_id"],
+        "entities": {"day": {}},
+        "measures": {"calendar_count": {"kind": "entity_count", "entity_key": "day_id"}},
+    }
+    raw["models"]["daily_sales"] = {
+        "kind": "fact",
+        "relation": "daily_sales",
+        "time_entity": "day",
+        "grain": ["day_id"],
+        "times": {
+            "day": {
+                "id": "temporal_role.shop_sales_day",
+                "column": "day",
+                "kind": "date",
+                "default": True,
+            },
+            "recorded_at": {"column": "recorded_at", "kind": "timestamp"},
+        },
+        "measures": {
+            key: {
+                "kind": "aggregate",
+                "expr": key,
+                "times": ["recorded_at", "day"] if include_axis else ["recorded_at"],
+            }
+            for key in ("sales", "returns")
+        },
+    }
+    source = tmp_path / "source.yml"
+    source.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    config = load_package_snapshot(source).config
+    clocks = {measure.id: measure.default_temporal_role for measure in config.measures}
+    assert clocks["measure.shop.calendar_count"] == ""
+    axis = next(role for role in config.temporal_roles if role.id == "temporal_role.shop_sales_day")
+    assert axis.default_query_time_axis
+    assert all(
+        measure.default_temporal_role != axis.id
+        for measure in config.measures
+        if measure.source_relation == "daily_sales"
+    )
+    directory = tmp_path / "out"
+    if not include_axis:
+        with pytest.raises(SemanticLayerError, match="clock.*measure.shop.calendar_count"):
+            package_documents(config, namespace="shop")
+        with pytest.raises(SemanticLayerError, match="clock.*measure.shop.calendar_count") as exc:
+            write_package(config, directory, namespace="shop")
+        assert exc.value.code == "INVALID_CONFIG"
+        assert not directory.exists()
+        return
+    write_package(config, directory, namespace="shop")
+    loaded = load_package_snapshot(directory).config
+    assert {measure.id: measure.default_temporal_role for measure in loaded.measures} == clocks
+    assert loaded.temporal_roles == config.temporal_roles
 
 
 def _relation_pipeline(config):

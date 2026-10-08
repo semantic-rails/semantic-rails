@@ -1886,6 +1886,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
     dim_defaults = dict(defaults.get("dimension", {}) or {})
     time_defaults = dict(defaults.get("time", {}) or {})
+    if "default" in time_defaults:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{path}: defaults.time.default is not supported; declare default: true on a model's time role",
+        )
     _check_binding_keys(dim_defaults, _DIMENSION_KEYS, label=f"{path}: defaults.dimension")
     _check_binding_keys(time_defaults, _TIME_KEYS, label=f"{path}: defaults.time")
     measure_defaults = dict(defaults.get("measure", {}) or {})
@@ -2091,6 +2096,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             measure_spec = lookup_measure_spec(
                 raw_measure_spec, measure_spec, f"{path}: measure '{measure_key}'"
             )
+            publish_spec = measure_spec.get("publish")
+            if isinstance(publish_spec, dict):
+                for advisory_key in ("clock_variants", "comparison_peers", "preferred_filter_ops"):
+                    if advisory_key in publish_spec:
+                        raise SemanticLayerError(
+                            "INVALID_CONFIG",
+                            f"{path}: measure '{measure_key}' publish.{advisory_key} is not supported",
+                        )
             measure_id = str(
                 measure_spec.get("id", f"measure.{_slug(entity_cfg.name)}_{_slug(measure_key)}")
             )

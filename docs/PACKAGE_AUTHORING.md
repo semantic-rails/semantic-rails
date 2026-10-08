@@ -1291,6 +1291,7 @@ the loader refuses multiple defaults with `INVALID_CONFIG`. This role supplies t
 default clock and has `default_query_time_axis: true` in catalog output. Separate models
 may have defaults on the same entity. `default_time` and `default_query_axis` are refused
 with `INVALID_CONFIG`; the `time-default-axis` upgrade rule deletes the old axis hints.
+`defaults.time.default` is also refused: declare the default on the model's role itself.
 
 ```yaml
 times:
@@ -2775,7 +2776,6 @@ named definition by hand before upgrading.
 | `policy-flat` | 0.3.2 | Nested policy `config:`, `visibility`, `rule`, and `description` (except nested row filters) | Flat kind-specific fields, `action` and `rationale`; nested scope or identity fields, disagreements, and release-label changes stop without choices |
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
-
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
 
 ## Reference
