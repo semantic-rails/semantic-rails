@@ -126,7 +126,7 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
             raise SemanticLayerError(
                 "REWRITE_NOT_SUPPORTED",
                 "This query compiles its parts as separate sub-queries, which cannot hold the "
-                "implicit calendar; add a calendar entity (kind: time) to the package",
+                "implicit calendar that fills its series",
             )
         return SqlSelect(
             select=[SqlField(_expr(field.expression), field.alias) for field in node.select],
