@@ -46,7 +46,6 @@ def _write_package(package_dir: Path, *, package_overrides: dict) -> Path:
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 }
             },

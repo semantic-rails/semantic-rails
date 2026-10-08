@@ -111,7 +111,7 @@ def _package(root, policies):
         "schema_version": 1,
         "package": {"id": "rf", "name": "rf", "description": "Row filters", "warehouse": "duckdb",
                     "default_db": "rf.duckdb", "seed": {"kind": "external"}},
-        "defaults": {"time": {"timezone": "UTC", "default_query_axis": False}},
+        "defaults": {"time": {"timezone": "UTC"}},
     })  # fmt: skip
     put("graph.yml", {"graph": {
         "entities": {

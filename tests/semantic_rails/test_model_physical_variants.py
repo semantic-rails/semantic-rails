@@ -39,7 +39,6 @@ def _write_variant_package(package_dir: Path) -> None:
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 }
             },
@@ -316,7 +315,7 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
                 "seed": {"kind": "external"},
                 "schema_strict": True,
             },
-            "defaults": {"time": {"timezone": "UTC", "default_query_axis": False}},
+            "defaults": {"time": {"timezone": "UTC"}},
         },
     )
     order = {

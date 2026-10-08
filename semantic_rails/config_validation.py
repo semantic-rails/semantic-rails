@@ -655,9 +655,6 @@ _STRICT_LEGACY_KEYS_ON_OBJECTS = {
     # Field name → migration message
     # Applied to dimensions and measures.
     "topics": "topics is metadata-only and dropped in v1; remove it",
-    "preferred_filter_ops": "preferred_filter_ops has no planner gating; remove it",
-    "clock_variants": "clock_variants is metadata-only and dropped; remove it",
-    "comparison_peers": "comparison_peers is advisory-only and dropped; remove it",
     "preferred_companion_metrics": "preferred_companion_metrics is advisory-only and dropped; remove it",
 }
 
@@ -665,9 +662,6 @@ _STRICT_LEGACY_KEYS_ON_OBJECTS = {
 # stays on metrics (advisory governance metadata, see commit ef4c543).
 _STRICT_LEGACY_KEYS_ON_METRICS = {
     "topics": "topics is metadata-only and dropped in v1; remove it",
-    "preferred_filter_ops": "preferred_filter_ops has no planner gating; remove it",
-    "clock_variants": "clock_variants is metadata-only and dropped; remove it",
-    "comparison_peers": "comparison_peers is advisory-only and dropped; remove it",
 }
 
 
@@ -822,8 +816,7 @@ def _check_strict_raw_yaml(
                         f"event, population.",
                     )
 
-    # 6. Metric strict checks — topics:/clock_variants:/etc. are metadata-only
-    # and dropped in v1 (keys outside _METRIC_KEYS are already reported as
+    # Metric topics are dropped in v1 (keys outside _METRIC_KEYS are already reported as
     # unknown). preferred_companion_metrics stays; see _STRICT_LEGACY_KEYS_ON_METRICS.
     for metric_key, (metric_path, metric_raw) in (metrics or {}).items():
         for legacy_key, message in _STRICT_LEGACY_KEYS_ON_METRICS.items():
@@ -918,7 +911,6 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
                     f"support and timezone handling.",
                 )
 
-    _check_default_query_axis_collisions(config, source_path, errors)
     _check_disallowed_names(config, source_path, errors)
     if getattr(config.package, "schema_strict", False):
         _check_strict_authoring(config, source_path, errors)
@@ -946,31 +938,6 @@ def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> Non
                 f"{source_path}: measure {measure.id} has accumulation.kind {kind!r} "
                 f"which is not in the strict enum {{flow, stock, event, population}}. "
                 f"Use one of those values or remove the accumulation block.",
-            )
-
-
-def _check_default_query_axis_collisions(config, source_path: Path, errors: list[str]) -> None:
-    """Reject if more than one temporal_role per entity sets default_query_time_axis=True.
-
-    A model can have multiple temporal columns (ordered_at, fulfilled_at, ...)
-    but at most one should be the implicit default time axis for queries.
-    """
-    dim_to_entity = {dim.id: dim.entity for dim in config.dimensions}
-    by_entity: dict[str, list[str]] = {}
-    for role in config.temporal_roles:
-        if not role.default_query_time_axis:
-            continue
-        entity_id = dim_to_entity.get(role.dimension, "")
-        if not entity_id:
-            continue
-        by_entity.setdefault(entity_id, []).append(role.id)
-    for entity_id, role_ids in by_entity.items():
-        if len(role_ids) > 1:
-            add_error(
-                errors,
-                f"{source_path}: entity {entity_id} has multiple temporal_roles with "
-                f"default_query_axis=true: {sorted(role_ids)}. At most one default time "
-                f"axis is allowed per model/entity.",
             )
 
 

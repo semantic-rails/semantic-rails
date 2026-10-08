@@ -1,7 +1,8 @@
 WITH leaf_1 AS (
 SELECT
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
-  SUM(comparison_orders.order_total_cents / 100.0) AS m1
+  SUM(comparison_orders.order_total_cents / 100.0) AS m1,
+  COUNT(1) AS m1_rows
 FROM comparison_orders
 GROUP BY
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
@@ -10,7 +11,8 @@ leaf_2__revenue_usd_order_month_source_1__leaf_1 AS (
 SELECT
   comparison_orders.order_id AS g1,
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
-  SUM(comparison_orders.order_total_cents / 100.0) AS m1
+  SUM(comparison_orders.order_total_cents / 100.0) AS m1,
+  COUNT(1) AS m1_rows
 FROM comparison_orders
 GROUP BY
   comparison_orders.order_id,
@@ -20,7 +22,7 @@ leaf_2__revenue_usd_order_month_source_1__guarded_base AS (
 SELECT
   base.g1 AS g1,
   base.t AS t,
-  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
 FROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base
 ),
 leaf_2__revenue_usd_order_month_source_1 AS (
@@ -41,7 +43,8 @@ WHERE
 leaf_2 AS (
 SELECT
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
-  SUM(comparison_orders.order_total_cents / 100.0) AS m2
+  SUM(comparison_orders.order_total_cents / 100.0) AS m2,
+  COUNT(1) AS m2_rows
 FROM comparison_orders
 INNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1."dimension.jaffle_order_id" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t
 GROUP BY
@@ -51,7 +54,9 @@ combined_2 AS (
 SELECT
   COALESCE(left_side.t, right_side.t) AS t,
   left_side.m1 AS m1,
-  right_side.m2 AS m2
+  left_side.m1_rows AS m1_rows,
+  right_side.m2 AS m2,
+  right_side.m2_rows AS m2_rows
 FROM leaf_1 AS left_side
 FULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t
 ),
@@ -64,8 +69,8 @@ FROM comparison_orders
 guarded_base AS (
 SELECT
   base.t AS t,
-  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,
-  CASE WHEN COUNT(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,
+  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2
 FROM combined_2 AS base
 CROSS JOIN coverage_1
 )

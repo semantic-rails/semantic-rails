@@ -41,7 +41,6 @@ def _write_minimal_package(
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 },
                 **dict(defaults_extra or {}),
@@ -79,7 +78,6 @@ def _write_minimal_package(
                         "column": "ordered_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "measures": {
@@ -142,7 +140,6 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 }
             },
@@ -204,7 +201,6 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
                         "column": "ordered_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "measures": {
@@ -467,7 +463,6 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 }
             },
@@ -504,7 +499,6 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
                         "column": "O_ORDERDATE",
                         "kind": "date",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "measures": {

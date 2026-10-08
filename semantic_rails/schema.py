@@ -116,7 +116,6 @@ class DimensionConfig:
     description: str = ""
     semantic_kind: str = ""
     topics: list[str] = field(default_factory=list)
-    preferred_filter_ops: list[str] = field(default_factory=list)
     sample_values_strategy: str = ""
     filterable: bool = True
     groupable: bool = True
@@ -231,8 +230,6 @@ class MeasureConfig:
     suggested_aggregations: list[str] = field(default_factory=list)
     comparison_family: str = ""
     comparison_mode: str = ""
-    comparison_peers: list[str] = field(default_factory=list)
-    clock_variants: list[str] = field(default_factory=list)
     preferred_companion_metrics: list[str] = field(default_factory=list)
     operational: dict[str, Any] = field(default_factory=dict)
     default_temporal_role: str = ""
@@ -270,8 +267,6 @@ class MetricConfig:
     topics: list[str] = field(default_factory=list)
     comparison_family: str = ""
     comparison_mode: str = ""
-    comparison_peers: list[str] = field(default_factory=list)
-    clock_variants: list[str] = field(default_factory=list)
     preferred_companion_metrics: list[str] = field(default_factory=list)
     operational: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)

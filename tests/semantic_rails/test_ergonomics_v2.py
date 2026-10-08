@@ -65,10 +65,9 @@ def _write_demo_package(package_dir: Path) -> None:
                         "column": "ordered_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "ordered_at",
                 "measures": {
                     "revenue": {
                         "kind": "aggregate",
