@@ -110,7 +110,10 @@ def _relation_pipeline(config):
         (lambda c: {"package": replace(c.package, default_db="../shop.duckdb")}, ["package"]),
     ],
 )
-def test_what_does_not_come_back_is_refused_by_name(changes, refused, tmp_path) -> None:
+def test_what_does_not_come_back_is_refused_by_name(
+    changes, refused, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", raising=False)
     if isinstance(changes, str):  # an authoring change, loaded the way the loader reads it
         raw = yaml.safe_load(PACKAGES[-1].read_text(encoding="utf-8"))
         raw["graph"]["entities"]["customer"].update(yaml.safe_load(changes))

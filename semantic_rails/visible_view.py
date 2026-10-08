@@ -122,7 +122,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     DimensionConfig: _classes(
         "id entity column data_type filterable groupable value_domain",
         text="label description semantic_kind sample_values_strategy",
-        texts="topics preferred_filter_ops",
+        texts="topics",
         identity="name aliases",
     ),
     TemporalRoleConfig: _classes(
@@ -149,7 +149,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     MeasureConfig: _classes(
         "id entity row_grain expr default_aggregation allowed_aggregations source_relation "
         "invalid_aggregations measure_class accumulation compatible_temporal_roles value_type "
-        "suggested_aggregations comparison_peers clock_variants preferred_companion_metrics "
+        "suggested_aggregations preferred_companion_metrics "
         "default_temporal_role cross_window_policy additive lookup_from lookup_via publish",
         text="currency label description comparison_family comparison_mode",
         texts="topics example_entries authoring_warnings",
@@ -159,7 +159,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     ),
     MetricConfig: _classes(
         "id kind expression temporal_role compatible_temporal_roles filter_spec window_spec "
-        "comparison_peers clock_variants preferred_companion_metrics value_type",
+        "preferred_companion_metrics value_type",
         text="label description comparison_family comparison_mode",
         texts="topics example_entries",
         identity="name aliases",

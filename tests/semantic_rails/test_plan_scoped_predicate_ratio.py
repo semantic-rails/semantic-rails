@@ -36,7 +36,7 @@ def _model(model_id: str, entities: list[str], time: tuple[str, str], measures: 
         f"model:\n  id: {model_id}\n  relation: {model_id}\n  entities:\n{entity_lines}\n"
         f"  times:\n    {column}:\n      label: {column}\n      column: {column}\n"
         f"      kind: timestamp\n      class: event_time\n      as: temporal_role.plan_{role}\n"
-        f"      default: true\n      default_query_axis: true\n  measures:\n{measures}"
+        f"      default: true\n  measures:\n{measures}"
     )
 
 

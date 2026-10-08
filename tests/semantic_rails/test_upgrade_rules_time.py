@@ -37,7 +37,7 @@ def test_default_axis_golden_and_effective_semantics(tmp_path, layout, axis, loc
         assert b"default_query_axis" not in data
     report = upgrade_project(files.source, workspace_root=tmp_path, dry_run=False)
     assert report["ok"] and report["status"] == "upgraded", report
-    assert report["proof"]["tier"] == "proven"
+    assert report["proof"]["tier"] == "certified"
     upgraded = load_package_snapshot(files.source)
     assert upgraded.semantic_fingerprint == expected.semantic_fingerprint
     query = {"select": [{"expression": {"metric": "metric.shop.revenue_usd"}, "as": "revenue"}]}

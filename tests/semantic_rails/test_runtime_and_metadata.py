@@ -63,7 +63,6 @@ def _write_operational_package(package_dir: Path) -> None:
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 },
                 "operational": {
@@ -117,7 +116,6 @@ def _write_operational_package(package_dir: Path) -> None:
                         "column": "ordered_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "measures": {
@@ -170,7 +168,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 },
             },
@@ -208,7 +205,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "column": "event_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "dimensions": {
@@ -831,7 +827,7 @@ def test_inspect_exposes_measure_and_dimension_cards(runtime_factory):
 
         assert dimension_card["kind_semantics"] == "categorical"
         # `preferred_filter_ops` was dropped in v1 — metadata-only, no planner gating.
-        assert dimension_card.get("preferred_filter_ops", []) == []
+        assert "preferred_filter_ops" not in dimension_card
         assert dimension_card["value_domain_summary"]["value_count"] == 2
         assert dimension_card["sample_values"]
         assert any(row["label"] == "Drink" for row in dimension_card["top_values"])

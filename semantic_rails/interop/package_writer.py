@@ -37,7 +37,7 @@ _RENAMES = {
     "aliases": "synonyms",
     "compatible_temporal_roles": "times",
     "default_aggregation": "default_agg",
-    "default_query_time_axis": "default_query_axis",
+    "default_query_time_axis": "default",
     "example_entries": "examples",
     "semantic_kind": "kind",
     "source_columns": "via",
@@ -140,7 +140,17 @@ class _Writer:
                     _authored(v, ("label", "description"), (), {}) for v in domain.values
                 ]
                 spec["value_domain_id"] = domain.id
-            model, role = self.model(entity.id)[1], roles.get(dimension.id)
+            role = roles.get(dimension.id)
+            source_relations = {
+                measure.source_relation
+                for measure in self.config.measures
+                if role is not None
+                and measure.entity == entity.id
+                and measure.default_temporal_role == role.id
+                and measure.source_relation
+            }
+            relation = next(iter(source_relations)) if len(source_relations) == 1 else ""
+            model = self.model(entity.id, relation)[1]
             if role is None:
                 model.setdefault("dimensions", {})[key] = spec
                 continue

@@ -38,5 +38,6 @@ RULES = (
         "Remove the separate query-axis hint.",
         _axis,
         masks=("temporal_roles.*.default_query_time_axis",),
+        refused=True,
     ),
 )

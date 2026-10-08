@@ -911,14 +911,14 @@ def test_metadata_partial_time_refuses(runtime, operation) -> None:
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
 
 
-def test_default_query_axis_requires_declared_time(package_path) -> None:
+def test_legacy_default_query_axis_is_refused_without_time(package_path) -> None:
     path = package_path / "package.yml"
     payload = yaml.safe_load(path.read_text())
     payload["defaults"]["time"]["default_query_axis"] = True
     path.write_text(yaml.safe_dump(payload))
-    with pytest.raises(SemanticLayerError, match="declares no time") as exc:
+    with pytest.raises(SemanticLayerError, match="default_query_axis") as exc:
         load_package_config(str(package_path))
-    assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    assert exc.value.code == "INVALID_CONFIG"
 
 
 def test_non_time_lookup_matches_independent_sql(package_path) -> None:

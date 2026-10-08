@@ -245,10 +245,9 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "label": "Valid from",
                         "kind": "date",
                         "class": "snapshot_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "valid_from",
                 "measures": {
                     "raw_account_rows": {
                         "label": "Raw account rows",
@@ -274,10 +273,9 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "label": "Date day",
                         "kind": "date",
                         "class": "snapshot_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "date_day",
                 "measures": {
                     "account_tag_rows": {
                         "label": "Account tag rows",
@@ -301,10 +299,9 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "label": "Next valid from",
                         "kind": "date",
                         "class": "snapshot_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "next_valid_from",
                 "measures": {
                     "eligible_account_rows": {
                         "label": "Eligible account rows",
@@ -327,10 +324,9 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "label": "Sent at",
                         "kind": "date",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "sent_at",
                 "measures": {
                     "sends": {
                         "label": "Sends",
@@ -354,10 +350,9 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "label": "Signed at",
                         "kind": "date",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     }
                 },
-                "default_time": "signed_at",
                 "measures": {
                     "matched_signups": {
                         "label": "Matched signups",

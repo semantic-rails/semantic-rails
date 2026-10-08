@@ -125,7 +125,6 @@ def _write_package_header(package_dir: Path, package_id: str, graph_entities: di
             "defaults": {
                 "time": {
                     "timezone": "UTC",
-                    "default_query_axis": False,
                     "supported_grains": ["day", "week", "month", "quarter", "year"],
                 }
             },
@@ -351,7 +350,6 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                         "column": time_column,
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "measures": {
@@ -616,7 +614,6 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                         "column": "ordered_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
                     }
                 },
                 "measures": {

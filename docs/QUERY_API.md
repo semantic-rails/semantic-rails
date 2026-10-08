@@ -837,8 +837,6 @@ Useful card fields for measures:
 - `recommended_filters`
 - `sample_questions`
 - `comparison_family`
-- `comparison_peers`
-- `clock_variants`
 - `preferred_companion_metrics`
 - `starter_query_patches` — list of `{kind, query_patch [, note]}` entries.
   Always includes `select` (and `group_by` when a recommended dimension

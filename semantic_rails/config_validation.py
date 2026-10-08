@@ -655,9 +655,6 @@ _STRICT_LEGACY_KEYS_ON_OBJECTS = {
     # Field name → migration message
     # Applied to dimensions and measures.
     "topics": "topics is metadata-only and dropped in v1; remove it",
-    "preferred_filter_ops": "preferred_filter_ops has no planner gating; remove it",
-    "clock_variants": "clock_variants is metadata-only and dropped; remove it",
-    "comparison_peers": "comparison_peers is advisory-only and dropped; remove it",
     "preferred_companion_metrics": "preferred_companion_metrics is advisory-only and dropped; remove it",
 }
 
@@ -665,9 +662,6 @@ _STRICT_LEGACY_KEYS_ON_OBJECTS = {
 # stays on metrics (advisory governance metadata, see commit ef4c543).
 _STRICT_LEGACY_KEYS_ON_METRICS = {
     "topics": "topics is metadata-only and dropped in v1; remove it",
-    "preferred_filter_ops": "preferred_filter_ops has no planner gating; remove it",
-    "clock_variants": "clock_variants is metadata-only and dropped; remove it",
-    "comparison_peers": "comparison_peers is advisory-only and dropped; remove it",
 }
 
 
@@ -822,8 +816,7 @@ def _check_strict_raw_yaml(
                         f"event, population.",
                     )
 
-    # 6. Metric strict checks — topics:/clock_variants:/etc. are metadata-only
-    # and dropped in v1 (keys outside _METRIC_KEYS are already reported as
+    # Metric topics are dropped in v1 (keys outside _METRIC_KEYS are already reported as
     # unknown). preferred_companion_metrics stays; see _STRICT_LEGACY_KEYS_ON_METRICS.
     for metric_key, (metric_path, metric_raw) in (metrics or {}).items():
         for legacy_key, message in _STRICT_LEGACY_KEYS_ON_METRICS.items():
