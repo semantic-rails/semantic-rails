@@ -248,6 +248,100 @@ def test_short_and_symbol_names_are_items(tmp_path, monkeypatch, label, question
         runtime.close()
 
 
+BOTH = "channel IS DISTINCT FROM 'web' AND channel IS DISTINCT FROM 'store'"
+
+
+@pytest.mark.parametrize(
+    ("label", "question", "items"),
+    [
+        # A character no item, separator or lead reads is an unknown item, never skipped.
+        ("-", "signups excluding web and '-'", [("value", "web"), ("unknown", "'-'")]),
+        ("-", "signups excluding web and ‘-’", [("value", "web"), ("unknown", "‘-’")]),
+        ("-", "signups excluding web, -", [("value", "web"), ("unknown", "-")]),
+        ("_", "signups excluding web, _", [("value", "web"), ("unknown", "_")]),
+        (
+            "Top",
+            "signups excluding web and 'store'",
+            [("value", "web"), ("unknown", "'"), ("value", "store"), ("unknown", "'")],
+        ),
+        # An opening curly quote is a mark that ends the list.
+        (
+            "Top",
+            "signups excluding web and ‘store’",
+            [("value", "web"), ("unknown", "‘"), ("unknown", "store")],
+        ),
+        # Only the question's own final mark is read.
+        ("Top", "signups excluding web.", [("value", "web")]),
+        ("Top", "signups excluding web? ", [("value", "web")]),
+        ("Top", "signups excluding web!", [("value", "web")]),
+        ("Top", "signups excluding web. by month", [("value", "web"), ("unknown", ".")]),
+        ("Top", "signups excluding (web, Top)", [("value", "web"), ("value", "Top")]),
+        ("Top", "signups not on Tue. June 25", [("time", "June 25")]),
+    ],
+)
+def test_every_character_of_a_list_is_read(tmp_path, label, question, items):
+    runtime = _open(tmp_path, _values(label))
+    try:
+        assert _items(runtime, question) == items
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("label", "question"),
+    [
+        ("-", "signups excluding web and '-'"),
+        ("-", "signups excluding web and ‘-’"),
+        ("-", "signups excluding web, -"),
+        ("_", "signups excluding web, _"),
+        ("Top", "signups excluding web and 'store'"),
+        ("Top", "signups excluding web and ‘store’"),
+    ],
+)
+def test_an_unread_list_character_holds(tmp_path, monkeypatch, label, question):
+    # The planner dropped only web here: 4, where the reference drops both values.
+    runtime = _open(tmp_path, _values(label))
+    try:
+        assert _reference(runtime, BOTH) == {105}
+        _assert_held(_plan(runtime, question))
+        for where in (_drops("web"), _drops("web", op="!="), _drops("web", "store")):
+            _draft_plan(monkeypatch, _signups(where))
+            _assert_held(_plan(runtime, question))
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("question", ["signups excluding web.", "signups excluding web?"])
+def test_the_questions_final_mark_keeps_it_ready(shop, monkeypatch, question):
+    expected = _reference(shop, "channel IS DISTINCT FROM 'web'")
+    assert len(expected) == 4
+    _assert_ready(shop, _plan(shop, question), expected)
+    _draft_plan(monkeypatch, _signups(_drops("web")))
+    _assert_ready(shop, _plan(shop, question), expected)
+
+
+@pytest.mark.parametrize("label", ["Including Top", "Includes Top", "Include", "All but Web"])
+@pytest.mark.parametrize("quote", ['"', ""])
+def test_a_marker_inside_a_name_holds(tmp_path, monkeypatch, label, quote):
+    # Read as a marker, the name ended the list early or opened a clause of its own: the
+    # planner drafted '= store' (3) or dropped web alone (4).
+    question = f"signups excluding web and {quote}{label}{quote}"
+    runtime = _open(tmp_path, _values(label))
+    try:
+        assert _reference(runtime, BOTH) == {105}
+        assert _items(runtime, question) == [("unknown", question)]
+        _assert_held(_plan(runtime, question))
+        for where in (
+            [*_drops("web"), {"field": CHANNEL, "op": "=", "value": "store"}],
+            _drops("web"),
+            _drops("web", "store"),
+        ):
+            _draft_plan(monkeypatch, _signups(where))
+            _assert_held(_plan(runtime, question))
+    finally:
+        runtime.close()
+
+
 def test_a_name_spans_a_separator_only_when_it_contains_it(tmp_path, monkeypatch):
     runtime = _open(tmp_path, _values("Mall", ValueDomainValue(value="wm", label="Web Mall")))
     try:
@@ -466,6 +560,82 @@ def test_an_exclusion_inside_a_selected_expression_is_no_evidence(shop):
     }
     [gap] = _gaps(shop, question, {"select": [scoped], "where": _drops("web")})
     assert "Top" in gap.actual["missing"]
+
+
+# Scopes no exclusion names, each beside an exact exclusion draft.
+NO_STORE_B = {
+    "child": "entity.shop_order",
+    "match": "none",
+    "where": [{"field": "dimension.shop_order_store_id", "op": "=", "value": "b"}],
+}
+SCOPES = {
+    # Drops the customers with a store-b order: 2 for "signups excluding web", not 4.
+    "child group": ({"where": [NO_STORE_B]}, "where[{}]"),
+    "or node": (
+        {
+            "where": [
+                {
+                    "op": "OR",
+                    "args": [
+                        {"field": CUSTOMER, "op": "=", "value": 102},
+                        {"field": CUSTOMER, "op": "=", "value": 104},
+                    ],
+                }
+            ]
+        },
+        "where[{}]",
+    ),
+    # Drops customer 102 inside the measure: 3, not 4.
+    "filtered selected expression": (
+        {
+            "select": [
+                {
+                    "as": "signup_count",
+                    "expression": {
+                        "kind": "scoped_aggregate",
+                        "measure": "measure.shop.signup_count",
+                        "where": [{"field": CUSTOMER, "op": "!=", "value": 102}],
+                    },
+                }
+            ]
+        },
+        "select[0].expression.where[0]",
+    ),
+}
+READY = {
+    "signups excluding web": _drops("web"),
+    **{question: _drops("web", "store") for question in QUESTIONS},
+}
+
+
+@pytest.mark.parametrize(("question", "scope"), list(itertools.product(READY, SCOPES)))
+def test_adding_an_unrelated_scope_never_keeps_readiness(shop, monkeypatch, question, scope):
+    where = READY[question]
+    assert _gaps(shop, question, _signups(where)) == []
+    change, path = SCOPES[scope]
+    draft = _signups([*where, *change.get("where", [])])
+    draft["select"] = change.get("select", draft["select"])
+    excess = [row for gap in _gaps(shop, question, draft) for row in gap.actual["excess"]]
+    assert excess == [{"path": path.format(len(where)), "kind": "scoped"}]
+    _draft_plan(monkeypatch, draft)
+    payload = _plan(shop, question)
+    assert "execute" not in payload["next"].get("ready_for", [])
+    if scope != "or node":  # A compound node also fails validation.
+        _assert_held(payload)
+
+
+def test_a_callers_child_group_keeps_its_provenance(shop):
+    question = "signups excluding web"
+    query = _signups([*_drops("web"), NO_STORE_B])
+    assert _gaps(shop, question, query, caller={"where": [*_drops("web"), NO_STORE_B]}) == []
+    # The caller supplies the scope, and the question's exclusion still holds beside it.
+    expected = _reference(
+        shop,
+        "channel IS DISTINCT FROM 'web' AND NOT EXISTS (SELECT 1 FROM orders "
+        "WHERE orders.customer_id = signups.customer_id AND orders.store_id = 'b')",
+    )
+    assert expected == {105, 107}
+    _assert_ready(shop, _plan(shop, question, [*_drops("web"), NO_STORE_B]), expected)
 
 
 STORE = "dimension.jaffle_store_name"

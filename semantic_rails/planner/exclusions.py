@@ -4,17 +4,22 @@ exactly what each clause names.
 A marker from a closed list ("excluding", "except", "without", "not", "but not", "other than",
 "apart from", "aside from", "minus", "outside of", "all … but") opens a list,
 ``lead? item (separator lead? item)*``. An item is one time phrase the time reader found, one
-quoted string, or one declared value name (its value, label or alias, longest first); any other
-word in an item's place is an ``unknown`` item. The list ends at the first token that is
-neither an item nor a separator. The first time phrase after it with only words between
+double-quoted string, or one declared value name (its value, label or alias, longest first);
+any other word in an item's place is an ``unknown`` item. The list ends at the first token
+that is neither an item nor a separator. Every other character up to the next word must
+belong to an item, a separator or a lead; each run that doesn't is an ``unknown`` item, so a
+single-quoted name ('store') or one with no word ("-") holds. The question's final ".", "?"
+or "!" is the only exception. The first time phrase after the list with only words between
 ("excluding web in June 2024") stays a positive window; every other value, quoted or time
 mention up to the clause's end (the next marker, an "including", or the end of the question)
-is an ``unknown`` item, and a clause with no item gets one.
+is an ``unknown`` item, and a clause with no item gets one. A marker or "including" inside a
+quoted string or a declared name ("Including Top") leaves the whole question unread.
 
 ``unrealized`` holds every item to its own predicate: a value item is realized only by an outer
 ``IS DISTINCT FROM`` filter on its one bound dimension, since an exclusion keeps rows with no
 recorded value and ``!=`` or ``NOT IN`` drop them, with no value the question doesn't name
-excluded beside it. Query IR has no window complement, so a time item is never realized.
+excluded beside it, and no child group, compound condition or selected expression's filter
+the caller didn't supply. Query IR has no window complement, so a time item is never realized.
 """
 
 from __future__ import annotations
@@ -39,6 +44,8 @@ _ALL_BUT_RE = re.compile(
 _INCLUSION_RE = re.compile(r"\b(?:including|include|includes)\b")
 # Words, newlines and single marks; apostrophes, hyphens and underscores join words.
 _TOKEN_RE = re.compile(r"[^\W_]+|\n|[^\w\s'’-]")
+# A quoted span: double quotes, or single ones whose marks touch no word on their outer side.
+_QUOTED_RE = re.compile(r"[\"“”][^\"“”]*[\"“”]|(?<!\w)['‘].*?['’](?!\w)", re.DOTALL)
 _SEPARATOR_WORDS = frozenset({"and", "or", "nor", "plus", "alongside"})
 _SEPARATOR_MARKS = frozenset({",", ";", "/", "&", "(", "—", "–", "\n"})
 _SEPARATOR_PHRASES = (("as", "well", "as"), ("along", "with"), ("together", "with"))
@@ -151,6 +158,8 @@ class _Lists:
         self.names = names
         # The separators the lists read, which the exclusion check accounts for.
         self.separators: list[Span] = []
+        # The leads ("on Tue.") and closing brackets the lists read.
+        self.leads: list[Span] = []
 
     def value_at(
         self, index: int, stop: int, *, exact: bool = False
@@ -230,10 +239,12 @@ class _Lists:
                 self.separators.append((tokens[index].start, tokens[index + taken - 1].end))
                 index += taken
             elif tokens[index].text in _LEADS:
+                self.leads.append((tokens[index].start, tokens[index].end))
                 index += 1
                 # "on Tue. June 25": a weekday's own mark leads in too.
                 weekday = tokens[index - 1].text in _WEEKDAYS
                 if weekday and index < len(tokens) and tokens[index].text in {".", ","}:
+                    self.leads.append((tokens[index].start, tokens[index].end))
                     index += 1
             else:
                 break
@@ -265,6 +276,7 @@ class _Lists:
             if not separated:
                 # A closing bracket ends the list it closes.
                 if index < len(tokens) and tokens[index].text == ")":
+                    self.leads.append((tokens[index].start, tokens[index].end))
                     index += 1
                 return items, index
 
@@ -365,6 +377,47 @@ def _value_names(config: Any) -> Names:
     return out
 
 
+def _unread(text: str) -> list[ExclusionClause]:
+    """One clause whose one item is the whole question, unread."""
+
+    unread = ExcludedItem("unknown", (0, len(text)), text)
+    return [ExclusionClause((0, 0), text, (unread,), len(text))]
+
+
+def _marker_inside_a_name(lowered: str, tokens: list[_Token], names: Names) -> bool:
+    """Whether a marker or an "including" sits inside a quoted string or a declared value
+    name ("Including Top", "All but Web"), where reading it would cut the name apart."""
+
+    spans = [match.span() for match in _QUOTED_RE.finditer(lowered)]
+    lists = _Lists(tokens, [], names)
+    for index, token in enumerate(tokens):
+        found = lists.value_at(index, len(tokens))
+        if found is not None:
+            spans.append((token.start, tokens[found[0] - 1].end))
+    words = [
+        match.span()
+        for pattern in (_MARKER_RE, _ALL_BUT_RE, _INCLUSION_RE)
+        for match in pattern.finditer(lowered)
+    ]
+    return any(start < end and begin < stop for start, stop in words for begin, end in spans)
+
+
+_RUN_RE = re.compile(r"[^\0\s](?:[^\0]*[^\0\s])?")
+
+
+def _unread_runs(lowered: str, start: int, stop: int, read: list[Span]) -> list[Span]:
+    """Each run of characters from ``start`` to ``stop`` that no ``read`` span covers, without
+    its outer whitespace. The question's final ".", "?" or "!" is read."""
+
+    last = len(lowered.rstrip()) - 1
+    if last >= 0 and lowered[last] in ".?!":
+        read = [*read, (last, last + 1)]
+    masked = list(lowered)
+    for begin, end in read:
+        masked[begin:end] = "\0" * (end - begin)
+    return [match.span() for match in _RUN_RE.finditer("".join(masked), start, stop)]
+
+
 def exclusion_clauses(config: Any, text: str, window: Any) -> list[ExclusionClause]:
     """Every exclusion clause of the question, with its typed items. ``window`` is the time
     reader's reading of the question (``_time_window``), which reads this module."""
@@ -375,15 +428,20 @@ def exclusion_clauses(config: Any, text: str, window: Any) -> list[ExclusionClau
         return []
     if len(lowered) != len(text):
         # Lowercasing moved the offsets: nothing in the question can be read safely.
-        unread = ExcludedItem("unknown", (0, len(text)), text)
-        return [ExclusionClause((0, 0), text, (unread,), len(text))]
+        return _unread(text)
+    tokens = _tokenize(lowered)
+    names = _value_names(config)
+    if _marker_inside_a_name(lowered, tokens, names):
+        return _unread(text)
     time_spans = list(window.spans)
     excluded = {*window.excluded, *excluded_time_spans(lowered, time_spans)}
-    tokens = _tokenize(lowered)
-    lists = _Lists(tokens, time_spans, _value_names(config))
+    lists = _Lists(tokens, time_spans, names)
     clauses: list[ExclusionClause] = []
     for region in _regions(lowered, tokens, time_spans):
         items, index = lists.read(region.first, region.end)
+        # The list runs to the next word it didn't read.
+        stop = next((token.start for token in tokens[index:] if _word(token)), region.end)
+        stop = min(stop, region.end)
         # Every other value, quoted or time mention up to the clause's end is unread.
         while index < len(tokens) and tokens[index].start < region.end:
             if (
@@ -403,6 +461,14 @@ def exclusion_clauses(config: Any, text: str, window: Any) -> list[ExclusionClau
             for span in sorted(excluded)
             if region.marker[1] <= span[0] < region.end
             and not any(item.span[0] <= span[0] < item.span[1] for item in items)
+        ]
+        # Every other character of the list is unread: nothing in it may vanish.
+        read = [item.span for item in items] + lists.separators + lists.leads
+        if region.window is not None:
+            read.append(region.window)
+        items += [
+            ExcludedItem("unknown", span)
+            for span in _unread_runs(lowered, region.marker[1], stop, read)
         ]
         if not items:
             items = [ExcludedItem("unknown", region.marker)]
@@ -468,21 +534,46 @@ def _read_filter(row: dict[str, Any]) -> tuple[str, list[Any]] | None:
     return op, literals
 
 
+def _plain_filter(node: Any) -> bool:
+    """A top-level ``where`` filter on a field, not a child group or a compound condition."""
+
+    return (
+        isinstance(node, dict) and not is_child_group(node) and isinstance(node.get("field"), str)
+    )
+
+
+def _nested_predicates(query: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Each condition outside ``where``, such as a selected expression's filter, by path."""
+
+    out: list[tuple[str, dict[str, Any]]] = []
+
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            if isinstance(value.get("field"), str) and ("op" in value or "value" in value):
+                out.append((path, value))
+            for key, child in value.items():
+                walk(child, f"{path}.{key}")
+        elif isinstance(value, list):
+            for number, child in enumerate(value):
+                walk(child, f"{path}[{number}]")
+
+    for key, value in query.items():
+        if key != "where":
+            walk(value, key)
+    return out
+
+
 def _scoped_fields(query: dict[str, Any]) -> set[str]:
     """Fields a child group, a selected expression or any other compound condition reads in a
     scope of its own."""
 
     out: set[str] = set()
     for node in list(query.get("where") or []):
-        plain = isinstance(node, dict) and isinstance(node.get("field"), str)
-        if is_child_group(node) or not plain:
+        if not _plain_filter(node):
             out.update(
                 row["field"] for row in _dict_nodes(node) if isinstance(row.get("field"), str)
             )
-    nested = {key: value for key, value in query.items() if key != "where"}
-    for node in _dict_nodes(nested):
-        if isinstance(node.get("field"), str) and ("op" in node or "value" in node):
-            out.add(node["field"])
+    out.update(node["field"] for _path, node in _nested_predicates(query))
     return out
 
 
@@ -544,14 +635,28 @@ def unrealized(
     A value item needs an outer ``IS DISTINCT FROM`` filter on its value, on its one bound
     dimension, which no other scope conditions. No outer filter may exclude a value the question
     doesn't name, and on an item's dimension a filter that keeps values keeps only values the
-    question names (``positive``, outside its exclusions). The caller's own ``partial_query``
-    filters may exclude or keep other values, but realize an item only by dropping that value.
+    question names (``positive``, outside its exclusions). No child group, compound condition
+    or selected expression's filter may narrow the answer. The caller's own ``partial_query``
+    filters and scopes may exclude or keep other values, but realize an item only by dropping
+    that value.
     """
 
     if not clauses:
         return []
     where = list(query.get("where") or [])
-    caller_rows = [row for row in list((caller or {}).get("where") or []) if isinstance(row, dict)]
+    caller_where = list((caller or {}).get("where") or [])
+    caller_rows = [row for row in caller_where if isinstance(row, dict)]
+    caller_nested = [node for _path, node in _nested_predicates(caller or {})]
+    # Every scope the caller didn't supply narrows the answer beyond what the question names.
+    scopes = [
+        {"path": f"where[{index}]", "kind": "scoped"}
+        for index, node in enumerate(where)
+        if not _plain_filter(node) and node not in caller_where
+    ] + [
+        {"path": path, "kind": "scoped"}
+        for path, node in _nested_predicates(query)
+        if node not in caller_nested
+    ]
     named: dict[str, list[Any]] = {}
     for clause in clauses:
         for item in clause.items:
@@ -562,7 +667,7 @@ def unrealized(
     filters = [
         (f"where[{index}]", row, _read_filter(row))
         for index, row in enumerate(where)
-        if isinstance(row, dict) and not is_child_group(row) and isinstance(row.get("field"), str)
+        if _plain_filter(row)
     ]
     excess = [
         {"path": path, "field": row["field"], "value": literal}
@@ -618,7 +723,7 @@ def unrealized(
             row
             for row in excess
             if row["field"] in fields or (number == 0 and row["field"] not in named)
-        ]
+        ] + (scopes if number == 0 else [])
         if not (extra or any(report[key] for key in report if key != "matched")):
             continue
         gaps.append(_clause_gap(clause, where, report, extra, valid_values))
