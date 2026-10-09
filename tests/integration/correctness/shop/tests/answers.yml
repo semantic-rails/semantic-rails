@@ -213,6 +213,46 @@ tests:
       WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2023-12-01'
       GROUP BY store_id
       ORDER BY orders DESC, store_id ASC NULLS LAST LIMIT 1
+  shop/top-orders-by-revenue-rank-a-null-revenue-last:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Order 7's NULL revenue sorts after every value, so it never takes one of the three highest places.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#orderby]
+    tags: [null-vs-zero]
+    query:
+      select: [{expression: {measure: measure.shop.revenue}, as: revenue}]
+      group_by: [dimension.shop_order_id]
+      order_by: [{field: revenue, direction: DESC}]
+      limit: 3
+    expected_rows:
+      - {dimension.shop_order_id: 4, revenue: 20}
+      - {dimension.shop_order_id: 1, revenue: 10}
+      - {dimension.shop_order_id: 10, revenue: 9}
+    reference_sql: |
+      SELECT order_id, SUM(amount) AS revenue
+      FROM orders
+      GROUP BY order_id
+      ORDER BY revenue DESC NULLS LAST LIMIT 3
+  shop/bottom-orders-by-revenue-rank-a-null-revenue-last:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Order 7's NULL revenue sorts after every value in ascending order too, so it is not among the three lowest.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#orderby]
+    tags: [null-vs-zero]
+    query:
+      select: [{expression: {measure: measure.shop.revenue}, as: revenue}]
+      group_by: [dimension.shop_order_id]
+      order_by: [{field: revenue, direction: ASC}]
+      limit: 3
+    expected_rows:
+      - {dimension.shop_order_id: 11, revenue: 2}
+      - {dimension.shop_order_id: 9, revenue: 3}
+      - {dimension.shop_order_id: 6, revenue: 4}
+    reference_sql: |
+      SELECT order_id, SUM(amount) AS revenue
+      FROM orders
+      GROUP BY order_id
+      ORDER BY revenue ASC NULLS LAST LIMIT 3
   shop/pinned-output-refuses-another-advertised-clock:
     kind: validate_fails_with_code
     expect: refuse
