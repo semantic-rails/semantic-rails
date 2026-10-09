@@ -220,7 +220,10 @@ def test_planner_answer(request, backend, case_id, spec):
 
 def assert_planner_outcome(runtime, spec, plan):
     if spec["expect"] != "answer":
-        assert plan["status"] in {"low_confidence", "unrealizable", "out_of_scope"}, plan
+        held = {"low_confidence", "unrealizable", "out_of_scope"}
+        # A question plan asks is a clarification of its own, never an answer.
+        held |= {"needs_clarification"} if spec["expect"] == "clarify" else set()
+        assert plan["status"] in held, plan
         assert "execute" not in plan["next"].get("ready_for", []), plan
         why = plan["why"]
         assert why["message"].strip(), plan
@@ -232,7 +235,8 @@ def assert_planner_outcome(runtime, spec, plan):
             assert not report["ok"], report
             assert report["errors"][0]["code"] == spec["code"], report
         if spec["expect"] == "clarify":
-            assert error["why_invalid"].strip(), error
+            question = error.get("why_invalid") or why["details"]["clarification"]["question"]
+            assert question.strip(), error
             assert_clarification(runtime, spec, plan["best"]["query"])
         return
     assert plan["status"] == "ok", plan
@@ -279,7 +283,7 @@ def test_planner_expectations_reject_incomplete_outcomes(
     elif defect == "execute":
         plan["next"]["ready_for"] = ["execute"]
     elif defect == "wrong_code":
-        plan["why"]["errors"][0]["code"] = "INVALID_QUERY"
+        (plan["why"].get("errors") or [plan["why"]])[0]["code"] = "INVALID_QUERY"
     else:
         validate = runtime.validate
 

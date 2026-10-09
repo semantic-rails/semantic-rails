@@ -235,7 +235,15 @@ def _each_terms(config: Any, text: str) -> list[str]:
 
     lowered = str(text or "").lower()
     spans = [_named_run(config, lowered, match.end()) for match in _EACH_RE.finditer(lowered)]
-    return [lowered[span[0] : span[1]] for span in spans if span is not None]
+    return [
+        lowered[span[0] : span[1]]
+        for span in spans
+        # "every store except Brooklyn" names the stores an exclusion keeps, not a row each.
+        if span is not None and not _EXCEPT_AFTER_RE.match(lowered, span[1])
+    ]
+
+
+_EXCEPT_AFTER_RE = re.compile(r"\s+(?:except|excluding|but|other\s+than|apart\s+from|besides)\b")
 
 
 def _requested_grouping_terms(text: str) -> list[str]:

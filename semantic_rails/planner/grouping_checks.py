@@ -12,6 +12,7 @@ from ._base import _NAME_CONNECTORS, _last_token, _object_by_id, _strip_leading_
 from .call import Call, Order, QueryBuilder
 from .generators import _grouping_term_matches
 from .groupings import (
+    _EXCEPT_AFTER_RE,
     _entity_stand_ins,
     _grouping_matches,
     _is_temporal_grouping_term,
@@ -78,6 +79,12 @@ def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
         ):
             continue
         run = _named_run(config, lowered, start)
+        if (
+            str(match.group("cue") or "").endswith(("each", "every"))
+            and run is not None
+            and _EXCEPT_AFTER_RE.match(lowered, run[1])
+        ):
+            continue  # the stores an exclusion keeps ("every store except Brooklyn")
         if (
             str(match.group("cue") or "").endswith(("each", "every"))
             and run is not None

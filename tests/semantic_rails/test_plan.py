@@ -1049,3 +1049,41 @@ def test_a_statistic_no_metric_defines_holds_with_its_yaml(runtime_factory) -> N
     actual = sorted((row["dimension.jaffle_store_name"], row[name]) for row in rows)
     assert [store for store, _ in actual] == [store for store, _ in reference]
     assert [value for _, value in actual] == pytest.approx([value for _, value in reference])
+
+
+def test_every_store_but_one_is_the_stores_an_exclusion_keeps(runtime_factory) -> None:
+    """ "For every store except Brooklyn" names the stores kept, not a row per store: one
+    monthly series of the other stores' orders, every month of the named year."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime, intent="monthly orders for every store except Brooklyn in 2017"
+        )
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query"]
+        assert "group_by" not in query
+        assert query["where"] == [
+            {"field": "dimension.jaffle_store_name", "op": "not", "value": "Brooklyn"}
+        ]
+        rows = runtime.query(query)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            counts = dict(
+                connection.execute(
+                    "SELECT CAST(DATE_TRUNC('month', o.ordered_at) AS DATE)::VARCHAR, "
+                    "COUNT(DISTINCT o.order_id) FROM jaffle_order o "
+                    "JOIN jaffle_store s USING (store_id) "
+                    "WHERE s.store_name IS DISTINCT FROM 'Brooklyn' "
+                    "AND o.ordered_at >= '2017-01-01' AND o.ordered_at < '2018-01-01' GROUP BY 1"
+                ).fetchall()
+            )
+            (last,) = connection.execute(
+                "SELECT CAST(DATE_TRUNC('month', MAX(ordered_at)) AS DATE)::VARCHAR "
+                "FROM jaffle_order"
+            ).fetchone()
+    finally:
+        runtime.close()
+    # Every month of 2017: NULL for a month after the last order.
+    months = [f"2017-{month:02d}-01" for month in range(1, 13)]
+    reference = [counts.get(month, 0) if month <= last else None for month in months]
+    assert [row["period"] for row in rows] == months
+    assert [row["order_count"] for row in rows] == reference
