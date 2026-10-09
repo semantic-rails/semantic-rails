@@ -298,7 +298,7 @@ def _query(measure: str, group_by: list[str]) -> dict:
     return {
         "select": [{"expression": measure, "as": "value"}],
         "group_by": group_by,
-        "order_by": [{"field": group_by[0], "direction": "ASC"}],
+        "order_by": [{"field": group_by[0], "direction": "asc"}],
         "limit": 50,
     }
 

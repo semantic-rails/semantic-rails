@@ -32,8 +32,8 @@ PRODUCT = "dimension.jaffle_product_name"
 STORE = "dimension.jaffle_store_name"
 SESSION_TO_ORDER = {
     "kind": "conversion",
-    "base": {"measure": "measure.jaffle.session_starts"},
-    "converted": {"measure": "measure.jaffle.order_count"},
+    "base": "measure.jaffle.session_starts",
+    "converted": "measure.jaffle.order_count",
     "entity": "entity.jaffle_customer",
     "window": {"unit": "minute", "value": 30},
 }
@@ -86,7 +86,7 @@ def adapter(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SemanticLayerM
 
 
 def _run(adapter: SemanticLayerMCPAdapter, expression: dict[str, Any], **extra: Any) -> Any:
-    query = {"version": 1, "select": [{"as": "v", "expression": expression}], **extra}
+    query = {"select": [{"as": "v", "expression": expression}], **extra}
     out = adapter.call_tool("execute", {"mode": "run", "query": query})
     assert out["status"] == "ok", out.get("errors")
     return out["rows"]
@@ -139,8 +139,8 @@ def test_conversion_card_expression_answers_like_the_metric_and_rewindows(adapte
     expression = card["conversion"]["expression"]
     assert card["conversion"]["matching_modes"] == list(CONVERSION_MATCHING_MODES)
 
-    metric = {"kind": "metric", "metric": metric_id}
-    by_store = {"group_by": [STORE], "order_by": [{"field": STORE, "direction": "ASC"}]}
+    metric = metric_id
+    by_store = {"group_by": [STORE], "order_by": [{"field": STORE, "direction": "asc"}]}
     role = card["default_temporal_role"]
     since_sep_2016 = {
         "time": {
@@ -149,7 +149,7 @@ def test_conversion_card_expression_answers_like_the_metric_and_rewindows(adapte
             "start": "2016-09-01",
             "end": "2017-07-01",
         },
-        "order_by": [{"field": "time", "direction": "ASC"}],
+        "order_by": [{"field": "period", "direction": "asc"}],
     }
     for extra in ({}, by_store, since_sep_2016):
         rows = _run(adapter, metric, **extra)
