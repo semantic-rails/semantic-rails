@@ -993,19 +993,14 @@ _BEFORE = [
         UNMATCHED,
         dims=(("sales", "", "store_name"),),
     ),
-    _Before("aov by store, sales", "VALIDATION_FAILED", dims=(("sales", "", "store_id"),)),
+    _Before("aov by store, sales", UNMATCHED, dims=(("sales", "", "store_id"),)),
     _Before(
         "revenue by received, sent",
         UNMATCHED,
         dims=(("received", "Received", "store_name"), ("sent", "Sent", "store_id")),
     ),
     *(
-        _Before(
-            intent,
-            before,
-            held=intent == "monthly revenue by store",
-            dims=((name, name.title(), "store_id"),),
-        )
+        _Before(intent, before, dims=((name, name.title(), "store_id"),))
         for name in ("period", "show", "date")
         for intent, before in [
             ("monthly revenue by store", OK),
@@ -1013,11 +1008,11 @@ _BEFORE = [
         ]
     ),
     _Before("revenue by taxes", OK, group_by=("dimension.tax",), dims=_TAX),
-    _Before("revenue by store, taxes", "PLAN_FALLBACK_SEMANTIC_DRIFT", dims=_TAX),
+    _Before("revenue by store, taxes", UNMATCHED, dims=_TAX),
     _Before("revenue by boxes", OK, group_by=("dimension.box",), dims=_BOX),
-    _Before("revenue by store, boxes", "PLAN_FALLBACK_SEMANTIC_DRIFT", dims=_BOX),
+    _Before("revenue by store, boxes", UNMATCHED, dims=_BOX),
     _Before("revenue by statuses", OK, group_by=("dimension.status",), dims=_STATUS),
-    _Before("revenue by store, statuses", "PLAN_FALLBACK_SEMANTIC_DRIFT", dims=_STATUS),
+    _Before("revenue by store, statuses", UNMATCHED, dims=_STATUS),
     _Before("repair cost by incident name, incident", OK, held=True, package="incident"),
     _Before("repair cost by incident, incident name", OK, package="incident"),
     _Before("repair cost by incident name and incident", OK, package="incident"),
