@@ -36,6 +36,8 @@ from .acceleration.routing import (
     parse_aggregate_routing,
 )
 from .ast import (
+    PERIOD_PARTIAL,
+    TIME_AXIS,
     every_filter,
     normalize_query,
     plain_filters,
@@ -50,7 +52,14 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .clock import describe_window, engine_window, format_now, local_date, parse_now
+from .clock import (
+    describe_window,
+    engine_window,
+    format_now,
+    local_date,
+    parse_now,
+    period_is_partial,
+)
 from .compiler import (
     BoundQuery,
     NonAdditiveRefusal,
@@ -1091,7 +1100,28 @@ def _compiled_warnings(
     return warnings
 
 
-def _answer_time_fields(config, compiled, payload, *, coverage=None) -> dict[str, Any]:
+def _mark_partial_periods(rows, config, compiled, payload) -> None:
+    """``period_partial`` on each row of a grain series, right after ``period``: whether the
+    row's period ends after ``now`` in the clock's zone."""
+    grain = (compiled["logical_plan"].time or {}).get("grain")
+    if not grain:
+        return
+    now = parse_now(_policy_context(payload or {}).get("now"))
+    zone = _time_zone(config, compiled) or "UTC"
+    for row in rows:
+        period = row.get(TIME_AXIS)
+        if isinstance(period, datetime) and period.utcoffset() is not None:
+            period = period.astimezone(ZoneInfo(zone))
+        marked: dict[str, Any] = {}
+        for key, value in row.items():
+            marked[key] = value
+            if key == TIME_AXIS:
+                marked[PERIOD_PARTIAL] = period_is_partial(period, grain, now, zone)
+        row.clear()
+        row.update(marked)
+
+
+def _answer_time_fields(config, compiled, payload, *, coverage=None, rows=None) -> dict[str, Any]:
     """What an answer's time means, said on every response: its ``window``, ``clock``,
     ``observation_scope`` and ``assumptions``.
 
@@ -1116,6 +1146,8 @@ def _answer_time_fields(config, compiled, payload, *, coverage=None) -> dict[str
         out["window"] = {key: value for key, value in shown.items() if value is not None}
         if window.start is not None or window.end is not None:
             out["window"]["partial"] = window.partial
+        elif rows:
+            out["window"]["partial"] = any(row.get(PERIOD_PARTIAL) for row in rows)
         edges = [
             value
             for key, value in (coverage or {}).items()
@@ -3190,6 +3222,7 @@ class Runtime:
                     seed_warnings=self._seed_warnings,
                 ),
             ) from exc
+        _mark_partial_periods(rows, self._config, compiled, payload)
         coverage = _coverage_read(self, compiled, payload) if compiled["logical_plan"].time else {}
         coverage_warnings = _no_data_yet_warnings(
             compiled,
@@ -3234,7 +3267,7 @@ class Runtime:
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            **_answer_time_fields(self._config, compiled, payload, coverage=coverage),
+            **_answer_time_fields(self._config, compiled, payload, coverage=coverage, rows=rows),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
