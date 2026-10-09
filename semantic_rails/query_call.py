@@ -966,7 +966,7 @@ def route_options(call: Any, details: dict[str, Any]) -> None:
     details["hint"] = (
         "Which route is meant is a business definition. Ask which option the question means, "
         "then send that option's query (this query only), or record the option's decision as "
-        "the package default."
+        "the package default with record_route_decision (a graph.path_preferences row)."
     )
 
 

@@ -2296,7 +2296,7 @@ def _predicate_time_spec(
                                     "code": "CHOOSE_PREDICATE_CLOCK",
                                     "message": (
                                         (
-                                            "Set query.time.temporal_role to one of the listed clocks. "
+                                            "Set time.temporal_role to one of the listed clocks. "
                                             if isinstance(predicate.input, MetricRecipeRefExpr)
                                             else "Set the predicate input's temporal_role to a candidate "
                                             "clock, or pin its measures' clock in a package metric. "

@@ -136,7 +136,7 @@ def test_mcp_session_previews_rows_and_writes_tests_and_an_example_that_pass(
     assert sorted(row[COUNTRY] for row in out["preview"]["rows"]) == ["GB", "NL", "US"]
     assert out["preview"]["truncated"] is False
     assert out["capped"]["row_count"] == 2 and out["capped"]["truncated"] is True
-    assert out["capped"]["total_row_count"] == 3
+    assert out["capped"]["total_row_count"] is None
     assert out["refused"]["ok"] is False
     assert out["refused"]["error"]["code"] == "OBJECT_NOT_FOUND"
     assert out["too_many"] is True

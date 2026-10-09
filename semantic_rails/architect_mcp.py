@@ -1419,8 +1419,8 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Preview query", open_world=True),
         description=(
             "Run a semantic query on the package's warehouse, as the query server's execute "
-            "does, and return at most max_rows rows (1-200), with truncated and total_row_count "
-            "when there are more. Values are real warehouse data."
+            "does, and return at most max_rows rows (1-200); truncated is true when there are more, "
+            "which are not counted (total_row_count null). Values are real warehouse data."
         ),
     )
     def preview_query(
