@@ -1,7 +1,7 @@
 {
   "_note": [
     "Inline percentile-as-threshold: revenue from top-decile customers by",
-    "lifetime spend. The two-round-trip pattern (compute P90 → filter on",
+    "lifetime spend. The two-round-trip pattern (compute P90 \u2192 filter on",
     "P90) collapses to a single query. The threshold is materialised in",
     "a CTE next to the predicate source and CROSS JOIN'd into the set",
     "CTE, so the WHERE clause reads `__predicate_value >= __threshold`",
@@ -14,11 +14,10 @@
     "",
     "Note: this example aggregates revenue without a group_by because",
     "combining a customer-grain percentile predicate with a store-grain",
-    "group_by trips PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE — a separate",
+    "group_by trips PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE \u2014 a separate",
     "cross-grain constraint that lives in the compiler. Add the group_by",
     "once the cohort-by-breakdown rewrite lands."
   ],
-  "version": 1,
   "select": [
     {
       "expression": {
@@ -30,14 +29,16 @@
             "kind": "metric_predicate",
             "entity": "entity.jaffle_customer",
             "input": {
+              "kind": "measure",
               "measure": "measure.jaffle.lifetime_spend_usd",
               "aggregation": "sum"
             },
-            "op": ">=",
+            "op": "gte",
             "value": {
               "kind": "percentile",
               "p": 0.9
-            }
+            },
+            "over": "all_time"
           }
         ]
       },

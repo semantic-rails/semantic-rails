@@ -101,6 +101,16 @@ _PREDICATE_SCOPES: dict[str, dict[str, str]] = {
 }
 _PREDICATE_RETIRED = ("scope_mode", "time_grain", "time_alignment")
 _SQL_COMPARISON = {"is": "=", "not": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+_SQL_MEMBERSHIP = {"is": "IN", "not": "NOT IN"}
+
+
+def _predicate_op(word: str, value: Any) -> str:
+    """A predicate's comparison in the engine's spelling; a list compares by membership."""
+    if isinstance(value, list) and word in _SQL_MEMBERSHIP:
+        return _SQL_MEMBERSHIP[word]
+    return _SQL_COMPARISON[word]
+
+
 V2_POINTER = f"See the query schema at {SCHEMA_ID}."
 
 # Inline kinds a call may not use, and keys of a kind that left the call.
@@ -261,6 +271,15 @@ def read_call(
     return internal, context.notes
 
 
+def engine_where(
+    where: Any, *, grain: str = "", config: PackageConfig | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """A call's ``where`` in the engine's form: ``(row filters and child groups, entity filters
+    as metric_filters)``. For a clarification option the engine re-binds."""
+    context = CallContext(config=config, now=parse_now(None))
+    return _where(where, context, {"time": {"grain": grain}} if grain else {})
+
+
 def _check_top_level(payload: Mapping[str, Any]) -> None:
     for key in payload:
         if key in FIELDS or key in IGNORED or str(key).startswith("_"):
@@ -367,6 +386,13 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
 _KINDLESS_FIX = 'A reference is the id string itself, e.g. "metric.<id>" or "measure.<id>".'
 
 
+def _operand(raw: Any, path: str, context: CallContext) -> Any:
+    """An operand inside a kind: a reference or kind is read; a literal passes to the parser."""
+    if isinstance(raw, Mapping) or (isinstance(raw, str) and raw.startswith(REFERENCE_PREFIXES)):
+        return _expression(raw, path, context)
+    return raw
+
+
 def _expression(raw: Any, path: str, context: CallContext) -> Any:
     """An inline expression with its references expanded to the engine's ref objects."""
     if isinstance(raw, str):
@@ -411,15 +437,15 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             or key == "value"
             and kind in {"aggregate_if", "nullif"}
         ):
-            node[key] = _expression(value, child, context)
+            node[key] = _operand(value, child, context)
         elif key in EXPRESSION_LISTS and isinstance(value, list):
             node[key] = [
-                _expression(item, f"{child}[{index}]", context) for index, item in enumerate(value)
+                _operand(item, f"{child}[{index}]", context) for index, item in enumerate(value)
             ]
         elif key == "whens" and isinstance(value, list):
             node[key] = [
                 {
-                    name: _expression(part, f"{child}[{index}].{name}", context)
+                    name: _operand(part, f"{child}[{index}].{name}", context)
                     for name, part in dict(when).items()
                 }
                 if isinstance(when, Mapping)
@@ -427,7 +453,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
                 for index, when in enumerate(value)
             ]
         elif key == "else":
-            node[key] = _expression(value, child, context)
+            node[key] = _operand(value, child, context)
         else:
             node[key] = value
     if kind in {"metric_predicate"}:
@@ -506,7 +532,7 @@ def _predicate(node: dict[str, Any], path: str) -> dict[str, Any]:
                 "compares an aggregate: use is, not, gt, gte, lt or lte",
                 fix="Use gt, gte, lt, lte, is or not.",
             )
-        node["op"] = _SQL_COMPARISON[word]
+        node["op"] = _predicate_op(word, node.get("value"))
     return {**node, **_PREDICATE_SCOPES[over]}
 
 
@@ -648,7 +674,7 @@ def _entity_filter(
                     "kind": "metric_predicate",
                     "entity": entity.strip(),
                     "input": _reference(field_id, f"{at}.field"),
-                    "op": _SQL_COMPARISON[word],
+                    "op": _predicate_op(word, value),
                     "value": value,
                     **_PREDICATE_SCOPES[over],
                 },
@@ -938,7 +964,17 @@ def route_options(call: Any, details: dict[str, Any]) -> None:
 
 # --- The call an engine query states, for echoes and the planner. ---------------------------
 
-_SQL_WORDS = {"=": "is", "!=": "not", "<>": "not", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte"}
+_SQL_WORDS = {
+    "=": "is",
+    "!=": "not",
+    "<>": "not",
+    ">": "gt",
+    ">=": "gte",
+    "<": "lt",
+    "<=": "lte",
+    "IN": "is",
+    "NOT IN": "not",
+}
 
 
 def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
@@ -1043,7 +1079,7 @@ def _over_word(scope: str, alignment: str) -> str:
 
 
 def _call_entity_having(expression: Mapping[str, Any]) -> dict[str, Any]:
-    op = _SQL_WORDS.get(str(expression.get("op", "=")).strip(), "is")
+    op = _SQL_WORDS.get(" ".join(str(expression.get("op", "=")).upper().split()), "is")
     condition = {
         "field": _call_expression(expression.get("input")),
         "op": op,
@@ -1116,5 +1152,7 @@ def _call_expression(expression: Any) -> Any:
         alignment = node.pop("time_alignment", "")
         node.pop("time_grain", None)
         node["over"] = _over_word(str(scope), str(alignment))
-        node["op"] = _SQL_WORDS.get(str(node.get("op", "=")).strip(), node.get("op"))
+        node["op"] = _SQL_WORDS.get(
+            " ".join(str(node.get("op", "=")).upper().split()), node.get("op")
+        )
     return node

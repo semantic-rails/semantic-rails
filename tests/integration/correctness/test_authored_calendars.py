@@ -24,31 +24,32 @@ def _fiscal_orders(runtime):
     return replace(authored, package=runtime.config.package, aggregate_relations=[])
 
 
-def _query(**time):
-    return {
+def _query(runtime, **time):
+    """The engine's form of a call over the window; a call never names a calendar."""
+    call = {
         "select": [{"expression": ORDERS, "as": "orders"}, {"expression": REVENUE, "as": "rev"}],
         "time": {"temporal_role": ROLE, **WINDOW, **time},
     }
+    return runtime.engine_payload(call)
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize(
-    "time",
-    [
-        {"grain": "quarter", "calendar_id": "fiscal", "fill": False},
-        {"grain": "quarter", "calendar_id": "fiscal", "fill": True},
-        {"calendar_id": "fiscal"},
-        {"grain": "quarter"},
-        {"grain": "week", "fill": True},
-        {"grain": "day", "calendar_id": "default"},
-    ],
-    ids=["fiscal", "fiscal-filled", "fiscal-no-grain", "bound", "bound-filled", "bound-day"],
-)
-def test_a_fiscal_clock_refuses_before_any_sql(request, backend_name, time):
+@pytest.mark.parametrize("grain", ["quarter", "week", "day", "to_date"])
+def test_a_fiscal_clock_refuses_before_any_sql(request, backend_name, grain):
     runtime = _backend(request, backend_name).runtimes["utc_authored"]
     config = _fiscal_orders(runtime)
+    if grain == "to_date":
+        to_date = {"kind": "period_to_date", "input": REVENUE, "period": "year"}
+        query = runtime.engine_payload(
+            {
+                "select": [{"expression": to_date, "as": "to_date"}],
+                "time": {"temporal_role": ROLE, "grain": "month"},
+            }
+        )
+    else:
+        query = _query(runtime, grain=grain)
     with pytest.raises(SemanticLayerError) as refused:
-        compile_query(config, Registry(config), _query(**time))
+        compile_query(config, Registry(config), query)
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     assert refused.value.details["reason"] == "calendar_not_supported_yet"
@@ -61,7 +62,7 @@ def test_a_fiscal_clock_without_a_grain_answers_its_exact_days(request, backend_
     backend = _backend(request, backend_name)
     runtime = backend.runtimes["utc_authored"]
     config = _fiscal_orders(runtime)
-    compiled = compile_query(config, Registry(config), _query())
+    compiled = compile_query(config, Registry(config), _query(runtime))
     reference = backend.reference(
         "SELECT COUNT(DISTINCT order_id), SUM(amount) FROM orders "
         "WHERE ordered_at >= TIMESTAMP '2024-05-06' AND ordered_at < TIMESTAMP '2024-05-20'"

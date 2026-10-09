@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from semantic_rails.errors import SemanticLayerError
+from tests.semantic_rails.result_helpers import typed_rows
 
 from .test_correctness import (
     MEDIAN,
@@ -17,8 +18,8 @@ from .test_correctness import (
     _assert_rows,
     _backend,
     _distribution,
+    _having,
     _item,
-    _predicate,
 )
 
 
@@ -29,19 +30,19 @@ from .test_correctness import (
 def test_contextual_predicate_groups_by_fact_attributes(
     request, backend_name, grain, threshold, where_store
 ):
+    # A call's entity filter is never grouped by the query's other dimensions; a package's
+    # contextual predicate is, so this reads the engine's own form.
     backend = _backend(request, backend_name)
+    runtime = backend.runtimes["utc_authored"]
     query = {
         "select": [_item(ORDERS, "orders"), _item(REVENUE, "revenue")],
         "group_by": [] if where_store else [STORE],
-        "metric_filters": [
-            _predicate("entity.shop_customer", "contextual", ORDERS, ">=", threshold)
-        ],
     }
     groups = [] if where_store else ["o.store_id"]
     context = [] if where_store else ["p.store_id IS NOT DISTINCT FROM o.store_id"]
     where = "o.store_id = 'a'" if where_store else "TRUE"
     if where_store:
-        query["where"] = [{"field": STORE, "op": "=", "value": "a"}]
+        query["where"] = [{"field": STORE, "op": "is", "value": "a"}]
         # A where filter beside a metric predicate is judged inside the filters only.
         query["observation_scope"] = "query"
     if grain:
@@ -60,9 +61,19 @@ def test_contextual_predicate_groups_by_fact_attributes(
         + f"HAVING COUNT(*) >= {threshold})"
         + (" GROUP BY " + ", ".join(groups) if groups else "")
     )
+    payload = runtime.engine_payload(query)
+    predicate = {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_customer",
+        "scope_mode": "contextual",
+        "input": {"kind": "measure", "measure": ORDERS},
+        "op": ">=",
+        "value": threshold,
+    }
+    payload["metric_filters"] = [{"expression": predicate, "op": "=", "value": True}]
     _assert_rows(
         backend.reference(reference),
-        _answer(backend, Case("contextual_fact_attributes", "utc_authored", query, reference)),
+        [tuple(row.values()) for row in typed_rows(runtime.query_internal(payload))],
         "contextual predicate must count customers within each returned group",
     )
 
@@ -70,16 +81,16 @@ def test_contextual_predicate_groups_by_fact_attributes(
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("grain", ["", "month"])
 @pytest.mark.parametrize(
-    ("measure", "aggregate", "op", "threshold"),
+    ("alias", "aggregate", "op", "threshold"),
     [
-        (REVENUE, "SUM(o.amount)", "<", 30),
-        (REVENUE, "SUM(o.amount)", ">=", 30),
-        (ORDERS, "COUNT(*)", ">=", 2),
-        (ORDERS, "COUNT(*)", ">=", 5),
+        ("revenue", "SUM(o.amount)", "<", 30),
+        ("revenue", "SUM(o.amount)", ">=", 30),
+        ("orders", "COUNT(*)", ">=", 2),
+        ("orders", "COUNT(*)", ">=", 5),
     ],
 )
 def test_comparison_filter_matches_having(
-    request, backend_name, grain, measure, aggregate, op, threshold
+    request, backend_name, grain, alias, aggregate, op, threshold
 ):
     backend = _backend(request, backend_name)
     select = [_item(REVENUE, "revenue"), _item(ORDERS, "orders")]
@@ -87,18 +98,7 @@ def test_comparison_filter_matches_having(
     query = {
         "select": select,
         "group_by": [STORE],
-        "metric_filters": [
-            {
-                "expression": {
-                    "kind": "comparison",
-                    "op": op,
-                    "left": measure,
-                    "right": {"kind": "literal", "value": threshold},
-                },
-                "op": "=",
-                "value": True,
-            }
-        ],
+        "having": [{"field": alias, "op": op, "value": threshold}],
     }
     groups = ["o.store_id"]
     if grain:
@@ -129,21 +129,10 @@ def test_comparison_filter_beside_distribution_refuses_changed_grain(request, ba
             _item(ORDERS, "orders"),
             _distribution("median", "median")
             if median == "inline"
-            else _item({"metric": "metric.shop.order_revenue_median"}, "median"),
+            else _item("metric.shop.order_revenue_median", "median"),
         ],
         "group_by": [STORE],
-        "metric_filters": [
-            {
-                "expression": {
-                    "kind": "comparison",
-                    "op": "<",
-                    "left": REVENUE,
-                    "right": {"kind": "literal", "value": 30},
-                },
-                "op": "=",
-                "value": True,
-            }
-        ],
+        "having": [{"field": "revenue", "op": "lt", "value": 30}],
     }
     with pytest.raises(SemanticLayerError, match="returned group's grain") as exc:
         runtime.query(query)
@@ -154,10 +143,10 @@ def test_comparison_filter_beside_distribution_refuses_changed_grain(request, ba
 def test_distribution_filter_cannot_bypass_fill_refusal(request, backend_name):
     runtime = _backend(request, backend_name).runtimes["utc_authored"]
     query = {
-        "select": [_item({"metric": "metric.shop.order_revenue_median"}, "median")],
+        "select": [_item("metric.shop.order_revenue_median", "median")],
         "group_by": [STORE],
         "time": {"temporal_role": ROLE, "grain": "month", "fill": True},
-        "metric_filters": [{"expression": REVENUE, "op": "<", "value": 30}],
+        "having": [{"field": REVENUE, "op": "lt", "value": 30}],
     }
     with pytest.raises(SemanticLayerError) as exc:
         runtime.query(query)
@@ -165,26 +154,19 @@ def test_distribution_filter_cannot_bypass_fill_refusal(request, backend_name):
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize("scope", ["contextual", "entity_only"])
 @pytest.mark.parametrize("entity", ["entity.shop_order", "entity.shop_customer"])
-def test_distribution_predicate_retains_declared_grain(request, backend_name, scope, entity):
+def test_distribution_predicate_retains_declared_grain(request, backend_name, entity):
     backend = _backend(request, backend_name)
     customer = entity == "entity.shop_customer"
     query = {
-        "select": [
-            _item(ORDERS, "orders"),
-            _item({"metric": "metric.shop.order_revenue_median"}, "median"),
-        ],
+        "select": [_item(ORDERS, "orders"), _item("metric.shop.order_revenue_median", "median")],
         "group_by": [STORE],
-        "metric_filters": [
-            _predicate(entity, scope, ORDERS if customer else REVENUE, ">=", 2 if customer else 7)
+        "where": [
+            _having(
+                entity, "all_time", ORDERS if customer else REVENUE, "gte", 2 if customer else 7
+            )
         ],
     }
-    if customer and scope == "contextual":
-        with pytest.raises(SemanticLayerError, match="entity_only") as exc:
-            backend.runtimes["utc_authored"].query(query)
-        assert exc.value.code == "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE"
-        return
     where = (
         "o.customer_id IN (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(*) >= 2)"
         if customer
@@ -207,7 +189,7 @@ def test_nested_distribution_cannot_bypass_grain_guard(request, backend_name):
                 {
                     "kind": "arithmetic",
                     "op": "add",
-                    "left": {"metric": "metric.shop.order_revenue_median"},
+                    "left": "metric.shop.order_revenue_median",
                     "right": {"kind": "literal", "value": 1},
                 },
                 "shifted_median",

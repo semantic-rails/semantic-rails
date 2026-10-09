@@ -29,7 +29,7 @@ BOUNDS["tz"] = BOUNDS["utc"]
 @pytest.mark.parametrize("clock", ["utc", "ny", "tz"])
 @pytest.mark.parametrize("calendar", ["authored", "implicit"])
 @pytest.mark.parametrize("unit", ["day", "month", "quarter"])
-@pytest.mark.parametrize("shape", ["filled", "sparse", "total"])
+@pytest.mark.parametrize("shape", ["series", "total"])
 def test_relative_bounds_use_one_local_date(request, backend_name, clock, calendar, unit, shape):
     backend = _backend(request, backend_name)
     runtime = backend.runtimes[f"{clock}_{calendar}"]
@@ -40,35 +40,19 @@ def test_relative_bounds_use_one_local_date(request, backend_name, clock, calend
         reference = (
             f"SELECT COALESCE(SUM(o.amount), 0) FROM orders o WHERE {within} HAVING COUNT(*) > 0"
         )
-    elif shape == "sparse":
-        reference = (
-            f"SELECT date_trunc('{unit}', {source}), COALESCE(SUM(o.amount), 0) "
-            f"FROM orders o WHERE {within} GROUP BY 1"
-        )
     else:
         reference = (
             f"SELECT TIMESTAMP '{start}', COALESCE(SUM(o.amount), 0) FROM orders o WHERE {within}"
         )
     expected = backend.reference(reference)
+    time = {"temporal_role": ROLE, "last": {"unit": unit, "value": 1}}
+    if shape == "series":
+        time["grain"] = unit
     for instant in INSTANTS:
-        result = runtime.query(
-            {
-                "select": [_item(REVENUE, "v")],
-                "time": {
-                    "temporal_role": ROLE,
-                    "grain": "" if shape == "total" else unit,
-                    "fill": shape == "filled",
-                    "range": {"last": {"unit": unit, "value": 1}},
-                },
-            },
-            now=instant,
-        )
+        result = runtime.query({"select": [_item(REVENUE, "v")], "time": time}, now=instant)
         resolved = result["normalized_query"]["time"]
         assert (resolved["start"], resolved["end"]) == (start, end)
         _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], instant)
-        # Sparse UTC month/quarter queries take the rollup; fill reads base coverage.
-        if clock == "utc" and unit != "day" and shape == "sparse":
-            assert "FROM orders_monthly" in result["rendered_sql"]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -96,8 +80,8 @@ def test_relative_window_refusal_keeps_the_local_bounds(request, backend_name, w
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("variant", ["utc_authored", "ny_authored"])
-@pytest.mark.parametrize("shape", ["sparse", "filled", "total", "rolling"])
-def test_fiscal_relative_periods_refuse_gregorian_floors(request, backend_name, variant, shape):
+@pytest.mark.parametrize("shape", ["series", "total", "rolling"])
+def test_a_call_cannot_pick_a_fiscal_calendar(request, backend_name, variant, shape):
     backend = _backend(request, backend_name)
     expression = (
         REVENUE
@@ -110,42 +94,37 @@ def test_fiscal_relative_periods_refuse_gregorian_floors(request, backend_name, 
                 "select": [_item(expression, "v")],
                 "time": {
                     "temporal_role": ROLE,
-                    "grain": "" if shape == "total" else "quarter",
+                    **({} if shape == "total" else {"grain": "quarter"}),
                     "calendar_id": "fiscal",
-                    "fill": shape == "filled",
-                    "range": {"last": {"unit": "quarter", "value": 9}},
+                    "last": {"unit": "quarter", "value": 9},
                 },
             },
             now="2026-12-31T02:00:00Z",
         )
     assert caught.value.code == "INVALID_QUERY"
-    assert caught.value.details["path"] == "time.range.last.unit"
-    assert caught.value.details["calendar_id"] == "fiscal"
+    assert caught.value.details["path"] == "time.calendar_id"
+    assert caught.value.details["recovery_hints"][0]["message"] == "Remove 'calendar_id'."
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("variant", ["date_authored", "date_implicit"])
 @pytest.mark.parametrize("end", ["2024-07-01T03:00:00", "2024-07-01T00:00:00"])
-@pytest.mark.parametrize("shape", ["sparse", "filled", "total", "folded", "dimensions"])
+@pytest.mark.parametrize("shape", ["sparse", "total", "folded", "dimensions"])
 def test_date_source_and_spine_share_the_end_day(request, backend_name, variant, end, shape):
     backend = _backend(request, backend_name)
     source = "CAST(o.order_date AS TIMESTAMP)"
     within = f"{source} >= TIMESTAMP '2024-06-01' AND {source} < TIMESTAMP '{end}'"
     query = {
         "select": [] if shape == "dimensions" else [_item(REVENUE, "v")],
-        "time": {
-            "temporal_role": ROLE,
-            "grain": "" if shape == "total" else "month",
-            "start": "2024-06-01",
-            "end": end,
-            "fill": shape == "filled",
-        },
+        "time": {"temporal_role": ROLE, "start": "2024-06-01", "end": end},
     }
+    if shape != "total":
+        query["time"]["grain"] = "month"
     if shape == "dimensions":
         query["group_by"] = [STORE]
         reference = f"SELECT o.store_id, date_trunc('month', {source}) FROM orders o WHERE {within} GROUP BY 1, 2"
     elif shape == "total":
-        query["where"] = [{"field": STORE, "op": "=", "value": "b"}]
+        query["where"] = [{"field": STORE, "op": "is", "value": "b"}]
         reference = f"SELECT SUM(o.amount) FROM orders o WHERE {within} AND store_id = 'b'"
     else:
         columns = "SUM(o.amount)"
@@ -185,26 +164,21 @@ def test_date_window_and_observation_include_the_end_day(request, backend_name, 
     )[0]
     current, prior = reference
     rows = typed_rows(result)
-    july = next(r for r in rows if r[f"{ROLE}__month"].date() == date(2024, 7, 1))
+    july = next(r for r in rows if r["period"] == date(2024, 7, 1))
     assert july["v"] == current == 9
     assert july["w"] == (prior if window == "prior_period" else current + prior)
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("variant", ["date_authored", "date_implicit"])
-@pytest.mark.parametrize("scope", ["contextual", "entity_only"])
-def test_date_predicate_window_uses_the_source_day_rule(request, backend_name, variant, scope):
+@pytest.mark.parametrize("over", ["period", "window"])
+def test_date_predicate_window_uses_the_source_day_rule(request, backend_name, variant, over):
     backend = _backend(request, backend_name)
-    predicate = {
-        "kind": "metric_predicate",
+    customers = {
         "entity": "entity.shop_customer",
-        "scope_mode": scope,
-        "input": ORDERS,
-        "op": ">=",
-        "value": 1,
+        "having": [{"field": ORDERS, "op": "gte", "value": 1}],
+        "over": over,
     }
-    if scope == "entity_only":
-        predicate["time_alignment"] = "query_window"
     result = backend.runtimes[variant].query(
         {
             "select": [_item(REVENUE, "v")],
@@ -214,14 +188,14 @@ def test_date_predicate_window_uses_the_source_day_rule(request, backend_name, v
                 "start": "2024-06-01",
                 "end": "2024-07-01T03:00:00",
             },
-            "metric_filters": [{"expression": predicate, "op": "=", "value": True}],
+            "where": [customers],
         }
     )
     reference = backend.reference(
         "SELECT date_trunc('month', CAST(order_date AS TIMESTAMP)), SUM(amount) FROM orders "
         "WHERE CAST(order_date AS TIMESTAMP) >= TIMESTAMP '2024-06-01' AND CAST(order_date AS TIMESTAMP) < TIMESTAMP '2024-07-01 03:00:00' GROUP BY 1"
     )
-    _assert_rows(reference, [tuple(r.values()) for r in typed_rows(result)], scope)
+    _assert_rows(reference, [tuple(r.values()) for r in typed_rows(result)], over)
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -245,10 +219,11 @@ def test_date_bounds_touch_whole_days_including_open_windows(
     request, backend_name, variant, start, end, day_predicate
 ):
     backend = _backend(request, backend_name)
+    bounds = {key: value for key, value in (("start", start), ("end", end)) if value is not None}
     result = backend.runtimes[variant].query(
         {
             "select": [_item(REVENUE, "v")],
-            "time": {"temporal_role": ROLE, "grain": "month", "start": start, "end": end},
+            "time": {"temporal_role": ROLE, "grain": "month", **bounds},
         }
     )
     reference = backend.reference(
@@ -279,10 +254,10 @@ def test_anchored_population_bounds_use_the_leaf_clock(request, backend_name, le
     }
     predicate = {
         "entity": "entity.shop_clock_edge",
-        "measure": f"measure.shop.{query_clock}_amount",
-        "op": "=",
+        "input": f"measure.shop.{query_clock}_amount",
+        "op": "is",
         "value": 10,
-        "time_alignment": "same_query_period",
+        "over": "period",
     }
     result = backend.runtimes["utc_implicit"].query(
         {
@@ -316,20 +291,17 @@ def test_anchored_population_bounds_use_the_leaf_clock(request, backend_name, le
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("variant", ["utc_authored", "utc_implicit"])
-@pytest.mark.parametrize("shape", ["sparse", "filled", "total"])
+@pytest.mark.parametrize("shape", ["series", "total"])
 def test_converted_date_bounds_include_both_local_days(request, backend_name, variant, shape):
     backend = _backend(request, backend_name)
-    amount = {"measure": "measure.shop.local_amount"}
-    query = {
-        "select": [_item(amount, "v")],
-        "time": {
-            "temporal_role": "temporal_role.shop_clock_edge_local_day",
-            "grain": "" if shape == "total" else "day",
-            "fill": shape == "filled",
-            "start": "2024-06-30",
-            "end": "2024-07-01T23:00:00",
-        },
+    time = {
+        "temporal_role": "temporal_role.shop_clock_edge_local_day",
+        "start": "2024-06-30",
+        "end": "2024-07-01T23:00:00",
     }
+    if shape == "series":
+        time["grain"] = "day"
+    query = {"select": [_item("measure.shop.local_amount", "v")], "time": time}
     result = backend.runtimes[variant].query(query)
     source = "((CAST(source_day AS TIMESTAMP) AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')"
     reference = (
@@ -351,7 +323,7 @@ def test_entity_only_predicate_window_refuses_timezone_conversion(
 ):
     backend = _backend(request, backend_name)
     role = f"temporal_role.shop_clock_edge_{clock}"
-    amount = {"measure": f"measure.shop.{measure}"}
+    amount = f"measure.shop.{measure}"
     query = {
         "select": [_item(amount, "v")],
         "time": {
@@ -360,19 +332,11 @@ def test_entity_only_predicate_window_refuses_timezone_conversion(
             "start": "2024-06-30",
             "end": "2024-07-01T23:00:00",
         },
-        "metric_filters": [
+        "where": [
             {
-                "expression": {
-                    "kind": "metric_predicate",
-                    "entity": "entity.shop_clock_edge",
-                    "input": amount,
-                    "scope_mode": "entity_only",
-                    "time_alignment": "query_window",
-                    "op": ">=",
-                    "value": 1,
-                },
-                "op": "=",
-                "value": True,
+                "entity": "entity.shop_clock_edge",
+                "having": [{"field": amount, "op": "gte", "value": 1}],
+                "over": "window",
             }
         ],
     }
@@ -406,14 +370,11 @@ def test_contextual_predicate_period_join_refuses_timezone_conversion(
     """The predicate's converted day buckets never equal the raw stored days it joins."""
     backend = _backend(request, backend_name)
     role = f"temporal_role.shop_clock_edge_{clock}"
-    amount = {"measure": f"measure.shop.{measure}"}
-    predicate = {
-        "kind": "metric_predicate",
+    amount = f"measure.shop.{measure}"
+    edges = {
         "entity": "entity.shop_clock_edge",
-        "input": amount,
-        "scope_mode": "contextual",
-        "op": ">=",
-        "value": threshold,
+        "having": [{"field": amount, "op": "gte", "value": threshold}],
+        "over": "period",
     }
     query = {
         "select": [_item(amount, "v")],
@@ -423,7 +384,7 @@ def test_contextual_predicate_period_join_refuses_timezone_conversion(
             "start": "2024-06-30",
             "end": "2024-07-01T23:00:00",
         },
-        "metric_filters": [{"expression": predicate, "op": "=", "value": True}],
+        "where": [edges],
     }
     runtime = backend.runtimes["utc_implicit"]
     if clock == "local_day":
