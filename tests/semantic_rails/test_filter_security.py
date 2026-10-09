@@ -213,6 +213,24 @@ def _placements(op):
                 }
             ]
         },
+        "entity_value_where": {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "distribution",
+                        "function": "percentile",
+                        "p": 0.5,
+                        "over": {
+                            "kind": "entity_value",
+                            "entity": CUSTOMER,
+                            "input": REVENUE,
+                            "where": [{"kind": "value_filter", "op": op, "value": 0}],
+                        },
+                    },
+                    "as": "median",
+                }
+            ]
+        },
         "entity_having": {
             "select": [ORDERS],
             "where": [
@@ -240,12 +258,25 @@ def test_a_non_word_op_is_refused_everywhere(config, op, placement):
 
 
 @pytest.mark.parametrize("op", BAD_OPS)
-def test_a_non_word_op_is_refused_in_the_engine_form(config, op):
+@pytest.mark.parametrize("placement", ["where", "metric_predicate"])
+def test_a_non_word_op_is_refused_in_the_engine_form(config, op, placement):
     engine = _engine(config)
     query = {
         "select": [{"expression": {"kind": "measure", "measure": REVENUE}, "as": "revenue"}],
-        "where": [{"field": STORE_NAME, "op": op, "value": "Philadelphia"}],
+        "observation_scope": "query",
     }
+    if placement == "where":
+        query["where"] = [{"field": STORE_NAME, "op": op, "value": "Philadelphia"}]
+    else:
+        predicate = {
+            "kind": "metric_predicate",
+            "entity": CUSTOMER,
+            "input": {"kind": "measure", "measure": ORDERS},
+            "op": op,
+            "value": 1,
+            "scope_mode": "entity_only",
+        }
+        query["metric_filters"] = [{"expression": predicate, "op": "is", "value": True}]
     try:
         report = engine.validate_internal(query)
         assert report["ok"] is False
