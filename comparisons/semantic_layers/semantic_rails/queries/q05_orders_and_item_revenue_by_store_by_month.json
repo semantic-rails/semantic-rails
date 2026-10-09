@@ -1,18 +1,7 @@
 {
-  "version": 1,
   "select": [
-    {
-      "expression": {
-        "metric": "metric.jaffle.orders"
-      },
-      "as": "orders"
-    },
-    {
-      "expression": {
-        "metric": "metric.jaffle.item_revenue_usd"
-      },
-      "as": "item_revenue_usd"
-    }
+    "metric.jaffle.orders",
+    "metric.jaffle.item_revenue_usd"
   ],
   "group_by": [
     "dimension.jaffle_store_name"
@@ -24,7 +13,7 @@
   "order_by": [
     {
       "field": "orders",
-      "direction": "DESC"
+      "direction": "desc"
     }
   ]
 }

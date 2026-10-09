@@ -1,28 +1,21 @@
 {
-  "version": 1,
   "select": [
     {
-      "expression": {
-        "metric": "metric.jaffle.orders"
-      },
+      "expression": "metric.jaffle.orders",
       "as": "qualifying_orders"
     }
   ],
-  "metric_filters": [
+  "where": [
     {
-      "expression": {
-        "kind": "metric_predicate",
-        "entity": "entity.jaffle_customer",
-        "scope_mode": "contextual",
-        "time_grain": "month",
-        "input": {
-          "measure": "measure.jaffle.order_count"
-        },
-        "op": ">",
-        "value": 5
-      },
-      "op": "=",
-      "value": true
+      "entity": "entity.jaffle_customer",
+      "having": [
+        {
+          "field": "measure.jaffle.order_count",
+          "op": "gt",
+          "value": 5
+        }
+      ],
+      "over": "period"
     }
   ],
   "time": {
@@ -31,8 +24,8 @@
   },
   "order_by": [
     {
-      "field": "temporal_role.jaffle_order_time__month",
-      "direction": "ASC"
+      "field": "period",
+      "direction": "asc"
     }
   ]
 }
