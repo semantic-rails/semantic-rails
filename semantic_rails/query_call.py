@@ -451,9 +451,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
         node = _predicate(node, path)
     if kind == "scoped_aggregate":
         node["predicates"] = [
-            _predicate(dict(item), f"{path}.predicates[{index}]")
-            if isinstance(item, Mapping)
-            else item
+            _scoped_predicate(item, f"{path}.predicates[{index}]", context)
             for index, item in enumerate(list(node.get("predicates") or []))
         ]
         node["where"] = [
@@ -491,6 +489,16 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
         return item
     word, value = operators.normalize_condition(item.get("op", "is"), item.get("value"), path=path)
     return {**item, "op": word, "value": value}
+
+
+def _scoped_predicate(item: Any, path: str, context: CallContext) -> Any:
+    """A scoped aggregate's predicate: its input is read like any operand, then its ``over``."""
+    if not isinstance(item, Mapping):
+        return item
+    node = dict(item)
+    if "input" in node:
+        node["input"] = _operand(node["input"], f"{path}.input", context)
+    return _predicate(node, path)
 
 
 def _predicate(node: dict[str, Any], path: str) -> dict[str, Any]:
