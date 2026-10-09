@@ -1855,7 +1855,7 @@ form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
 | Refused | Current form | Upgrade rule |
 |---|---|---|
 | `package.schema_strict` (either value) | Delete it: one set of rules applies to every package | `package-schema-strict` |
-| A measure `publish:` mapping (`publish: {id: ..., label: ...}`) | Author the metric under `metrics:`; a measure never publishes one of its own name. `publish: false` still marks an [unoffered measure](#building-block-measures) | `measure-auto-publish` |
+| A measure `publish:` mapping (`publish: {id: ..., label: ...}`) | Author the metric under `metrics:`; a measure never publishes one of its own name. `publish: false` still marks an [unoffered measure](#building-block-measures). A measure with no `publish:` key or with `publish: true` no longer publishes its metric either, and the upgrade can't detect it: [author those metrics by hand](#metrics-a-measure-published-implicitly) | `measure-auto-publish` |
 | `id:` on a graph entity, dimension or measure | The key derives the id; `as:` only to keep a public id | `object-as` |
 | A model `grain:` | The bound entity's key keys the model's rows; rows finer than an entity are an [entity of their own](#graphyml) | `model-grain` |
 | A singular `entity:` without `entities:`; `keys.foreign:`; `keys.primary:` beside `entities:` | List the model's entities under `entities:` | `model-primary-key` |
@@ -1881,6 +1881,24 @@ Warnings (advisory only):
   compatible temporal roles.
 - Entity pairs a question can need have two or more routes and no recorded
   decision (`ROUTES_UNDECIDED`; see [the route census](#route-census-and-route-changes)).
+
+### Metrics a measure published implicitly
+
+In a package that did not set `schema_strict: true`, a measure with no `publish:` key or with
+`publish: true` used to publish `metric.<namespace>.<measure>`. It no longer does: callers,
+saved queries and metric references that name such an id fail with an unknown-object error.
+`project upgrade` can't tell such a package from a current one and may report `up_to_date`, so
+author a metric under `metrics:` for each such id still in use. For a `revenue` measure in the
+`shop` namespace, this keeps `metric.shop.revenue`:
+
+```yaml
+metrics:
+  revenue:                  # the key derives metric.shop.revenue
+    label: Revenue
+    kind: aggregate
+    measure: revenue
+    value_type: currency
+```
 
 ## Path-finding behavior (entity hopping)
 
@@ -2875,7 +2893,7 @@ named definition by hand before upgrading.
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
 | `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 | `package-schema-strict` | 0.3.2 | `package.schema_strict` | Deleted (a drop: only that field of the fingerprint changes) |
-| `measure-auto-publish` | 0.3.2 | A measure's `publish:` mapping | In a package without `schema_strict: true`, the metric it published, authored under `metrics:` with the mapping's overrides, and `publish: false` on the measure; in a strict package, where the mapping was never read, deleted. A mapping with `topics`, or a metric key or id already taken, stops |
+| `measure-auto-publish` | 0.3.2 | A measure's `publish:` mapping | In a package without `schema_strict: true`, the metric it published, authored under `metrics:` with the mapping's overrides, and `publish: false` on the measure; in a strict package, where the mapping was never read, deleted. A mapping with `topics`, or a metric key or id already taken, stops. A measure with no `publish:` key or with `publish: true` is left unchanged, and the upgrade may report `up_to_date`: [author its metric by hand](#metrics-a-measure-published-implicitly) |
 | `model-grain` | 0.3.2 | A model `grain:` beside `entities:` (or on a fact model) | Deleted when it equals the entity's key, binding that entity's `model:` when the grain chose it. A grain finer than the key stops: model those rows as their own entity |
 | `model-primary-key` | 0.3.2 | `keys:` and a singular `entity:` (and a block-less model's `grain:`) | An `entities:` block that states the same keys (`bridge: false` when the legacy keys inferred no relationship). A key with a role, keys that disagree with the block, or a model with no row key stop |
 | `model-joins` | 0.3.2 | A model `joins:` block | `graph.relationships` rows with the same ids (`traversal` becomes `allowed_directions`). A join that never read its cardinality as one, names no columns under a different key, or isn't on its entity's home model stops |

@@ -12,10 +12,18 @@
 - **Breaking (0.x):** measures never publish a metric of their own name. A measure stays
   queryable as a measure; author a metric under `metrics:` to publish one. A measure's
   `publish:` is `true` or `false` only (`publish: false` still marks an unoffered measure).
+  In a package that did not set `schema_strict: true`, a measure with no `publish:` key or
+  with `publish: true` used to publish `metric.<namespace>.<measure>`, and no longer does:
+  callers, saved queries and metric references that name such an id now fail with an
+  unknown-object error. `project upgrade` can't detect this case and may report
+  `up_to_date`; author a metric under `metrics:` for each such id still in use. See
+  [Refused legacy forms](docs/PACKAGE_AUTHORING.md#refused-legacy-forms).
   Measure cards no longer carry `default_metric_id`, metric cards no longer carry
   `curated_status` or `aggregation_mode`, and `discover` no longer lowers a metric whose id
   matches a measure's name. Architect `upsert_model` no longer takes `joins`; relationships
   go through `upsert_relationship`.
 - `semantic-rails project upgrade` rewrites a package written for an earlier release with six
   new rules: `package-schema-strict`, `measure-auto-publish`, `model-grain`,
-  `model-primary-key`, `model-joins` and `object-as`.
+  `model-primary-key`, `model-joins` and `object-as`. `measure-auto-publish` rewrites only a
+  measure's `publish:` mapping; it leaves a measure with no `publish:` key or with
+  `publish: true` unchanged.
