@@ -546,6 +546,13 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
                 "How many orders did each store get last week?",
             )
         ),
+        # "which customers" lists the customers who ordered, by their key: Customer declares no
+        # display name and has several naming dimensions.
+        (
+            "Which customers ordered last week?",
+            {},
+            f"SELECT customer_id, count(DISTINCT order_id) FROM jaffle_order {LAST_WEEK} GROUP BY 1",
+        ),
     ],
 )
 def test_a_ready_answer_equals_its_reference(
@@ -592,7 +599,6 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
 # Held because a word carries meaning: a catalog name, a grouping, a value plan can't find, or a
 # number. Asking again without it changes the question, so no hint offers that.
 MEANINGFUL = [
-    "Which customers ordered last week?",
     "List the customers who ordered last week.",
     "How many orders did we get last week compared with the week before?",
     "Orders by store name last week compared with the week before?",

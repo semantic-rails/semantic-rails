@@ -1133,8 +1133,8 @@ row, a dbt snapshot) is the usual cause of an empty group.
 entity's own model's `dimensions:`, never its key. Anything else fails with `INVALID_CONFIG`.
 `label` names the entity type and `key` identifies a row; `display` is what a person reads.
 
-When a question groups by or ranks an entity ("by customer", "each customer", "top 5
-customers by revenue"), `plan` groups by the entity's key and its `display` dimension,
+When a question groups by, lists or ranks an entity ("by customer", "which customers",
+"top 5 customers by revenue"), `plan` groups by the entity's key and its `display` dimension,
 so names that repeat stay separate rows. Without `display:`, it uses the entity's one dimension
 whose own name names it ("Store name" for "store"), if exactly one does; otherwise the key
 alone, with an assumption line saying so. A caller who can't see the display dimension gets

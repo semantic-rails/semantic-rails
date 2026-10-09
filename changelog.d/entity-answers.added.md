@@ -5,3 +5,6 @@
   three", "bottom 1"), and is ready only when the question names the value it ranks by (a
   measure's or metric's whole name, label or alias) or the caller's select does: "top 5
   customers" and "which store had the most customers" stay held.
+- `plan` answers "which accounts closed last week" and "who upgraded last week" with the
+  entity's rows, listed by name without zero rows. "Who" that could mean several entities
+  asks which.

@@ -32,7 +32,7 @@ from ..naming import semantic_token as _semantic_token
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import _governed_target, _resolved
-from .answer_shape import _answer_shape_why
+from .answer_shape import _answer_shape_why, _listed_entity_terms
 from .consumed_spans import unconsumed_terms
 from .examples import example_plan
 from .faithfulness import intent_faithfulness_why, intent_subject_why, named_subject_why
@@ -472,7 +472,13 @@ def _question_payload(
                 set(intent_ir.unresolved),
             )
             or grouping_why
-            or _unasked_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+            or _unasked_grouping_why(
+                runtime,
+                intent_str,
+                best_draft.query,
+                partial_query,
+                _listed_entity_terms(runtime._config, intent_str, best_draft.query),
+            )
             or _qualifying_entity_why(runtime, intent_ir, best_draft.query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
@@ -687,7 +693,10 @@ def _planned_row(
         merged_draft.resolved,
     )
     if merged_draft.blocked_reason:
-        return _blocked_row(merged_draft, pattern, dict(merged_draft.blocked_reason), blocked)
+        why = dict(merged_draft.blocked_reason)
+        # A pattern that asks (whose rows "who" lists) blocks with the options to pick from.
+        clarify = bool((why.get("details") or {}).get("clarification"))
+        return _blocked_row(merged_draft, pattern, why, blocked, clarify=clarify)
     merged_draft = _governed_draft(runtime._config, intent, merged_draft, partial_query)
     # A balance reads the one day the question names (planner/snapshot.py).
     shaped, ask = shape_snapshot(runtime, intent, merged_draft.query, partial_query)

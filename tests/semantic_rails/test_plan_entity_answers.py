@@ -1,4 +1,4 @@
-"""By X, top N and each X answer with the rows of the entity they name, never a total."""
+"""Which, who, top N and each X answer with the rows of the entity they name, never a total."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.planner import groupings as groupings_module
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner.filter_checks import _filter_value_gaps
 from semantic_rails.planner.patterns import metric_by_dimension_rollup as rollup_module
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -232,6 +233,67 @@ def _ready(payload: dict[str, Any]) -> dict[str, Any]:
     return payload["best"]["query_ir"]
 
 
+_EVENTS_LAST_WEEK = """
+SELECT a.account_id, a.name, COUNT(DISTINCT e.event_id)
+FROM events e JOIN accounts a USING (account_id)
+WHERE a.segment = 'customer' AND e.kind = '{kind}'
+  AND e.occurred_at >= DATE '2026-09-28' AND e.occurred_at < DATE '2026-10-05'
+GROUP BY 1, 2 HAVING COUNT(DISTINCT e.event_id) != 0 ORDER BY 2
+"""
+
+
+@pytest.mark.parametrize(
+    ("question", "metric", "kind", "expected"),
+    [
+        ("Which accounts closed last week?", "closures", "close", [("b", "Globex", 1)]),
+        ("Who upgraded last week?", "upgrades", "upgrade", [("a", "Acme Data Co", 1)]),
+        ("Who closed last week?", "closures", "close", [("b", "Globex", 1)]),
+        ("Which accounts upgraded last week?", "upgrades", "upgrade", [("a", "Acme Data Co", 1)]),
+    ],
+)
+def test_a_list_answers_with_the_rows_of_the_entity_it_lists(
+    subscriptions: Callable[..., Runtime],
+    question: str,
+    metric: str,
+    kind: str,
+    expected: list[tuple[Any, ...]],
+) -> None:
+    runtime = subscriptions()
+    query = _ready(_plan(runtime, question))
+    assert query["group_by"] == [ACCOUNT_ID, ACCOUNT_NAME]
+    assert query["metric_filters"] == [
+        {"expression": {"metric": f"metric.subscriptions.{metric}"}, "op": "!=", "value": 0}
+    ]
+    assert query["order_by"][0] == {"field": ACCOUNT_NAME, "direction": "ASC"}
+    rows = runtime.query(query)["rows"]
+    actual = [(row[ACCOUNT_ID], row[ACCOUNT_NAME], row[metric]) for row in rows]
+    reference = _reference(runtime, _EVENTS_LAST_WEEK.format(kind=kind))
+    assert actual == reference == expected
+
+
+_UPGRADES = {"metric": "metric.subscriptions.upgrades"}
+_DROPS_UPGRADE = {"field": "dimension.subscriptions_event_kind", "op": "!=", "value": "upgrade"}
+
+
+@pytest.mark.parametrize(
+    ("text", "query", "gap"),
+    [
+        # The chosen metric's name carries the value in either number.
+        ("upgrades last week", {"select": [_UPGRADES]}, False),
+        ("each upgrade last week", {"select": [_UPGRADES]}, False),
+        # A name that doesn't spell the value never carries it.
+        ("upgrades last week", {"select": [{"metric": "metric.subscriptions.closures"}]}, True),
+        # A filter on the value's dimension that drops it still holds.
+        ("upgrades last week", {"select": [_UPGRADES], "where": [_DROPS_UPGRADE]}, True),
+    ],
+)
+def test_a_chosen_name_carries_a_value_in_either_number(
+    subscriptions: Callable[..., Runtime], text: str, query: dict[str, Any], gap: bool
+) -> None:
+    gaps = _filter_value_gaps(subscriptions(), text, query)
+    assert [row.kind for row in gaps] == (["filter_values_unrealized"] if gap else [])
+
+
 _MRR_ON = """
 SELECT a.account_id, a.name, d.mrr FROM account_day d JOIN accounts a USING (account_id)
 WHERE a.segment = 'customer' AND d.day = DATE '2026-10-04'
@@ -321,8 +383,9 @@ def test_each_groups_by_the_name_it_names(
     )
 
 
-# A question ranking accounts: its reference SQL, and its value's alias.
+# A question listing accounts and one ranking them: its reference SQL, and its value's alias.
 _ACCOUNT_ROWS = {
+    "Which accounts closed last week?": (_EVENTS_LAST_WEEK.format(kind="close"), "closures"),
     "Top 2 accounts by MRR on 2026-10-04": (_MRR_ON.format(direction="DESC", limit=2), "mrr"),
 }
 
@@ -369,6 +432,26 @@ def test_without_a_display_the_key_stands_alone_with_an_assumption(
     line = "Account has no display name, so its rows show its key, Account Id."
     assert (line in payload.get("assumptions", [])) is assumed
     _account_rows(runtime, query, question)
+
+
+def test_who_reaching_two_entities_with_a_display_asks_which(
+    subscriptions: Callable[..., Runtime],
+) -> None:
+    runtime = subscriptions(event_display="reference")
+    payload = _plan(runtime, "Who upgraded last week?")
+    assert payload["status"] == "needs_clarification"
+    assert payload["next"] == {"action": "clarify"}
+    clarification = payload["why"]["details"]["clarification"]
+    assert [(row["entity"], row["group_by"]) for row in clarification["options"]] == [
+        ("entity.subscriptions_account", [ACCOUNT_ID, ACCOUNT_NAME]),
+        (
+            "entity.subscriptions_event",
+            ["dimension.subscriptions_event_id", "dimension.subscriptions_event_reference"],
+        ),
+    ]
+    # Naming the entity settles it.
+    query = _ready(_plan(runtime, "Which accounts upgraded last week?"))
+    assert query["group_by"] == [ACCOUNT_ID, ACCOUNT_NAME]
 
 
 @pytest.mark.parametrize(
