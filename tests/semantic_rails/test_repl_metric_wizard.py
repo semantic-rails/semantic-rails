@@ -1400,12 +1400,13 @@ def test_editing_a_metric_keeps_its_authored_examples(tmp_path: Path) -> None:
 def test_growth_offers_the_units_its_calendar_can_fill(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from semantic_rails.cli.reports import ask_report
+    from semantic_rails.planner.plan import plan_payload
+    from semantic_rails.runtime import Runtime
 
     project = _shop(tmp_path, calendar=True)
     calendar = project / "models" / "core" / "calendar.yml"
     doc = yaml.safe_load(calendar.read_text("utf-8"))
-    fiscal = {**doc["model"], "id": "fiscal", "calendar_id": "fiscal", "entities": {"fiscal": {}}}
+    fiscal ={**doc["model"], "id": "fiscal", "calendar_id": "fiscal", "entities": {"fiscal": {}}}
     fiscal["dimensions"] = dict(fiscal["dimensions"])
     del doc["model"]["dimensions"]["month_start"]
     _write_yaml(calendar, doc)
@@ -1423,13 +1424,25 @@ def test_growth_offers_the_units_its_calendar_can_fill(
     assert script.options["Compare with how far back"] == ["Days", "Weeks", "Quarters", "Years"]
     assert script.offered["Compare with how far back"] == "Days"
     assert "columns on the calendar model: `month_start`." in capsys.readouterr().out
-    # One written by hand runs: every fill uses the implicit Gregorian calendar.
+    # One written by hand runs: every fill uses the implicit Gregorian calendar. Its window
+    # ends on a month boundary, so each month it compares has ended.
     growth = {"kind": "derived", "expression": _growth(REVENUE, "sum", "month")}
     _write_metric(project, "g", {**growth, "value_type": "percent", "temporal_role": ORDERED})
-    report = ask_report(
-        PackageReference(source_path=str(project)), question="g by month", execute=True
-    )
-    assert not report.get("errors"), report.get("errors")
+    runtime = Runtime.from_path(str(project))
+    try:
+        # Without an end, the window reaches now and its last month is still in progress.
+        held = plan_payload(runtime, intent="g by month")
+        assert held["why"]["code"] == "PERIOD_COMPARISON_INCOMPLETE", held.get("why")
+        assert "execute" not in held["next"].get("ready_for", [])
+        plan = plan_payload(
+            runtime, intent="g by month", partial_query={"time": {"end": "2026-02-01"}}
+        )
+        assert plan["status"] == "ok", plan.get("why")
+        assert "execute" in plan["next"]["ready_for"]
+        assert plan["best"]["query_ir"]["time"]["grain"] == "month"
+        assert typed_rows(runtime.query(plan["best"]["query_ir"]))
+    finally:
+        runtime.close()
     # Its saved unit stays on offer, so an edit that keeps it still goes through.
     script, metric = _author(project, {"Metric key": "g", "Business definition": "Edited."})
     assert script.offered["Compare with how far back"] == "Months"
