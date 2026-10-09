@@ -350,7 +350,7 @@ def _seed_call_from_args(args: argparse.Namespace) -> dict[str, Any]:
     The seed never says who is asking: identity comes from --environment/--audience.
     """
     seed = _parse_json(args.query_json) if args.query_json else {}
-    refuse_identity_claims({"query": seed}, remote=False)
+    refuse_identity_claims({"query": seed}, remote=False, transport="cli")
     return {**seed, "policy_context": _policy_context_from_args(args)}
 
 
@@ -371,7 +371,9 @@ def _query_call_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, Any]
         value = str(getattr(args, name, "") or "").strip()
         if value:
             arguments[name] = value
-    return _parse_json(args.query_json), arguments
+    call = _parse_json(args.query_json)
+    refuse_identity_claims({"query": call}, remote=False, transport="cli")
+    return call, arguments
 
 
 def _add_now_arg(parser: argparse.ArgumentParser) -> None:

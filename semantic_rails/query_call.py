@@ -54,8 +54,8 @@ TIME_AXIS = "period"
 # Keys that are not part of a call, with where each one went.
 RETIRED: dict[str, str] = {
     "policy_context": (
-        "Identity comes from your credentials, never from the call; pass `now` as an "
-        "argument beside the query."
+        "Identity never travels in the call: pass it as the `context` argument (HTTP and MCP "
+        "read it from credentials), and `now` beside the query."
     ),
     "metric_filters": (
         "Filter results with `having: [{field, op, value}]`, or entities with an entity "
