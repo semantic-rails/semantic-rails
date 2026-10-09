@@ -77,7 +77,7 @@ def _assert_no_time_plan(result) -> None:
             ),
         }
     ]
-    assert "time" not in result["best"]["query_ir"]
+    assert "time" not in result["best"]["query"]
     assert "execute" not in result.get("next", {}).get("ready_for", [])
 
 
@@ -322,7 +322,7 @@ def test_plan_without_time_always_downgrades(runtime, intent: str, detail: str) 
     result = plan_payload(runtime, intent=intent, detail=detail)
     _assert_no_time_plan(result)
     assert result["best"]["validation_ok"]
-    query = result["best"]["query_ir"]
+    query = result["best"]["query"]
     assert query["select"]
     assert runtime.validate(query)["ok"]
 
@@ -404,7 +404,7 @@ def test_plan_ordinary_time_words_retains_query_and_downgrades(
     try:
         result = plan_payload(runtime, intent=intent)
         _assert_no_time_plan(result)
-        query = result["best"]["query_ir"]
+        query = result["best"]["query"]
         assert "time" not in query
         rows = runtime.query(query)["rows"]
         values = [next(value for key, value in row.items() if key != CATEGORY) for row in rows]
@@ -458,7 +458,7 @@ def test_plan_time_phrase_category_values_retains_query_and_downgrades(
     try:
         result = plan_payload(runtime, intent=f"item count for the {phrase} category")
         _assert_no_time_plan(result)
-        query = result["best"]["query_ir"]
+        query = result["best"]["query"]
         assert "time" not in query
         assert query["where"] == _category_is(value)
         rows = runtime.query(query)["rows"]
@@ -500,7 +500,7 @@ def test_plan_repeated_catalogue_time_phrase_downgrades(
         result = plan_payload(runtime, intent=intent, detail=detail)
         _assert_no_time_plan(result)
         assert "execute" not in result.get("next", {}).get("ready_for", [])
-        query = result["best"]["query_ir"]
+        query = result["best"]["query"]
         assert "time" not in query
         assert query["where"] == _category_is(value)
         rows = runtime.query(query)["rows"]
@@ -536,7 +536,7 @@ def test_plan_fallback_catalogue_time_phrase_downgrades(package_path, detail):
             },
             detail=detail,
         )
-        assert result["best"]["query_ir"]["where"] == _category_is("monthly")
+        assert result["best"]["query"]["where"] == _category_is("monthly")
         _assert_no_time_plan(result)
         assert "execute" not in result.get("next", {}).get("ready_for", [])
     finally:
@@ -558,7 +558,7 @@ def test_plan_fallback_accepts_null_group_by(package_path):
         )
         _assert_no_time_plan(result)
         assert result["best"]["validation_ok"]
-        assert runtime.query(result["best"]["query_ir"])["rows"] == [{"value": 4}]
+        assert runtime.query(result["best"]["query"])["rows"] == [{"value": 4}]
     finally:
         runtime.close()
 
@@ -584,7 +584,7 @@ def test_plan_window_shaped_category_values_downgrade(package_path, phrase, matc
     try:
         result = plan_payload(runtime, intent=f"item count for the {phrase} category")
         _assert_no_time_plan(result)
-        query = result["best"]["query_ir"]
+        query = result["best"]["query"]
         assert "time" not in query
         assert [v for k, v in runtime.query(query)["rows"][0].items() if k != CATEGORY] == [2]
         _assert_no_time_plan(
@@ -610,11 +610,12 @@ def test_plan_irrelevant_time_phrase_is_out_of_scope(runtime) -> None:
 
 
 def test_plan_drafted_time_cannot_bypass_guard(runtime, monkeypatch) -> None:
+    from semantic_rails.planner.call import Time
     from semantic_rails.planner.orchestrator import compose
 
     result = compose(runtime, "item count")
     assert result.draft is not None
-    draft = replace(result.draft, query={**result.draft.query, "time": {}})
+    draft = replace(result.draft, query=replace(result.draft.query, time=Time()))
     result = replace(result, draft=draft)
     monkeypatch.setattr("semantic_rails.planner.plan.compose", lambda *_: result)
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
@@ -644,7 +645,7 @@ def test_plan_measure_label_without_recipe_retains_query_and_downgrades(
     try:
         result = plan_payload(runtime, intent=intent)
         _assert_no_time_plan(result)
-        assert "time" not in result["best"]["query_ir"]
+        assert "time" not in result["best"]["query"]
         _assert_no_time_plan(plan_payload(runtime, intent=f"{intent} last month"))
     finally:
         runtime.close()
@@ -724,7 +725,7 @@ def test_plan_dimension_label_with_time_word_retains_query_and_downgrades(packag
     try:
         result = plan_payload(runtime, intent="item count by monthly plans")
         _assert_no_time_plan(result)
-        query = result["best"]["query_ir"]
+        query = result["best"]["query"]
         assert query["group_by"] == [CATEGORY]
         assert "time" not in query
         assert sorted(row["item_count"] for row in runtime.query(query)["rows"]) == [2, 2]
@@ -830,7 +831,7 @@ def test_catalog_inspect_and_builder_without_dates(runtime) -> None:
     assert not any(row.get("kind") == "temporal_role" for row in builder["available"])
     plan = plan_payload(runtime, intent="item count by category")
     _assert_no_time_plan(plan)
-    assert "time" not in plan["best"]["query_ir"]
+    assert "time" not in plan["best"]["query"]
 
 
 def test_literal_filter_values_and_caller_metadata_are_not_time_requests(runtime) -> None:

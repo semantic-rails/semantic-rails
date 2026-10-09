@@ -220,7 +220,7 @@ def test_store_questions_group_by_the_keyed_store(jaffle_package: Path, question
     with mcp_context.QueryMCPClient(jaffle_package) as client:
         payload = client.tool_payload("plan", {"intent": question, "detail": "query"})
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query_ir"]["group_by"] == [
+    assert payload["best"]["query"]["group_by"] == [
         "dimension.jaffle_store_id",
         "dimension.jaffle_store_name",
     ]
@@ -276,7 +276,7 @@ def _plan(query: dict[str, Any] | None, *, status: str = "ok", warnings: int = 0
         "ok": True,
         "status": status,
         "warnings": [{"code": "SOME_WARNING"}] * warnings,
-        "best": {"query_ir": query} if query is not None else None,
+        "best": {"query": query} if query is not None else None,
     }
 
 

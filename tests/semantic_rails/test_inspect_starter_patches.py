@@ -59,7 +59,7 @@ def test_inspect_measure_ships_order_by_and_where_patches(runtime_factory) -> No
 
 
 def test_inspect_predicate_metric_ships_metric_filters_patch(runtime_factory) -> None:
-    """Predicate-backed metrics — only those expose a `metric_filters`
+    """Predicate-backed metrics — only those expose a `having`
     starter patch. Use the registry to find a predicate-backed metric in
     jaffle_shop. If none exist, the test is a no-op (presence-when-meaningful
     contract, not absence-otherwise)."""
@@ -78,18 +78,17 @@ def test_inspect_predicate_metric_ships_metric_filters_patch(runtime_factory) ->
 
         card = inspect_payload(runtime, object_id=predicate_metric_id)["card"]
         patches = _patches_by_kind(card)
-        assert "metric_filters" in patches, (
-            f"predicate metric {predicate_metric_id} missing metric_filters patch; "
-            f"got {list(patches)}"
+        assert "having" in patches, (
+            f"predicate metric {predicate_metric_id} missing having patch; got {list(patches)}"
         )
-        mf_patch = patches["metric_filters"]["query_patch"]
-        first = list(mf_patch.get("metric_filters", []) or [])[0]
-        expr = dict(first.get("expression", {}) or {})
-        # The scaffold uses the simpler MetricRefExpr shape — the full
-        # metric_predicate union accepts that without requiring `entity`
-        # or `input` fields the agent would have to fill in.
-        assert expr.get("kind") == "metric"
-        assert expr.get("metric") == predicate_metric_id
+        hv_patch = patches["having"]["query_patch"]
+        first = list(hv_patch.get("having", []) or [])[0]
+        # The scaffold keeps the rows whose metric value passes: it names the metric's own
+        # select by alias or id, with a placeholder word and value.
+        selected = {
+            item if isinstance(item, str) else item.get("as") for item in hv_patch.get("select", [])
+        }
+        assert first.get("field") in selected | {predicate_metric_id}
         assert first.get("op") and "value" in first
     finally:
         runtime.close()

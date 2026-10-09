@@ -137,7 +137,7 @@ def test_disjoint_catalog_discovery_inspect_plan_query(granted_runtime, metric, 
     plan = plan_payload(runtime, intent=metric, partial_query=partial, detail="debug")
     assert plan["best"]["validation_ok"]
     assert "validate" not in plan["next"]
-    portable = plan["best"]["query_ir"]
+    portable = plan["best"]["query"]
     assert "policy_context" not in portable
     assert portable["select"] == [{"expression": metric, "as": "value"}]
     compiled = runtime.compile(portable, context=ctx)
@@ -481,7 +481,7 @@ def test_authenticated_asgi_grants_roundtrip_and_revoke(
             assert claimed["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED"
             plan = await call("plan", {"intent": CUSTOMERS})
             assert plan["best"]["validation_ok"]
-            portable = plan["best"]["query_ir"]
+            portable = plan["best"]["query"]
             assert "policy_context" not in portable
             assert plan["request_context"]["roles"] == ["analyst"]
             assert plan["request_context"]["audience"] == "finance"
@@ -625,7 +625,7 @@ def test_business_wording_consumer_flow_retains_columns_and_starters(runtime_fac
         assert starter["select"][0]["expression"] == CUSTOMERS
         plan = call("plan", {"intent": "Show me customer count by customer type"})
         assert plan["status"] == "ok"
-        portable = plan["best"]["query_ir"]
+        portable = plan["best"]["query"]
         assert portable["group_by"] == [DIMENSION]
         expected_fields = [DIMENSION, "value"]
         # REST takes the call's options beside it; MCP takes them as tool arguments.

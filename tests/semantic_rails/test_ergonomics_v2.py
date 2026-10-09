@@ -414,7 +414,7 @@ def test_plan_v2_composes_runtime_arithmetic_from_package_metadata(tmp_path: Pat
     assert held["status"] == "low_confidence"
     assert "ready_for" not in held["next"]
     assert held["why"]["details"]["terms"] == ["messages", "region"]
-    assert not held["best"]["query_ir"].get("group_by")
+    assert not held["best"]["query"].get("group_by")
     query = result["candidates"][0]["candidate_ir"]
     assert result["candidate_envelope_version"] == 1
     assert result["interpreted_intent"]["pattern"] == "runtime_metric_arithmetic"

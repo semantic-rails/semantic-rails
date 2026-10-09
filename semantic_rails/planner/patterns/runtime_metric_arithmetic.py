@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from .._base import RuntimeCompositionDraft, _metric, _resolved
+from ..call import QueryBuilder
 from ..groupings import _maybe_group_by
 from ..qualifiers import _add_order
 from ._protocol import IntentPattern
@@ -27,30 +28,11 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         return None
     m0, m1, m2 = metrics[0], metrics[1], metrics[2]
     assert m0 is not None and m1 is not None and m2 is not None
-    left = {
-        "kind": "arithmetic",
-        "op": "add",
-        "left": {"metric": m0.id},
-        "right": {"metric": m1.id},
-    }
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [
-            {
-                "as": "total_messages",
-                "expression": {
-                    "kind": "arithmetic",
-                    "op": "add",
-                    "left": left,
-                    "right": {"metric": m2.id},
-                },
-            }
-        ],
-    }
-    group_by = _maybe_group_by(config, text)
-    if group_by:
-        query["group_by"] = group_by
-    _add_order(query)
+    left = {"kind": "arithmetic", "op": "add", "left": m0.id, "right": m1.id}
+    builder = QueryBuilder(config).select(
+        {"kind": "arithmetic", "op": "add", "left": left, "right": m2.id}, "total_messages"
+    )
+    query = _add_order(builder.groups(_maybe_group_by(config, text))).build()
     return RuntimeCompositionDraft(
         query=query,
         resolved=[_resolved(row) for row in metrics if row is not None],

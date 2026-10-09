@@ -324,7 +324,7 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         if terms and not overlap:
             continue
         starter = (
-            {"select": [{"expression": {"metric": row["id"]}, "as": "value"}]}
+            {"select": [{"expression": row["id"], "as": "value"}]}
             if row["kind"] == "metric"
             else {"group_by": [row["id"]]}
             if row["kind"] == "dimension"
@@ -353,10 +353,11 @@ def _restricted_plan(
     intent = kwargs.get("intent")
     if not isinstance(intent, str) or not intent.strip():
         raise access_denied()
-    partial = dict(kwargs.get("partial_query") or {})
-    partial.pop("policy_context", None)
-    partial.pop("request_context", None)
-    partial.pop("request_id", None)
+    partial = {
+        key: value
+        for key, value in dict(kwargs.get("partial_query") or {}).items()
+        if key not in {"policy_context", "request_context", "request_id"}
+    }
     # Restrict inference to exact, visible names/labels/IDs. More complex
     # composition stays unavailable until it retains invocation provenance.
     lowered = intent.lower()
@@ -384,8 +385,9 @@ def _restricted_plan(
             },
         }
     row = matches[0]
-    query = {"version": 1, **partial}
-    query.setdefault("select", [{"expression": {"metric": row["id"]}, "as": "value"}])
+    granted = [{"expression": row["id"], "as": "value"}]
+    call = {**partial}
+    call.setdefault("select", granted)
     dimensions = [
         candidate["id"]
         for candidate in rows
@@ -414,8 +416,12 @@ def _restricted_plan(
             },
         }
     if dimensions:
-        query.setdefault("group_by", dimensions)
-    if query["select"] != [{"expression": {"metric": row["id"]}, "as": "value"}]:
+        call.setdefault("group_by", dimensions)
+    try:
+        query = runtime.engine_seed(call, now=kwargs.get("now"))
+    except SemanticLayerError:
+        raise access_denied() from None
+    if call["select"] != granted:
         try:
             selected = normalize_query(query).select
         except SemanticLayerError:
@@ -435,7 +441,7 @@ def _restricted_plan(
             "why": {"code": "NO_AUTHORIZED_PLAN", "message": "The requested plan is unavailable."},
         }
     best = {
-        "query_ir": query,
+        "query": call,
         "validation_ok": True,
         "pattern": "granted_metric",
         "resolved": [row],
@@ -634,9 +640,7 @@ def _run_in_view(
             options = [
                 {
                     **row,
-                    "query_patch": {
-                        "select": [{"expression": {"metric": row["id"]}, "as": "value"}]
-                    },
+                    "query_patch": {"select": [{"expression": row["id"], "as": "value"}]},
                 }
                 for row in discovery["metrics"]
             ]

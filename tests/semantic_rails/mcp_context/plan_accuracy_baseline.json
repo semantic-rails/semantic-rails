@@ -1,6 +1,6 @@
 {
- "eval_set_sha256": "0f679b6452358b4c59af91f3ad4a4c64d422ef19b0bdc197fb76b614f4b7474d",
- "summary": {"cases": 40, "pass": 23, "pass_flagged": 2, "wrong_flagged": 15, "wrong_warned": 0, "wrong_silent": 0},
+ "eval_set_sha256": "add4819581e4426cf30eb672c1e4bcb7deb52470ebde29c3a1d2bc7f8c13ef01",
+ "summary": {"cases": 40, "pass": 24, "pass_flagged": 2, "wrong_flagged": 14, "wrong_warned": 0, "wrong_silent": 0},
  "cases": {
   "J01": {"outcome": "pass", "mismatched": []},
   "J02": {"outcome": "pass", "mismatched": []},
@@ -20,7 +20,7 @@
   "J16": {"outcome": "wrong_flagged", "mismatched": ["group_by", "where"]},
   "J17": {"outcome": "wrong_flagged", "mismatched": ["where"]},
   "J18": {"outcome": "pass", "mismatched": []},
-  "J19": {"outcome": "wrong_flagged", "mismatched": ["group_by"]},
+  "J19": {"outcome": "pass", "mismatched": []},
   "J20": {"outcome": "pass", "mismatched": []},
   "J21": {"outcome": "pass", "mismatched": []},
   "J22": {"outcome": "pass", "mismatched": []},

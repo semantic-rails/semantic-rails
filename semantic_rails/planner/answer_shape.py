@@ -12,6 +12,7 @@ from ._base import (
     _requested_grouping_spans,
     _singular,
 )
+from .call import Call, Select, Time
 from .consumed_spans import _TERM_RE, _name_spans
 from .coverage import (
     _COMPARISON_PHRASE_RE,
@@ -20,14 +21,8 @@ from .coverage import (
     _coverage_why,
     _query_contains_prior_period,
 )
-from .grouping_checks import (
-    _declared_name_spans,
-    _entity_grouping_dimensions,
-    _reads_grouping,
-    _time_of,
-)
+from .grouping_checks import _declared_name_spans, _entity_grouping_dimensions, _reads_grouping
 from .groupings import _listed_grouping_terms
-from .plan_query import _select_key
 from .time_windows import _time_window
 from .unasked_groupings import _grain_splits
 from .unmatched_words import _FRAMING_WORDS
@@ -47,8 +42,8 @@ _CLAUSE_BREAK_RE = re.compile(r"[,;:.?!\n]|\band\b")
 def _answer_shape_why(
     runtime: Any,
     question: str,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None = None,
+    query: Call,
+    partial_query: Call | None = None,
 ) -> dict[str, Any] | None:
     """The draft's result holds the part each of the question's shape words asks for, or the
     plan is not ready.
@@ -119,7 +114,7 @@ def _answer_shape_why(
                 (token.end(), clause_end(token.end())),
                 kind == "person",
                 query,
-                partial_query or {},
+                partial_query or Call(),
             )
             keys |= wanted
             if not listed and word not in unlisted:
@@ -150,8 +145,8 @@ def _answer_shape_why(
                 subject.append(token.span())
         subjects.append(subject)
 
-    values = [item for item in query.get("select") or [] if isinstance(item, dict)]
-    split = bool(query.get("group_by")) or _grain_splits(_time_of(query))
+    values = list(query.select)
+    split = bool(query.group_by) or _grain_splits(query.time or Time())
     compared = _query_contains_prior_period(runtime, query)
     # (kind, the words asking, whether the draft's shape leaves them unanswered, message,
     # expected, hint kind, hint).
@@ -166,7 +161,7 @@ def _answer_shape_why(
             {"answer": "rows", **({"key_dimensions": sorted(keys)} if keys else {})},
             "group_by_listed_rows",
             "Find what the question lists with discover, add its key dimension to "
-            "best.query_ir group_by (a name may go beside it), then validate; or ask the user "
+            "best.query group_by (a name may go beside it), then validate; or ask the user "
             "what to list.",
         ),
         (
@@ -177,7 +172,7 @@ def _answer_shape_why(
             "time grain that splits the rows, so it returns one total.",
             {"answer": "row per item"},
             "group_by_each_item",
-            "Add the dimension or time grain the question asks for each of to best.query_ir, "
+            "Add the dimension or time grain the question asks for each of to best.query, "
             "then validate; or ask the user what it means.",
         ),
         (
@@ -189,7 +184,7 @@ def _answer_shape_why(
             "grain doesn't say what the question compares.",
             {"answer": "values to compare"},
             "add_compared_value",
-            "Add what the question compares with to best.query_ir (a prior_period select for "
+            "Add what the question compares with to best.query (a prior_period select for "
             "an earlier period), then validate; or ask the user what to compare.",
         ),
         (
@@ -200,14 +195,14 @@ def _answer_shape_why(
             "draft has no select of its own for each that names what it asks about.",
             {"select_count": len(questions)},
             "plan_each_question",
-            "Plan each question on its own, or give best.query_ir one select per value asked "
+            "Plan each question on its own, or give best.query one select per value asked "
             "for, then validate.",
         ),
     ]
     actual = {
         "select_count": len(values),
-        "group_by": list(query.get("group_by") or []),
-        "time_grain": _time_of(query).get("grain"),
+        "group_by": list(query.group_by),
+        "time_grain": (query.time or Time()).grain or None,
     }
     gaps = []
     for kind, words, unmet, message, expected, hint, text in shapes:
@@ -232,8 +227,8 @@ def _lists_entity_rows(
     windows: list[tuple[int, int]],
     clause: tuple[int, int],
     person: bool,
-    query: dict[str, Any],
-    caller: dict[str, Any],
+    query: Call,
+    caller: Call,
 ) -> tuple[bool, set[str]]:
     """Whether the draft's group_by lists the rows a list or person word asks for, with the key
     dimensions that would list them.
@@ -252,10 +247,10 @@ def _lists_entity_rows(
     does.
     """
 
-    chosen = set(caller.get("group_by") or [])
+    chosen = set(caller.group_by)
     grouped = [
         row
-        for item in dict.fromkeys(query.get("group_by") or [])
+        for item in dict.fromkeys(query.group_by)
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
 
@@ -312,7 +307,7 @@ def _lists_entity_rows(
 
 
 def _questions_answered(
-    config: Any, lowered: str, subjects: list[list[tuple[int, int]]], values: list[dict[str, Any]]
+    config: Any, lowered: str, subjects: list[list[tuple[int, int]]], values: list[Select]
 ) -> bool:
     """Whether each question for a value has a select of its own that names what it asks about.
 
@@ -330,24 +325,12 @@ def _questions_answered(
     metrics = {row.id: row for row in config.metric_recipes}
     named: dict[str, list[tuple[int, int]]] = {}
     for item in values:
-        raw = item.get("expression")
-        expression = raw if isinstance(raw, dict) else {}
-        kind = expression.get("kind", "measure" if "measure" in expression else "metric")
-        if kind in ("measure", "measure_ref"):
-            row = measures.get(str(expression.get("measure")))
-            declared = row is not None and expression.get("aggregation") in (
-                None,
-                "",
-                row.default_aggregation,
-            )
-        else:
-            row = metrics.get(str(expression.get("metric"))) if kind == "metric" else None
-            declared = row is not None
-        if row is None or not declared:
+        row = measures.get(item.ref) or metrics.get(item.ref)
+        if row is None or item.aggregation not in ("", getattr(row, "default_aggregation", "")):
             continue
         aliases = [str(alias) for alias in row.aliases or []]
         names = [str(row.label or ""), *aliases, _last_token(row.id), _last_token(row.name)]
-        spans = named.setdefault(_select_key(config, item), [])
+        spans = named.setdefault(item.ref, [])
         spans.extend(_name_spans(tokens, normal, names, whole=True))
     options = [
         [

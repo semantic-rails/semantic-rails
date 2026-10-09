@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from ._base import _TERM_SYNONYMS, _name_matches, _singular, _tokens
+from .call import Call
 from .coverage import (
     _catalog_rows,
     _dict_nodes,
@@ -107,7 +108,7 @@ def _number_key(value: float) -> str | None:
         return None
 
 
-def unconsumed_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+def unconsumed_terms(runtime: Any, question: str, query: Call) -> list[str]:
     """The numerals, number words and clock or zone words no part of the draft consumes.
 
     The invariant plan holds a draft to before it calls it ready: every number ("9", "14h30",
@@ -162,7 +163,7 @@ def _time_and_number_terms(
 
 
 def _consumed_spans(
-    runtime: Any, lowered: str, tokens: list[tuple[str, int, int]], query: dict[str, Any]
+    runtime: Any, lowered: str, tokens: list[tuple[str, int, int]], query: Call
 ) -> list[tuple[int, int]]:
     """The character spans of the question the draft's constructs consume.
 
@@ -176,26 +177,22 @@ def _consumed_spans(
     """
 
     spans: list[tuple[int, int]] = []
-    time = _time_block(query)
-    spans.extend(_window_spans(lowered, time, query.get("policy_context")))
+    spans.extend(_window_spans(lowered, _time_block(query).window))
     if (read := snapshot_read(runtime, lowered, query)) is not None:
         # A balance read on the day an as-of phrase or a window names consumes that phrase.
         spans.extend(read.spans)
     normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
     referenced = set(_referenced_ids(query))
-    calendar_id = str(time.get("calendar_id") or "default")
     rows = _catalog_rows(runtime._config)
     for row in rows:
-        if str(getattr(row, "id", "")) in referenced or (
-            calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
-        ):
+        if str(getattr(row, "id", "")) in referenced:
             # An object's own names only: a description that says "per hour" consumes nothing.
             names = [str(getattr(row, attr, "") or "") for attr in ("id", "name", "label")]
             spans.extend(_name_spans(tokens, normal, names, whole=False))
             spans.extend((start, end) for _, start, end in _name_matches(row, lowered))
     labels = _value_phrases(runtime._config)
     fields = {str(getattr(row, "id", "")): row for row in rows}
-    for node in _dict_nodes(query):
+    for node in _dict_nodes(query.to_call()):
         if "field" not in node or "value" not in node:
             continue
         value = node.get("value")
@@ -220,8 +217,7 @@ def _consumed_spans(
                 )
             )
     spans.extend(_number_spans(lowered, tokens, *_draft_numbers(query)))
-    limit = query.get("limit")
-    limit = _number_key(limit) if isinstance(limit, (int, float)) else None
+    limit = _number_key(query.limit) if isinstance(query.limit, (int, float)) else None
     if limit is not None and limit.isdigit():
         # A ranking's count is read where the ranking parser reads it, whatever words sit beside
         # it. A limit the draft carries and the question doesn't state stays unconsumed.
@@ -343,22 +339,21 @@ def _window_spans(
     """
 
     windows, others = _question_time(lowered, policy_context, timezone=timezone)
-    if not windows and not any(time.get(key) for key in ("start", "end", "range")):
+    if not windows and not time:
         return []
     if not _window_agrees(windows, time, policy_context, timezone=timezone):
         return []
     return [span for span, _bounds in windows] + others
 
 
-def _draft_numbers(query: dict[str, Any]) -> tuple[set[str], set[str]]:
+def _draft_numbers(query: Call | dict[str, Any]) -> tuple[set[str], set[str]]:
     """Every number the draft carries outside its time block and its limit (a threshold, a
     filter value, a percentile), as digits, and the percentages its fractions state (0.9 is the
     "top 10 percent" it cuts). The limit is read by the ranking that states it, never here: a
     threshold that repeats its number ("top 10 stores with at least 10 orders") is not the limit."""
 
-    return _number_sets(
-        {key: value for key, value in query.items() if key not in ("time", "limit")}
-    )
+    call = query.to_call() if isinstance(query, Call) else query
+    return _number_sets({key: value for key, value in call.items() if key not in ("time", "limit")})
 
 
 def _number_sets(query: dict[str, Any]) -> tuple[set[str], set[str]]:
@@ -390,7 +385,7 @@ def _number_sets(query: dict[str, Any]) -> tuple[set[str], set[str]]:
             for child in value:
                 walk(child)
 
-    walk({key: value for key, value in query.items() if key != "version"})
+    walk(query)
     return plain, percents
 
 

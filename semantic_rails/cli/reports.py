@@ -423,7 +423,7 @@ def _catalog_objects(catalog: dict[str, Any], *, selected: str) -> list[dict[str
 
 def _planned_query(plan: dict[str, Any]) -> dict[str, Any]:
     best = dict(plan.get("best", {}) or {})
-    query = best.get("query_ir")
+    query = best.get("query")
     return dict(query) if isinstance(query, dict) else {}
 
 

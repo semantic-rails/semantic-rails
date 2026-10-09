@@ -1488,7 +1488,23 @@ def test_validate_compile_execute_and_plan_agree(package: Path, shape: str) -> N
         assert outcomes[0][1] and outcomes[0][1] == outcomes[1][1]
     # plan carries the caller's where unchanged and validates it the same way.
     best = planned["best"]
-    assert best["query_ir"]["where"] == query["where"]
+    assert best["query"]["where"] == query["where"]
     assert best["validation_ok"] is (code == "ok")
-    plan_codes = [error["code"] for error in (planned.get("why") or {}).get("errors", [])]
-    assert plan_codes == ([] if code == "ok" else [code])
+    why = planned.get("why") or {}
+    if code == "AMBIGUOUS_CHILD_SCOPE":
+        # plan asks the engine's question, each reading a whole call that runs.
+        assert planned["status"] == "needs_clarification"
+        assert why["code"] == code
+        for option in why["details"]["options"]:
+            assert engine_validates(package, option["call"]), option
+    else:
+        plan_codes = [error["code"] for error in why.get("errors", [])]
+        assert plan_codes == ([] if code == "ok" else [code])
+
+
+def engine_validates(package: Path, call: dict[str, Any]) -> bool:
+    engine = Runtime.from_path(str(package))
+    try:
+        return bool(engine.validate(call)["ok"])
+    finally:
+        engine.close()

@@ -1,6 +1,6 @@
 - `plan` answers a balance question on one day. When every select reads a stock on its
   `as_of_time` clock, a question that names no day, or says "now", "right now" or "current",
-  reads the last complete day before `policy_context.now`; "at the end of last month", "as of
+  reads the last complete day before the request's `now`; "at the end of last month", "as of
   2026-09-30" or one stated period ("MRR last month") reads that period's closing day. The
   response's `assumptions` names the day. Caller-selected expressions and aliases are preserved.
   Time words without a single-day reading, such as "all time" or "ever", stay held. A day that

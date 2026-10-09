@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from .call import Call
+from .coverage import _projected_subject_ids
 from .intent_ir import IntentIR
-from .plan_query import _append_unique_dicts, _where_filters
+from .plan_query import _append_unique_dicts
 
 
 def _select_best_plan(
@@ -48,11 +50,11 @@ def _slim_best(
     fallback: dict[str, Any] | None = None,
     warnings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Project one draft with canonical Query IR and unique resolved rows."""
+    """Project one draft with its call and unique resolved rows."""
 
     out: dict[str, Any] = {
         "pattern": pattern,
-        "query_ir": draft.query,
+        "query": draft.query.to_call(),
         "resolved": _append_unique_dicts([], draft.resolved),
         "rationale": list(dict.fromkeys(draft.rationale)),
         "interpreted_intent": draft.interpreted_intent,
@@ -110,7 +112,7 @@ def _query_detail_best(best: Any) -> dict[str, Any] | None:
         key: best[key]
         for key in (
             "pattern",
-            "query_ir",
+            "query",
             "resolved",
             "validation_ok",
             "subject_ids_used",
@@ -121,62 +123,14 @@ def _query_detail_best(best: Any) -> dict[str, Any] | None:
 
 
 def _extract_subject_ids(draft: Any) -> list[str]:
-    """Walk the draft's select expressions and surface every catalog
-    id (measure / metric / scoped_aggregate inner measure) that ends
-    up in the IR.
+    """Every measure and metric id the draft's call names, in first-seen order.
 
-    Lets the agent reconcile ``best.query_ir`` against
-    ``intent_ir.subjects`` without parsing the IR themselves. Order
-    matches first-seen-in-select.
+    Lets the agent reconcile ``best.query`` against ``intent_ir.subjects`` without parsing the
+    call themselves.
     """
 
-    ids: list[str] = []
-    seen: set[str] = set()
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in ("measure", "metric"):
-                value = node.get(key)
-                if isinstance(value, str) and value and value not in seen:
-                    seen.add(value)
-                    ids.append(value)
-            for value in node.values():
-                if isinstance(value, (dict, list)):
-                    _walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                _walk(item)
-
-    _walk(getattr(draft, "query", {}))
-    return ids
-
-
-def _projected_subject_ids(query: dict[str, Any]) -> list[str]:
-    """Return the top-level semantic objects projected by a query.
-
-    Unlike :func:`_extract_subject_ids`, this intentionally does not
-    include predicate inputs nested inside scoped aggregates. The target
-    slot is the answer's subject; qualification/cohort objects are
-    tracked separately.
-    """
-
-    ids: list[str] = []
-    seen: set[str] = set()
-    for item in list((query or {}).get("select") or []):
-        if not isinstance(item, dict):
-            continue
-        expr = item.get("expression")
-        if not isinstance(expr, dict):
-            continue
-        object_id = ""
-        if expr.get("metric"):
-            object_id = str(expr.get("metric") or "")
-        elif expr.get("measure"):
-            object_id = str(expr.get("measure") or "")
-        if object_id and object_id not in seen:
-            seen.add(object_id)
-            ids.append(object_id)
-    return ids
+    query: Call = draft.query
+    return [ref for ref in query.references() if ref.startswith(("measure.", "metric."))]
 
 
 def _object_ids_in_node(node: Any) -> list[str]:
@@ -185,7 +139,7 @@ def _object_ids_in_node(node: Any) -> list[str]:
 
     def _walk(value: Any) -> None:
         if isinstance(value, dict):
-            for key in ("measure", "metric", "entity", "dimension", "field"):
+            for key in ("measure", "metric", "input", "entity", "dimension", "field"):
                 item = value.get(key)
                 if isinstance(item, str) and "." in item and item not in seen:
                     seen.add(item)
@@ -207,8 +161,8 @@ def _filter_keys(filters: list[dict[str, Any]]) -> set[str]:
     return {json.dumps(row, sort_keys=True, default=str) for row in filters}
 
 
-def _query_qualification(query: dict[str, Any]) -> list[str]:
-    """Return generic qualification/cohort signals present in Query IR."""
+def _query_qualification(query: Call) -> list[str]:
+    """Return generic qualification/cohort signals present in the call."""
 
     out: list[str] = []
     seen: set[str] = set()
@@ -218,14 +172,18 @@ def _query_qualification(query: dict[str, Any]) -> list[str]:
             seen.add(value)
             out.append(value)
 
-    for item in list((query or {}).get("metric_filters") or []):
-        if isinstance(item, dict):
-            _add("metric_filter")
-            for object_id in _object_ids_in_node(item.get("expression", item)):
-                _add(object_id)
-    for select in list((query or {}).get("select") or []):
-        expr = select.get("expression") if isinstance(select, dict) else None
-        for predicate in _scoped_predicates(expr):
+    for entity_filter in query.entity_filters:
+        if entity_filter.match == "having":
+            _add("entity_filter")
+            _add(entity_filter.entity)
+            for row in entity_filter.conditions:
+                _add(row.field)
+    for row in query.having:
+        _add("having")
+        if row.field.startswith(("measure.", "metric.")):
+            _add(row.field)
+    for select in query.select:
+        for predicate in _scoped_predicates(select.expression):
             _add("scoped_aggregate_predicates")
             for object_id in _object_ids_in_node(predicate):
                 _add(object_id)
@@ -247,21 +205,16 @@ def _scoped_predicates(node: Any) -> list[Any]:
     return found
 
 
-def _time_scope(query: dict[str, Any]) -> dict[str, Any]:
-    time_spec = (query or {}).get("time")
-    if not isinstance(time_spec, dict):
+def _time_scope(query: Call) -> dict[str, Any]:
+    if query.time is None:
         return {}
-    return {
-        key: time_spec[key]
-        for key in ("temporal_role", "grain", "start", "end", "range")
-        if time_spec.get(key) not in (None, "", [], {})
-    }
+    return {key: value for key, value in query.time.to_call().items() if key != "fill"}
 
 
 def _intent_slots(intent_ir: IntentIR | None, draft: Any | None = None) -> dict[str, Any]:
     """Build a domain-neutral slot summary for an intent/draft pair."""
 
-    query = dict(getattr(draft, "query", {}) or {}) if draft is not None else {}
+    query: Call = draft.query if draft is not None else Call()
     ir = intent_ir.to_dict() if intent_ir is not None else {}
     target = _projected_subject_ids(query)
     if not target:
@@ -270,7 +223,7 @@ def _intent_slots(intent_ir: IntentIR | None, draft: Any | None = None) -> dict[
             for row in list(ir.get("subjects") or [])
             if isinstance(row, dict) and row.get("id")
         ][:5]
-    grouping = [str(item) for item in list(query.get("group_by") or []) if item]
+    grouping = list(query.group_by)
     if not grouping:
         grouping = [
             str(row.get("id", ""))
@@ -289,7 +242,7 @@ def _intent_slots(intent_ir: IntentIR | None, draft: Any | None = None) -> dict[
         "target": list(dict.fromkeys(target)),
         "grouping": list(dict.fromkeys(grouping)),
         "qualification": list(dict.fromkeys(qualification)),
-        "filters": _where_filters(query),
+        "filters": [row.to_call() for row in query.where],
         "time": _time_scope(query) or dict(ir.get("time", {}) or {}),
     }
 
@@ -359,7 +312,7 @@ def _fallback_semantic_drift(
         "message": (
             "The named planner pattern matched the intent but failed validation; "
             "a validating fallback was available, but it changed or dropped one "
-            "or more requested intent slots. Review best.query_ir and validate "
+            "or more requested intent slots. Review best.query and validate "
             "diagnostics before executing."
         ),
         "details": {
@@ -373,7 +326,7 @@ def _fallback_semantic_drift(
             {
                 "kind": "inspect_primary_failure",
                 "message": (
-                    "Validate best.query_ir (over MCP, execute with mode 'validate') to see "
+                    "Validate best.query (over MCP, execute with mode 'validate') to see "
                     "why the semantically closest draft failed."
                 ),
             },
@@ -429,10 +382,10 @@ def _plan_trace(
     fallback: dict[str, Any] | None,
 ) -> dict[str, Any]:
     slots = _intent_slots(intent_ir, draft)
-    query = dict(getattr(draft, "query", {}) or {})
+    query: Call = draft.query
     subjects = _projected_subject_ids(query) or _extract_subject_ids(draft)
-    group_by = [str(item) for item in list(query.get("group_by") or []) if item]
-    filters = _where_filters(query)
+    group_by = list(query.group_by)
+    filters = [row.to_call() for row in query.where]
     selected: dict[str, Any] = {
         "subjects": subjects,
         "group_by": group_by,

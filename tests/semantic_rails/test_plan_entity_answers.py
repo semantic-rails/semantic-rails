@@ -229,7 +229,7 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
 def _ready(payload: dict[str, Any]) -> dict[str, Any]:
     assert payload["status"] == "ok", payload.get("why")
     assert "execute" in payload["next"]["ready_for"]
-    return payload["best"]["query_ir"]
+    return payload["best"]["query"]
 
 
 _MRR_ON = """
@@ -245,35 +245,35 @@ ORDER BY d.mrr {direction}, a.account_id LIMIT {limit}
         (
             "Top 2 accounts by MRR on 2026-10-04",
             2,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0)],
         ),
         (
             "Top 2 accounts by MRR on 2026-10-04?",
             2,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0)],
         ),
         (
             "Which 2 accounts had the most MRR on 2026-10-04?",
             2,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0)],
         ),
         (
             "Top two accounts by MRR on 2026-10-04",
             2,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0)],
         ),
         (
             "Top three accounts by MRR on 2026-10-04",
             3,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0), ("b", "Globex", 0.0)],
         ),
-        ("Bottom 1 account by MRR on 2026-10-04", 1, "ASC", [("b", "Globex", 0.0)]),
-        ("Which account had the least MRR on 2026-10-04?", 1, "ASC", [("b", "Globex", 0.0)]),
+        ("Bottom 1 account by MRR on 2026-10-04", 1, "asc", [("b", "Globex", 0.0)]),
+        ("Which account had the least MRR on 2026-10-04?", 1, "asc", [("b", "Globex", 0.0)]),
     ],
 )
 def test_a_ranking_keeps_its_count_direction_and_entity(
@@ -288,7 +288,7 @@ def test_a_ranking_keeps_its_count_direction_and_entity(
     assert query["group_by"] == [ACCOUNT_ID, ACCOUNT_NAME]
     assert query["order_by"] == [{"field": "mrr", "direction": direction}]
     assert query["limit"] == limit
-    assert "metric_filters" not in query
+    assert "having" not in query and not any("entity" in row for row in query.get("where", []))
     rows = runtime.query(query)["rows"]
     actual = [(row[ACCOUNT_ID], row[ACCOUNT_NAME], row["mrr"]) for row in rows]
     # The internal QA Sandbox (99) is outside the metric, so no tie reaches the cut.
@@ -420,7 +420,7 @@ def test_a_draft_by_another_entitys_column_is_held(
     monkeypatch.setattr(groupings_module, "_entity_grouping", lambda *args: None)
     monkeypatch.setattr(rollup_module, "_entity_grouping", lambda *args: None)
     payload = _plan(subscriptions(), "Top 2 accounts by MRR on 2026-10-04")
-    assert payload["best"]["query_ir"]["group_by"] == [
+    assert payload["best"]["query"]["group_by"] == [
         "dimension.subscriptions_account_day_account_id"
     ]
     assert payload["status"] != "ok"

@@ -1,9 +1,8 @@
 """Directional safety for fact-table measures.
 
-Ensures that dimensions arriving via ``select[]`` (rather than
-``group_by[]``) still get reachability-validated. A fact measure
-bound to a time entity must not silently drop an unreachable
-customer-side dim from the output.
+Ensures that a grouping dimension (a call's select names one only for the front door to
+lift it into ``group_by``) is reachability-validated. A fact measure bound to a time entity
+must not silently drop an unreachable customer-side dim from the output.
 """
 
 import pytest
@@ -28,8 +27,8 @@ def test_fact_measure_with_unreachable_select_dim_errors():
                         "expression": {"measure": "measure.jaffle.revenue_mtd_usd"},
                         "as": "mtd",
                     },
-                    {"dimension": customer_dim.id},
                 ],
+                "group_by": [customer_dim.id],
                 "time": {
                     "temporal_role": "temporal_role.jaffle_daily_metric_day",
                     "grain": "day",

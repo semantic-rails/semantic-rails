@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 
+import duckdb
 import pytest
+import yaml
 
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import RuntimeCompositionDraft
+from semantic_rails.planner.call import Call, Select, time_of
 from semantic_rails.planner.intent_ir import compose_hints, parse_intent
 from tests.semantic_rails.result_helpers import assert_plan_held
 
@@ -42,7 +45,7 @@ def test_best_plan_corpus_carries_query_once(runtime_factory) -> None:
             best = payload.get("best") or {}
             full = plan_payload(runtime, intent=case["intent"], detail="full")
             assert dereference(payload["intent_ir"], payload) == full["intent_ir"]
-            if query := best.get("query_ir"):
+            if query := best.get("query"):
                 assert occurrences(payload, query) == 1, case["intent"]
                 resolved = [json.dumps(row, sort_keys=True) for row in best["resolved"]]
                 assert len(resolved) == len(set(resolved)), case["intent"]
@@ -72,23 +75,38 @@ def test_best_plan_corpus_carries_query_once(runtime_factory) -> None:
 
 
 def test_plan_drafts_a_qualified_ranking(runtime_factory) -> None:
+    """No window: every order of each store qualifies it, the one reading, so plan answers."""
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
             runtime,
             intent="top 3 stores by revenue with at least 4 distinct customers",
         )
+        assert payload["status"] == "ok", payload.get("why")
+        assert payload["best"]["pattern"] == "qualified_metric_rollup"
+        query = payload["best"]["query"]
+        [qualification] = query["where"]
+        assert qualification == {
+            "entity": "entity.jaffle_store",
+            "having": [
+                {"field": "measure.jaffle.ordering_customer_count", "op": "gte", "value": 4}
+            ],
+            "over": "all_time",
+        }
+        rows = runtime.query(query)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute(
+                "SELECT s.store_name, SUM(o.order_total_cents / 100.0) FROM jaffle_order o "
+                "JOIN jaffle_store s USING (store_id) WHERE o.store_id IN (SELECT store_id "
+                "FROM jaffle_order GROUP BY 1 HAVING COUNT(DISTINCT customer_id) >= 4) "
+                "GROUP BY 1 ORDER BY 2 DESC LIMIT 3"
+            ).fetchall()
     finally:
         runtime.close()
-    assert payload["best"] is not None
-    assert payload["best"]["pattern"] == "qualified_metric_rollup"
-    assert payload["best"]["validation_ok"] is True
-    assert "metric_filters" in payload["best"]["query_ir"]
-    # The draft buckets by month, which the question never asks for: it would keep the top 3
-    # store-months, so it is held.
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
-    assert payload["why"]["details"]["grain"] == "month"
+    actual = [(row["dimension.jaffle_store_name"], row["revenue_usd"]) for row in rows]
+    assert [name for name, _ in actual] == [name for name, _ in reference]
+    assert [value for _, value in actual] == pytest.approx([value for _, value in reference])
+    assert len(reference) == 2
 
 
 @pytest.mark.parametrize(
@@ -121,11 +139,11 @@ def test_plan_prefers_governed_subject_over_generic_order_count(
     else:
         assert payload["status"] == "ok"
     best = payload["best"]
-    query = best["query_ir"]
+    query = best["query"]
     projected_ids = {
-        expression.get("metric") or expression.get("measure")
+        expression if isinstance(expression, str) else expression["measure"]
         for item in query.get("select", [])
-        for expression in [item.get("expression", {})]
+        for expression in [item if isinstance(item, str) else item["expression"]]
     }
     assert expected_id in projected_ids
     assert expected_id in {row["id"] for row in best["resolved"]}
@@ -152,9 +170,7 @@ def test_plan_prefers_explicit_revenue_qualifier_over_generic_revenue(
     assert expected_id in {row["id"] for row in payload["best"]["resolved"]}
 
 
-def test_plan_keeps_historical_segment_grouping_but_reports_its_missing_revenue_order(
-    runtime_factory,
-) -> None:
+def test_plan_holds_a_ranking_of_segments_it_does_not_group_by(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
@@ -165,7 +181,6 @@ def test_plan_keeps_historical_segment_grouping_but_reports_its_missing_revenue_
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     assert "ranking_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
-    assert "dimension.jaffle_customer_history_segment" in payload["best"]["query_ir"]["group_by"]
 
 
 @pytest.mark.parametrize("intent", ["", "   ", None, 123])
@@ -185,21 +200,14 @@ def test_plan_rejects_missing_or_non_string_intent(runtime_factory, intent) -> N
 def test_plan_preserves_partial_query_state(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     partial = {
-        "version": 1,
         "group_by": ["dimension.jaffle_store_name"],
-        "where": [
-            {
-                "field": "dimension.jaffle_order_has_food_item",
-                "op": "=",
-                "value": True,
-            }
-        ],
+        "where": [{"field": "dimension.jaffle_order_has_food_item", "op": "is", "value": True}],
     }
     try:
         payload = plan_payload(runtime, intent="revenue", partial_query=partial)
     finally:
         runtime.close()
-    query_ir = payload["best"]["query_ir"]
+    query_ir = payload["best"]["query"]
     assert "dimension.jaffle_store_name" in query_ir["group_by"]
     assert partial["where"][0] in query_ir["where"]
     assert payload["status"] == "ok"
@@ -208,10 +216,12 @@ def test_plan_preserves_partial_query_state(runtime_factory) -> None:
 @pytest.mark.parametrize(
     ("partial", "path"),
     [
-        ({"group_by": [["dimension.jaffle_store_name"]]}, "query.group_by[0]"),
-        ({"group_by": [{"label": "store"}]}, "query.group_by[0]"),
-        ({"group_by": "dimension.jaffle_store_name"}, "query.group_by"),
-        ({"select": {"measure": "measure.jaffle.revenue_usd"}}, "query.select"),
+        ({"group_by": [["dimension.jaffle_store_name"]]}, "group_by[0]"),
+        ({"group_by": [{"label": "store"}]}, "group_by[0]"),
+        # A group_by item is the dimension id itself, never an object naming it.
+        ({"group_by": [{"dimension": "dimension.jaffle_store_name"}]}, "group_by[0]"),
+        ({"group_by": "dimension.jaffle_store_name"}, "group_by"),
+        ({"select": {"measure": "measure.jaffle.revenue_usd"}}, "select"),
     ],
 )
 def test_plan_rejects_a_partial_query_it_cannot_read(runtime_factory, partial, path) -> None:
@@ -226,47 +236,49 @@ def test_plan_rejects_a_partial_query_it_cannot_read(runtime_factory, partial, p
     assert response["ok"] is False
     error = response["errors"][0]
     assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
-    assert error["recovery_hints"][0]["kind"] == "fix_query_shape"
+    assert error["recovery_hints"][0]["code"] == "FIX_QUERY_CALL"
 
 
-def test_plan_reads_a_dimension_object_in_the_partial_group_by(runtime_factory) -> None:
+def test_plan_keeps_the_callers_store_name_grouping(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
-    partial = {"group_by": [{"dimension": "dimension.jaffle_store_name"}]}
+    partial = {"group_by": ["dimension.jaffle_store_name"]}
     try:
         payload = plan_payload(runtime, intent="revenue by store", partial_query=partial)
     finally:
         runtime.close()
     # The caller's Store name settles how the stores show: the draft adds no Store id.
     assert payload["status"] == "ok"
-    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_store_name"]
+    assert payload["best"]["query"]["group_by"] == ["dimension.jaffle_store_name"]
 
 
-REVENUE_SUM = {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
+REVENUE = "measure.jaffle.revenue_usd"
+REVENUE_SUM = {"kind": "measure", "measure": REVENUE, "aggregation": "sum"}
 
 
 @pytest.mark.parametrize(
-    ("caller", "alias"),
+    ("caller", "alias", "shown"),
     [
-        ({"as": "rev", "expression": {"measure": "measure.jaffle.revenue_usd"}}, "rev"),
-        ({"as": "rev", "expression": REVENUE_SUM}, "rev"),
+        ({"as": "rev", "expression": REVENUE}, "rev", None),
+        # The caller's spelling stays, the default aggregation restated too.
+        ({"as": "rev", "expression": REVENUE_SUM}, "rev", None),
         # Without an alias of its own, the caller's item takes the draft's.
-        ({"expression": {"measure": "measure.jaffle.revenue_usd"}}, "revenue_usd"),
+        ({"expression": REVENUE}, "revenue_usd", REVENUE),
     ],
 )
-def test_plan_keeps_a_caller_select_item_once(runtime_factory, caller, alias) -> None:
+def test_plan_keeps_a_caller_select_item_once(runtime_factory, caller, alias, shown) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
             runtime, intent="top 3 stores by revenue", partial_query={"select": [caller]}
         )
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         rows = runtime.query(query)["rows"]
     finally:
         runtime.close()
 
     assert payload["status"] == "ok"
-    assert query["select"] == [{**caller, "as": alias}]
-    assert query["order_by"] == [{"field": alias, "direction": "DESC"}]
+    assert query["select"] == [shown or {**caller, "as": alias}]
+    assert query["order_by"] == [{"field": alias, "direction": "desc"}]
     assert sorted(rows[0]) == ["dimension.jaffle_store_id", "dimension.jaffle_store_name", alias]
 
 
@@ -279,16 +291,17 @@ def test_plan_keeps_a_different_computation_beside_the_caller_one(runtime_factor
         )
     finally:
         runtime.close()
-    expressions = [row["expression"] for row in payload["best"]["query_ir"]["select"]]
-    assert expressions == [average["expression"], REVENUE_SUM]
+    select = payload["best"]["query"]["select"]
+    expressions = [row if isinstance(row, str) else row["expression"] for row in select]
+    assert expressions == [average["expression"], REVENUE]
 
 
 def test_plan_demotes_to_low_confidence_on_validation_failure(runtime_factory, monkeypatch) -> None:
     runtime = runtime_factory("jaffle_shop")
     real_validate = runtime.validate
 
-    def _failing_validate(payload):
-        report = dict(real_validate(payload))
+    def _failing_validate(payload, **kwargs):
+        report = dict(real_validate(payload, **kwargs))
         report["ok"] = False
         report["errors"] = [
             {"code": "FABRICATED_FOR_TEST", "message": "synthetic validation failure"}
@@ -297,10 +310,7 @@ def test_plan_demotes_to_low_confidence_on_validation_failure(runtime_factory, m
 
     monkeypatch.setattr(runtime, "validate", _failing_validate)
     try:
-        payload = plan_payload(
-            runtime,
-            intent="top 3 stores by revenue with at least 4 distinct customers",
-        )
+        payload = plan_payload(runtime, intent="revenue by store")
     finally:
         runtime.close()
     assert payload["status"] == "low_confidence"
@@ -313,8 +323,8 @@ def test_plan_caps_why_errors_with_truncation_marker(runtime_factory, monkeypatc
     runtime = runtime_factory("jaffle_shop")
     real_validate = runtime.validate
 
-    def _flood_errors(payload):
-        report = dict(real_validate(payload))
+    def _flood_errors(payload, **kwargs):
+        report = dict(real_validate(payload, **kwargs))
         report["ok"] = False
         report["errors"] = [
             {"code": f"E_{i:02d}", "message": f"synthetic error {i}"} for i in range(10)
@@ -323,10 +333,7 @@ def test_plan_caps_why_errors_with_truncation_marker(runtime_factory, monkeypatc
 
     monkeypatch.setattr(runtime, "validate", _flood_errors)
     try:
-        payload = plan_payload(
-            runtime,
-            intent="top 3 stores by revenue with at least 4 distinct customers",
-        )
+        payload = plan_payload(runtime, intent="revenue by store")
     finally:
         runtime.close()
     assert len(payload["why"]["errors"]) == 3
@@ -390,14 +397,12 @@ def test_plan_compact_detail_discovers_fallback_after_invalid_primary(
     # this test isolates fallback timing rather than the semantic-drift gate.
     valid_fallback = replace(
         composed.draft,
-        query={**composed.draft.query, "time": dict(composed.intent_ir.time or {})},
+        query=replace(composed.draft.query, time=time_of(composed.intent_ir.time)),
     )
+    missing = Select("measure.jaffle.missing", "missing_expression")
     invalid_primary = replace(
         valid_fallback,
-        query={
-            **valid_fallback.query,
-            "select": [*valid_fallback.query["select"], {"as": "missing_expression"}],
-        },
+        query=replace(valid_fallback.query, select=(*valid_fallback.query.select, missing)),
     )
     events: list[str] = []
     real_planned_row = plan_module._planned_row
@@ -456,7 +461,7 @@ def test_plan_uses_planner_owned_catalog_fallback(runtime_factory, monkeypatch) 
     assert "stock_as_of_unrealized" in {gap["kind"] for gap in payload["why"]["details"]["gaps"]}
     assert payload["best"] is not None
     assert payload["best"]["pattern"] == "catalog_fallback"
-    assert "query_ir" in payload["best"]
+    assert "query" in payload["best"]
 
 
 def test_plan_best_detail_rejects_grouping_drift_fallback(runtime_factory) -> None:
@@ -474,12 +479,12 @@ def test_plan_best_detail_rejects_grouping_drift_fallback(runtime_factory) -> No
     assert "ready_for" not in best["next"]
     assert full["status"] == "low_confidence"
     fallback_alt = full["alternatives"][0]
-    assert fallback_alt["trace"]["selected"]["group_by"] == fallback_alt["query_ir"].get(
+    assert fallback_alt["trace"]["selected"]["group_by"] == fallback_alt["query"].get(
         "group_by", []
     )
     assert query["status"] == best["status"]
     assert query["why"]["code"] == best["why"]["code"]
-    assert query["best"]["query_ir"] == best["best"]["query_ir"]
+    assert query["best"]["query"] == best["best"]["query"]
     assert "next" not in query
     assert "trace" not in query["best"]
     assert len(json.dumps(best, default=str, separators=(",", ":"))) < len(
@@ -498,49 +503,26 @@ class _FakeIntentIR:
             "subjects": [{"id": self.subject, "label": self.subject, "object_type": "measure"}],
             "grouping": [{"id": self.grouping, "label": self.grouping, "object_type": "dimension"}],
             "qualification_token_groups": [[self.qualification]],
-            "threshold": {"op": ">=", "value": 2},
+            "threshold": {"op": "gte", "value": 2},
             "time": {},
         }
+
+
+def _qualification(predicate: str, entity: str) -> dict:
+    having = [{"field": predicate, "op": "gte", "value": 2}]
+    return {"entity": entity, "having": having, "over": "all_time"}
 
 
 def _qualified_primary(*, target: str, predicate: str, entity: str, group_by: str):
     return {
         "draft": RuntimeCompositionDraft(
-            query={
-                "version": 1,
-                "select": [
-                    {
-                        "as": "qualified_target",
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "aggregation": "sum",
-                            "measure": target,
-                            "predicates": [
-                                {
-                                    "entity": entity,
-                                    "measure": predicate,
-                                    "op": ">=",
-                                    "value": 2,
-                                }
-                            ],
-                        },
-                    }
-                ],
-                "group_by": [group_by],
-                "metric_filters": [
-                    {
-                        "expression": {
-                            "kind": "metric_predicate",
-                            "entity": entity,
-                            "input": {"measure": predicate},
-                            "op": ">=",
-                            "value": 2,
-                        },
-                        "op": "=",
-                        "value": True,
-                    }
-                ],
-            },
+            query=Call.from_call(
+                {
+                    "select": [target],
+                    "group_by": [group_by],
+                    "where": [_qualification(predicate, entity)],
+                }
+            ),
             resolved=[],
             rationale=[],
             interpreted_intent={"pattern": "qualified_metric_rollup"},
@@ -551,16 +533,13 @@ def _qualified_primary(*, target: str, predicate: str, entity: str, group_by: st
     }
 
 
-def _fallback_row(*, target: str, group_by: str, metric_filters: list[dict] | None = None):
-    query = {
-        "select": [{"as": "fallback", "expression": target}],
-        "group_by": [group_by],
-    }
-    if metric_filters:
-        query["metric_filters"] = metric_filters
+def _fallback_row(*, target: str, group_by: str, where: list[dict] | None = None):
+    query = {"select": [{"as": "fallback", "expression": target}], "group_by": [group_by]}
+    if where:
+        query["where"] = where
     return {
         "draft": RuntimeCompositionDraft(
-            query=query,
+            query=Call.from_call(query),
             resolved=[],
             rationale=[],
             interpreted_intent={"pattern": "catalog_fallback"},
@@ -624,9 +603,7 @@ def test_plan_allows_subject_preserving_valid_fallback() -> None:
         target=subject, predicate=predicate, entity=entity, group_by=grouping
     )
     fallback = _fallback_row(
-        target=subject,
-        group_by=grouping,
-        metric_filters=primary["draft"].query["metric_filters"],
+        target=subject, group_by=grouping, where=[_qualification(predicate, entity)]
     )
 
     best = _select_best_plan(
@@ -638,24 +615,53 @@ def test_plan_allows_subject_preserving_valid_fallback() -> None:
     assert "semantic_drift" not in fallback
 
 
-def test_plan_preserves_period_shift_intent_instead_of_validating_generic_fallback(
-    runtime_factory,
-) -> None:
+def test_plan_holds_a_comparison_of_a_period_not_over_yet(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_payload(runtime, intent="revenue this month vs last month", detail="full")
+        payload = plan_payload(
+            runtime, intent="revenue this month vs last month", detail="full", now="2017-08-15"
+        )
     finally:
         runtime.close()
-    # The comparison needs last month's rows, so the draft can't start at this
-    # month; plan says which rows answer the question.
+    # This month isn't over, so it can't be compared with last month: plan holds and offers
+    # the last two complete months as one series.
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
+    assert payload["why"]["code"] == "PERIOD_COMPARISON_INCOMPLETE"
     assert payload["best"]["pattern"] == "inline_period_shift"
-    assert payload["best"]["validation_ok"] is True
-    query = payload["best"]["query_ir"]
-    assert "start" not in query["time"]
-    assert any(
-        (item.get("expression") or {}).get("kind") == "prior_period" for item in query["select"]
+    [option] = payload["why"]["details"]["options"]
+    assert option["call"]["time"]["last"] == {"unit": "month", "value": 2}
+    assert option["call"]["time"]["grain"] == "month"
+
+
+def test_plan_asks_about_a_comparison_of_complete_periods(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="revenue month over month", now="2017-08-15")
+        rows = runtime.query(payload["best"]["query"], now="2017-08-15")["rows"]
+    finally:
+        runtime.close()
+    # A side-by-side comparison ships after this release: plan asks, offering the series.
+    assert payload["status"] == "needs_clarification"
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
+    assert payload["next"] == {"action": "clarify"}
+    assert payload["best"]["query"] == {
+        "select": ["measure.jaffle.revenue_usd"],
+        "time": {
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "grain": "month",
+            "last": {"unit": "month", "value": 2},
+        },
+        "order_by": [{"field": "period", "direction": "asc"}],
+    }
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        reference = connection.execute(
+            "SELECT DATE_TRUNC('month', ordered_at)::DATE, SUM(order_total_cents) / 100.0 "
+            "FROM jaffle_order WHERE ordered_at >= DATE '2017-06-01' "
+            "AND ordered_at < DATE '2017-08-01' GROUP BY 1 ORDER BY 1"
+        ).fetchall()
+    assert [row["period"] for row in rows] == [str(day) for day, _value in reference]
+    assert [row["revenue_usd"] for row in rows] == pytest.approx(
+        [value for _day, value in reference]
     )
 
 
@@ -674,30 +680,21 @@ def test_plan_preserves_explicitly_blocked_primary_over_generic_fallback(
         return real_fallback_drafts(*args, **kwargs)
 
     monkeypatch.setattr(plan_module, "fallback_drafts", _tracking_fallback_drafts)
+    intent = "revenue this month vs last month"
     try:
-        best = plan_payload(
-            runtime,
-            intent="Compare delivered revenue by delivered month versus ordered month.",
-            detail="best",
-        )
+        best = plan_payload(runtime, intent=intent, detail="best", now="2017-08-15")
         compact_fallback_calls = fallback_calls
-        full = plan_payload(
-            runtime,
-            intent="Compare delivered revenue by delivered month versus ordered month.",
-            detail="full",
-            limit=3,
-        )
+        full = plan_payload(runtime, intent=intent, detail="full", limit=3, now="2017-08-15")
     finally:
         runtime.close()
     assert best["status"] == "low_confidence"
-    assert best["best"]["pattern"] == "inline_comparison"
-    assert best["why"]["errors"][0]["code"] == "COMPARISON_COORDINATED"
-    assert "measure.jaffle.delivered_revenue_usd" in best["best"]["subject_ids_used"]
+    assert best["best"]["pattern"] == "inline_period_shift"
+    assert best["why"]["code"] == "PERIOD_COMPARISON_INCOMPLETE"
     assert "measure.jaffle.revenue_usd" in best["best"]["subject_ids_used"]
     assert compact_fallback_calls == 0
     assert fallback_calls == 1
     assert full["status"] == "low_confidence"
-    assert full["best"]["pattern"] == "inline_comparison"
+    assert full["best"]["pattern"] == "inline_period_shift"
     assert any(row["pattern"] == "catalog_fallback" for row in full["alternatives"])
 
 
@@ -740,7 +737,7 @@ def test_parse_intent_remains_internal_debug_helper(runtime_factory) -> None:
     ir = intent_ir.to_dict()
     assert ir["is_top_intent"] is True
     assert ir["top_n"] == 3
-    assert ir["threshold"]["op"] == ">="
+    assert ir["threshold"]["op"] == "gte"
     assert ir["threshold"]["value"] == 4
     assert compose_hints(intent_ir)["entity"]["id"] == "entity.jaffle_store"
 
@@ -784,10 +781,10 @@ def test_plan_query_detail_matches_best_query_ir_and_stays_compact(
     finally:
         runtime.close()
 
-    assert query["best"]["query_ir"] == best["best"]["query_ir"]
+    assert query["best"]["query"] == best["best"]["query"]
     assert set(query["best"]) <= {
         "pattern",
-        "query_ir",
+        "query",
         "resolved",
         "validation_ok",
         "subject_ids_used",
@@ -827,8 +824,8 @@ def test_plan_query_detail_preserves_low_confidence_validation_failure(
     runtime = runtime_factory("jaffle_shop")
     real_validate = runtime.validate
 
-    def _failing_validate(payload):
-        report = dict(real_validate(payload))
+    def _failing_validate(payload, **kwargs):
+        report = dict(real_validate(payload, **kwargs))
         report["ok"] = False
         report["errors"] = [
             {"code": "FABRICATED_FOR_TEST", "message": "synthetic validation failure"}
@@ -837,11 +834,7 @@ def test_plan_query_detail_preserves_low_confidence_validation_failure(
 
     monkeypatch.setattr(runtime, "validate", _failing_validate)
     try:
-        payload = plan_payload(
-            runtime,
-            intent="top 3 stores by revenue with at least 4 distinct customers",
-            detail="query",
-        )
+        payload = plan_payload(runtime, intent="revenue by store", detail="query")
     finally:
         runtime.close()
 
@@ -853,24 +846,39 @@ def test_plan_query_detail_preserves_low_confidence_validation_failure(
     assert "trace" not in payload["best"]
 
 
-def test_plan_does_not_promote_target_changing_lifetime_cohort_fallback(runtime_factory) -> None:
+def test_plan_answers_a_lifetime_cohort_with_an_entity_filter(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
             runtime,
             intent="Show sales by store for customers who made at least 2 orders in their lifetime.",
-            detail="full",
-            limit=3,
         )
+        rows = runtime.query(payload["best"]["query"])["rows"]
     finally:
         runtime.close()
 
-    assert payload["status"] == "low_confidence"
-    # The fallback grouped by the customer history's preferred store has no time and is refused,
-    # so the reason is drift only when another drafted fallback validates.
-    assert payload["why"]["code"] in {"PLAN_FALLBACK_SEMANTIC_DRIFT", "VALIDATION_FAILED"}
+    # "in their lifetime" says over which rows each customer is counted: all of them.
+    assert payload["status"] == "ok", payload.get("why")
     assert payload["best"]["pattern"] == "qualified_metric_rollup"
-    assert "metric.sales.high_value_customer_orders" not in payload["best"]["subject_ids_used"]
+    assert payload["best"]["query"]["where"] == [
+        {
+            "entity": "entity.jaffle_customer",
+            "having": [{"field": "measure.jaffle.lifetime_order_count", "op": "gte", "value": 2}],
+            "over": "all_time",
+        }
+    ]
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        reference = dict(
+            connection.execute(
+                "SELECT s.store_name, SUM(o.order_total_cents) / 100.0 FROM jaffle_order o "
+                "JOIN jaffle_store s USING (store_id) WHERE o.customer_id IN "
+                "(SELECT customer_id FROM jaffle_customer GROUP BY customer_id "
+                "HAVING SUM(lifetime_order_count) >= 2) GROUP BY 1"
+            ).fetchall()
+        )
+    assert {row["dimension.jaffle_store_name"]: row["revenue_usd"] for row in rows} == (
+        pytest.approx(reference)
+    )
 
 
 def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) -> None:
@@ -885,39 +893,25 @@ def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) ->
         runtime.close()
 
     assert payload["status"] == "ok"
-    query = payload["best"]["query_ir"]
-    assert query["select"] == [
-        {
-            "as": "revenue_usd",
-            "expression": {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"},
-        }
-    ]
+    query = payload["best"]["query"]
+    assert query["select"] == [REVENUE]
     assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
     assert query["where"] == [
-        {"field": "dimension.jaffle_customer_type", "op": "=", "value": "repeat"}
+        {"field": "dimension.jaffle_customer_type", "op": "is", "value": "repeat"}
     ]
     assert payload["best"]["trace"]["intent_slots"]["target"]
 
 
-@pytest.mark.parametrize(
-    ("payload", "code"),
-    [
-        pytest.param({"select": []}, "STRUCTURAL_EMPTY_SELECT", id="empty-select"),
-        pytest.param(
-            {"select": [{"as": "x"}]}, "STRUCTURAL_MISSING_EXPRESSION", id="missing-expression"
-        ),
-    ],
-)
-def test_plan_structural_precheck_short_circuits(payload, code) -> None:
+def test_plan_structural_precheck_short_circuits() -> None:
     from semantic_rails.planner.plan_query import _validate_query
 
     class _NoCallRuntime:
-        def validate(self, payload):  # noqa: ARG002
+        def validate(self, payload, **kwargs):  # noqa: ARG002
             raise AssertionError("structural precheck should have short-circuited")
 
-    result = _validate_query(_NoCallRuntime(), payload, None)
+    result = _validate_query(_NoCallRuntime(), Call(group_by=("dimension.jaffle_store_name",)))
     assert result["ok"] is False
-    assert result["errors"][0]["code"] == code
+    assert result["errors"][0]["code"] == "STRUCTURAL_EMPTY_SELECT"
 
 
 def test_mcp_registers_only_plan_intent_tool() -> None:
@@ -957,7 +951,7 @@ def test_plan_refuses_intents_grounded_only_by_package_namespace(runtime_factory
     assert payload["why"]["code"] == "LOW_RELEVANCE"
     # The namespace token plus a real measure word still plans normally.
     assert grounded["status"] == "ok"
-    assert grounded["best"]["query_ir"]["select"]
+    assert grounded["best"]["query"]["select"]
 
 
 def test_plan_per_dimension_keeps_plain_measure(runtime_factory) -> None:
@@ -969,9 +963,8 @@ def test_plan_per_dimension_keeps_plain_measure(runtime_factory) -> None:
     finally:
         runtime.close()
     assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-    query = payload["best"]["query_ir"]
-    expressions = [row["expression"] for row in query["select"]]
-    assert expressions == [{"metric": "metric.sales.month_over_month_revenue_growth"}]
+    query = payload["best"]["query"]
+    assert query["select"] == ["metric.sales.month_over_month_revenue_growth"]
     assert not query.get("group_by")
 
 
@@ -984,16 +977,16 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
         bucketed = plan_payload(runtime, intent="top stores by revenue by month")
     finally:
         runtime.close()
-    ranked_query = ranked["best"]["query_ir"]
+    ranked_query = ranked["best"]["query"]
     assert ranked["status"] == "ok"
     assert ranked["best"]["pattern"] == "package_example"
     # The month splits the stores it ranks: plan asks which ranking is meant.
     assert_plan_held(bucketed, "PLAN_RANKING_PERIOD_AMBIGUOUS")
     assert "time" not in ranked_query
     assert ranked_query["limit"] == 5
-    assert ranked_query["order_by"][0]["direction"] == "DESC"
+    assert ranked_query["order_by"][0]["direction"] == "desc"
     # An explicit grain cue keeps the time bucket.
-    assert bucketed["best"]["query_ir"]["time"]["grain"] == "month"
+    assert bucketed["best"]["query"]["time"]["grain"] == "month"
 
 
 @pytest.mark.parametrize(
@@ -1002,7 +995,9 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
         # "by revenue" after "What are the top stores" reads as a grouping it lacks.
         ("top_stores_by_revenue", "PLAN_UNMATCHED_TERMS"),
         ("inventory_levels_by_store", "PLAN_INTENT_COVERAGE_GAP"),
-        ("active_menu_snapshot_for_high_activity_stores", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        # A balance summed over each month is not the snapshot asked for; that hold comes
+        # before asking over which rows the stores qualify.
+        ("active_menu_snapshot_for_high_activity_stores", "PLAN_INTENT_COVERAGE_GAP"),
         ("adversarial_fake_ids_route_to_real_revenue", "PLAN_UNMATCHED_TERMS"),
     ],
 )
@@ -1011,12 +1006,129 @@ def test_benchmark_store_questions_require_clarification(runtime_factory, name, 
 
     case = next(row for row in _load_cases() if row["name"] == name)
     assert case["expected"] == "clarify"
-    assert case["expected_status"] == "low_confidence"
     assert case["forbid_ready_for_execute"] is True
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=case["intent"])
-        assert payload["status"] == "low_confidence"
-        assert_plan_held(payload, code)
+        assert payload["status"] == case["expected_status"]
+        assert payload["why"]["code"] == code, payload.get("why")
+        assert "execute" not in payload["next"].get("ready_for", [])
     finally:
         runtime.close()
+
+
+def test_a_statistic_no_metric_defines_holds_with_its_yaml(runtime_factory) -> None:
+    """ "Median revenue" reads Revenue at a statistic no metric defines: plan holds, hands the
+    metric's YAML to paste, and the call reading the measure at the median now."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="median revenue by store")
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "DEFINE_METRIC"
+        assert "execute" not in payload["next"].get("ready_for", [])
+        details = payload["why"]["details"]
+        [(name, metric)] = yaml.safe_load(details["yaml"])["metrics"].items()
+        assert name == "median_revenue_usd"
+        assert metric["expression"] == {
+            "kind": "aggregate",
+            "measure": "measure.jaffle.revenue_usd",
+            "aggregation": "median",
+        }
+        call = details["components"]["call"]
+        rows = runtime.query(call)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute(
+                "SELECT s.store_name, MEDIAN(o.order_total_cents / 100.0) FROM jaffle_order o "
+                "JOIN jaffle_store s USING (store_id) GROUP BY 1 ORDER BY 1"
+            ).fetchall()
+        # A measure already read at the asked statistic needs no metric.
+        stock = plan_payload(runtime, intent="latest lifetime spend by customer type")
+        assert stock["why"]["code"] != "DEFINE_METRIC"
+    finally:
+        runtime.close()
+    actual = sorted((row["dimension.jaffle_store_name"], row[name]) for row in rows)
+    assert [store for store, _ in actual] == [store for store, _ in reference]
+    assert [value for _, value in actual] == pytest.approx([value for _, value in reference])
+
+
+def test_every_store_but_one_is_the_stores_an_exclusion_keeps(runtime_factory) -> None:
+    """ "For every store except Brooklyn" names the stores kept, not a row per store: one
+    monthly series of the other stores' orders, every month of the named year."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime, intent="monthly orders for every store except Brooklyn in 2017"
+        )
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query"]
+        assert "group_by" not in query
+        assert query["where"] == [
+            {"field": "dimension.jaffle_store_name", "op": "not", "value": "Brooklyn"}
+        ]
+        rows = runtime.query(query)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            counts = dict(
+                connection.execute(
+                    "SELECT CAST(DATE_TRUNC('month', o.ordered_at) AS DATE)::VARCHAR, "
+                    "COUNT(DISTINCT o.order_id) FROM jaffle_order o "
+                    "JOIN jaffle_store s USING (store_id) "
+                    "WHERE s.store_name IS DISTINCT FROM 'Brooklyn' "
+                    "AND o.ordered_at >= '2017-01-01' AND o.ordered_at < '2018-01-01' GROUP BY 1"
+                ).fetchall()
+            )
+            (last,) = connection.execute(
+                "SELECT CAST(DATE_TRUNC('month', MAX(ordered_at)) AS DATE)::VARCHAR "
+                "FROM jaffle_order"
+            ).fetchone()
+    finally:
+        runtime.close()
+    # Every month of 2017: NULL for a month after the last order.
+    months = [f"2017-{month:02d}-01" for month in range(1, 13)]
+    reference = [counts.get(month, 0) if month <= last else None for month in months]
+    assert [row["period"] for row in rows] == months
+    assert [row["order_count"] for row in rows] == reference
+
+
+def test_every_date_plan_resolves_comes_from_the_request_clock(runtime_factory) -> None:
+    """A named month and a balance's day are read on the request's now, never the wall clock,
+    and the assumptions name the dates the draft reads."""
+    now = "2017-11-04T00:00:00Z"
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        september = plan_payload(runtime, intent="revenue in September", now=now)
+        assert september["status"] == "ok", september.get("why")
+        time = september["best"]["query"]["time"]
+        assert (time["start"], time["end"]) == ("2017-09-01", "2017-10-01")
+        assert any("2017-09-01" in text for text in september["assumptions"])
+        [row] = runtime.query(september["best"]["query"], now=now)["rows"]
+        balance = plan_payload(runtime, intent="active menu count", now="2017-04-02T12:00:00Z")
+        assert balance["status"] == "ok", balance.get("why")
+        assert balance["best"]["query"]["time"]["last"] == {"unit": "day", "value": 1}
+        [read] = balance["assumptions"]
+        assert "2017-04-01" in read
+        [day] = runtime.query(balance["best"]["query"], now="2017-04-02T12:00:00Z")["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            (revenue,) = connection.execute(
+                "SELECT SUM(order_total_cents / 100.0) FROM jaffle_order "
+                "WHERE ordered_at >= '2017-09-01' AND ordered_at < '2017-10-01'"
+            ).fetchone()
+            (menu,) = connection.execute(
+                "SELECT SUM(active_menu_count) FROM jaffle_store_inventory_snapshot "
+                "WHERE date_day = DATE '2017-04-01'"
+            ).fetchone()
+    finally:
+        runtime.close()
+    assert row["revenue_usd"] == pytest.approx(revenue)
+    assert day["period"] == "2017-04-01"
+    assert day["active_menu_count_eop"] == menu
+
+
+@pytest.mark.parametrize("intent", ["revenue by fiscal quarter", "revenue by FY quarter"])
+def test_a_fiscal_quarter_is_never_answered_in_gregorian_quarters(runtime_factory, intent) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent=intent, now="2017-11-04T00:00:00Z")
+    finally:
+        runtime.close()
+    assert payload["status"] != "ok", payload.get("why")
+    assert "execute" not in payload["next"].get("ready_for", [])

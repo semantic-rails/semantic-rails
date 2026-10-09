@@ -7,7 +7,7 @@ Semantic Rails now has two runtime modes:
 
 Both modes serve the same stable `/api/v1/*` semantic API. The ASGI path is the clean deploy target
 for containers and process supervisors; it keeps authentication intentionally small so a service
-wrapper can add tenant isolation and stronger auth without changing Query IR.
+wrapper can add tenant isolation and stronger auth without changing the query call.
 Both modes also serve stateless MCP Streamable HTTP at `/mcp`, with the same API-key
 authentication and trusted policy-context resolver. `/health` remains a public probe.
 
@@ -98,7 +98,8 @@ curl -s -H 'X-Semantic-Check-Warehouse: true' http://127.0.0.1:8080/api/v1/ready
 
 ## Request Context And API Key Shim
 
-The runtime accepts trusted request context from headers or `policy_context`:
+The runtime resolves trusted request context from these headers; a request body that says who
+is asking (`policy_context`) is refused with `IDENTITY_CLAIM_REFUSED`:
 
 - `X-Request-ID` or `X-Correlation-ID`
 - `X-Semantic-Actor`

@@ -92,7 +92,7 @@ def _answer(runtime: Runtime, example: dict) -> tuple:
     except SemanticLayerError as exc:
         rows = exc.code
     plan = plan_payload(runtime, intent=example["question"])
-    return rows, plan["status"], (plan.get("best") or {}).get("query_ir")
+    return rows, plan["status"], (plan.get("best") or {}).get("query")
 
 
 def test_imported_jaffle_answers_every_example_like_the_original(tmp_path) -> None:

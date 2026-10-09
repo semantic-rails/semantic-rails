@@ -30,6 +30,7 @@ from semantic_rails.mcp import (
 )
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.question_parts import split_question
 from semantic_rails.runtime import Runtime
 
@@ -165,25 +166,27 @@ def _reference(sql: str) -> float:
 
 
 def _value(runtime: Runtime, query: dict[str, Any]) -> float:
-    [item] = query["select"]
-    [row] = runtime.query({**query, "policy_context": NOW})["rows"]
-    return row[item["as"]]
+    [alias] = Call.from_call(query).aliases
+    [row] = runtime.query(query, now=NOW["now"])["rows"]
+    return row[alias]
 
 
-# (question, [(metric, window start, window end, reference SQL)] per part).
+LAST_WEEK = {"last": {"unit": "week", "value": 1}}
+# (question, [(metric, the window the call states, reference SQL)] per part). A relative
+# phrase stays relative; the balance reads its last day of the week.
 ANSWERED = [
     (
         "Last week, how many new accounts were there, and what was the MRR?",
         [
-            ("new_accounts", "2026-09-28", "2026-10-05", _events("signup", "2026-09-28", "2026-10-05")),
-            ("mrr", "2026-10-04", "2026-10-05", _balance("2026-10-04")),
+            ("new_accounts", LAST_WEEK, _events("signup", "2026-09-28", "2026-10-05")),
+            ("mrr", {"start": "2026-10-04", "end": "2026-10-05"}, _balance("2026-10-04")),
         ],
     ),
     (
         "How many new accounts last week, and how many closures this month?",
         [
-            ("new_accounts", "2026-09-28", "2026-10-05", _events("signup", "2026-09-28", "2026-10-05")),
-            ("closures", "2026-10-01", "2026-11-01", _events("close", "2026-10-01", "2026-11-01")),
+            ("new_accounts", LAST_WEEK, _events("signup", "2026-09-28", "2026-10-05")),
+            ("closures", {"this": "month"}, _events("close", "2026-10-01", "2026-11-01")),
         ],
     ),
 ]  # fmt: skip
@@ -191,7 +194,7 @@ ANSWERED = [
 
 @pytest.mark.parametrize(("question", "expected"), ANSWERED)
 def test_each_part_answers_its_clause_like_its_reference(
-    runtime: Runtime, question: str, expected: list[tuple[str, str, str, str]]
+    runtime: Runtime, question: str, expected: list[tuple[str, dict[str, Any], str]]
 ) -> None:
     payload = _plan(runtime, question, detail="best")
 
@@ -199,14 +202,11 @@ def test_each_part_answers_its_clause_like_its_reference(
     assert payload["next"]["ready_for"] == ["execute"]
     assert "why" not in payload and "warnings" not in payload
     assert len(payload["parts"]) == len(expected)
-    for part, (metric, start, end, sql) in zip(payload["parts"], expected, strict=True):
+    for part, (metric, window, sql) in zip(payload["parts"], expected, strict=True):
         assert part["status"] == "ok", part.get("why")
-        query = part["best"]["query_ir"]
-        assert query["version"] == 1
-        assert [item["expression"] for item in query["select"]] == [
-            {"metric": f"metric.{NS}.{metric}"}
-        ]
-        assert (query["time"]["start"], query["time"]["end"]) == (start, end)
+        query = part["best"]["query"]
+        assert query["select"] == [f"metric.{NS}.{metric}"]
+        assert Call.from_call(query).time.window == window
         assert _value(runtime, query) == _reference(sql)
         # Each part is its own words plus the shared leading phrase.
         assert part["text"] == "".join(question[low:high] for low, high in part["spans"])
@@ -215,8 +215,8 @@ def test_each_part_answers_its_clause_like_its_reference(
 
 
 def test_the_references_are_the_documented_answers() -> None:
-    assert [_reference(sql) for _metric, _start, _end, sql in ANSWERED[0][1]] == [1, 599]
-    assert [_reference(sql) for _metric, _start, _end, sql in ANSWERED[1][1]] == [1, 1]
+    assert [_reference(sql) for _metric, _window, sql in ANSWERED[0][1]] == [1, 599]
+    assert [_reference(sql) for _metric, _window, sql in ANSWERED[1][1]] == [1, 1]
 
 
 def test_the_query_detail_returns_every_parts_query(runtime: Runtime) -> None:
@@ -225,10 +225,10 @@ def test_the_query_detail_returns_every_parts_query(runtime: Runtime) -> None:
     compact = _plan(runtime, question, detail="query")
 
     assert compact["status"] == "ok"
-    assert [part["best"]["query_ir"] for part in compact["parts"]] == [
-        part["best"]["query_ir"] for part in best["parts"]
+    assert [part["best"]["query"] for part in compact["parts"]] == [
+        part["best"]["query"] for part in best["parts"]
     ]
-    assert compact["best"]["query_ir"] == compact["parts"][0]["best"]["query_ir"]
+    assert compact["best"]["query"] == compact["parts"][0]["best"]["query"]
     assert {key for part in compact["parts"] for key in part} <= {
         "text", "spans", "status", "best", "why", "assumptions", "warnings", "tie_break_hints",
     }  # fmt: skip
@@ -237,18 +237,16 @@ def test_the_query_detail_returns_every_parts_query(runtime: Runtime) -> None:
 def test_mcp_and_rest_plan_the_same_parts(runtime: Runtime) -> None:
     question = ANSWERED[1][0]
     mcp = SemanticLayerMCPAdapter(runtime).call_tool(
-        "plan", {"intent": question, "detail": "best", "query": {"policy_context": NOW}}
+        "plan", {"intent": question, "detail": "best", **NOW}
     )
     rest, code = SemanticHTTPService(runtime).handle(
-        "POST",
-        normalize_route("/api/v1/plan"),
-        {"intent": question, "detail": "best", "policy_context": NOW},
+        "POST", normalize_route("/api/v1/plan"), {"intent": question, "detail": "best", **NOW}
     )
 
     assert code == 200
     assert mcp["status"] == rest["status"] == "ok"
-    assert [(part["status"], part["best"]["query_ir"]) for part in mcp["parts"]] == [
-        (part["status"], part["best"]["query_ir"]) for part in rest["parts"]
+    assert [(part["status"], part["best"]["query"]) for part in mcp["parts"]] == [
+        (part["status"], part["best"]["query"]) for part in rest["parts"]
     ]
     # The MCP plan tool declares parts, and its server instructions say to run each one.
     [tool] = [tool for tool in list_tool_definitions() if tool["name"] == "plan"]
@@ -256,7 +254,7 @@ def test_mcp_and_rest_plan_the_same_parts(runtime: Runtime) -> None:
     Draft202012Validator(tool["outputSchema"]).validate(mcp)
     assert (
         "When status is ok, a question asking several things returns parts; execute each "
-        "part's best.query_ir." in MCP_SERVER_INSTRUCTIONS
+        "part's best.query." in MCP_SERVER_INSTRUCTIONS
     )
 
 
@@ -448,7 +446,7 @@ def test_a_part_the_engine_refuses_keeps_the_whole_questions_hold(
 ) -> None:
     question = ANSWERED[0][0]
     planned = plan_module._question_payload
-    whole = planned(runtime, question, {"policy_context": NOW}, "best", 3, runtime._config)
+    whole = planned(runtime, question, None, "best", 3, runtime._config)
 
     def refused(runtime: Any, intent: str, *args: Any) -> dict[str, Any]:
         if intent.endswith("MRR"):
@@ -488,7 +486,7 @@ def test_ask_never_runs_one_part_as_the_whole_answer(
 
 def test_a_caller_query_is_never_split_across_parts(runtime: Runtime) -> None:
     question = ANSWERED[0][0]
-    select = [{"expression": {"metric": f"metric.{NS}.new_accounts"}}]
+    select = [f"metric.{NS}.new_accounts"]
     payload = plan_payload(
         runtime, intent=question, partial_query={"policy_context": NOW, "select": select}
     )

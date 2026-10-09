@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ...config_parts.measure_governance import whole_aggregate
-from ...naming import semantic_token as _semantic_token
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -15,14 +15,13 @@ from .._base import (
     _resolved,
     _tokens,
 )
+from ..call import Call, QueryBuilder
 from ..coverage import CoverageGap, _coverage_why
 from ..faithfulness import _conjoined_filter_text, _conjoined_subjects, _selectable_subjects
 from ..generators import _matched_value_rows, _normalize_value_filters
-from ..groupings import _explicit_grain, _maybe_group_by, _time_spec
+from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import _add_order
-from ..time_windows import _time_window
 from ._protocol import IntentPattern
-from .metric_by_dimension_rollup import _TIME_SERIES_PHRASES
 
 
 def _clock(config: Any, row: Any) -> str:
@@ -35,52 +34,33 @@ def _clock(config: Any, row: Any) -> str:
 
 def _part_query(
     runtime: Any, text: str, phrase: str, target: Any, filter_text: str
-) -> tuple[Any, dict[str, Any]]:
+) -> tuple[Any, Call]:
     """Use the catch-all's time, grouping, value-filter and governance helpers."""
     config = runtime._config
     role = _clock(config, target)
     clock = _object_by_id(config.temporal_roles, role)
     clock_label = str(getattr(clock, "label", "") or "")
     group_by = _maybe_group_by(config, text, target_terms=_tokens(phrase), clock=clock_label)
-    expression = (
-        {
-            "measure": target.id,
-            "aggregation": _aggregation_from_text(phrase, set(_tokens(phrase)), target),
-        }
-        if target.id.startswith("measure.")
-        else {"metric": target.id}
-    )
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": _semantic_token(target.id, fallback="value"), "expression": expression}],
-    }
-    window = _time_window(text)
-    if role and (
-        _explicit_grain(text, clock_label)
-        or window.bounds
-        or window.unresolved
-        or any(cue in text.lower() for cue in _TIME_SERIES_PHRASES)
-    ):
-        query["time"] = _time_spec(role, text, clock_label)
-    if group_by:
-        query["group_by"] = group_by
+    builder = QueryBuilder(config)
+    if target.id.startswith("measure."):
+        builder.measure(target.id, _aggregation_from_text(phrase, set(_tokens(phrase)), target))
+    else:
+        builder.select(target.id)
+    builder.time(_time_spec(role, text, clock_label)).groups(group_by)
+    query = builder.build()
     query = _normalize_value_filters(
-        query, _matched_value_rows(runtime, query, filter_text), text=filter_text
+        query, _matched_value_rows(runtime, query, filter_text), text=filter_text, config=config
     )
     # A part swaps only to the bare governed aggregate, on its own clock.
     governed = _governed_target(config, phrase, query)
+    clock_id = query.time.temporal_role if query.time is not None else ""
     if (
         governed is not None
         and whole_aggregate(governed) is not None
-        and (query.get("time") or {}).get("temporal_role", "") == governed.temporal_role
+        and clock_id == governed.temporal_role
     ):
         target = governed
-        query["select"] = [
-            {
-                "as": _semantic_token(target.id, fallback="value"),
-                "expression": {"metric": target.id},
-            }
-        ]
+        query = QueryBuilder(config, query).selects([]).select(target.id).build()
     return target, query
 
 
@@ -135,31 +115,29 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     )
     shared = bool(role) or roles == [""]
     first = queries[0]
-    for _target, query in targets_and_queries:
-        own_time = dict(query.get("time") or {})
-        own_time.pop("temporal_role", None)
-        first_time = dict(first.get("time") or {})
-        first_time.pop("temporal_role", None)
+
+    def unclocked(time: Any) -> Any:
+        return replace(time, temporal_role="") if time is not None else None
+
+    for query in queries:
         shared = (
             shared
-            and own_time == first_time
-            and query.get("group_by", []) == first.get("group_by", [])
-            and query.get("where", []) == first.get("where", [])
+            and unclocked(query.time) == unclocked(first.time)
+            and query.group_by == first.group_by
+            and query.where == first.where
         )
-        if query.get("time") and role:
-            query["time"] = {**query["time"], "temporal_role": role}
-    query = {**first, "select": []}
+    builder = QueryBuilder(config, first).selects([])
+    if first.time is not None and role:
+        builder.time(replace(first.time, temporal_role=role))
     aliases: set[str] = set()
     for part_query in queries:
-        item = dict(part_query["select"][0])
-        alias = item["as"]
-        suffix = 2
-        while item["as"] in aliases:
-            item["as"] = f"{alias}_{suffix}"
-            suffix += 1
-        aliases.add(item["as"])
-        query["select"].append(item)
-    _add_order(query)
+        item = part_query.select[0]
+        alias, suffix = item.alias, 2
+        while alias in aliases:
+            alias, suffix = f"{item.alias}_{suffix}", suffix + 1
+        aliases.add(alias)
+        builder.select(item.expression, alias)
+    query = _add_order(builder).build()
     why: dict[str, Any] = {}
     if not shared:
         why = (

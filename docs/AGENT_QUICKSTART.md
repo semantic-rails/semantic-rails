@@ -90,8 +90,8 @@ package-authoring MCP. `--mcp both` installs both entries.
 
 Semantic Rails is designed for human-defined semantics and agent-first query building. Humans own
 entities, measures, metrics, policies, examples, and tests in the package. Agents use the runtime
-API to discover that governed surface, assemble Query IR, and execute it locally or customer-side;
-the runtime validates and compiles every query before it runs.
+API to discover that governed surface, assemble a [query call](QUERY_CALL.md), and execute it
+locally or customer-side; the runtime validates and compiles every query before it runs.
 
 Start the active package:
 
@@ -110,7 +110,7 @@ discover -> plan -> execute
 - `discover` maps business terms to governed semantic objects.
 - `inspect` (optional) opens an object card with usage, provenance, comparison metadata, and
   starter patches.
-- `plan` returns the best Query IR draft for natural-language intents, with a `status` that says
+- `plan` returns the best query call draft for natural-language intents, with a `status` that says
   whether to run it. Use `detail="full"` only when you need alternatives or blocked drafts.
 - `build-options` returns legal next query choices for guided builders.
 - `valid-values` searches categorical values for selected dimensions.
@@ -119,9 +119,10 @@ discover -> plan -> execute
   An invalid query fails with a structured error and, where possible, recovery hints instead of
   running. On MCP it returns at most `max_rows` rows (default 200); a capped result sets
   `truncated` and warns `EXECUTE_ROWS_TRUNCATED`.
-  A window (`start` and/or `end`) without a `time.grain` returns one total over the window, with no
-  time column, and says so in `assumptions`; set `time.grain` for one row per period. A time role
-  with no window and no grain still returns one row per timestamp (`UNGRAINED_TIME_PROJECTION`).
+  A window (`last`, `this`, `start` and/or `end`) without a `time.grain` returns one total over the
+  window, with no time column, and says so in `assumptions`; set `time.grain` for one row per
+  period. A `time` with neither a grain nor a window is refused. Pass `now` beside the call
+  (HTTP `options.now`) to pin relative windows ([`now`](QUERY_CALL.md#now)).
   Every MCP tool and mode fits one 32,000-character response budget. Optional plans and metadata
   are trimmed first (`omitted_fields` names them); required data that still cannot fit is
   refused with `RESULT_TOO_LARGE`. Compact responses omit compiler plans.
@@ -138,12 +139,12 @@ discover -> plan -> execute
 ### Plan Status And Detail
 
 Use `plan` when the user gives a natural-language analysis intent. Use `build-options` when the
-user is interactively editing Query IR one step at a time.
+user is interactively editing a query call one step at a time.
 
 `plan` runs validation inline and checks the draft against the question. When `status="ok"` and
 there are no `warnings`, agents can forward `best.query_ir` directly to `execute`
 (`/api/v1/query`). Call `validate` only when you want diagnostics without running the query, for
-example after editing Query IR or after `low_confidence`.
+example after editing the call or after `low_confidence`.
 
 A question that asks several things one draft can't answer ("Last week, how many accounts signed
 up, and what was the MRR?") comes back as `parts`, one plan per clause, each with its own
@@ -187,7 +188,7 @@ Statuses are:
   week?" needs a select of its own naming orders and one naming revenue, never the same select
   twice or one that names neither (`multiple_questions_unrealized`).
   Exact conjoined metric or measure names ("New accounts and closures last week")
-  can produce one Query IR v1 draft with a select for every subject, in question order.
+  can produce one draft with a select for every subject, in question order.
   The subjects must share a declared or compatible clock, a supported window, grouping,
   and filters. Equivalent measure/metric names with the same aggregation resolve to the
   authored metric; different shared-name candidates ask for clarification. Each ambiguous
@@ -225,10 +226,10 @@ Statuses are:
   `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
   June 29, 2017)", keep the one you mean and plan again. (One window stated twice the same way
   resolves.) On a package without time, every plan with a draft yields `low_confidence`,
-  including plain catalogue questions. The Query IR is retained, with the same
+  including plain catalogue questions. The draft is retained, with the same
   `INVALID_TEMPORAL_ROLE` warning: "This package has no time; check the question doesn't ask
   for a time breakdown or window."
-- `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
+- `unrealizable`: the intent parsed, but no pattern or fallback produced a call.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 
 Use `detail="query"` for a compact MCP QA loop, `detail="best"` for normal clients,
@@ -268,10 +269,7 @@ curl -s -X POST http://127.0.0.1:8081/api/v1/compile \
   -H 'Content-Type: application/json' \
   -d '{
     "query": {
-      "version": 1,
-      "select": [
-        { "expression": { "measure": "measure.jaffle.revenue_usd" }, "as": "revenue_usd" }
-      ],
+      "select": ["measure.jaffle.revenue_usd"],
       "group_by": ["dimension.jaffle_store_name"],
       "time": { "temporal_role": "temporal_role.jaffle_order_time", "grain": "month" },
       "limit": 5
@@ -288,32 +286,22 @@ curl -s -X POST http://127.0.0.1:8081/api/v1/compile \
   -H 'Content-Type: application/json' \
   -d '{
     "query": {
-      "version": 1,
-      "select": [
-        { "expression": { "measure": "measure.jaffle.order_count", "aggregation": "count_distinct" }, "as": "orders" }
-      ],
+      "select": [{ "expression": "measure.jaffle.order_count", "as": "orders" }],
       "group_by": ["dimension.jaffle_store_name"]
     }
   }' \
   | jq '.explain.chosen_paths | map_values({selected, candidates, contracts})'
 ```
 
-### Policy Context
+### Identity
 
-Discovery and query routes accept optional policy context:
-
-```json
-{
-  "policy_context": {
-    "environment": "production",
-    "audience": "finance",
-    "roles": ["sales"]
-  }
-}
-```
-
-When provided, the runtime applies package visibility, access, and metric-constraint rules
-consistently across discovery, metadata, validation, compile, and query calls.
+Who is asking (environment, audience, roles) comes from the request's credentials, never from
+the body: a `policy_context` in a body is refused with `IDENTITY_CLAIM_REFUSED`. The default
+resolver of `semantic-rails serve` reads the `X-Semantic-Environment`, `X-Semantic-Audience`
+and `X-Semantic-Roles` headers; a hosted deployment derives identity from authentication instead
+(see [Embedding](EMBEDDING.md)). The runtime applies package visibility, access, and
+metric-constraint rules for that identity consistently across discovery, metadata, validation,
+compile, and query calls.
 
 ## Recommended Agent Policy
 
@@ -322,8 +310,8 @@ consistently across discovery, metadata, validation, compile, and query calls.
 2. Call `inspect` on a candidate metric, measure, dimension, or segment when you need its
    aggregations, values, or time roles.
 3. Use `plan` for natural-language questions, and `valid-values` for filter values.
-4. Run a `plan` draft only when its status is `ok` and it has no warnings; otherwise fix the Query
-   IR or ask the user.
+4. Run a `plan` draft only when its status is `ok` and it has no warnings; otherwise fix the call
+   or ask the user.
 5. Use `execute` with `mode: "sql"` when the user wants SQL, lineage, path selection, or explain
    output.
 6. Call `execute` when the user wants rows. It validates and compiles first, so it needs no
@@ -331,8 +319,8 @@ consistently across discovery, metadata, validation, compile, and query calls.
 7. On `AMBIGUOUS_CHILD_SCOPE`, the conditions on a child entity can mean the same child row or
    separate ones (or, negated, "has a row that is not X" or "has no row that is X"). Answer
    `details.clarification.question` from the user's question, or ask the user, then resend the
-   chosen option's `where` unchanged. Write a child group (`{child, match, where}`) up front when
-   the question already says it.
+   chosen option's `where` unchanged. Write an [entity filter](QUERY_CALL.md#entity-filters)
+   (`{entity, any | none}`) up front when the question already says it.
    A `PLAN_UNMATCHED_TERMS` grouping option also carries `group_by` and `order_by` to
    apply with `where` for one unclear term. With several, each option names its
    `term` and `replaces` IDs: in `best.query_ir`, remove those IDs from `group_by`
@@ -395,27 +383,28 @@ The agent never picks one; it asks:
 1. Refusal: `details.clarification.question` ("Which District does the question mean for an
    Account?") and one option per route, each with a `meaning` in business words.
 2. Ask the person, reading each option's `meaning`.
-3. Send the chosen option's `query`: the same call with the route in `routes`. The answer is
-   for this person and this query only, and its `routes` names the route it took as
-   `{from, to, via}`. State the option's meaning, and mention each of `other_routes` (the
-   other options, ready to send as `routes`) as a one-step switch. Only a pair the package
-   leaves undecided gets these, taken from the refusal's options and excluding routes
-   through hidden objects. At most three are listed; `more_routes` counts the rest. To see
-   every option, validate the call without `routes`; that does not run a warehouse query.
-   The warehouse executes only the chosen route. A compact or full answer adds `basis:
-   routes` and `replaced` (how the package resolves the pair without it: `undecided` when it
-   refuses).
+3. Send the chosen option's `query`: the same call with that route in
+   [`routes`](QUERY_CALL.md#routes). The answer is for this person and this
+   call only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (how
+   the package resolves the pair without it: `undecided` when it refuses). State the meaning
+   used (`details.meaning`) and mention the `label` of each ready decision row in
+   `details.route_alternatives` as a one-step switch: resend with that row in `routes`
+   (`from`, `to`, `via` for its `source_entity`, `target_entity`, `relationship_path`). Only an
+   undecided pair gets these alternatives, taken from the
+   package's refusal options and excluding routes through hidden objects. At most three
+   are listed; `details.more_alternatives` counts any remaining visible alternatives.
+   To see every option, validate the call without `routes`; that does not run
+   a warehouse query. The warehouse executes only the chosen route.
 4. To make it the default for everyone, a maintainer calls Architect
    [`record_route_decision`](ARCHITECT_MCP.md) with the same `decision`. That is a reviewed package
    change; from then on the question answers without asking. An option with `conflicts_with`
    names the package rows to change first; its `decision` still answers per query.
 
-One row also decides every route that walks its pair. The answer's `routes` names each route
-the engine chose among several; it needs no follow-up. A compact or full answer adds how
-(`basis`: `own_key`, the start entity's own key, or `recorded`, the package's rows, with
-`recorded_for` naming the pairs whose rows it follows), and an own-key route lists the row
-that would make each other route the default in `alternatives` (or, in `conflicts_with`, the
-rows that row would disagree with). `PATH_NOT_FOUND` with `details.reason:
+One row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
+`ROUTE_RECORDED` (compact and full responses) names the route the answer used, the start entity's
+own key or the package's recorded routes; it needs no follow-up, and `ROUTE_COLOCATED_KEY` lists
+the row that would make each other route the default (or, in `details.conflicts_with`, the rows
+that row would disagree with). `PATH_NOT_FOUND` with `details.reason:
 excluded_by_decision` means the package's rows rule out every route; it is a package fix, not a
 query fix.
 
@@ -440,7 +429,8 @@ Supported with guardrails:
 
 - Mixed-grain rewrites for supported shapes.
 - Historical slicing through declared temporal-validity joins.
-- `metric_predicate` for contextual and entity-only predicate shapes.
+- Entity filters on aggregates (`having` with `over`) and `metric_predicate` for the supported
+  predicate shapes.
 - Event-count conversion metrics for the supported execution model.
 - Non-DuckDB warehouse connectors through optional drivers and conformance tests; live credentials
   are exercised on demand, not in every CI run.

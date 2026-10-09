@@ -230,15 +230,17 @@ def test_a_route_through_another_tables_rows_says_what_it_counts(
     meaning = "the Team of any of the Member's Member events"
     assert note["severity"] == "warning"
     assert note["object_ids"] == [MEMBER, TEAM]
+    where = query.get("where", [])
+    # Conditions on the Team are asked of the Member events themselves with an entity filter.
+    ask = ", or ask about the Member events with an entity filter in where" if where else ""
     assert note["message"] == (
         "The Team of any of the Member's Member events, through Member event rows the package "
         "doesn't declare as a link table: a Member with no Member event is left out, and one "
         "with several can count under several Teams. Fix: declare the Member's own Team key, "
-        "declare Member event a link table (`bridge: true`), record this route "
-        "(graph.path_preferences), or ask about the Member events with a child group."
+        f"declare Member event a link table (`bridge: true`), {'' if ask else 'or '}record "
+        f"this route (graph.path_preferences){ask}."
     )
     assert len(json.dumps(note)) < 1500
-    where = query.get("where", [])
     assert note["details"] == {
         "route": THROUGH_EVENTS,
         "route_basis": "only_route",
@@ -258,9 +260,15 @@ def test_a_route_through_another_tables_rows_says_what_it_counts(
                 "target_entity": TEAM,
                 "relationship_path": THROUGH_EVENTS,
             },
-            "child_group": {"child": MEMBER_EVENT, "match": "any", "where": where},
+            **({"entity_filter": {"entity": MEMBER_EVENT, "any": where}} if where else {}),
         },
     }
+    if where:  # The fix is a ready call: it answers without the warning.
+        fixed = teams.runtimes["base"].query(
+            {**query, "where": [note["details"]["fixes"]["entity_filter"]]}
+        )
+        assert _values(fixed) == teams.reference(reference)
+        assert not _codes(fixed, "ROUTE_PASS_THROUGH")
 
 
 def test_the_pass_through_warning_shows_on_every_surface(teams):
@@ -312,7 +320,7 @@ def test_plan_drafts_disclose_the_routes_they_validate(teams, detail, surface):
     assert _pass_through(out)
     assert _pass_through(out["best"])
     for draft in drafts:
-        expected = _codes(runtime.validate(draft["query_ir"]), "ROUTE_PASS_THROUGH")
+        expected = _codes(runtime.validate(draft["query"]), "ROUTE_PASS_THROUGH")
         actual = [row for row in draft.get("warnings", []) if row["code"] == "ROUTE_PASS_THROUGH"]
         assert actual == expected
         assert all(
@@ -322,7 +330,7 @@ def test_plan_drafts_disclose_the_routes_they_validate(teams, detail, surface):
             )
             for warning in expected
         )
-    assert _values(runtime.query(out["best"]["query_ir"])) == teams.reference("members_by_tier")
+    assert _values(runtime.query(out["best"]["query"])) == teams.reference("members_by_tier")
 
 
 def test_the_key_fix_names_a_column_the_start_already_reads(teams):
