@@ -70,10 +70,15 @@ def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
             low <= match.start() and end <= high for low, high in value_spans
         ):
             continue
-        if str(match.group("cue") or "").endswith(("each", "every")):
+        run = _named_run(config, lowered, start)
+        if (
+            str(match.group("cue") or "").endswith(("each", "every"))
+            and run is not None
+            and run[1] < end
+            and not re.match(r"\s*(?:,|and\b|&)", lowered[run[1] : end])
+        ):
             # The name "each" asks a row of ends at the first word naming nothing more.
-            run = _named_run(config, lowered, start)
-            end = run[1] if run is not None and run[1] <= end else end
+            end = run[1]
         if group == "ranked":
             raw = match.group(group)
             stripped = _strip_leading_rank_count(raw)

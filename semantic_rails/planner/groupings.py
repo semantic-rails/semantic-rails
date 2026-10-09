@@ -232,26 +232,40 @@ def _key_only_assumptions(
     return lines
 
 
+def _whole_names(row: Any) -> set[tuple[str, ...]]:
+    """A dimension's or entity's whole names, as singular words: its label without a
+    parenthetical, the last part of its name, and its synonyms."""
+
+    names = [re.sub(r"\s*\(.*?\)", "", str(row.label or "")), _last_token(row.name)]
+    return {
+        tuple(_singular(word) for word in re.findall(r"[^\W_]+", str(name).lower()))
+        for name in [*names, *(row.aliases or [])]
+    }
+
+
+def _named_dimension(config: Any, term: str) -> Any | None:
+    """The one visible dimension ``term`` is a whole name of, or None."""
+
+    said = tuple(_singular(word) for word in re.findall(r"[^\W_]+", term.lower()))
+    rows = [row for row in visible_dimensions(config) if said in _whole_names(row)]
+    return rows[0] if len(rows) == 1 else None
+
+
 def _named_run(config: Any, lowered: str, start: int) -> tuple[int, int] | None:
     """The span of the longest run of up to four words from ``start`` that is a whole name of a
-    visible dimension or entity (its label without a parenthetical, the last part of its name,
-    or a synonym; singular or plural), or None. A grouping term ends at the first word that
-    names nothing more: "each plan make" names "plan"."""
+    visible dimension or entity (``_whole_names``; singular or plural), or None. A grouping
+    term ends at the first word that names nothing more: "each plan make" names "plan"."""
 
     words = list(re.finditer(r"[^\W_]+", lowered[start:]))[:4]
     names = {
-        tuple(_singular(word) for word in re.findall(r"[^\W_]+", str(name).lower()))
+        name
         for row in [*visible_dimensions(config), *config.entities]
-        for name in [
-            re.sub(r"\s*\(.*?\)", "", str(row.label or "")),
-            _last_token(row.name),
-            *(row.aliases or []),
-        ]
+        for name in _whole_names(row)
     }
     for size in range(len(words), 0, -1):
         low, high = start + words[0].start(), start + words[size - 1].end()
         said = tuple(_singular(word.group()) for word in words[:size])
-        if said in names and re.fullmatch(r"[^\W_]+(?:\s+[^\W_]+)*", lowered[low:high]):
+        if said in names and re.fullmatch(r"[^\W_]+(?:[\s_]+[^\W_]+)*", lowered[low:high]):
             return low, high
     return None
 
@@ -418,6 +432,10 @@ def _maybe_group_by(
             if content_tokens and not (content_tokens - target_set):
                 continue
         entity = _entity_grouping(config, named.strip())
-        dim = _dimension(config, term_tokens) if entity is None else None
-        group_by.extend(entity[1] if entity is not None else [dim.id] if dim is not None else [])
+        if entity is not None:
+            group_by.extend(entity[1])
+            continue
+        # A name "each" asks a row of is a whole declared name, never a scored guess.
+        dim = _named_dimension(config, term) if outright else _dimension(config, term_tokens)
+        group_by.extend([dim.id] if dim is not None else [])
     return list(dict.fromkeys(group_by))
