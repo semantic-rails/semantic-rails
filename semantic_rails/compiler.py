@@ -4848,7 +4848,12 @@ def _compile_query_sql_ast(
         select = attach_relation_ctes(
             config, lower_to_sql(plan, config, guard_empty=guard_empty, default_order=False)
         )
-        return limit_order(select)[0]
+        return limit_order(select, _tie_breakers(plan))[0]
+
+
+def _tie_breakers(plan: LogicalPlan) -> list[str]:
+    """The columns that break ties at a ``limit``: the group_by columns, then the period."""
+    return [*plan.group_by, *([time_output_alias(plan.time)] if plan.time else [])]
 
 
 def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
@@ -5299,7 +5304,7 @@ def compile_query(
     plan, config = bound.plan, bound.config
     from .top_n import limit_order
 
-    sql_ast, limit_order_keys = limit_order(bound.sql_ast)
+    sql_ast, limit_order_keys = limit_order(bound.sql_ast, _tie_breakers(plan))
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,
