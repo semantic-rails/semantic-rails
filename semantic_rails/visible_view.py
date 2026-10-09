@@ -187,7 +187,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         text="message owner",
         texts="entity_values references",
         identity="id",
-        typed="time config",
+        typed="time",
     ),
     AggregateRelationConfig: _classes(
         "id relation source_entity measures dimensions temporal_role grain entity_grain "
@@ -504,7 +504,7 @@ def _display_caveat(
     listed = [object_id for object_id in caveat.object_ids if object_id not in hidden]
     if caveat.object_ids and not listed:
         return None
-    named = [caveat.entity_values, caveat.time, caveat.references, caveat.config]
+    named = [caveat.entity_values, caveat.time, caveat.references]
     if _names(named, hidden) or _authored_mentions(caveat, tokens):
         return None
     return replace(caveat, object_ids=listed)

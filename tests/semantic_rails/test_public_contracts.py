@@ -423,7 +423,9 @@ def test_export_semantic_contract_uses_expression_columns_without_invented_names
     assert all(not name.startswith(("{", "[")) for name in names)
 
 
-@pytest.mark.parametrize(("section", "label"), [("dimensions", "dimension"), ("times", "time")])
+@pytest.mark.parametrize(
+    ("section", "label"), [("dimensions", "dimension"), ("times", "times entry")]
+)
 def test_contract_export_refuses_ignored_expression_keys(
     typed_contract_project: Path, section: str, label: str
 ) -> None:
@@ -436,8 +438,7 @@ def test_contract_export_refuses_ignored_expression_keys(
     with pytest.raises(SemanticLayerError) as raised:
         export_semantic_contract(typed_contract_project)
     assert raised.value.code == "INVALID_CONFIG"
-    assert f"{label} 'authored_time'" in str(raised.value)
-    assert "['expr']" in str(raised.value)
+    assert f"{label} 'authored_time' has unknown key 'expr'" in str(raised.value)
 
 
 def test_semantic_contract_schema_allows_adapter_owned_binding() -> None:
@@ -704,7 +705,7 @@ def test_diff_semantic_contract_classifies_changes(typed_contract_project, chang
 @pytest.mark.parametrize(
     ("hint", "physical"),
     [
-        ("string", kind)
+        ("categorical", kind)
         for kind in ["string", "varchar(100)", "text", "character varying(9)", "char", "uuid"]
     ]
     + [

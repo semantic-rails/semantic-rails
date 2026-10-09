@@ -32,6 +32,7 @@ metrics:
     kind: ratio
     numerator: order_count
     denominator: session_starts
+    value_type: number
 """
 
 

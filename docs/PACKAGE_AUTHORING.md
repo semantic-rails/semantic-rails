@@ -2631,6 +2631,28 @@ CLI `segment-*` commands) could not serve:
 
 ### Unknown keys
 
+Loading a package runs the same authoring checks as `validate-config`, so `serve`, MCP, the
+Architect and `Runtime.from_path` refuse a package `validate-config` refuses, with one
+`INVALID_CONFIG` that lists every error in `details.errors`. These blocks have a closed key
+set: the document top level; `package:` and `package.seed`; `defaults:` and its `dimension`,
+`time`, `measure` and `relationship` entries; `graph:`, its `entities`, its `relationships`
+entries and their `rollup_safe`; both `path_policy` blocks; `semantic_caveats` rows and their
+`time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
+`dimensions`, `times`, `measures`, `joins` and `variants`, with each variant's `grain`, `time`,
+`excludes`, `selection`, `equivalence` and every `columns:` binding; metrics; segments and
+their `membership`. A `columns:` binding takes the keys of what its name resolves to: a measure
+(by key, `as:`, `id:` or a `measure.` prefix), a dimension (by key, `as:`, `id:`, a
+`dimension.` prefix, or a key or foreign-key column the loader turns into a key dimension), or,
+when it resolves to neither, the keys either takes. `relations` entries are not closed yet. A
+key that starts with `_` is an annotation.
+
+In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,
+`relations.yml`, `metrics.yml` and `segments.yml` through `defaults:`, `graph:`,
+`relations:`, `metrics:` and `segments:`; a file under `models/`, `relations/`, `metrics/` or
+`segments/` through its plural or singular wrapper (`models:` or `model:`) when it has one.
+Any other root key is refused, as is a block file whose contents are not under its wrapper.
+`policies.yml` and `caveats.yml` may still hold a bare list.
+
 `parse-config`, `validate-config` and `check` reject a metric or segment key the
 loader doesn't read, in every layout it reads: files under `metrics/` and
 `segments/`, root `metrics.yml` and `segments.yml`, and `package.yml`. The loader
@@ -2805,6 +2827,7 @@ named definition by hand before upgrading.
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
+| `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 
 ## Reference
 

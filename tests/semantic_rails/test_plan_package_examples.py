@@ -66,7 +66,7 @@ model:
 model:
   id: account_day
   relation: account_day
-  entities: {account_day: {}, account: {join: account_id}}
+  entities: {account_day: {}, account: {}}
   times:
     day:
       column: day
