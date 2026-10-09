@@ -53,15 +53,18 @@ class QuestionSplit:
     held: tuple[int, ...] = ()
 
 
-def _asks_grouping(config: Any, text: str) -> bool:
-    """Whether the text asks for a grouping as plan reads one: a grouping it lists, the noun
-    it ranks or the words after "per", "each" or "every" (``_asked_grouping_terms``), or a time
-    unit's buckets or a series ("monthly", "over time", ``_asks_grain``)."""
+def _grouping_signature(config: Any, text: str) -> tuple[Any, ...]:
+    """What the text asks to group by as plan reads it: the groupings it lists, the noun it
+    ranks and the words after "per", "each" or "every" (``_asked_grouping_terms``), the time
+    units whose buckets it asks for ("monthly"), and whether it asks for a series ("over
+    time", ``_asks_grain``). Empty when it asks for no grouping."""
 
-    return bool(
-        _requested_grouping_spans(text.lower())
-        or _asked_grouping_terms(config, text)
-        or _asks_grain(text, _TIME_UNITS)
+    lowered = text.lower()
+    return (
+        frozenset(term.lower().strip() for term in _asked_grouping_terms(config, text)),
+        frozenset(lowered[low:high] for low, high in _requested_grouping_spans(lowered)),
+        tuple(grain for grain in _TIME_UNITS if _asks_grain(text, (grain,))),
+        _asks_grain(text, ()),
     )
 
 
@@ -71,10 +74,12 @@ def split_question(question: str, config: Any) -> QuestionSplit | None:
     The text before the first boundary is a shared leading phrase when it asks nothing (no
     wh-word or "how many") and a bare comma ends it. A split is held when it has more than
     ``MAX_PARTS`` parts, when a part after the first points back at another ("those", "of
-    that"), when a part names nothing to measure ("and how many?"), or when some parts state a
-    time window or a grouping (``_asks_grouping``: "by plan", "per plan", "monthly") and others
-    don't: a trailing "last week" or "per plan" may be meant for every part, and plan never
-    guesses which.
+    that"), when a part names nothing to measure ("and how many?"), when some parts state a
+    time window and others don't, or when the parts don't all state the same grouping
+    (``_grouping_signature``: "by plan", "per plan", "monthly"), including when some state one
+    and others don't: a trailing "last week" or "per plan" may be meant for every part, and plan
+    never guesses which. A leading phrase applies to every part alike, so its window excuses a
+    part without one, but its grouping excuses no difference.
     """
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
@@ -109,7 +114,7 @@ def split_question(question: str, config: Any) -> QuestionSplit | None:
     if len(parts) > MAX_PARTS:
         return QuestionSplit(tuple(parts), "too_many_parts", tuple(range(1, len(parts) + 1)))
     framing = _INTENT_STOPWORDS | _FRAMING_WORDS
-    windowed, grouped = [], []
+    windowed, groupings = [], []
     for number, part in enumerate(parts, start=1):
         own = part.text[len(prefix) :]
         windows = _time_window(own).spans
@@ -124,12 +129,15 @@ def split_question(question: str, config: Any) -> QuestionSplit | None:
         if all(word in framing or word.isdigit() for word in words):
             return QuestionSplit(tuple(parts), "part_without_subject", (number,))
         windowed.append(bool(windows))
-        grouped.append(_asks_grouping(config, own))
-    for stated, in_prefix, hold in (
-        (windowed, bool(_time_window(prefix).spans), "part_without_window"),
-        (grouped, _asks_grouping(config, prefix), "part_without_grouping"),
-    ):
-        if any(stated) and not all(stated) and not in_prefix:
-            missing = tuple(number for number, has in enumerate(stated, start=1) if not has)
-            return QuestionSplit(tuple(parts), hold, missing)
+        groupings.append(_grouping_signature(config, own))
+    if any(windowed) and not all(windowed) and not _time_window(prefix).spans:
+        missing = tuple(number for number, has in enumerate(windowed, start=1) if not has)
+        return QuestionSplit(tuple(parts), "part_without_window", missing)
+    if len(set(groupings)) > 1:
+        ungrouped = tuple(
+            number for number, signature in enumerate(groupings, start=1) if not any(signature)
+        )
+        return QuestionSplit(
+            tuple(parts), "part_without_grouping", ungrouped or tuple(range(1, len(parts) + 1))
+        )
     return QuestionSplit(tuple(parts))

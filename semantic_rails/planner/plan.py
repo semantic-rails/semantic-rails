@@ -865,8 +865,8 @@ _PART_HOLDS = {
         "which window it asks for."
     ),
     "part_without_grouping": (
-        "Part {parts} asks for no breakdown while another part asks for one, so plan can't tell "
-        "whether the breakdown is meant for every part."
+        "Part {parts} asks for no breakdown or a different one than another part, so plan can't "
+        "tell which breakdown is meant for every part."
     ),
     "part_filters_differ": (
         "Parts {parts} filter their rows differently, so plan can't tell whether a filter one "

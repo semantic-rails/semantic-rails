@@ -322,6 +322,22 @@ HELD = [
     ("How many new accounts, and how many closures for each month?", "part_without_grouping", [1]),
     ("How many new accounts, and how many closures monthly?", "part_without_grouping", [1]),
     ("How many new accounts, and how many closures over time?", "part_without_grouping", [1]),
+    # Parts that state different groupings, even when a leading phrase states one.
+    (
+        "How many new accounts monthly, and how many closures by segment?",
+        "part_without_grouping",
+        [1, 2],
+    ),
+    (
+        "Monthly, how many new accounts, and how many closures by segment?",
+        "part_without_grouping",
+        [1],
+    ),
+    (
+        "Per month, how many new accounts, and how many closures by segment?",
+        "part_without_grouping",
+        [1],
+    ),
     (
         "Last week, how many new accounts were there, and how many closures where segment is "
         "internal?",

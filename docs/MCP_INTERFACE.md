@@ -295,9 +295,12 @@ is one of:
 - `dependent_part`: a part points back at another ("…, and what share of those closed?", "…,
   and how much of that came from new accounts?");
 - `part_without_subject`: a part names nothing to measure ("…, and how many?");
-- `part_without_window` or `part_without_grouping`: some parts state a time window or a
-  grouping ("by plan", "per plan", "for each plan", "monthly", "over time") and others don't,
-  so a trailing "last week" or "per plan" may be meant for every part;
+- `part_without_window`: some parts state a time window and others don't, so a trailing "last
+  week" may be meant for every part;
+- `part_without_grouping`: the parts don't all state the same grouping ("by plan", "per plan",
+  "for each plan", "monthly", "over time"): some state one and others don't, or they state
+  different ones, so a trailing "per plan" may be meant for every part. A leading "Monthly, …"
+  doesn't settle which grouping a part meant;
 - `part_filters_differ`: the planned parts filter their rows differently, so a filter one part
   states may be meant for every part.
 
