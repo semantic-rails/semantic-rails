@@ -143,6 +143,8 @@ def test_one_value_never_answers_a_question_asking_for_more(
     why = payload["why"]
     if question in PARTS_HELD:
         assert why["code"] == "PLAN_PARTS_HELD"
+        # The kept draft's gaps stay where a single question's are.
+        assert why["details"]["gaps"] == why["details"]["question_why"]["details"]["gaps"]
         why = why["details"]["question_why"]
     assert why["code"] == GAP
     [gap] = why["details"]["gaps"]

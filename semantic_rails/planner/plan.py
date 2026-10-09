@@ -947,7 +947,8 @@ def _parts_payload(
     ``why`` names the parts that aren't ready. Every part's warnings are the payload's too.
     ``best`` and ``intent_ir`` are the first part's, for a client that reads only ``best``.
     A split whose parts can't be planned alone (``split.hold``) keeps the whole question's
-    draft, ``low_confidence``, with the parts listed.
+    draft, ``low_confidence``, with the parts listed and the draft's gaps where a single
+    question's are (``why.details.gaps``, such as the metric that governs a part's measure).
     """
 
     listed = [
@@ -956,6 +957,7 @@ def _parts_payload(
 
     def held(reason: str, numbers: tuple[int, ...]) -> dict[str, Any]:
         named = ", ".join(str(number) for number in numbers)
+        details = (whole.get("why") or {}).get("details") or {}
         return {
             **whole,
             "status": "low_confidence",
@@ -967,6 +969,7 @@ def _parts_payload(
                     "reason": reason,
                     "parts": [{"part": number, **listed[number - 1]} for number in numbers],
                     **({"question_why": whole["why"]} if whole.get("why") else {}),
+                    **{key: details[key] for key in ("gap_count", "gaps") if key in details},
                 },
             },
             "next": {key: value for key, value in whole.get("next", {}).items() if key != "action"},

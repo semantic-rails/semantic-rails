@@ -288,7 +288,9 @@ each answer.
 `plan` doesn't plan the parts when it can't read each one alone. It keeps the whole question's
 draft, `low_confidence`, with `why.code="PLAN_PARTS_HELD"`, the parts listed as `{text, spans}`,
 the whole question's own hold (such as `multiple_questions_unrealized`) in
-`why.details.question_why`, and the parts concerned in `why.details.parts`. `why.details.reason`
+`why.details.question_why`, that draft's gaps in `why.details.gaps` as for a single question
+(such as `governed_metric_unrealized` naming the metric for a part's measure), and the parts
+concerned in `why.details.parts`. `why.details.reason`
 is one of:
 
 - `too_many_parts`: more than four parts;
