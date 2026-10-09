@@ -33,7 +33,9 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import discover_payload
 from semantic_rails.planner import faithfulness, plan_payload
 from semantic_rails.planner import plan as planner
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.patterns import metric_by_dimension_rollup
+from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 
@@ -239,22 +241,15 @@ def test_a_building_block_is_left_out_of_discover_and_runs_by_id(runtime: Runtim
     assert _value(runtime, query) == _gold(LAST_WEEK) == 5
 
 
-def test_plan_answers_a_building_block_with_its_only_metric(runtime: Runtime) -> None:
-    """The question names neither. The building block is answered with the metric; a draft
-    over the published measure is held, since the metric leaves out some of its stores."""
+def test_plan_answers_with_the_only_metric_that_filters_the_measure(runtime: Runtime) -> None:
+    """The question names neither. Published or a building block, the measure is answered
+    with the one metric that filters it, which leaves out the demo and staff stores."""
 
     plan = _plan(runtime, "stores last week")
-    building_block = not next(row for row in runtime._config.measures if row.id == MEASURE).publish
-    assert _subject(plan["best"]["query"]) == (METRIC if building_block else MEASURE)
-    if building_block:
-        assert plan["status"] == "ok", plan.get("why")
-        assert _value(runtime, plan["best"]["query"]) == 3
-    else:
-        assert plan["status"] == "low_confidence"
-        assert "execute" not in plan["next"].get("ready_for", [])
-        assert [gap["expected"] for gap in _gaps(plan)] == [
-            {"metrics": [METRIC], "narrowed_by": ["dimension.shop_visit_channel"]}
-        ]
+    assert plan["status"] == "ok", plan.get("why")
+    assert _subject(plan["best"]["query"]) == METRIC
+    assert _value(runtime, plan["best"]["query"]) == _gold(f"{LAST_WEEK} AND channel = 'retail'")
+    assert _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
 
 
 def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
@@ -279,8 +274,10 @@ def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
 @pytest.mark.parametrize(
     ("intent", "status", "value"),
     [
-        ("How many stores that were active last week?", "low_confidence", 5),
-        ("Number of stores that were active last week", "low_confidence", 5),
+        # The draft reads the metric; beside a plain metric of the same measure, the question
+        # fits both and is held.
+        ("How many stores that were active last week?", "ok_alone", 3),
+        ("Number of stores that were active last week", "ok_alone", 3),
         (QUESTION, "ok", 3),
     ],
 )
@@ -302,20 +299,19 @@ def test_the_whole_question_is_checked_against_reference_sql(
             monkeypatch.setattr(metric_by_dimension_rollup, "_preferred_measure", lambda *_: None)
             monkeypatch.setattr(metric_by_dimension_rollup, "_preferred_metric", lambda *_: plain)
         plan = _plan(engine, intent)
-        assert plan["status"] == status, plan.get("why")
+        held = status == "ok_alone" and plain_metric
+        assert plan["status"] == ("low_confidence" if held else "ok"), plan.get("why")
         query = plan["best"]["query"]
-        assert _value(engine, query) == value
-        assert value == _gold(
-            LAST_WEEK if status == "low_confidence" else f"{LAST_WEEK} AND channel = 'retail'"
-        )
-        assert _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
-        if status == "low_confidence":
+        assert _subject(query) == METRIC
+        assert _value(engine, query) == value == _gold(f"{LAST_WEEK} AND channel = 'retail'")
+        if held:
             assert "execute" not in plan["next"].get("ready_for", [])
-            assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[METRIC]]
-            if plain_draft:
-                assert _subject(query) != METRIC
-            else:
-                assert _subject(query) == MEASURE
+            [gap] = plan["why"]["details"]["gaps"]
+            assert gap["kind"] == "subject_ambiguous"
+            assert set(gap["expected"]["candidates"]) == {
+                METRIC,
+                f"metric.shop.{MEASURE.split('.')[-1]}",
+            }
     finally:
         engine.close()
 
@@ -343,15 +339,11 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
             semantic_policies=[policy],
         ),
     )
-    arguments = {
-        "intent": intent,
-        "now": NOW["now"],
-        "policy_context": {"audience": "external"},
-        "detail": detail,
-    }
-    mcp = SemanticLayerMCPAdapter(runtime).call_tool("plan", arguments)
+    arguments = {"intent": intent, "now": NOW["now"], "detail": detail}
+    external = RequestContext(audience="external")
+    mcp = SemanticLayerMCPAdapter(runtime).call_tool("plan", arguments, request_context=external)
     http, status = SemanticHTTPService(runtime).handle(
-        "POST", normalize_route("/api/v1/plan"), arguments
+        "POST", normalize_route("/api/v1/plan"), arguments, context=external
     )
     assert status == 200
     building_block = not runtime._config.measures[0].publish
@@ -369,8 +361,7 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
             assert _gaps(response) == []
     # A building block stays one when its governor is hidden: discover still leaves it out.
     discovered = SemanticLayerMCPAdapter(runtime).call_tool(
-        "discover",
-        {"terms": "active stores", "policy_context": arguments["policy_context"]},
+        "discover", {"terms": "active stores"}, request_context=external
     )
     assert [row["id"] for row in discovered["measures"]] == ([] if building_block else [MEASURE])
     # The same policy leaves the metric visible to a different caller, on the next call.
@@ -586,8 +577,8 @@ def _assert_unoffered_hold(plan: dict[str, Any]) -> None:
     ]
     assert gaps[0]["message"] == "The package doesn't offer this measure."
     assert [hint["message"] for hint in plan["why"]["recovery_hints"]] == [
-        "Name the measure by id in partial_query.select when the question asks for every row "
-        "it counts, or pick an offered metric."
+        "Name the measure by id in the seed's select when the question asks for every row it "
+        "counts, or pick an offered metric."
     ]
 
 
@@ -643,7 +634,7 @@ def _unreadable_offer(*_: Any) -> Any:
 
 
 @pytest.mark.parametrize("transport", ["mcp", "http"])
-def test_transport_plan_holds_a_measure_named_only_in_policy_metadata(
+def test_transport_plan_refuses_a_measure_named_in_request_metadata(
     unpublished_teams: Runtime, transport: str
 ) -> None:
     arguments = {
@@ -654,12 +645,16 @@ def test_transport_plan_holds_a_measure_named_only_in_policy_metadata(
     }
     if transport == "mcp":
         plan = SemanticLayerMCPAdapter(unpublished_teams).call_tool("plan", arguments)
+        assert plan["ok"] is False
+        error = plan["errors"][0]
     else:
-        plan, status = SemanticHTTPService(unpublished_teams).handle(
-            "POST", normalize_route("/api/v1/plan"), arguments
-        )
-        assert status == 200
-    _assert_unoffered_hold(plan)
+        with pytest.raises(SemanticLayerError) as caught:
+            SemanticHTTPService(unpublished_teams).handle(
+                "POST", normalize_route("/api/v1/plan"), arguments
+            )
+        error = {"code": caught.value.code, "details": caught.value.details}
+    assert error["details"]["path"] == "policy_context"
+    assert TEAMS not in json.dumps(error)
 
 
 @pytest.mark.parametrize("offer", ["readable", "unreadable"])
@@ -706,8 +701,8 @@ def test_request_fields_outside_select_do_not_exempt_a_draft_over_a_governed_mea
         ({"metrics": [METRIC]}, {"measure": MEASURE})
     ]
     assert [hint["message"] for hint in plan["why"]["recovery_hints"]] == [
-        "Select the governed metric in Query IR. Name the measure by id in "
-        "partial_query.select only when the question asks for every row it counts."
+        "Select the governed metric in the call. Name the measure by id in the seed's select "
+        "only when the question asks for every row it counts."
     ]
 
 
@@ -903,16 +898,16 @@ def test_the_hold_names_the_question_s_metrics_first_and_at_most_five(
     config = replace(config, metric_recipes=[replace(governor, id=row) for row in ids])
     hold = faithfulness._population_hold
     # ids[0] is selected; the question's subjects rank ids[6] above ids[3].
-    assert hold(config, TEAMS, {}, [ids[0]], [ids[6], TEAMS, ids[3]]) == {
+    assert hold(config, TEAMS, Call(), [ids[0]], [ids[6], TEAMS, ids[3]]) == {
         "metrics": [ids[6], ids[3], ids[1], ids[2], ids[4]],
         "narrowed_by": [TEAM_CLASS],
     }
-    test_teams = {"where": [{"field": TEAM_CLASS, "op": "=", "value": "test"}]}
-    for heeded in ({"group_by": [TEAM_CLASS]}, test_teams):
+    test_teams = Call.from_call({"where": [{"field": TEAM_CLASS, "op": "is", "value": "test"}]})
+    for heeded in (Call.from_call({"group_by": [TEAM_CLASS]}), test_teams):
         assert hold(config, TEAMS, heeded, [], []) is None
     # Only the measure's own entity counts: the team class never narrows the event count, and
     # the event type narrows it only where the metric counts events.
-    events = hold(config, "measure.org.team_events", {}, [], []) or {}
+    events = hold(config, "measure.org.team_events", Call(), [], []) or {}
     event_type = ["dimension.org_team_event_event_type"] if shape == "event" else None
     assert events.get("narrowed_by") == event_type
 
@@ -981,13 +976,11 @@ def test_a_hidden_narrowing_dimension_still_holds_and_is_not_named(
     serialized = json.dumps(plan)
     for name in (TEAM_CLASS, "Team class", NEW_TEAMS, "New teams", "Customer teams created"):
         assert name not in serialized
-    # The control: for a caller who sees the class, the hold names the metric and the class.
+    # The control: a caller who sees the class gets the metric that filters the count.
     visible = _plan(engine, "teams last week", policy_context={**NOW, "audience": "internal"})
-    assert visible["status"] == "low_confidence", visible.get("why")
-    assert [gap["expected"] for gap in _gaps(visible)] == [
-        {"metrics": [NEW_TEAMS], "narrowed_by": [TEAM_CLASS]}
-    ]
-    assert [gap["message"] for gap in _gaps(visible)] != [HIDDEN_GOVERNOR]
+    assert visible["status"] == "ok", visible.get("why")
+    assert visible["best"]["query"]["select"] == [NEW_TEAMS]
+    assert _value(engine, visible["best"]["query"]) == _teams_gold(f"{WEEK} AND class = 'customer'")
 
 
 CALLS_SEED = """
@@ -1134,7 +1127,7 @@ def test_the_team_measures_count_the_test_teams_their_metrics_leave_out() -> Non
         ),
     ],
 )
-def test_a_class_on_a_joined_entity_holds_a_draft_over_the_measure_its_metric_narrows(
+def test_a_class_on_a_joined_entity_drafts_the_metric_that_narrows_the_measure(
     calls: dict[str, Runtime], intent: str, measure: str, governor: str, select: str
 ) -> None:
     engine = calls["all"]
@@ -1142,23 +1135,20 @@ def test_a_class_on_a_joined_entity_holds_a_draft_over_the_measure_its_metric_na
         plan = plan_payload(
             engine, intent=intent, partial_query={"policy_context": NOW}, detail=detail
         )
-        assert plan["status"] == "low_confidence", (detail, plan.get("why"))
-        assert "execute" not in plan.get("next", {}).get("ready_for", [])
-        assert [(gap["expected"], gap["actual"]) for gap in _gaps(plan)] == [
-            ({"metrics": [governor], "narrowed_by": [TEAM_CLASS]}, {"measure": measure})
-        ], detail
-    # The held draft counts the test teams as well.
-    assert _value(engine, plan["best"]["query"]) == _calls_gold(select)
-    assert _calls_gold(select) > _calls_gold(select, "AND class = 'customer'")
+        assert plan["status"] == "ok", (detail, plan.get("why"))
+        assert plan["best"]["query"]["select"] == [governor], detail
+    # The metric leaves out the test teams the measure counts.
+    customer = "AND class = 'customer'"
+    assert _value(engine, plan["best"]["query"]) == _calls_gold(select, customer)
+    assert _calls_gold(select) > _calls_gold(select, customer)
 
 
-def test_mcp_plan_holds_a_measure_a_joined_class_narrows(calls: dict[str, Runtime]) -> None:
+def test_mcp_plan_drafts_the_metric_a_joined_class_narrows(calls: dict[str, Runtime]) -> None:
     plan = SemanticLayerMCPAdapter(calls["all"]).call_tool(
         "plan", {"intent": "team calls last week", "now": NOW["now"]}
     )
-    assert plan["status"] == "low_confidence", plan.get("why")
-    assert "execute" not in plan.get("next", {}).get("ready_for", [])
-    assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[PAYING_CALLS]]
+    assert plan["status"] == "ok", plan.get("why")
+    assert plan["best"]["query"]["select"] == [PAYING_CALLS]
 
 
 @pytest.mark.parametrize(
@@ -1272,12 +1262,10 @@ def test_a_joined_class_does_not_exempt_an_own_entity_event_hold(
     teams: dict[tuple[str, bool], Runtime],
 ) -> None:
     engine = teams["event", False]
-    where = [{"field": TEAM_CLASS, "op": "=", "value": "test"}]
+    where = Call.from_call({"where": [{"field": TEAM_CLASS, "op": "is", "value": "test"}]})
     expected = {"metrics": [NEW_TEAMS], "narrowed_by": ["dimension.org_team_event_event_type"]}
     assert (
-        faithfulness._population_hold(
-            engine._config, "measure.org.team_events", {"where": where}, [], []
-        )
+        faithfulness._population_hold(engine._config, "measure.org.team_events", where, [], [])
         == expected
     )
     plan = _plan(engine, "team events from test teams last week")
@@ -1333,11 +1321,11 @@ def test_an_explicit_join_holds_all_calls_and_preserves_the_filtered_reference(
     engine = Runtime.from_path(str(root))
     try:
         plan = _plan(engine, "team calls last week")
-        assert plan["status"] == "low_confidence", plan.get("why")
-        assert "execute" not in plan.get("next", {}).get("ready_for", [])
-        assert [gap["expected"] for gap in _gaps(plan)] == [
-            {"metrics": [PAYING_CALLS], "narrowed_by": [TEAM_CLASS]}
-        ]
+        assert plan["status"] == "ok", plan.get("why")
+        assert plan["best"]["query"]["select"] == [PAYING_CALLS]
+        assert _value(engine, plan["best"]["query"]) == _calls_gold(
+            "SUM(calls)", "AND class = 'customer'"
+        )
         filtered = _plan(engine, "team calls from test teams last week")
         assert filtered["status"] == "ok", filtered.get("why")
         assert "execute" in filtered["next"]["ready_for"]

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from typing import Any
 
 from ._base import RuntimeCompositionDraft
@@ -135,7 +136,8 @@ def _draft_for_choice(
     from ..metadata_parts.object_metadata import _public_object_type  # noqa: WPS433
 
     config = runtime._config
-    builder = QueryBuilder(config, partial_query)
+    # The caller's order_by may name a column this draft doesn't add; the merge restores it.
+    builder = QueryBuilder(config, replace(partial_query or Call(), order_by=()))
     if str(choice["id"]) not in {item.ref for item in builder.build().select}:
         builder.select(str(choice["id"]))
     builder.group(*_choose_group_dimensions(runtime, builder.build(), intent))
