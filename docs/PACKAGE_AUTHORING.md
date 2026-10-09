@@ -2142,9 +2142,8 @@ relationship), and `details.fixes`:
   reads one of that name;
 - `declare_link_table`: `entities: {bridge: true}` on the crossed model;
 - `record_route`: the `graph.path_preferences` row for the pair;
-- `child_group`: ask about the crossed rows themselves, a
-  [child group](QUERY_IR_SCHEMA.md#child-groups) carrying the query's
-  conditions on the target.
+- `entity_filter`, when the query has conditions on the target: ask about the
+  crossed rows themselves, `{entity, any}` in `where` carrying those conditions.
 
 Three declarations allow the crossing, and then no warning is given: the
 crossed model's `bridge: true`; a validity window on the crossed entity (a
