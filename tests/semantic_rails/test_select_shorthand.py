@@ -160,70 +160,56 @@ def test_kindless_expression_error_shows_canonical_form():
     assert '{"kind": "measure", "measure": "<measure id>"' in str(excinfo.value)
 
 
-def test_runtime_accepts_shorthand_compiles_identically_and_warns(runtime_factory):
+def _call(select: list, **extra: object) -> dict:
+    return {"select": select, "time": TIME, **extra}
+
+
+def test_runtime_lifts_a_dimension_in_select_into_group_by_and_reports_it(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
+    select = [
+        {"expression": {"kind": "measure", "measure": MEASURE, "aggregation": "sum"}, "as": "rev"},
+        {"expression": METRIC, "as": "aov"},
+    ]
     try:
-        canonical = runtime.compile(
-            _query(
-                [
-                    {
-                        "expression": {"kind": "measure", "measure": MEASURE, "aggregation": "sum"},
-                        "as": "rev",
-                    },
-                    {"expression": {"kind": "metric", "metric": METRIC}, "as": "aov"},
-                ],
-                group_by=[DIM],
-                sql_profile="audit",
-            )
-        )
-        shorthand = runtime.compile(
-            _query(
-                [
-                    {"measure": MEASURE, "aggregation": "sum", "as": "rev"},
-                    {"metric": METRIC, "as": "aov"},
-                    {"dimension": DIM},
-                ],
-                sql_profile="audit",
-            )
-        )
+        canonical = runtime.compile(_call(select, group_by=[DIM]), sql_profile="audit")
+        shorthand = runtime.compile(_call([*select, DIM]), sql_profile="audit")
         assert shorthand["rendered_sql"] == canonical["rendered_sql"]
         notes = [w for w in shorthand["warnings"] if w["code"] == "QUERY_SHORTHAND_NORMALIZED"]
-        assert [w["path"] for w in notes] == ["select[0]", "select[1]", "select[2]"]
-        assert '"kind":"measure"' in notes[0]["message"]
-        assert notes[2]["details"]["canonical"] == {"group_by": [DIM]}
+        assert [w["path"] for w in notes] == ["select[2]"]
+        assert notes[0]["details"]["canonical"] == {"group_by": [DIM]}
         assert not [w for w in canonical["warnings"] if w["code"] == "QUERY_SHORTHAND_NORMALIZED"]
         assert _without_notices(shorthand["warnings"]) == canonical["warnings"]
     finally:
         runtime.close()
 
 
-@pytest.mark.parametrize("kind", [None, "dimension", "group", "ref"])
-def test_runtime_reports_expression_dimension_shorthand(runtime_factory, kind):
+@pytest.mark.parametrize(("shorthand", "canonical"), ACCEPTED)
+def test_runtime_refuses_a_bare_select_item_with_the_reference_to_send(
+    runtime_factory, shorthand, canonical
+):
+    """A bare ``{metric}`` / ``{measure}`` item is not a call's spelling: the refusal names
+    the item and hands back the id to send instead."""
     runtime = runtime_factory("jaffle_shop")
     try:
-        canonical = runtime.compile(
-            _query(
-                [{"expression": {"kind": "metric", "metric": METRIC}, "as": "aov"}],
-                group_by=[DIM],
-                sql_profile="audit",
-            )
-        )
-        compiled = runtime.compile(
-            _query(
-                [
-                    {"expression": {**({"kind": kind} if kind else {}), "dimension": DIM}},
-                    {"metric": METRIC, "as": "aov"},
-                ],
-                sql_profile="audit",
-            )
-        )
-        notes = [w for w in compiled["warnings"] if w["code"] == "QUERY_SHORTHAND_NORMALIZED"]
-        assert [n["path"] for n in notes] == ["select[0]", "select[1]"]
-        assert notes[0]["details"]["canonical"] == {"group_by": [DIM]}
-        assert compiled["rendered_sql"] == canonical["rendered_sql"]
-        assert _without_notices(compiled["warnings"]) == canonical["warnings"]
+        (error,) = runtime.validate(_call([shorthand]))["errors"]
     finally:
         runtime.close()
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"].startswith("select[0]")
+    (hint,) = error["details"]["recovery_hints"]
+    assert canonical["expression"].get("metric", MEASURE) in hint["message"]
+
+
+@pytest.mark.parametrize("kind", [None, "dimension", "group", "ref"])
+def test_runtime_refuses_a_dimension_wrapped_in_an_expression(runtime_factory, kind):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        item = {"expression": {**({"kind": kind} if kind else {}), "dimension": DIM}}
+        (error,) = runtime.validate(_call([item, {"expression": METRIC, "as": "aov"}]))["errors"]
+    finally:
+        runtime.close()
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"].startswith("select[0].expression")
 
 
 def test_dimension_moved_to_group_by_is_reported_by_the_rewriter():
@@ -242,7 +228,7 @@ def test_rewriting_the_canonical_form_changes_nothing():
     assert rewrite_select_shorthand(canonical) == (canonical, [])
 
 
-def test_time_grain_warning_reads_the_rewritten_group_by(runtime_factory):
+def test_time_grain_warning_reads_the_rewritten_group_by():
     no_grain = {"temporal_role": "temporal_role.jaffle_order_time"}
     shorthand = {
         "version": 1,
@@ -260,28 +246,11 @@ def test_time_grain_warning_reads_the_rewritten_group_by(runtime_factory):
             _grouped_ungrained_time_warning(query, {})["code"]
             == "UNGRAINED_GROUPED_TIME_PROJECTION"
         )
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        codes = {
-            name: [
-                w["code"] for w in runtime.compile({**query, "sql_profile": "audit"})["warnings"]
-            ]
-            for name, query in (("shorthand", shorthand), ("canonical", canonical))
-        }
-    finally:
-        runtime.close()
-    assert "UNGRAINED_TIME_PROJECTION" not in codes["shorthand"]
-    assert [c for c in codes["shorthand"] if c != "QUERY_SHORTHAND_NORMALIZED"] == codes[
-        "canonical"
-    ]
 
 
 def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory):
-    shorthand = {"select": [{"metric": METRIC}, {"expression": {"dimension": DIM}}]}
-    canonical = {
-        "select": [{"expression": {"kind": "metric", "metric": METRIC}}],
-        "group_by": [DIM],
-    }
+    shorthand = {"select": [METRIC, DIM]}
+    canonical = {"select": [METRIC], "group_by": [DIM]}
     runtime = runtime_factory("jaffle_shop")
     try:
         planned = plan_payload(runtime, intent="revenue by store", partial_query=shorthand)
@@ -292,12 +261,12 @@ def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory):
                 intent="revenue by store",
                 partial_query={"select": [{"dimension": DIM, "metric": METRIC}]},
             )
-        assert excinfo.value.code == "INVALID_EXPRESSION_AST"
+        assert excinfo.value.code == "INVALID_QUERY"
     finally:
         runtime.close()
 
 
 def test_partial_query_still_accepts_an_empty_select_item():
-    state = normalize_partial_query({"select": [{"as": "x"}, METRIC]})
+    state = normalize_partial_query({"select": [{"as": "x"}, {"metric": METRIC}]})
     assert [item.as_ for item in state.select] == ["x", "expr_2"]
     assert state.select[0].expression is None

@@ -22,7 +22,7 @@ from tests.plan_candidate_envelope import plan_candidate_envelope
 from tests.semantic_rails.result_helpers import held_candidate
 
 
-def _fake_query_result(payload):
+def _fake_query_result(payload, **_options):
     group_by = list(payload.get("group_by", []) or [])
     dimension = group_by[0] if group_by else "dimension.jaffle_store_name"
     return {
@@ -339,12 +339,11 @@ def test_validate_compile_and_query_happy_path_on_jaffle_shop(runtime_factory):
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "order_by": [{"field": "orders", "direction": "desc"}],
             "limit": 5,
-            "verbosity": "full",
         }
 
-        validated = runtime.validate(query)
-        compiled = runtime.compile(query)
-        result = runtime.query(query)
+        validated = runtime.validate(query, verbosity="full")
+        compiled = runtime.compile(query, verbosity="full")
+        result = runtime.query(query, verbosity="full")
 
         assert validated["ok"] is True
         assert validated["query"] == query
@@ -376,11 +375,10 @@ def test_validate_uses_compiled_plan_cache(runtime_factory):
             "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 3,
-            "verbosity": "full",
         }
 
-        first = runtime.validate(query)
-        second = runtime.validate(query)
+        first = runtime.validate(query, verbosity="full")
+        second = runtime.validate(query, verbosity="full")
 
         assert first["ok"] is True
         assert first["compile_stats"]["cache_hit"] is False
@@ -400,12 +398,13 @@ def test_compile_cache_is_not_mutated_by_returned_compilation(runtime_factory):
             "limit": 3,
         }
 
-        first = runtime._compile(query, policy_context={})
+        payload = runtime.engine_payload(query)
+        first = runtime._compile(payload, policy_context={})
         original_sql = first["sql"]
         first["sql"] = "select mutated"
         first["logical_plan"].measure_plans.clear()
 
-        second = runtime._compile(query, policy_context={})
+        second = runtime._compile(payload, policy_context={})
 
         assert second["compile_stats"]["cache_hit"] is True
         assert second["sql"] == original_sql
@@ -445,11 +444,10 @@ def test_runtime_compile_cache_supports_basic_concurrent_use(runtime_factory):
             "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 3,
-            "verbosity": "full",
         }
 
         with ThreadPoolExecutor(max_workers=8) as pool:
-            results = list(pool.map(lambda _: runtime.validate(query), range(16)))
+            results = list(pool.map(lambda _: runtime.validate(query, verbosity="full"), range(16)))
 
         assert all(result["ok"] is True for result in results)
         assert any(result["compile_stats"]["cache_hit"] is True for result in results)
@@ -1120,7 +1118,7 @@ def test_plan_generic_multi_dimension_and_current_month_bounds(tmp_path: Path):
         assert planned["candidates"]
         query = planned["candidates"][0]["candidate_ir"]
         assert planned["candidates"][0]["validation"]["ok"] is True
-        assert query["select"][0]["expression"] == {"metric": "metric.engagement.sends_per_account"}
+        assert query["select"] == ["metric.engagement.sends_per_account"]
         assert query["group_by"] == ["dimension.demo_product", "dimension.demo_send_type"]
         assert query["time"] == {
             "temporal_role": "temporal_role.demo_event_time",
@@ -1146,10 +1144,10 @@ def test_plan_generic_q4_bounds_and_paying_filter_not_group_by(tmp_path: Path):
         assert planned["candidates"]
         query = planned["candidates"][0]["candidate_ir"]
         assert planned["candidates"][0]["validation"]["ok"] is True
-        assert query["select"][0]["expression"] == {"metric": "metric.engagement.utilization_rate"}
+        assert query["select"] == ["metric.engagement.utilization_rate"]
         assert query["group_by"] == ["dimension.demo_send_type"]
         assert query["where"] == [
-            {"field": "dimension.demo_account_status", "op": "=", "value": "paying"}
+            {"field": "dimension.demo_account_status", "op": "is", "value": "paying"}
         ]
         assert query["time"] == {
             "temporal_role": "temporal_role.demo_event_time",
@@ -1343,7 +1341,7 @@ def test_history_backed_queries_emit_null_preserving_caveats(runtime_factory):
         inspected = inspect_payload(
             runtime,
             object_id="dimension.jaffle_customer_history_segment",
-            partial_query={"version": 1, "select": query["select"]},
+            partial_query=runtime.engine_payload({"select": query["select"]}, partial=True),
         )
         validated = runtime.validate(query)
         compiled = runtime.compile(query)
@@ -1376,12 +1374,12 @@ def test_query_request_limits_clip_rows_for_duckdb(runtime_factory):
         assert baseline["truncated"] is False
 
         # max_rows clips the result.
-        clipped = runtime.query({**query, "limits": {"max_rows": 1}})
+        clipped = runtime.query(query, limits={"max_rows": 1})
         assert len(clipped["rows"]) == 1
         assert clipped["truncated"] is True
 
         # statement_timeout_ms is enforced by DuckDB's interrupt watchdog.
-        timed = runtime.query({**query, "limits": {"statement_timeout_ms": 60_000}})
+        timed = runtime.query(query, limits={"statement_timeout_ms": 60_000})
         assert len(timed["rows"]) == len(baseline_rows)
         timeout_warnings = [
             w
@@ -1391,7 +1389,7 @@ def test_query_request_limits_clip_rows_for_duckdb(runtime_factory):
         assert timeout_warnings == []
 
         # When limits don't include statement_timeout_ms, no warning fires.
-        only_rows = runtime.query({**query, "limits": {"max_rows": 1}})
+        only_rows = runtime.query(query, limits={"max_rows": 1})
         assert not [
             w
             for w in only_rows.get("warnings", []) or []
@@ -1399,11 +1397,11 @@ def test_query_request_limits_clip_rows_for_duckdb(runtime_factory):
         ]
 
         # Invalid limits values are silently ignored.
-        ignored = runtime.query({**query, "limits": {"max_rows": "not-an-int"}})
+        ignored = runtime.query(query, limits={"max_rows": "not-an-int"})
         assert len(ignored["rows"]) == len(baseline_rows)
 
         # Limits in the wrong shape don't blow up.
-        wrong_shape = runtime.query({**query, "limits": [1, 2, 3]})
+        wrong_shape = runtime.query(query, limits=[1, 2, 3])
         assert len(wrong_shape["rows"]) == len(baseline_rows)
     finally:
         runtime.close()
@@ -1795,7 +1793,7 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
 
         # debug=true alone (no debug role) must NOT expose raw SQL.
         with _pytest.raises(SemanticLayerError) as exc_info:
-            runtime.query({**base_query, "debug": True})
+            runtime.query(base_query, debug=True)
         details = dict(exc_info.value.details)
         assert "sql" not in details
         assert details.get("sql_redacted") is True
@@ -1804,13 +1802,7 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
         # opt-in, must STILL redact. The OSS default treats roles as
         # client-assertable, so role membership alone is not authority.
         with _pytest.raises(SemanticLayerError) as exc_info:
-            runtime.query(
-                {
-                    **base_query,
-                    "debug": True,
-                    "policy_context": {"roles": ["debug"]},
-                }
-            )
+            runtime.query(base_query, debug=True, context={"roles": ["debug"]})
         details = dict(exc_info.value.details)
         assert "sql" not in details, "raw SQL leaked when only role was asserted"
         assert details.get("sql_redacted") is True
@@ -1818,13 +1810,7 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
         # Operator env opt-in + debug=true + debug role → SQL is included.
         monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_DEBUG_SQL", "1")
         with _pytest.raises(SemanticLayerError) as exc_info:
-            runtime.query(
-                {
-                    **base_query,
-                    "debug": True,
-                    "policy_context": {"roles": ["debug"]},
-                }
-            )
+            runtime.query(base_query, debug=True, context={"roles": ["debug"]})
         details = dict(exc_info.value.details)
         assert details.get("sql_debug_authorized") is True
         assert isinstance(details.get("sql"), str) and details["sql"].strip().lower().startswith(
@@ -1833,7 +1819,7 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
 
         # Env opt-in alone (no debug role) must still redact.
         with _pytest.raises(SemanticLayerError) as exc_info:
-            runtime.query({**base_query, "debug": True})
+            runtime.query(base_query, debug=True)
         details = dict(exc_info.value.details)
         assert "sql" not in details
         assert details.get("sql_redacted") is True
