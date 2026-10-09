@@ -459,9 +459,10 @@ def _relative_window(lowered: str) -> list[tuple[tuple[int, int], dict[str, Any]
     candidates: list[tuple[tuple[int, int], dict[str, Any], str]] = []
     for match in _RELATIVE_WINDOW_RE.finditer(lowered):
         unit = match.group(2)
-        last = {"unit": unit, "value": _relative_window_value(match.group(1))}
+        value = _relative_window_value(match.group(1))
+        last = {"unit": unit, "value": value}
         try:
-            shift_period(date.today(), unit, -last["value"])
+            shift_period(date.today(), unit, -value)
         except (ValueError, OverflowError):
             continue  # reaches past the calendar: the phrase stays unread, and held
         candidates.append((match.span(), {"last": last}, unit))
