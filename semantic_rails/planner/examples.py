@@ -66,17 +66,21 @@ def example_plan(
         if not isinstance(authored, str) or not isinstance(query, dict):
             continue
         values = _references(query)
-        if values is None or any(
-            value == object_id or value.startswith(object_id + "__")
-            for value in values
-            for object_id in hidden
-        ):
+        if values is None:
             continue
         matched = _match(question, normalize(authored), query)
         if matched is None:
             continue
+        # A hidden reference answers like the absent object: the example fails validation.
         # Validate the original before any planner repair can rescue it.
-        if not _validate_query(runtime, query, partial)["ok"]:
+        if (
+            any(
+                value == object_id or value.startswith(object_id + "__")
+                for value in values
+                for object_id in hidden
+            )
+            or not _validate_query(runtime, query, partial)["ok"]
+        ):
             invalid.append(example_id)
             continue
         matches.append((example_id, matched))

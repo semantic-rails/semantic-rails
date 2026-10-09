@@ -233,7 +233,9 @@ def test_invalid_examples_fall_through_to_normal_planning(subscriptions, bad):
 @pytest.mark.parametrize(
     "hidden", [NAME, "metric.subscriptions.mrr", "measure.subscriptions.mrr_all"]
 )
-def test_hidden_example_is_silent_even_alongside_visible_match(subscriptions, hidden):
+def test_hidden_example_fails_like_an_absent_one_even_alongside_visible_match(
+    subscriptions, hidden
+):
     from dataclasses import replace
 
     from semantic_rails.schema import SemanticPolicyConfig
@@ -258,11 +260,18 @@ def test_hidden_example_is_silent_even_alongside_visible_match(subscriptions, hi
         ],
     )
     result = _plan(subscriptions)
-    assert "private_definition" not in str(result)
     assert hidden not in str(result)
     if hidden == NAME:
+        assert "private_definition" not in str(result)
         assert result["status"] == "ok", result.get("why")
         assert result["best"]["pattern"] == "package_example"
+    else:
+        # Both read the hidden metric: each fails as it would without the metric.
+        assert (result.get("best") or {}).get("pattern") != "package_example"
+        assert result["why"]["details"]["invalid_examples"] == [
+            "private_definition",
+            "public_definition",
+        ]
 
 
 def test_examples_load_once_per_generation_and_have_no_source_fallback(subscriptions, monkeypatch):
@@ -642,7 +651,7 @@ def test_bundled_decimal_threshold_is_not_its_whole_number_neighbour(runtime_fac
 
 
 @pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
-def test_hidden_id_in_a_mapping_key_skips_the_example_unnamed(runtime_factory, detail):
+def test_hidden_id_in_a_mapping_key_fails_the_example_like_an_absent_one(runtime_factory, detail):
     import json
     from dataclasses import replace
 
@@ -690,7 +699,47 @@ def test_hidden_id_in_a_mapping_key_skips_the_example_unnamed(runtime_factory, d
     finally:
         runtime.close()
     assert hidden not in payload
-    assert "keyed_override" not in payload
+    result = json.loads(payload)
+    assert (result.get("best") or {}).get("pattern") != "package_example"
+    assert result["why"]["details"]["invalid_examples"] == ["keyed_override"]
+
+
+def test_a_hidden_measure_answers_its_example_question_like_an_absent_one(tmp_path):
+    import json
+    from dataclasses import replace
+
+    from semantic_rails.config import load_package_config
+    from semantic_rails.schema import SemanticPolicyConfig
+    from semantic_rails.visible_view import hidden_object_ids
+    from tests.semantic_rails.conftest import copy_package_config
+    from tests.semantic_rails.hidden_absent import absent
+
+    hidden = "measure.jaffle.revenue_usd"
+    root = copy_package_config(tmp_path, "jaffle_shop")
+    config = load_package_config(str(root))
+    policy = SemanticPolicyConfig(
+        id="policy.hidden", kind="object_visibility", object_ids=[hidden], action="hidden"
+    )
+    governed = replace(config, semantic_policies=[*config.semantic_policies, policy])
+    packages = {
+        "hidden": governed,
+        "absent": absent(config, hidden_object_ids(governed)),
+    }
+    answers = {}
+    for name, package in packages.items():
+        runtime = Runtime.from_config(package, source_path=str(root))
+        try:
+            answers[name] = plan_payload(runtime, intent="Monthly revenue")
+        finally:
+            runtime.close()
+
+    def outcome(payload):
+        why = payload.get("why") or {}
+        return payload["status"], why.get("code"), why.get("details", {}).get("invalid_examples")
+
+    assert outcome(answers["hidden"]) == outcome(answers["absent"])
+    assert outcome(answers["absent"])[1:] == ("PLAN_INVALID_EXAMPLE", ["monthly_revenue"])
+    assert hidden not in json.dumps(answers["hidden"])
 
 
 def test_example_draft_cannot_bypass_shared_planned_row_validation(subscriptions, monkeypatch):

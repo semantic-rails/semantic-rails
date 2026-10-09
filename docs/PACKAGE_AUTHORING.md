@@ -2474,9 +2474,10 @@ whole matched question is recorded as a consumed span. The query still passes
 the normal validation and caller visibility checks. There is no fuzzy matching.
 Several valid, visible examples matching the same question require clarification with
 their IDs. Invalid examples fall through to normal planning with their IDs in
-`why.details.invalid_examples`; examples referring to hidden objects, in a value
-or in a mapping key such as `temporal_role_overrides`, are skipped without
-naming them.
+`why.details.invalid_examples`. An example referring to a hidden object, in a value
+or in a mapping key such as `temporal_role_overrides`, is invalid for that caller,
+exactly as it would be in a package without the object; the response never names
+the hidden object.
 
 The runtime loads the same `examples/` entries that package validation checks,
 once per runtime generation. `reload` refreshes them. A runtime without a
