@@ -164,7 +164,6 @@ def _lookup(
     """The (key, display) rows whose display holds the words, and whether the read was whole
     (it came back short of its limit); None when it failed."""
 
-    pinned = visible_view.pinned()
     payload: dict[str, Any] = {
         "version": 1,
         "select": [],
@@ -178,10 +177,13 @@ def _lookup(
             {"field": key_dimension, "direction": "ASC"},
         ],
         "limit": _LOOKUP_ROWS,
-        **({"policy_context": dict(pinned.policy_context)} if pinned is not None else {}),
     }
     try:
-        rows = runtime.query(payload)["rows"]
+        # The caller plan answers; without one, no row filter could apply, so nothing is read.
+        pinned = visible_view.pinned_view(runtime)
+        if pinned is None:
+            return None
+        rows = runtime.query({**payload, "policy_context": dict(pinned.policy_context)})["rows"]
     except Exception:  # noqa: BLE001 — a lookup that fails (no adapter, a denial) is the hold
         return None
     found = [

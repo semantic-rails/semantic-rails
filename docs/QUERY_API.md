@@ -1007,6 +1007,12 @@ source diagnostics. If all available candidates are denied, it keeps the
 refuses with `NO_VALID_VALUES_SOURCE`. Row filters still constrain the returned
 values and counts.
 
+`search` keeps the values that contain its words in order, in any case ("acme data" finds
+"Acme Data Co"). On a live lookup of a text dimension it runs in the warehouse, as an `ILIKE`
+filter that `query_state.where` shows, so a match past the first rows is found; `plan` looks
+names up the same way. A declared domain, or a live lookup of another type, filters the values
+it read.
+
 ### `POST /api/v1/plan`
 
 Request:

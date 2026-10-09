@@ -48,8 +48,9 @@ INSERT INTO account_day SELECT a.account_id, d::DATE,
 """
 # The caller sees only Globex: a partner reading its own account.
 PARTNER = {
-    **RequestContext(actor="end-user", audience="partner", attributes={"account": "Globex"})
-    .to_policy_context(),
+    **RequestContext(
+        actor="end-user", audience="partner", attributes={"account": "Globex"}
+    ).to_policy_context(),
     **NOW,
 }
 
@@ -391,13 +392,20 @@ def test_a_row_filter_hides_the_name_and_plan_never_shows_it(
     hidden = _plan(runtime, question.format("Acme"), PARTNER)
     _held_on(hidden, ["acme"])
     assert "Acme Data Co" not in json.dumps(hidden)
-    # A caller the filter doesn't apply to finds it; the partner finds its own account.
-    for name, context, expected in [("Acme", NOW, ("Acme Data Co", 7)), ("Globex", PARTNER, None)]:
+    # A caller the filter doesn't apply to finds Acme; the partner finds its own account.
+    for name, context, expected in [
+        ("Acme", NOW, [("Acme Data Co", 7)]),
+        ("Globex", PARTNER, [("Globex", 2)]),
+    ]:
         payload = _plan(runtime, question.format(name), context)
         assert payload["status"] == "ok", payload.get("why")
         rows = runtime.query({**payload["best"]["query_ir"], "policy_context": context})["rows"]
-        sql = f"SELECT name, SUM(seats) FROM accounts WHERE name = '{expected[0] if expected else name}' GROUP BY name"
-        assert [(row[ACCOUNT_NAME], row["seats"]) for row in rows] == _reference(runtime, sql)
+        sql = (
+            "SELECT name, SUM(seats) FROM accounts "
+            f"WHERE segment = 'customer' AND name LIKE '{name}%' GROUP BY name"
+        )
+        actual = [(row[ACCOUNT_NAME], row["seats"]) for row in rows]
+        assert actual == _reference(runtime, sql) == expected
 
 
 def test_a_failed_lookup_is_held(
@@ -412,7 +420,47 @@ def test_a_failed_lookup_is_held(
     _held_on(_plan(runtime, "How many new accounts did Acme have last month?"), ["acme"])
 
 
-def test_a_callers_draft_with_the_row_is_not_a_lookup(subscriptions: Callable[..., Runtime]) -> None:
+@pytest.mark.parametrize(
+    ("question", "detail", "reads"),
+    [
+        ("How many new accounts did Acme have last month?", "best", 1),
+        ("How many new accounts did Acme have last month?", "full", 1),
+        ("How many new accounts did Zenith have last month?", "best", 1),
+        ("How many new accounts last month?", "best", 0),
+        # A word the catalog declares as a value (segment "internal") is no lookup.
+        ("How many new accounts did Internal accounts have last month?", "best", 0),
+    ],
+)
+def test_plan_reads_each_name_once_and_never_an_answer(
+    subscriptions: Callable[..., Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    detail: str,
+    reads: int,
+) -> None:
+    runtime = subscriptions()
+    calls: list[dict[str, Any]] = []
+    query = runtime.query
+
+    def recorded(payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(payload)
+        return query(payload)
+
+    monkeypatch.setattr(runtime, "query", recorded)
+    plan_payload(runtime, intent=question, partial_query={"policy_context": NOW}, detail=detail)
+    assert len(calls) == reads
+    for payload in calls:
+        assert payload["select"] == []
+        assert payload["group_by"] == [ACCOUNT_NAME, ACCOUNT_ID]
+        assert payload["limit"] == 6
+        assert payload["policy_context"] == NOW
+        [condition] = payload["where"]
+        assert condition["field"] == ACCOUNT_NAME and condition["op"] == "ILIKE"
+
+
+def test_a_callers_draft_with_the_row_is_not_a_lookup(
+    subscriptions: Callable[..., Runtime],
+) -> None:
     # The draft the lookup would make, sent by the caller: readiness credits a name only for
     # a row plan found itself, so "Acme" is still held.
     runtime = subscriptions()

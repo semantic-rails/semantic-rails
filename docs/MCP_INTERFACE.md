@@ -631,8 +631,26 @@ or ask the user what the words mean. No hint offers to ask again without a word 
 another one, except the "s" ending a contraction or possessive that plan reads as an unknown
 word ("What's revenue last month?"): every check reads that retry again. No other ending is
 offered: without its "t", "can't" says the opposite. A single unknown
-value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan never guesses its dimension or queries
-the warehouse to resolve it. Other unmatched words stay warnings; check them before executing.
+value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan
+never guesses its dimension. The one exception is a name: capitalized or quoted words, held as
+unknown this way, that may name a row of an entity with a text `display` dimension
+([PACKAGE_AUTHORING](PACKAGE_AUTHORING.md#display--the-name-of-one-row)). Plan looks each such
+name up once, in the display of every entity the draft's measure reaches: one query per name and
+entity, run through `execute`'s own path under the caller's `policy_context` (so row filters and
+policies apply), reading at most 6 rows whose display contains the name's words (`ILIKE`). It is
+the only warehouse read `plan` makes, and it never runs an answer. A row whose display holds the
+name as whole words, in any case, is a match ("Acme" finds "Acme Data Co"):
+- one match, on a read of fewer than 6 rows: the draft filters on the row's key (`=`) and groups
+  by its display, so the answer names it; the words are consumed, and an assumption line says
+  "'Acme' is read as Account 'Acme Data Co'.";
+- several: `status="needs_clarification"`, `next.action="clarify"`, with a `name_ambiguous` gap
+  whose `expected.matches` lists each row's `entity`, `display`, `key`, its `where` filter and
+  its `group_by` display (`complete: false` when the read was full), and
+  `why.details.clarification.question` asking which one;
+- none, a full read with one match, a failed lookup, or names giving two rows of one entity
+  ("Acme and Globex"): the hold above. A caller's `partial_query` with a `where` or `group_by`
+  turns the lookup off.
+Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
 threshold. Every measure a

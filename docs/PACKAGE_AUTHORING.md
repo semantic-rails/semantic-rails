@@ -1119,7 +1119,8 @@ warning naming the hop (`details`: `use`, `dimension`, `entity` (the versioned e
 - **Filtered by it** (`use: filter`): for known NULL-excluding forms, every stage says
   "Plan filter: rows with no Billing version valid at their time are left out by this filter."
   These are `IS NOT NULL`, `IN` / `NOT IN`, inequality to NULL, and ordinary comparisons or
-  `LIKE` / `NOT LIKE` with a non-NULL value. Operator case and spacing follow SQL lowering.
+  `LIKE` / `NOT LIKE` / `ILIKE` / `NOT ILIKE` with a non-NULL value. Operator case and spacing
+  follow SQL lowering.
   `IS NULL`, `=` / `IS` with NULL, null-safe comparisons and boolean `IS` / `IS NOT` carry no
   such warning. Multiple excluding filters on the same dimension produce one filter warning.
 
@@ -1139,6 +1140,15 @@ so names that repeat stay separate rows. Without `display:`, it uses the entity'
 whose own name names it ("Store name" for "store"), if exactly one does; otherwise the key
 alone, with an assumption line saying so. A caller who can't see the display dimension gets
 the same answer as a package without `display:`; the entity itself stays visible.
+
+A text `display:` dimension also makes the entity's rows findable by name. When a question
+names a row with capitalized or quoted words that match nothing in the catalog ("How many
+orders did Acme place last month?", "What's Globex's MRR?"), `plan` looks the words up in the
+display of each entity the question's measure reaches, under the caller's row filters. One
+row whose display holds the words, as whole words in any case ("Acme" finds "Acme Data Co",
+not "Acmeco"), is answered: the draft filters on that row's key and groups by its display, so
+the answer names it. Several rows ask which one; none leaves the question held. Declare a
+`domain:` instead for a short fixed list of values, which needs no lookup.
 
 ### `disallowed_names:` — explicit anti-pattern guard
 
