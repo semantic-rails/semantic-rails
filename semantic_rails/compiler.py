@@ -1692,7 +1692,7 @@ def _unsupported_conversion(expr: ConversionExpr) -> SemanticLayerError:
 _NUMERIC_DATA_TYPES = {"integer", "number"}
 
 
-def _validate_where_value_type(dim, item) -> None:
+def _validate_where_value_type(dim, item, path: str = "where") -> None:
     """Catch common where-value type mismatches before warehouse execution.
 
     Skip dimensions without a classified catalog data type.
@@ -1705,8 +1705,9 @@ def _validate_where_value_type(dim, item) -> None:
     ):
         raise SemanticLayerError(
             "INVALID_QUERY",
-            f"where filter on boolean dimension {dim.id!r} compares with is or not",
+            f"{path}.op: a boolean dimension compares with is or not",
             details={
+                "path": f"{path}.op",
                 "dimension": dim.id,
                 "op": item.op,
                 "recovery_hints": [
@@ -3020,7 +3021,7 @@ def _mixed_grain_error(
 
 
 def _checked_where_dimension(
-    item: Filter, dimensions: dict[str, Any], measures: dict[str, Any]
+    item: Filter, dimensions: dict[str, Any], measures: dict[str, Any], path: str = "where"
 ) -> Any:
     """The dimension a where filter compares, once its value suits it."""
     if item.field not in dimensions:
@@ -3031,11 +3032,10 @@ def _checked_where_dimension(
                 details={
                     "dimension": item.field,
                     "measure": item.field,
-                    "path": "where[].field",
+                    "path": "where.field",
                     "why_invalid": (
-                        "where filters compare row-level dimensions to literal values. "
-                        "Measures require metric_filters, a governed segment, or an "
-                        "authored dimension value that represents the cohort."
+                        "where filters compare row-level dimensions to literal values; filter "
+                        "entities by a measure with an entity filter, or results with having."
                     ),
                     "recovery_hints": [
                         {
@@ -3054,7 +3054,7 @@ def _checked_where_dimension(
             f"Unknown dimension '{item.field}'",
             details={"dimension": item.field},
         )
-    _validate_where_value_type(dimensions[item.field], item)
+    _validate_where_value_type(dimensions[item.field], item, path)
     return dimensions[item.field]
 
 
@@ -3082,19 +3082,21 @@ def _root_path_summary(
                 details={"dimension": dim_id},
             )
         targets[dimensions[dim_id].entity] = "group_by"
-    for item in query.where:
+    for index, item in enumerate(query.where):
         if isinstance(item, ChildGroup):
             if item.child not in _entity_index(config):
                 raise SemanticLayerError(
                     "OBJECT_NOT_FOUND",
                     f"Unknown entity '{item.child}'",
-                    details={"entity": item.child, "path": "where[].child"},
+                    details={"entity": item.child, "path": f"where[{index}].entity"},
                 )
-            for condition in item.where:
-                _checked_where_dimension(condition, dimensions, measures)
+            for position, condition in enumerate(item.where):
+                at = f"where[{index}].{item.match}[{position}]"
+                _checked_where_dimension(condition, dimensions, measures, at)
             targets[item.child] = "child_group"
             continue
-        targets[_checked_where_dimension(item, dimensions, measures).entity] = "where"
+        dim = _checked_where_dimension(item, dimensions, measures, f"where[{index}]")
+        targets[dim.entity] = "where"
     for target_entity, purpose in sorted(targets.items()):
         if target_entity == root_entity:
             continue
@@ -3196,8 +3198,9 @@ def _query_target_entities(query: NormalizedQuery, config: PackageConfig) -> dic
                 details={"dimension": dim_id},
             )
         targets.setdefault(dimensions[dim_id].entity, "group_by")
-    for item in refuse_child_groups(query.where, "in a query without a measure"):
-        dim = _checked_where_dimension(item, dimensions, _measure_index(config))
+    rows = refuse_child_groups(query.where, "in a query without a measure")
+    for index, item in enumerate(rows):
+        dim = _checked_where_dimension(item, dimensions, _measure_index(config), f"where[{index}]")
         targets.setdefault(dim.entity, "where")
     if query.time is not None:
         role = temporal_roles.get(query.time.temporal_role)

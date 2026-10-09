@@ -51,8 +51,8 @@ def test_probe_diagnostics_do_not_change_shared_debug_authority(
         assert os.environ.get(setting_name) == debug_setting
         raise SemanticLayerError("QUERY_EXECUTION_ERROR", "Redacted failure")
 
-    monkeypatch.setattr(runtime, "query", fail)
-    monkeypatch.setattr(runtime, "compile", lambda payload: {"rendered_sql": "SELECT 1"})
+    monkeypatch.setattr(runtime, "query_internal", fail)
+    monkeypatch.setattr(runtime, "compile_internal", lambda payload: {"rendered_sql": "SELECT 1"})
     result = _run_probe(
         runtime, kind="measure", object_id="measure.example", query=query, repair=True
     )
@@ -260,7 +260,7 @@ def test_runtime_validation_probes_constrained_objects(tmp_path, target, constra
         try:
             actual = [
                 # Probes use LIMIT 0; read the fixture rows for the reference comparison.
-                typed_rows(runtime.query({**probe["query"], "limit": 10}))
+                typed_rows(runtime.query_internal({**probe["query"], "limit": 10}))
                 for probe in report["runtime"]["probes"]
                 if probe["object_id"] in affected
             ]
@@ -411,9 +411,8 @@ def test_constrained_probe_preserves_denials_and_policy_scope(tmp_path, constrai
     else:
         policy["roles"] = ["analyst"]
     _write_yaml(package_dir / "policies.yml", {"semantic_policies": policies})
-    query = {
-        "select": [{"expression": "measure.demo.order_count", "as": "orders"}],
-    }
+    # A probe runs the compiler's own form of the query.
+    query = {"select": [{"expression": {"measure": "measure.demo.order_count"}, "as": "orders"}]}
     if denial == "grouping" and constraint == "required_where":
         query["group_by"] = [field]
     runtime = Runtime.from_path(str(package_dir))
@@ -708,10 +707,10 @@ def test_runtime_from_path_prefers_package_relative_assets_for_external_packages
         result = runtime.query(
             {
                 "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-                "limit": 0,
+                "limit": 1,
             }
         )
-        assert result["row_count"] == 0
+        assert result["row_count"] == 1
         assert runtime.db_path == str(package_dir / "data" / "jaffle_shop.duckdb")
         assert Path(runtime.db_path).exists()
     finally:

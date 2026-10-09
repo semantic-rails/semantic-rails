@@ -39,7 +39,9 @@ def test_unsupported_aggregation_hint_uses_measure_allowlist(package_config_fact
         config.measures[0], allowed_aggregations=["sum", "avg"], default_aggregation="count"
     )
     config = replace(config, measures=[measure])
-    query = normalize_query({"select": [{"expression": measure.id, "as": "value"}]})
+    query = normalize_query(
+        {"select": [{"expression": {"kind": "measure", "measure": measure.id}, "as": "value"}]}
+    )
     with pytest.raises(SemanticLayerError) as raised:
         _bind_measure(MeasureRefExpr(measure=measure.id, aggregation=aggregation), config, query)
 
@@ -63,8 +65,10 @@ def test_unknown_aggregation_hint_does_not_invent_allowed_values():
 def test_filter_operator_guidance_keeps_other_expression_positions_unchanged(path):
     with pytest.raises(SemanticLayerError) as raised:
         build_filter_condition(SqlLiteral(1), "is_null", None, path=path)
-    assert raised.value.code == "INVALID_EXPRESSION_AST"
-    assert raised.value.details["token_kind"] == "operator"
+    assert raised.value.code == "INVALID_QUERY"
+    assert raised.value.details["path"] == f"{path}.op"
+    [hint] = raised.value.details["recovery_hints"]
+    assert hint["message"] == 'Write {"op": "missing", "value": true}.'
     assert "expression_position" not in raised.value.details
 
 
@@ -75,7 +79,7 @@ def test_unsupported_aggregation_hint_names_the_actual_default(package_config_fa
         config.measures[0], allowed_aggregations=["sum", "avg", "max"], default_aggregation=default
     )
     config = replace(config, measures=[measure])
-    query = normalize_query({"select": [measure.id]})
+    query = normalize_query({"select": [{"expression": {"measure": measure.id}}]})
     with pytest.raises(SemanticLayerError) as raised:
         _bind_measure(MeasureRefExpr(measure=measure.id, aggregation="count"), config, query)
     hint = exception_issue(raised.value, stage="bind")["recovery_hints"][0]
