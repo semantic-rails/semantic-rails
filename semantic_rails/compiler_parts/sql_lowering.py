@@ -5045,13 +5045,13 @@ def _row_markers(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> li
 
     The guard reads 0 only where that count is 0 (see ``empty_groups``); counts need none. A
     leaf lowered outside ``naming_row_counts`` counts nothing, and the guard refuses its sum.
-    A measure the call re-aggregates counts its rows too, for the answer to state.
+    A measure the call re-aggregates counts its source rows too, for the answer to state; a
+    rollup holds no source rows to count.
     """
     bound = measure_plan.bound_measure
     name = (_row_count_columns.get() or {}).get(bound.alias)
-    if name is None or not (
-        counts_rows(bound.aggregation, measure) or bound.alias in _counted_overrides.get()
-    ):
+    stated = bound.alias in _counted_overrides.get() and not measure_plan.aggregate_relation_id
+    if name is None or not (counts_rows(bound.aggregation, measure) or stated):
         return []
     return [(_row_marker(value_expr), name)]
 

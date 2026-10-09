@@ -1847,9 +1847,11 @@ SELECT
 FROM guarded_base AS base
 ORDER BY
   period ASC""",
+    # A median overrides the revenue sum, so the answer counts the rows it read.
     "median": """WITH leaf_1 AS (
 SELECT
-  {median} AS m1
+  {median} AS m1,
+  COUNT(1) AS m1_rows
 FROM orders
 WHERE
   EXISTS (
@@ -1862,7 +1864,8 @@ WHERE
 )
 )
 SELECT
-  base.m1 AS median_revenue
+  base.m1 AS median_revenue,
+  base.m1_rows AS m1_rows
 FROM leaf_1 AS base""",
 }
 
@@ -1927,7 +1930,8 @@ ORDER BY
     "median": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
-  orders.total AS __entity_value
+  orders.total AS __entity_value,
+  1 AS __entity_rows
 FROM orders
 INNER JOIN order_items ON orders.order_id = order_items.order_id
 WHERE
@@ -1935,11 +1939,13 @@ WHERE
 ),
 leaf_1 AS (
 SELECT
-  {median} AS m1
+  {median} AS m1,
+  COUNT(leaf_1__leaf_1_entity_rows.__entity_rows) AS m1_rows
 FROM leaf_1__leaf_1_entity_rows
 )
 SELECT
-  base.m1 AS median_revenue
+  base.m1 AS median_revenue,
+  base.m1_rows AS m1_rows
 FROM leaf_1 AS base""",
 }
 

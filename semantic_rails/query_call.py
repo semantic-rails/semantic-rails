@@ -593,12 +593,16 @@ def _check_share(raw: Mapping[str, Any], path: str, context: CallContext) -> Non
             )
 
 
+_TIME_ORDERED = frozenset({"first_value", "last_value"})
+
+
 def _check_aggregation(node: dict[str, Any], path: str, context: CallContext) -> None:
     """An ``aggregation`` override names one of the measure's allowed aggregations."""
     measures = context.config.measures if context.config is not None else []
     measure = next((row for row in measures if row.id == node["measure"]), None)
-    aggregation = node["aggregation"]
-    if measure is None or aggregation in measure.allowed_aggregations:
+    aggregation = str(node["aggregation"]).strip()
+    # A time-ordered statistic is allowed by a clock: the engine's clock rule says so.
+    if measure is None or aggregation in {*measure.allowed_aggregations, *_TIME_ORDERED}:
         return
     allowed = list(measure.allowed_aggregations)
     raise refusal(

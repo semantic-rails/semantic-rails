@@ -2828,6 +2828,9 @@ class Runtime:
         binding: BoundQuery | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
+        if binding is not None:
+            # After the policy gate, so a policy that refuses the call outright speaks first.
+            refuse_hidden_governors(self._config, binding.plan.query)
         normalized = (
             binding.plan.query
             if binding is not None
@@ -2954,7 +2957,13 @@ class Runtime:
             payload = self.engine_payload(query, now=now, context=context, **options)
         except SemanticLayerError as exc:
             issue = exception_issue(exc, stage="validate")
-            return {"ok": False, "status": "error", "errors": [issue], "warnings": []}
+            return {
+                "ok": False,
+                "status": "error",
+                "errors": [issue],
+                "warnings": [],
+                "recovery_hints": list(issue.get("recovery_hints") or []),
+            }
         result = self.validate_internal(payload)
         for error in result.get("errors") or []:
             if error.get("code") == "AMBIGUOUS_PATH":
@@ -3448,7 +3457,6 @@ class Runtime:
             )
 
         binding = bind(payload)
-        refuse_hidden_governors(self._config, binding.plan.query)
         # A rank by a withheld value breaks its ties by the group keys, in the same direction.
         return withheld_rank_order(
             self.package_config,

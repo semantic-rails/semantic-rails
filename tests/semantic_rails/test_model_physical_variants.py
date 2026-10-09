@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pytest
@@ -15,6 +16,7 @@ from semantic_rails.config import _merge_package_dir, load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts.assumptions import hidden_columns
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -1124,6 +1126,15 @@ def test_foreign_key_rollup_checks_its_declared_path(tmp_path: Path, fanout_path
     assert report["selected"] == ([] if fanout_path else [relation_id])
 
 
+def _public_rows(connection: Any, compiled: dict) -> list[tuple]:
+    """The answer's columns: a re-aggregated measure's source-row count is the runtime's own,
+    and a rollup holds no source rows to count."""
+    cursor = connection.execute(compiled["sql"])
+    hidden = set(hidden_columns(compiled))
+    keep = [index for index, column in enumerate(cursor.description) if column[0] not in hidden]
+    return [tuple(row[index] for index in keep) for row in cursor.fetchall()]
+
+
 def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
     """Check that the package without its rollups, with them, and with routing off all return
     the same rows; return the routing report with them."""
@@ -1136,10 +1147,7 @@ def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
         compiled[name] = compile_query(config, Registry(config), query)
     with aggregate_routing(False):
         compiled["off"] = compile_query(config, Registry(config), query)
-    rows = {
-        name: sorted(connection.execute(c["sql"]).fetchall(), key=str)
-        for name, c in compiled.items()
-    }
+    rows = {name: sorted(_public_rows(connection, c), key=str) for name, c in compiled.items()}
 
     assert rows["rollup"] == rows["off"]
     # A dimension a rollup holds from another model keeps its inner join in this package (see

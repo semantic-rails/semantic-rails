@@ -100,12 +100,19 @@ def _nodes(node: Any) -> Iterable[dict[str, Any]]:
 def refuse_hidden_governors(config: PackageConfig, query: dict[str, Any]) -> None:
     """A raw measure governed by a metric the caller can't see is never answered as a number;
     the refusal names neither the metric nor what it filters."""
-    for measure, _, hidden in _governors(config, query.get("select")):
+    select = list(query.get("select") or [])
+    for measure, _, hidden in _governors(config, select):
         if hidden:
+            index = next(
+                index
+                for index, row in enumerate(select)
+                if any(node["measure"] == measure for node in select_measure_reads([row]))
+            )
             raise SemanticLayerError(
                 "POLICY_DENIED",
-                f"'{measure}' can't be answered as a raw number for you.",
+                f"select[{index}]: '{measure}' can't be answered as a raw number for you.",
                 details={
+                    "path": f"select[{index}]",
                     "measure": measure,
                     "recovery_hints": [
                         {
