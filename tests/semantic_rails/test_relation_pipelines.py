@@ -280,7 +280,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                     "valid_from": {
                         "label": "Valid from",
                         "kind": "date",
-                        "class": "snapshot_time",
+                        "class": "state_time",
                         "default": True,
                     }
                 },
@@ -307,7 +307,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                     "date_day": {
                         "label": "Date day",
                         "kind": "date",
-                        "class": "snapshot_time",
+                        "class": "state_time",
                         "default": True,
                     }
                 },
@@ -331,7 +331,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                     "next_valid_from": {
                         "label": "Next valid from",
                         "kind": "date",
-                        "class": "snapshot_time",
+                        "class": "state_time",
                         "default": True,
                     }
                 },

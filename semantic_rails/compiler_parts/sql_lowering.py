@@ -65,7 +65,7 @@ from ..ir import (
     PhysicalPlan,
     PhysicalPlanNode,
 )
-from ..schema import AggregateRelationConfig, DimensionConfig, PackageConfig
+from ..schema import AggregateRelationConfig, PackageConfig
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
@@ -177,7 +177,11 @@ from .predicate import (
     _predicate_time_spec,
     _scoped_predicate_expr_payload,
 )
-from .temporal import _fractional_second, _time_bound_relationship_ids
+from .temporal import (
+    _fractional_second,
+    _time_bound_relationship_ids,
+    refuse_authored_calendar,
+)
 
 
 def _dialect(config: PackageConfig):
@@ -589,7 +593,6 @@ def _record_time_scope(
     *,
     raw_time: Any,
     bucket: Any,
-    calendar: SqlJoin | None,
     local: bool,
 ) -> None:
     if not plan.time or leaf.ctes:
@@ -628,13 +631,12 @@ def _record_time_scope(
             alias,
             LeafScope(
                 from_table=leaf.from_table,
-                joins=tuple(j for j in leaf.joins if j is not calendar),
+                joins=tuple(leaf.joins),
                 where=tuple(untimed),
                 value=value,
                 bucket=coverage_bucket if local else None,
                 raw_time=raw_time,
                 storage_zone=role.column_timezone or role.timezone or "UTC",
-                calendar=calendar,
                 now=dialect.now("UTC"),
                 bounded=bool(plan.time.get("start") or plan.time.get("end")),
             ),
@@ -2546,7 +2548,6 @@ def _fanout_filter_leaf_select(
     where: list[Any],
     child_where: list[Any],
     value_expr: Any,
-    calendar_join: SqlJoin | None,
 ) -> SqlSelect:
     """Filter the measure's rows with correlated EXISTS, never join copies into its sum.
 
@@ -2593,7 +2594,7 @@ def _fanout_filter_leaf_select(
             *_rows_fields(measure_plan, measure, value_expr),
         ],
         from_table=SqlTableRef(name=_measure_owned_relation(measure, _entity_index(config))),
-        joins=[*joins, *([calendar_join] if calendar_join is not None else [])],
+        joins=joins,
         where=[*where, *conditions],
         group_by=[field.expression for field in key_fields],
     )
@@ -3014,7 +3015,6 @@ def _measure_leaf_select(
         ) or _resolve_dimension_expr(dim_id, config)
         select_fields.append(SqlField(expr, alias))
         group_fields.append(expr)
-    leaf_calendar_join: SqlJoin | None = None
     if plan.time:
         time = dict(plan.time)
         role = temporal_roles[leaf_time_role]
@@ -3033,13 +3033,7 @@ def _measure_leaf_select(
         )
         coverage_time = raw_expr
         raw_expr = _apply_role_timezone(raw_expr, role, config)
-        cal_binding = _leaf_calendar_binding(plan, config)
-        if cal_binding is not None and time.get("grain"):
-            cal_table, cal_grain_column, cal_join_column = cal_binding
-            time_expr = _column_ref(cal_table, cal_grain_column)
-            leaf_calendar_join = _calendar_join_for_leaf(raw_expr, cal_table, cal_join_column)
-        else:
-            time_expr = _time_bucket_expr(time, raw_expr, config)
+        time_expr = _time_bucket_expr(time, raw_expr, config)
         time_alias = (
             time["temporal_role"]
             if not time.get("grain")
@@ -3141,7 +3135,6 @@ def _measure_leaf_select(
                     time_spec=plan.time,
                 ),
                 *predicate_joins,
-                *([leaf_calendar_join] if leaf_calendar_join is not None else []),
             ],
             where=where_clauses,
             ctes=predicate_ctes,
@@ -3157,7 +3150,6 @@ def _measure_leaf_select(
             where=where_clauses,
             child_where=child_where,
             value_expr=leaf_value_expr,
-            calendar_join=leaf_calendar_join,
         )
     if measure_plan.rewrite_strategy == "fanout_dedup":
         where_clauses += _distinct_parent_group_conditions(plan, measure_plan, config, measure)
@@ -3172,7 +3164,7 @@ def _measure_leaf_select(
             measure_plan,
             config,
             key_fields=select_fields,
-            joins=[*joins, *([leaf_calendar_join] if leaf_calendar_join is not None else [])],
+            joins=joins,
             where=where_clauses,
             value_expr=leaf_value_expr,
         )
@@ -3202,8 +3194,6 @@ def _measure_leaf_select(
         ),
         *predicate_joins,
     ]
-    if leaf_calendar_join is not None:
-        joins.append(leaf_calendar_join)
     if measure.measure_class == "semi_additive":
         if order_expr is None:
             raise SemanticLayerError(
@@ -3306,7 +3296,6 @@ def _measure_leaf_select(
             untimed,
             raw_time=coverage_time,
             bucket=time_expr,
-            calendar=leaf_calendar_join,
             local=time_source_local,
         )
     return leaf
@@ -3893,24 +3882,15 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
         select_fields.append(SqlField(expr, alias))
         group_fields.append(expr)
 
-    leaf_calendar_join: SqlJoin | None = None
     if plan.time:
         time = dict(plan.time)
         role = temporal_roles[str(time["temporal_role"])]
         dim = dimensions[role.dimension]
         raw_expr = _column_ref(entities[dim.entity].table, dim.column)
         raw_expr = _apply_role_timezone(raw_expr, role, config)
-        cal_binding = _leaf_calendar_binding(plan, config)
-        if cal_binding is not None and time.get("grain"):
-            cal_table, cal_grain_column, cal_join_column = cal_binding
-            time_expr = _column_ref(cal_table, cal_grain_column)
-            leaf_calendar_join = _calendar_join_for_leaf(raw_expr, cal_table, cal_join_column)
-        else:
-            time_expr = (
-                _dialect(config).date_trunc(time["grain"], raw_expr)
-                if time.get("grain")
-                else raw_expr
-            )
+        time_expr = (
+            _dialect(config).date_trunc(time["grain"], raw_expr) if time.get("grain") else raw_expr
+        )
         time_alias = (
             time["temporal_role"]
             if not time.get("grain")
@@ -3941,8 +3921,6 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
             time_spec=plan.time,
         )
     )
-    if leaf_calendar_join is not None:
-        joins.append(leaf_calendar_join)
     return SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=entities[plan.root_entity].table),
@@ -5119,7 +5097,6 @@ def _measure_group_leaf_select(
 
     select_fields: list[SqlField] = []
     group_fields: list[Any] = []
-    leaf_calendar_join: SqlJoin | None = None
     for dim_id in plan.group_by:
         expr, alias = _direct_dimension_source_expr(
             first_measure.entity, dim_id, config
@@ -5139,13 +5116,7 @@ def _measure_group_leaf_select(
         )
         coverage_time = raw_expr
         raw_expr = _apply_role_timezone(raw_expr, role, config)
-        cal_binding = _leaf_calendar_binding(plan, config)
-        if cal_binding is not None and time.get("grain"):
-            cal_table, cal_grain_column, cal_join_column = cal_binding
-            time_expr = _column_ref(cal_table, cal_grain_column)
-            leaf_calendar_join = _calendar_join_for_leaf(raw_expr, cal_table, cal_join_column)
-        else:
-            time_expr = _time_bucket_expr(time, raw_expr, config)
+        time_expr = _time_bucket_expr(time, raw_expr, config)
         time_alias = (
             time["temporal_role"]
             if not time.get("grain")
@@ -5209,8 +5180,6 @@ def _measure_group_leaf_select(
             time_spec=plan.time,
         )
     )
-    if leaf_calendar_join is not None:
-        joins.append(leaf_calendar_join)
     leaf = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=_measure_owned_relation(first_measure, entities)),
@@ -5227,7 +5196,6 @@ def _measure_group_leaf_select(
             untimed,
             raw_time=coverage_time,
             bucket=time_expr,
-            calendar=leaf_calendar_join,
             local=time_source_local,
         )
     return leaf
@@ -5279,168 +5247,28 @@ def _metric_filters_require_dense_series(plan: LogicalPlan, config: PackageConfi
     return False
 
 
-def _calendar_join_for_leaf(
-    raw_role_expr: Any,
-    calendar_table: str,
-    calendar_join_column: str,
-) -> SqlJoin:
-    """Build the LEFT JOIN that aligns a Gregorian-frame role timestamp
-    with a non-default calendar's date_day. The cast to DATE is required
-    because role columns may be timestamp/datetime while calendar tables
-    key on DATE.
-    """
-    return SqlJoin(
-        join_type="LEFT",
-        table=SqlTableRef(name=calendar_table),
-        on=SqlBinary(
-            SqlIdentifier(parts=[calendar_table, calendar_join_column]),
-            "=",
-            SqlCast(expr=raw_role_expr, type_name="DATE"),
-        ),
-    )
-
-
-def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[str, str, str] | None:
-    """When the query requests a non-default calendar (e.g. fiscal) on a
-    role whose underlying entity is bound to a different calendar, the
-    leaf SQL must bucket by the calendar's grain column — NOT by
-    DATE_TRUNC of the role's source column.
-
-    The validate-time `_validate_calendar_id` check already rejects this
-    shape unless `time.fill: true` is set, which routes through the
-    calendar entity. This helper returns the calendar table, the grain
-    column to GROUP BY, and the calendar's date_day column to JOIN on.
-    Returns None when no rewrite is needed (default calendar, or the
-    role is itself bound to the requested calendar).
-
-    Without this binding, the leaf groups by Gregorian DATE_TRUNC while
-    the dense_time scaffold returns fiscal grain anchors — the equality
-    join misses every bucket and every value reads empty, producing a
-    canonical fiscal-quarterly query whose every value is silently NULL.
-    """
-    if plan.time is None:
-        return None
-    requested_calendar = str(plan.time.get("calendar_id", "default") or "default").strip().lower()
-    if requested_calendar in {"", "default"}:
-        return None
-    grain = str(plan.time.get("grain", "") or "").lower()
-    column_by_grain = {
-        "day": "date_day",
-        "week": "week_start",
-        "month": "month_start",
-        "quarter": "quarter_start",
-        "year": "year_start",
-    }
-    if grain not in column_by_grain:
-        return None
-    # Only rewrite when the role's underlying entity is on a different
-    # calendar — otherwise the source column is already in the requested
-    # calendar's frame and DATE_TRUNC is correct.
-    temporal_roles = _temporal_role_index(config)
-    role = temporal_roles.get(str(plan.time.get("temporal_role") or ""))
-    if role is None:
-        return None
-    dim = _dimension_index(config).get(role.dimension)
-    if dim is None:
-        return None
-    role_entity = next((row for row in config.entities if row.id == dim.entity), None)
-    role_calendar = (role_entity.calendar_id if role_entity else "").strip().lower() or "default"
-    if role_calendar == requested_calendar:
-        return None
-    # Find the calendar entity bound to the requested calendar.
-    calendar_candidates = [row for row in config.entities if row.kind == "time"]
-    calendar_entity = next(
-        (
-            row
-            for row in calendar_candidates
-            if (row.calendar_id or "default").strip().lower() == requested_calendar
-        ),
-        None,
-    )
-    if calendar_entity is None:
-        return None
-    grain_column = column_by_grain[grain]
-    grain_dim = next(
-        (
-            row
-            for row in config.dimensions
-            if row.entity == calendar_entity.id and row.column == grain_column
-        ),
-        None,
-    )
-    if grain_dim is None:
-        return None
-    _entity_index(config).get(calendar_entity.id)
-    _dimension_index(config).get(grain_dim.id)
-    return calendar_entity.table, grain_dim.column, "date_day"
-
-
 def _calendar_fill_binding(
     plan: LogicalPlan, config: PackageConfig, *, force: bool = False
 ) -> tuple[str, str, str | None] | None:
+    """A filled series hangs off the implicit Gregorian calendar, bucketed like the leaf.
+
+    No authored calendar table takes part: its period columns and ``date_day`` are
+    never read for bucketing (validation refuses every non-default calendar).
+    """
     if not plan.time or (not plan.time.get("fill") and not force):
         return None
     grain = str(plan.time.get("grain", "") or "").lower()
     if not grain:
         raise SemanticLayerError("INVALID_QUERY", "time.fill requires query.time.grain")
-
-    column_by_grain = {
-        "day": "date_day",
-        "week": "week_start",
-        "month": "month_start",
-        "quarter": "quarter_start",
-        "year": "year_start",
-    }
-    if grain not in column_by_grain:
+    if grain not in {"day", "week", "month", "quarter", "year"}:
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED", f"time.fill does not support grain '{grain}'"
         )
-
-    requested_calendar = _normalized_calendar_id(plan.time.get("calendar_id"))
-    calendar_entity = next(
-        (
-            row
-            for row in config.entities
-            if row.kind == "time" and _normalized_calendar_id(row.calendar_id) == requested_calendar
-        ),
-        None,
-    )
-    if calendar_entity is None:
-        if requested_calendar != "default":
-            raise SemanticLayerError(
-                "REWRITE_NOT_SUPPORTED",
-                f"Calendar '{requested_calendar}' is not available in the package",
-                details={"calendar_id": requested_calendar},
-            )
-        # No authored default calendar: the implicit Gregorian one, never another
-        # calendar's grains (a fiscal quarter_start misses every Gregorian bucket).
-        bounded = plan.time.get("start") is not None and plan.time.get("end") is not None
-        return _IMPLICIT_CALENDAR, "bucket", "date_day" if bounded else None
-
-    calendar_column = column_by_grain[grain]
-    dimension = next(
-        (
-            row
-            for row in config.dimensions
-            if row.entity == calendar_entity.id and row.column == calendar_column
-        ),
-        None,
-    )
-    if dimension is None:
-        raise SemanticLayerError(
-            "REWRITE_NOT_SUPPORTED",
-            f"time.fill requires calendar dimension '{calendar_column}' on '{calendar_entity.id}'",
-        )
-    _entity_index(config).get(calendar_entity.id)
-    _dimension_index(config).get(dimension.id)
-    return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)
+    bounded = plan.time.get("start") is not None and plan.time.get("end") is not None
+    return _IMPLICIT_CALENDAR, "bucket", "date_day" if bounded else None
 
 
 _IMPLICIT_CALENDAR = "implicit_calendar"
-
-
-def _normalized_calendar_id(value: Any) -> str:
-    return str(value or "").strip().lower() or "default"
 
 
 def _implicit_calendar_ctes(plan: LogicalPlan, config: PackageConfig) -> list[SqlCte]:
@@ -5502,29 +5330,6 @@ def _implicit_calendar_ctes(plan: LogicalPlan, config: PackageConfig) -> list[Sq
     return ctes
 
 
-def _day_column(config: PackageConfig, bucket: DimensionConfig, time: dict[str, Any]) -> str | None:
-    """Return a DATE day column eligible for bounded day expansion.
-
-    A timestamp day column may be zoned or unzoned; metadata cannot distinguish
-    the two, so its calendar predicate retains the original bucket bounds.
-    """
-    if time.get("start") is None or time.get("end") is None:
-        return None
-    day = next(
-        (
-            row
-            for row in config.dimensions
-            if row.entity == bucket.entity and row.column == "date_day" and row.data_type == "date"
-        ),
-        None,
-    )
-    if day is None:
-        return None
-    # The fill window reads this column, so it is bound like the grain dimension.
-    _dimension_index(config).get(day.id)
-    return day.column
-
-
 def _calendar_bound(value: Any) -> datetime | None:
     """Parse a bound without projecting it through the finite datetime range."""
     try:
@@ -5577,15 +5382,6 @@ def _calendar_day(moment: datetime, value: Any, zone: tzinfo) -> tuple[int, bool
                     ordinal, day_us = divmod(local_us, 86_400_000_000)
             return ordinal, bool(day_us or tail)
     return local.toordinal(), bool(local.time() != datetime.min.time() or _fractional_second(value))
-
-
-def _has_offset_bound(time: dict[str, Any]) -> bool:
-    if time.get("start") is None or time.get("end") is None:
-        return False
-    return any(
-        (moment := _calendar_bound(time.get(key))) is not None and moment.tzinfo is not None
-        for key in ("start", "end")
-    )
 
 
 def _nonpositive_window(
@@ -5671,17 +5467,6 @@ def _source_time_window(
     ]
 
 
-def _bounded_calendar_window(
-    bucket: Any, day: Any | None, time: dict[str, Any], config: PackageConfig
-) -> list[Any]:
-    if day is not None:
-        return _whole_day_window(day, time, config)
-    return [
-        SqlBinary(bucket, ">=", SqlLiteral(time["start"])),
-        SqlBinary(bucket, "<", SqlLiteral(time["end"])),
-    ]
-
-
 def _source_bucket_recovery_ctes(time_alias: str) -> list[SqlCte]:
     """Keep buckets selected by the source when offset typing is unspecified."""
     calendar_bucket = SqlIdentifier(parts=["calendar_time", time_alias])
@@ -5741,13 +5526,9 @@ def _dense_time_ctes(
     ctes: list[SqlCte] = []
     calendar_table, calendar_column, day = binding
     calendar_expr = _column_ref(calendar_table, calendar_column)
-    dense_time_where: list[Any] = []
     dense_time_joins: list[SqlJoin] = []
-    implicit = calendar_table == _IMPLICIT_CALENDAR
-    if plan.time.get("start") is not None and plan.time.get("end") is not None:
-        dense_time_where = _bounded_calendar_window(
-            calendar_expr, _column_ref(calendar_table, day) if day else None, plan.time, config
-        )
+    if day is not None:
+        dense_time_where = _whole_day_window(_column_ref(calendar_table, day), plan.time, config)
     else:
         ctes.append(
             SqlCte(
@@ -5776,16 +5557,12 @@ def _dense_time_ctes(
             SqlBinary(calendar_expr, ">=", SqlIdentifier(parts=["dense_bounds", "range_start"])),
             SqlBinary(calendar_expr, "<=", SqlIdentifier(parts=["dense_bounds", "range_end"])),
         ]
-    if implicit:
-        ctes.extend(_implicit_calendar_ctes(plan, config))
-    # Offset bounds can select a source bucket the calendar misses. The implicit spine
-    # keeps every source bucket too, so a generated series that falls short can only
-    # lose an empty bucket, never data.
-    recover = implicit or bool(day and _has_offset_bound(plan.time))
-    spine_name = "calendar_time" if recover else "dense_time"
+    ctes.extend(_implicit_calendar_ctes(plan, config))
+    # The spine keeps every source bucket too, so a generated series that falls short
+    # can only lose an empty bucket, never data.
     ctes.append(
         SqlCte(
-            name=spine_name,
+            name="calendar_time",
             query=SqlSelect(
                 select=[SqlField(calendar_expr, time_alias)],
                 from_table=SqlTableRef(name=calendar_table),
@@ -5795,8 +5572,7 @@ def _dense_time_ctes(
             ),
         )
     )
-    if recover:
-        ctes.extend(_source_bucket_recovery_ctes(time_alias))
+    ctes.extend(_source_bucket_recovery_ctes(time_alias))
     return ctes
 
 
@@ -5842,6 +5618,15 @@ def lower_to_sql(
     guard_empty: bool = True,
     default_order: bool = True,
 ) -> SqlSelect:
+    if plan.time:
+        # Validation resolves the calendar; a plan that bypassed it refuses the same way.
+        refuse_authored_calendar(
+            plan.time.get("calendar_id"),
+            plan.time.get("grain"),
+            [str(plan.time.get("temporal_role") or "")]
+            + [row.bound_measure.temporal_role for row in plan.measure_plans],
+            config,
+        )
     # Row-based rewrites do not choose a snapshot per series before filtering. Keep the
     # planner/loader's stock refusal even when a caller supplies a plan that bypasses them.
     measures = _measure_index(config)

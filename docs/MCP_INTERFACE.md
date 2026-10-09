@@ -600,7 +600,34 @@ qualifies it ("year 2017", "the calendar year 2017"; "financial year 2017" and "
 are not calendar years and are reported), consecutive years, a quarter or half with a year ("the first half
 of 2017", "H2 2017"), a month or month range with a year, days with a year ("March 1 to March
 31, 2017", "Mar 1 - Mar 31 2017"), an ISO date or ISO range ("2017-03-01 to 2017-03-31"), or a
-relative window ("last 7 days"). A range's spoken end is included: the response's
+relative window ("last 7 days"). A single named month, quarter or half without a year
+("in September", "Q3", "the first half") uses the latest such period starting on or before
+`policy_context.now` (the package's time zone, or UTC), and `assumptions` names the year.
+Without a day, every month name needs a scoping word ("in", "for", "during", "on" or
+"since") or must be the whole input: "customer April", "Jan's revenue" and "the June
+promotion" do not resolve a month. "First half hour" and "first quarter hour" do not name
+calendar periods.
+Only a completed period resolves: if it contains the reference date, `plan` returns
+`needs_clarification` with `TIME_WINDOW_UNRESOLVED` and `why.details.possible_readings` naming
+that period through the last complete day and the same period a year earlier. A month and
+day without a year ("Sept 30", "September 1st") uses the latest such date; an optional weekday
+("Wed Sept 30") must match it, otherwise the same clarification names the stated weekday
+and the date's actual weekday. "Since September", "since Sept 22" and "since Q3" start at
+that inferred date and end at the start of the reference day, so they include only complete
+days. "Early", "late" and "mid" months and multiple named periods remain unresolved.
+"All time", "of all time", "ever", "in total", bare "to date", "since launch", "since the
+beginning" and "since we started" record their spans and add no start or end, with the
+assumption "all time: no start date". A caller's bounded window cannot silently narrow them.
+Beside exactly one bounded window, "ever" and "in total" instead emphasize that window
+and add no all-time assumption ("signups in total last month"). The other all-time forms
+still conflict with a stated bounded window. "Since launch of …" and "since the beginning
+of …" are not all-time readings. A named or all-time phrase inside an exclusion ("not in
+June", "excluding Q2", "not on Jun. 25") follows the exclusion rule above: it never becomes a
+positive window, and `plan` offers no readings for it.
+A balance such as "MRR of all time" remains held: a stock needs an as-of day. Period-to-date
+forms ("year to date", "month to date", "ytd", "mtd") retain their existing handling. Planning
+reads no warehouse data to establish coverage; the all-time assumption makes no claim about
+the first date with data. A range's spoken end is included: the response's
 `assumptions` says so, with the exclusive `time.end` it chose. A window restated right beside
 itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
 one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are a
@@ -1102,7 +1129,6 @@ expression kind names the received kind and its request path (for example,
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
 | `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric, or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
-| `INCOMPATIBLE_CALENDAR` | Selected calendar grain is not supported by the underlying measure. |
 | `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary, or joins into a `temporal_validity` window without a query `time`. |
 | `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (=) each key dimension. Keys are named only on validate, compile and run errors. The message, `details.key_dimensions` and hint name those dimensions only when every key column is a dimension of the caller's view; a key a hidden dimension declares keeps the generic refusal. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
@@ -1111,7 +1137,7 @@ expression kind names the received kind and its request path (for example,
 | `WINDOWED_TIME_FILTER_UNSUPPORTED` | Time-windowed filter cannot be applied to this query shape. `details.lookback` carries the metric's window; `recovery_hints` carries a `widen_time_window` patch with a concrete `suggested_start` and a `drop_time_start` patch with `{remove: ["time.start"]}`. A `where` filter on a date or calendar dimension other than an upper bound refuses the same way: `details.where_path` names it and the patch removes it. Filters on the window's own measure input and applied row policies on temporal columns also refuse (`details.filter_source`), with no time-boundary recovery patch. |
 | `MIXED_GRAIN_INVALID` | Query mixes incompatible grains; split or rewrite. Compatible measure and dimension replacements rank naming-token overlap (id suffix, name and label) before character similarity. Replacements answer a different question and are suggestions for the caller to judge. |
 | `NO_VALID_VALUES_SOURCE` | No `valid_values` source declared for the requested dimension. |
-| `REWRITE_NOT_SUPPORTED` | Required rewrite is not implemented; try a simpler shape. |
+| `REWRITE_NOT_SUPPORTED` | Required rewrite is not implemented; try a simpler shape. A non-default `time.calendar_id`, or a `grain` on a time bound to a non-default calendar, refuses with `details.reason: calendar_not_supported_yet` and `details.calendar_id`: authored fiscal calendars return in a later release. |
 | `INVALID_EXPRESSION_AST` | Expression AST is malformed; check the position-specific shape. An invalid `where` operator lists query filter operators and the null-test form: `op: "IS NULL"` / `"IS NOT NULL"`, omitting `value`. |
 | `OBJECT_NOT_FOUND` | Referenced `object_id` does not exist for the caller; see `details.closest_matches`. An object hidden from the caller gets exactly the response of one the package doesn't have, and is never suggested. An existing measure with the exact namespace and name of a missing metric (or the reverse) is the first suggestion; unrelated typos keep same-kind matching. When what the caller may see can't be resolved, no suggestion is made. |
 | `INVALID_QUERY` | Query IR fails structural validation. |

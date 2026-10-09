@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -967,12 +968,32 @@ def test_a_never_matched_operand_reads_null_beyond_the_loaded_range(
         gold = _gold(rt, FUTURE_GOLD.format(value=FUTURE_B[shape], where=""))
         assert gold == [{"b": None}]
         assert [{"b": row["b"]} for row in typed_rows(response)] == gold
-        # Authored DATE spine keys and TIMESTAMP coverage cannot prove a dated edge.
-        assert _warnings(response, "NO_DATA_YET") == []
-        assert _warnings(response)[0]["details"]["outputs"] == ["b"]
         with monkeypatch.context() as patch:
             patch.setattr("semantic_rails.runtime._no_data_yet_warnings", lambda *a, **k: [])
-            assert response["warnings"] == rt.query(query)["warnings"]
+            undisclosed = rt.query(query)
+        assert (response["rows"], response["rendered_sql"]) == (
+            undisclosed["rows"],
+            undisclosed["rendered_sql"],
+        )
+        assert _warnings(undisclosed)[0]["details"]["outputs"] == ["b"]
+        if not fill:
+            # The unfilled leaf has no coverage guard: the NULL is store b's missing data.
+            assert response["warnings"] == undisclosed["warnings"]
+            return
+        # The filled series and the coverage marker bucket the same timestamps the same
+        # way, so the window's January 2098 is dated past the last loaded month.
+        last = _gold(
+            rt,
+            "SELECT CAST(date_trunc('month', MAX(ordered_at)) AS DATE) AS month FROM orders "
+            "WHERE ordered_at <= CURRENT_TIMESTAMP",
+        )
+        assert last == [{"month": date(2023, 11, 1)}] and last[0]["month"] < date(2098, 1, 1)
+        assert _warnings(response) == []
+        [warning] = _warnings(response, "NO_DATA_YET")
+        assert warning["details"]["outputs"] == ["b"]
+        assert warning["details"]["measures"] == [
+            {"id": b["measure"], "edge": last[0]["month"].isoformat(), "edge_source": "last_bucket"}
+        ]
     finally:
         if rt is not future_shop:
             rt.close()

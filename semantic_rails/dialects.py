@@ -274,13 +274,12 @@ class SqlDialect:
 
         ``start`` and ``end`` are DATE expressions over the one-row relation
         ``source``, which always holds finite bounds. This is the implicit
-        calendar's spine; a warehouse without an override refuses, so a
-        package on it still needs an authored calendar.
+        calendar's spine; a warehouse without an override refuses every fill.
         """
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
             f"Warehouse '{self.name}' has no implicit calendar, so time.fill, rolling and "
-            "prior_period need a calendar entity (kind: time) in the package",
+            "prior_period are not supported on it yet",
             details={"warehouse": self.name, "rewrite": "day_series"},
         )
 

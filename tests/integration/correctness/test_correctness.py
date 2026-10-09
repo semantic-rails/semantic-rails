@@ -224,22 +224,6 @@ def _per_order(aggregate: str, grain: str = "month") -> str:
     return f"(SELECT {aggregate} FROM orders AS o WHERE date_trunc('{grain}', o.ordered_at) = s.b)"
 
 
-def _fiscal(grain: str, clock: str, start: str, end: str) -> str:
-    """Fiscal revenue, preserving values and filling only inside loaded calendar coverage."""
-    zone = "America/New_York" if clock == "ny" else "UTC"
-    return (
-        f"WITH coverage AS (SELECT MIN(c.{grain}_start) lo, "
-        f"MAX(CASE WHEN {CLOCK[clock]} <= (CURRENT_TIMESTAMP AT TIME ZONE '{zone}') "
-        f"THEN c.{grain}_start END) hi FROM orders o "
-        f"JOIN dim_fiscal c ON c.date_day = CAST({CLOCK[clock]} AS DATE)) "
-        f"SELECT f.{grain}_start, COALESCE(SUM(o.amount), "
-        f"CASE WHEN f.{grain}_start BETWEEN (SELECT lo FROM coverage) AND "
-        f"(SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f"
-        f" LEFT JOIN orders AS o ON f.date_day = CAST({CLOCK[clock]} AS DATE)"
-        f" WHERE f.date_day >= DATE '{start}' AND f.date_day < DATE '{end}' GROUP BY 1"
-    )
-
-
 def _data_months(value: str) -> str:
     """One row per month with orders, plus ``value``, which reads ``s.b`` and ``s.v``."""
     return f"""
@@ -709,16 +693,6 @@ def _cases() -> Iterator[Case]:
             variant = f"{clock}_{calendar}"
             for grain in ("day", "week", "month", "quarter", "year"):
                 yield _plain(f"{variant}-revenue_by_{grain}", variant, grain)
-    # Fiscal quarters: order 11 crosses into the previous one in New York, and the window
-    # starts and ends with an empty quarter there (the first one in every clock).
-    for clock, grain, start, end in [
-        *((clock, "quarter", "2023-08-01", "2024-11-01") for clock in CLOCK),
-        ("utc", "year", "2023-02-01", "2025-02-01"),
-    ]:
-        query = _ask(grain, revenue, calendar_id="fiscal", start=start, end=end, fill=True)
-        reference = _fiscal(grain, clock, start, end)
-        yield Case(f"{clock}-fiscal_{grain}", f"{clock}_authored", query, reference)
-
     # Nulls, groups, filters and bounds; whole-month bounds may use the rollup.
     # Store a has only a NULL amount in May: its sum, average, minimum and maximum are unknown
     # (NULL), while its one order counts.

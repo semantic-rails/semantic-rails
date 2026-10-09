@@ -350,11 +350,13 @@ def shape_snapshot(
         return query, None
     expected = _expected_read(runtime, question, query)
     window = _time_window(question)
-    # Report the existing stock hold even when a day policy would fail validation first.
+    # Report the existing stock hold even when a day policy would fail validation first. An
+    # all-time window ("all time", "ever") is no day either.
+    all_time = any(not bounds for _span, bounds in window.windows)
     if (
         expected is None
         and not window.as_of
-        and _unread_time_words(question, window.spans)
+        and (all_time or _unread_time_words(question, window.spans))
         and (gaps := _stock_as_of_gaps(config, query))
     ):
         return query, _coverage_why(gaps)

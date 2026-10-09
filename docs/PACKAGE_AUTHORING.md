@@ -82,17 +82,23 @@ that file nor a relation pipeline. It doesn't pre-tick `_cents` columns as money
 amounts: as currency they would print cents as dollars. Publish them in dollars
 with a measure such as `amount_cents / 100.0`.
 
-Rolling windows, prior periods and growth fill empty periods from a calendar. At
-query time a package without one uses the engine's implicit Gregorian calendar
-(QUERY_IR_SCHEMA "Which calendar fills"); author one for fiscal or custom periods,
-Sunday weeks, or a ClickHouse package. `author metric` offers these metrics only
-once the package has a calendar. A calendar
-is a model whose graph entity has `kind: time`: one row per day in a `date_day`
-column, plus `week_start`, `month_start`, `quarter_start` and `year_start` date
-columns for the coarser units (see `models/core/calendar.yml` in the bundled
-package). An authored default calendar replaces the implicit one for every grain,
-so a grain whose column it lacks is refused. `author calendar` writes it from your
-date-spine table.
+Rolling windows, prior periods and growth fill empty periods from the engine's
+implicit Gregorian calendar (QUERY_IR_SCHEMA "Which calendar fills"), whether or
+not the package authors a calendar; ClickHouse has none, so it refuses them.
+`author metric` offers these metrics only once the package has a calendar. A
+calendar is a model whose graph entity has `kind: time`: one row per day in a
+`date_day` column, plus `week_start`, `month_start`, `quarter_start` and
+`year_start` date columns (see `models/core/calendar.yml` in the bundled package).
+`author calendar` writes it from your date-spine table. Its columns are ordinary
+dimensions: an authored default calendar's `date_day` and `week_start` to
+`year_start` columns are not used for bucketing, so weeks are ISO Monday weeks
+even if its `week_start` names Sundays.
+
+Fiscal and other non-default calendars (a `calendar_id` other than `default`) are
+not supported in this release. A query that names one, or that sets a `grain` on a
+time whose model is bound to one, refuses with `REWRITE_NOT_SUPPORTED`
+(`details.reason: calendar_not_supported_yet`); authored fiscal calendars return in
+a later release.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh
@@ -2433,10 +2439,9 @@ Routing is conservative in the MVP:
   rollup row. The rollup must have one row per time bucket and dimension columns
   (and per key of any `grain.entities`); an `IN` list or a range on a rollup
   dimension that isn't grouped runs on the base tables.
-- A time role whose `column_timezone` differs from its `timezone`, and a query
-  with a non-default `calendar_id`, run on the base tables: the rollup path
-  buckets the stored column's clock, without the role's zone conversion, on the
-  default calendar.
+- A time role whose `column_timezone` differs from its `timezone` runs on the
+  base tables: the rollup path buckets the stored column's clock, without the
+  role's zone conversion.
 - A dimension column pre-joined from another model (for example `region` from
   customers) uses its full dimension ID in the variant's `columns:` and declares
   the relationships it was built along: `columns: {dimension.region: {column: region, path:
@@ -2667,6 +2672,28 @@ CLI `segment-*` commands) could not serve:
 
 ### Unknown keys
 
+Loading a package runs the same authoring checks as `validate-config`, so `serve`, MCP, the
+Architect and `Runtime.from_path` refuse a package `validate-config` refuses, with one
+`INVALID_CONFIG` that lists every error in `details.errors`. These blocks have a closed key
+set: the document top level; `package:` and `package.seed`; `defaults:` and its `dimension`,
+`time`, `measure` and `relationship` entries; `graph:`, its `entities`, its `relationships`
+entries and their `rollup_safe`; both `path_policy` blocks; `semantic_caveats` rows and their
+`time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
+`dimensions`, `times`, `measures`, `joins` and `variants`, with each variant's `grain`, `time`,
+`excludes`, `selection`, `equivalence` and every `columns:` binding; metrics; segments and
+their `membership`. A `columns:` binding takes the keys of what its name resolves to: a measure
+(by key, `as:`, `id:` or a `measure.` prefix), a dimension (by key, `as:`, `id:`, a
+`dimension.` prefix, or a key or foreign-key column the loader turns into a key dimension), or,
+when it resolves to neither, the keys either takes. `relations` entries are not closed yet. A
+key that starts with `_` is an annotation.
+
+In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,
+`relations.yml`, `metrics.yml` and `segments.yml` through `defaults:`, `graph:`,
+`relations:`, `metrics:` and `segments:`; a file under `models/`, `relations/`, `metrics/` or
+`segments/` through its plural or singular wrapper (`models:` or `model:`) when it has one.
+Any other root key is refused, as is a block file whose contents are not under its wrapper.
+`policies.yml` and `caveats.yml` may still hold a bare list.
+
 `parse-config`, `validate-config` and `check` reject a metric or segment key the
 loader doesn't read, in every layout it reads: files under `metrics/` and
 `segments/`, root `metrics.yml` and `segments.yml`, and `package.yml`. The loader
@@ -2841,6 +2868,7 @@ named definition by hand before upgrading.
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
+| `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 
 ## Reference
 

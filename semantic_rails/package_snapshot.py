@@ -194,6 +194,7 @@ def load_package_snapshot(path: str | Path | LoadedPackageSnapshot) -> LoadedPac
         return path
     # Parser dependencies remain one-way at module import time.
     from .config import _load_package_source, _parse_package, normalize_package
+    from .config_parts.shape_checks import authoring_errors
 
     source = capture_package_source(path)
     authored = _load_package_source(source.source_path, captured=source)
@@ -202,6 +203,9 @@ def load_package_snapshot(path: str | Path | LoadedPackageSnapshot) -> LoadedPac
         raise SemanticLayerError(
             "INVALID_CONFIG", f"{source.source_path}: schema_version must be 1 (got {version!r})"
         )
+    # Every file-based load runs the authoring check validate-config reports.
+    if errors := authoring_errors(authored, path_label=source.source_path):
+        raise SemanticLayerError("INVALID_CONFIG", "\n".join(errors), details={"errors": errors})
     normalized = normalize_package(deepcopy(authored))
     config = _parse_package(deepcopy(normalized), path=source.source_path)
     semantic = semantic_payload(config)
