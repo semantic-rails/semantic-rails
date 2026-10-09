@@ -1107,7 +1107,7 @@ def _run_example(
         }
     shape = dict(spec.get("expected_shape", {}) or {})
     columns = list(shape.get("columns", []) or [])
-    actual_columns = [column["field"] for column in result["output_columns"]]
+    actual_columns = _shown_columns([c["field"] for c in result["output_columns"]], columns)
     if columns and actual_columns[: len(columns)] != columns:
         return {
             "id": example_id,
@@ -1153,6 +1153,11 @@ def _run_example(
     }
 
 
+def _shown_columns(actual: list[str], expected: list[str]) -> list[str]:
+    """A series' period_partial flag is compared only when the expectation names it."""
+    return actual if PERIOD_PARTIAL in expected else [c for c in actual if c != PERIOD_PARTIAL]
+
+
 def _run_test(
     runtime: Runtime, test_id: str, spec: dict[str, Any], now: Any = None
 ) -> dict[str, Any]:
@@ -1162,7 +1167,7 @@ def _run_test(
     if kind == "query_returns_columns":
         result = runtime.query(query, **call)
         expected = list(spec.get("columns", []) or [])
-        actual = list(result["rows"][0].keys()) if result["rows"] else []
+        actual = _shown_columns(list(result["rows"][0]) if result["rows"] else [], expected)
         ok = actual[: len(expected)] == expected
         return _test_result(
             test_id,

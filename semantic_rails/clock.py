@@ -67,6 +67,15 @@ def _zone(name: str) -> Any:
         ) from exc
 
 
+def known_zone(name: str) -> bool:
+    """Whether ``name`` is a time zone the clock can read its days in."""
+    try:
+        _zone(name)
+    except SemanticLayerError:
+        return False
+    return True
+
+
 def local_now(now: datetime, timezone: str) -> datetime:
     """``now`` as wall time in ``timezone`` (naive), the zone the clock's bounds are read in."""
     return now.astimezone(_zone(timezone)).replace(tzinfo=None)

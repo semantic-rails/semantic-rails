@@ -151,6 +151,12 @@ ANSWER_CASES = [
 ]
 
 
+def _column(query):
+    """The first output's column: its alias, or a plain reference's last segment."""
+    item = query["select"][0]
+    return item["as"] if isinstance(item, dict) else item.split(".")[-1]
+
+
 @pytest.mark.parametrize(("phrase", "start", "end", "expected"), ANSWER_CASES)
 def test_named_reading_matches_reference_sql(subscriptions, phrase, start, end, expected):
     intent = f"How many new accounts {phrase}?"
@@ -169,7 +175,7 @@ def test_named_reading_matches_reference_sql(subscriptions, phrase, start, end, 
         gold = connection.execute(reference).fetchone()[0]
     assert gold == expected
     rows = subscriptions.query(query)["rows"]
-    assert sum(row[query["select"][0]["as"]] or 0 for row in rows) == gold
+    assert sum(row[_column(query)] or 0 for row in rows) == gold
     if start is None:
         assert "all time: no start date" in plan["assumptions"]
     elif "2026" not in phrase:
@@ -506,7 +512,7 @@ def test_bounded_reading_matches_shop_reference_sql(
     assert gold == expected
     rows = shop.query(query)["rows"]
     # One bounded window is one row: an empty result can't pass as a zero.
-    assert [row[query["select"][0]["as"]] for row in rows] == [gold]
+    assert [row[_column(query)] for row in rows] == [gold]
     for word in ("ever", "in total", "in  total"):
         if word in intent:
             assert any(intent[start:end] == word for start, end in read.spans)

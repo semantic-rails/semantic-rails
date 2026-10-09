@@ -1135,7 +1135,8 @@ def _mark_partial_periods(rows, config, compiled, payload) -> None:
             period = period.astimezone(ZoneInfo(zone))
         marked: dict[str, Any] = {}
         for key, value in row.items():
-            marked[key] = value
+            if key != PERIOD_PARTIAL:
+                marked[key] = value
             if key == TIME_AXIS:
                 marked[PERIOD_PARTIAL] = period_is_partial(period, grain, now, zone)
         row.clear()

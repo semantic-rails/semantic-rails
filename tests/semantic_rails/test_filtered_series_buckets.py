@@ -116,9 +116,14 @@ def test_a_quiet_week_agrees_with_its_ungrouped_total(series, scope, kind):
     assert total["rows"] == [{"value": 0}]
 
 
-def test_unobserved_weeks_stay_absent(series):
+def test_weeks_outside_the_data_read_null(series):
+    """The named window answers its 14 weeks: the twelve with sales (0 where no apple sold),
+    and NULL before the first sale and after the last one."""
     response = series.query(_query("count", start="2024-12-30", end="2025-04-07"))
-    assert len(response["rows"]) == 12
+    values = [row["value"] for row in response["rows"]]
+    assert len(values) == 14
+    assert values[0] is None and values[-1] is None
+    assert values[1:-1] == [1 if week in MATCHING_WEEKS else 0 for week in range(12)]
 
 
 def test_a_filtered_average_keeps_its_seven_populated_buckets(series):
@@ -196,10 +201,12 @@ def test_matching_null_amounts_remain_unknown(series, tmp_path):
     try:
         response = runtime.query(_query("sum", grain="month"))
         assert [row["value"] for row in response["rows"]] == [None, None]
+        # A named window answers each week it touches; weeks with no apple row, inside the
+        # loaded data, read 0, whether or not a pear sold in them.
         quiet = runtime.query(_query("sum", start="2025-03-02", end="2025-03-09"))
-        assert [row["value"] for row in quiet["rows"]] == [0]
+        assert [row["value"] for row in quiet["rows"]] == [0, 0]
         empty = runtime.query(_query("sum", start="2025-02-01", end="2025-02-08"))
-        assert empty["rows"] == []
+        assert [row["value"] for row in empty["rows"]] == [0, 0]
     finally:
         runtime.close()
 
@@ -429,7 +436,8 @@ def test_retained_series_skip_bucket_probes_on_cold_and_cached_compiles(
 
     monkeypatch.setattr(runtime, "query_internal", query)
     call = _query(kind, scope)
-    options: dict = {"verbosity": "full"}
+    # One request instant: a cached plan serves the same now only.
+    options: dict = {"verbosity": "full", "now": "2025-06-01"}
     if limit is not None:
         call["limit"] = limit
     if metric_only:

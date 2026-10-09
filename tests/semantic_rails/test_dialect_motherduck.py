@@ -385,6 +385,8 @@ def test_motherduck_compiles_entire_integration_battery():
 
     for case in battery:
         query, _ = read_call(case.payload, config=config)
+        # One request instant for both compiles: a named window's coverage reads it.
+        query["policy_context"] = {"now": "2026-10-01T00:00:00Z"}
         compiled = compile_query(config, registry, query)
         sql = compiled["sql"]
         assert isinstance(sql, str) and sql.strip(), f"{case.name}: empty rendered SQL"

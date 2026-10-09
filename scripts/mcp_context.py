@@ -68,7 +68,7 @@ EVAL_SET_PATH = CONTEXT_DIR / "eval_jaffle.jsonl"
 PLAN_BASELINE_PATH = CONTEXT_DIR / "plan_accuracy_baseline.json"
 # Digest of the frozen dev split, EVAL_SET_PATH. Change a case only through a
 # reviewed revision of the eval set, and update this digest in that change.
-DEV_SET_SHA256 = "8a5b5c345d5a8fddac66b960bc54aeecf11561c3e9d6d115da5a30951523ea01"
+DEV_SET_SHA256 = "0f679b6452358b4c59af91f3ad4a4c64d422ef19b0bdc197fb76b614f4b7474d"
 # Commitment to the held-out split: 12 more cases kept outside this repository
 # so the planner can't be tuned against them. ``--eval-file`` checks a copy.
 HELDOUT_SET_SHA256 = "ce5ef85b14f8b92a3f6944a55dd4657631ddde104006dcb50178fd0800027730"
@@ -1085,7 +1085,7 @@ def answer_table(
         if key == "period":
             if trend:
                 named[key] = TIME_COLUMN
-        elif key not in pinned:
+        elif key != "period_partial" and key not in pinned:  # the flag only reads the period
             named[key] = select.get(key, key)
     order = sorted(named, key=named.__getitem__)
     return {

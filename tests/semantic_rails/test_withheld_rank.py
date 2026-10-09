@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from semantic_rails.ast import PERIOD_PARTIAL
 from semantic_rails.compiler import bind_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
@@ -281,8 +282,8 @@ def test_rank_returns_keys_only_and_flips_with_the_direction(engine):
     assert 3 < every <= 10
     result = engine.query({**RANK, **window}, context=SALES)
     assert result["withheld"] == [REVENUE]
-    assert all(set(row) == {STORE, bucket} for row in result["rows"])
-    assert [row["field"] for row in result["output_columns"]] == [STORE, bucket]
+    assert all(set(row) == {STORE, bucket, PERIOD_PARTIAL} for row in result["rows"])
+    assert [row["field"] for row in result["output_columns"]] == [STORE, bucket, PERIOD_PARTIAL]
     assert "revenue" not in result["column_types"]
     assert [warning["code"] for warning in result["warnings"]].count("VALUES_WITHHELD") == 1
     # Ties order by every group key in the rank's direction, so ascending is the exact reverse.
@@ -301,7 +302,9 @@ def test_rank_returns_keys_only_and_flips_with_the_direction(engine):
     assert rows["asc"] == rows["desc"][::-1]
     assert result["rows"] == rows["desc"][:3]
     ranked = sorted(unrestricted, key=lambda row: (row["revenue"], row[STORE], row[bucket]))
-    assert rows["asc"] == [{STORE: row[STORE], bucket: row[bucket]} for row in ranked]
+    assert rows["asc"] == [
+        {STORE: row[STORE], bucket: row[bucket], PERIOD_PARTIAL: False} for row in ranked
+    ]
     assert engine.compile({**RANK, **window}, context=SALES)["normalized_query"]["order_by"] == [
         {"field": "revenue", "direction": "DESC"},
         {"field": STORE, "direction": "DESC"},
