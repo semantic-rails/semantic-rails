@@ -177,8 +177,7 @@ def _consumed_spans(
 
     spans: list[tuple[int, int]] = []
     time = _time_block(query)
-    if any(time.get(key) for key in ("start", "end", "range")):
-        spans.extend(_window_spans(lowered, time, query.get("policy_context")))
+    spans.extend(_window_spans(lowered, time, query.get("policy_context")))
     if (read := snapshot_read(runtime, lowered, query)) is not None:
         # A balance read on the day an as-of phrase or a window names consumes that phrase.
         spans.extend(read.spans)
@@ -344,6 +343,8 @@ def _window_spans(
     """
 
     windows, others = _question_time(lowered, policy_context, timezone=timezone)
+    if not windows and not any(time.get(key) for key in ("start", "end", "range")):
+        return []
     if not _window_agrees(windows, time, policy_context, timezone=timezone):
         return []
     return [span for span, _bounds in windows] + others

@@ -175,10 +175,11 @@ def test_every_list_form_reads_each_item(shop, marker, form, spelling):
 @pytest.mark.parametrize(
     ("question", "items"),
     [
-        # A dotted date is one item, whole; a weekday leads into its date.
+        # A dotted date is one item, whole; a day without a year is read with its lead and
+        # weekday.
         ("signups excluding Jun. 25, 2024", [("time", "Jun. 25, 2024")]),
-        ("signups not on Jun. 25", [("time", "Jun. 25")]),
-        ("signups not on Tue. June 25", [("time", "June 25")]),
+        ("signups not on Jun. 25", [("time", "on Jun. 25")]),
+        ("signups not on Tue. June 25", [("time", "on Tue. June 25")]),
         ("signups excluding Sept. 30", [("time", "Sept. 30")]),
         ("signups excluding Dec. 31, 2023", [("time", "Dec. 31, 2023")]),
         ("signups not in June 2024", [("time", "June 2024")]),
@@ -275,7 +276,7 @@ BOTH = "channel IS DISTINCT FROM 'web' AND channel IS DISTINCT FROM 'store'"
         ("Top", "signups excluding web!", [("value", "web")]),
         ("Top", "signups excluding web. by month", [("value", "web"), ("unknown", ".")]),
         ("Top", "signups excluding (web, Top)", [("value", "web"), ("value", "Top")]),
-        ("Top", "signups not on Tue. June 25", [("time", "June 25")]),
+        ("Top", "signups not on Tue. June 25", [("time", "on Tue. June 25")]),
     ],
 )
 def test_every_character_of_a_list_is_read(tmp_path, label, question, items):

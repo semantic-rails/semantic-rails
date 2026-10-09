@@ -24,6 +24,10 @@ _SUPPORTED_WINDOW_FORMS = (
     "a month with a year, or a month range (e.g. 'March 2017', 'January 2017 through June 2017')",
     "days with a year, or ISO dates (e.g. 'April 3, 2017', 'April 1 to April 7, 2017', "
     "'2017-04-03')",
+    "one completed named month, quarter or half without a year (latest on or before now)",
+    "a month and day without a year, optionally with a matching weekday (e.g. 'Wed Sept 30')",
+    "since a named month, month/day or quarter without a year (through the last complete day)",
+    "all time / ever / in total / to date / since launch / since the beginning / since we started",
     "explicit time.start / time.end ISO dates via partial_query",
 )
 
@@ -223,9 +227,9 @@ def _time_assumptions(intent: str, query: dict[str, Any]) -> list[str]:
 
     window = _time_window(intent)
     time = query.get("time")
-    if not window.assumptions or not isinstance(time, dict):
+    if not window.assumptions or (time is not None and not isinstance(time, dict)):
         return []
-    if any(time.get(key) != window.bounds.get(key) for key in ("start", "end")):
+    if any((time or {}).get(key) != window.bounds.get(key) for key in ("start", "end")):
         return []
     return list(window.assumptions)
 
@@ -375,6 +379,8 @@ def _unresolved_time_why(
             f"({'; '.join(window.conflicts)}), so plan returns no query: picking one would "
             "answer a different question."
             if window.conflicts
+            else "Which reading do you mean: " + " or ".join(window.readings) + "?"
+            if window.readings
             else "The intent names a time window the planner could not resolve, so "
             "plan returns no query: one without that window would answer a "
             "different question."
@@ -384,6 +390,7 @@ def _unresolved_time_why(
             "unresolved_phrases": list(phrases),
             **({"conflicting_phrases": list(window.conflicts)} if window.conflicts else {}),
             **({"sub_day_phrases": list(window.sub_day)} if window.sub_day else {}),
+            **({"possible_readings": list(window.readings)} if window.readings else {}),
             **({"max_intent_chars": _MAX_TIME_TEXT} if too_long else {}),
         },
         "recovery_hints": [
