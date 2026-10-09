@@ -672,7 +672,7 @@ def test_an_unknown_operator_is_refused_before_child_scope_analysis(
     error = _refusal(package, _query([{"field": field, "op": op, "value": value}]))
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"] == "where[0].op"
-    assert error["details"]["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
+    assert error["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
     assert "clarification" not in error["details"]
 
 

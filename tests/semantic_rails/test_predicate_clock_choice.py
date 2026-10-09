@@ -425,8 +425,8 @@ def test_metric_bound_clock_conflicting_with_window_clock_refuses(
     hint = error.details["recovery_hints"][0]
     assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
     assert SHIPPED in hint["message"]
-    assert "query.time.temporal_role" in hint["message"]
-    assert "omit time_alignment" in hint["message"]
+    assert "time.temporal_role" in hint["message"]
+    assert "over: all_time" in hint["message"]
 
 
 @pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
@@ -450,8 +450,8 @@ def test_window_clock_excluded_by_any_measure_in_metric_refuses(
     hint = error.details["recovery_hints"][0]
     assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
     assert hint["message"] == (
-        f"The input is bound to {SHIPPED}; set query.time.temporal_role to one of them, "
-        "or omit time_alignment to apply the predicate over all time."
+        f"The input is bound to {SHIPPED}; set time.temporal_role to one of them, "
+        "or write over: all_time to apply the predicate over all time."
     )
 
 

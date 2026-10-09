@@ -54,9 +54,9 @@ def test_metric_predicate_without_leaf_refuses(package_config_factory, extra, sc
     with pytest.raises(SemanticLayerError) as exc:
         compile_query(config, Registry(config), query)
     assert exc.value.code == "PREDICATE_NOT_SUPPORTED"
-    assert exc.value.details["path"] == "metric_filters"
+    assert exc.value.details["path"] == "where"
     assert "add a select" in str(exc.value)
-    assert "remove metric_filters" in str(exc.value)
+    assert "remove the entity filter" in str(exc.value)
 
 
 def test_direct_distinct_lowering_cannot_bypass_predicate_guard(package_config_factory):

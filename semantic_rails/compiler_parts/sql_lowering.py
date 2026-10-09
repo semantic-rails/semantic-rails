@@ -1472,7 +1472,8 @@ def _distribution_select(
             raise SemanticLayerError(
                 "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
                 "A distribution's per-entity grouping cannot inherit this contextual predicate. "
-                "Use over: all_time or a where filter.",
+                "Use over: all_time or window (scope_mode: entity_only in a package metric), "
+                "or a where filter.",
             )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():

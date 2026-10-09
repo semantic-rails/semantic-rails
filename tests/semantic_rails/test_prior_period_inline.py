@@ -508,6 +508,6 @@ def test_a_call_with_the_prior_period_shorthand_is_refused_with_the_one_spelling
     (error,) = runtime.validate(_SHORTHAND)["errors"]
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"] == "select[0].expression"
-    (hint,) = error["details"]["recovery_hints"]
+    (hint,) = error["recovery_hints"]
     assert '"input": "measure.jaffle.revenue_usd"' in hint["message"]
     assert '"offset": {"unit": "year", "value": 1}' in hint["message"]
