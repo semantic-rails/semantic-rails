@@ -107,7 +107,8 @@ def _package(root: Path, *, policy: bool) -> Path:
         "entities": {"account_day": {}, "account": {}},
         "times": {"day": {**day, **({"supported_grains": ["day"]} if policy else {})}},
         "dimensions": {"plan": {"kind": "categorical", "domain": ["basic", "pro"]}},
-        "measures": {"mrr_all": {"expr": "mrr", "accumulation": stock, "publish": False}},
+        "measures": {"mrr_all": {"kind": "aggregate", "expr": "mrr", "accumulation": stock,
+                                 "publish": False}},
     }})  # fmt: skip
     metrics: dict[str, Any] = {
         key: {
@@ -123,7 +124,8 @@ def _package(root: Path, *, policy: bool) -> Path:
                                  ("upgrades", "Upgrades", "upgrade")]
     }  # fmt: skip
     metrics["mrr"] = {
-        "label": "MRR (USD)", "kind": "semi_additive", "temporal_role": DAY_CLOCK,
+        "label": "MRR (USD)", "kind": "semi_additive", "value_type": "number",
+        "temporal_role": DAY_CLOCK,
         "expression": {"kind": "semi_additive", "measure": f"measure.{NS}.mrr_all",
                        "filter": {"all": [CUSTOMERS]}},
     }  # fmt: skip
