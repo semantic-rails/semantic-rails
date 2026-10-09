@@ -14,6 +14,8 @@ from ._base import (
     _object_by_id,
     _requested_grouping_spans,
     _runtime_composition_terms,
+    _said_name,
+    _singular,
     _strip_leading_rank_count,
     _tokens,
 )
@@ -117,20 +119,146 @@ def _name_forms(words: Iterable[str]) -> set[str]:
 
 
 def _grouping_matches(term: str, row: Any, *, entity: bool = False) -> bool:
-    """Match content words to declared names, never substring scores or synonyms.
+    """Match content words to declared names, never substring scores or descriptions.
 
     A dimension's own words are its label, its aliases and the last part of its name; the
-    namespace, model and entity prefix in its id are not its words.
+    namespace, model and entity prefix in its id are not its words. An entity's are its name,
+    its label and its synonyms.
     """
 
-    names = (
-        [row.name, row.label]
-        if entity
-        else [_last_token(row.name), row.label, *(row.aliases or [])]
-    )
+    names = [row.name if entity else _last_token(row.name), row.label, *(row.aliases or [])]
     words = _name_forms(re.findall(r"[^\W_]+", " ".join(names).lower()))
     content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
     return bool(content and content <= words)
+
+
+def _names_whole_entity(term: str, entity: Any) -> bool:
+    """Whether a grouping term names an entity by every word of its label or of one of its
+    synonyms: "customer" names Customer, but not Customer history or Customer segment
+    membership."""
+
+    content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
+    names = [str(entity.label or _last_token(entity.name)), *(entity.aliases or [])]
+    return _grouping_matches(term, entity, entity=True) and any(
+        (words := set(re.findall(r"[^\W_]+", str(name).lower())) - _NAME_CONNECTORS)
+        and all(_name_forms({word}) & content for word in words)
+        for name in names
+    )
+
+
+def _entity_stand_ins(config: Any, entity: Any, term: str = "") -> tuple[list[str], list[str]]:
+    """The dimensions that stand for an entity's rows in an answer: its key dimensions (on its
+    one-column key), and the one that names a row beside them.
+
+    That is its ``display`` dimension, else its one dimension (not a clock) whose own words name
+    ``term`` ("Store name" for "store"), else none. A composite key, or a key the caller can't
+    see, has no stand-ins. Drafting and every readiness check read the entity through this.
+    """
+
+    if len(entity.key) != 1:
+        return [], []
+    owned = [row for row in visible_dimensions(config) if row.entity == entity.id]
+    keys = [row.id for row in owned if row.column == entity.key[0]]
+    others = [row for row in owned if row.column != entity.key[0]]
+    shown = [row.id for row in others if entity.display and row.id == entity.display]
+    if not shown:
+        clocks = {row.dimension for row in config.temporal_roles}
+        shown = [row.id for row in others if row.id not in clocks and _grouping_matches(term, row)]
+    return keys, shown if len(shown) == 1 else []
+
+
+def _entity_grouping(config: Any, term: str) -> tuple[Any, list[str]] | None:
+    """The one entity a grouping term names by its whole label or a synonym (plurals allowed,
+    never a description), with its stand-ins, key first; None when the term names no entity,
+    or several, or the entity has no one key dimension the caller can see."""
+
+    named = [row for row in config.entities if _names_whole_entity(term, row)]
+    if len(named) != 1:
+        return None
+    keys, shown = _entity_stand_ins(config, named[0], term)
+    if len(keys) > 1:  # other dimensions read the key column: the key is the loader's own
+        kinds = {row.id: row.semantic_kind for row in visible_dimensions(config)}
+        keys = [key for key in keys if kinds.get(key) == "id"]
+    return (named[0], [*keys, *shown]) if len(keys) == 1 else None
+
+
+def _key_only_assumptions(
+    config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None = None
+) -> list[str]:
+    """A line for each entity the draft shows by its key alone because nothing else names its
+    rows: the caller sees no display for it and no one dimension of its own names it. A
+    caller's grouping needs none, nor a key the question names beyond its entity ("by store
+    id")."""
+
+    caller = set((partial_query or {}).get("group_by") or [])
+    grouped = [
+        row
+        for item in dict.fromkeys(query.get("group_by") or [])
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
+    lines: list[str] = []
+    for row in grouped:
+        entity = _object_by_id(config.entities, row.entity)
+        if (
+            entity is None
+            or row.id in caller
+            or _said_name(row, question) - {_singular(word) for word in _tokens(entity.label)}
+            or _entity_stand_ins(config, entity, str(entity.label or "")) != ([row.id], [])
+            or any(other.entity == row.entity for other in grouped if other is not row)
+        ):
+            continue
+        lines.append(f"{entity.label} has no display name, so its rows show its key, {row.label}.")
+    return lines
+
+
+def _whole_names(row: Any) -> set[tuple[str, ...]]:
+    """A dimension's or entity's whole names, as singular words: its label without a
+    parenthetical, the last part of its name, and its synonyms."""
+
+    names = [re.sub(r"\s*\(.*?\)", "", str(row.label or "")), _last_token(row.name)]
+    return {
+        tuple(_singular(word) for word in re.findall(r"[^\W_]+", str(name).lower()))
+        for name in [*names, *(row.aliases or [])]
+    }
+
+
+def _named_dimension(config: Any, term: str) -> Any | None:
+    """The one visible dimension ``term`` is a whole name of, or None."""
+
+    said = tuple(_singular(word) for word in re.findall(r"[^\W_]+", term.lower()))
+    rows = [row for row in visible_dimensions(config) if said in _whole_names(row)]
+    return rows[0] if len(rows) == 1 else None
+
+
+def _named_run(config: Any, lowered: str, start: int) -> tuple[int, int] | None:
+    """The span of the longest run of up to four words from ``start`` that is a whole name of a
+    visible dimension or entity (``_whole_names``; singular or plural), or None. A grouping
+    term ends at the first word that names nothing more: "each plan make" names "plan"."""
+
+    words = list(re.finditer(r"[^\W_]+", lowered[start:]))[:4]
+    names = {
+        name
+        for row in [*visible_dimensions(config), *config.entities]
+        for name in _whole_names(row)
+    }
+    for size in range(len(words), 0, -1):
+        low, high = start + words[0].start(), start + words[size - 1].end()
+        said = tuple(_singular(word.group()) for word in words[:size])
+        if said in names and re.fullmatch(r"[^\W_]+(?:[\s_]+[^\W_]+)*", lowered[low:high]):
+            return low, high
+    return None
+
+
+# "each" and "every" (also "for each") ask for a row per item of the name that follows.
+_EACH_RE = re.compile(r"\b(?:each|every)\s+")
+
+
+def _each_terms(config: Any, text: str) -> list[str]:
+    """The names "each" or "every" ask for a row of ("How many orders did each store get")."""
+
+    lowered = str(text or "").lower()
+    spans = [_named_run(config, lowered, match.end()) for match in _EACH_RE.finditer(lowered)]
+    return [lowered[span[0] : span[1]] for span in spans if span is not None]
 
 
 def _requested_grouping_terms(text: str) -> list[str]:
@@ -152,7 +280,8 @@ def _listed_grouping_terms(text: str, config: Any) -> list[str]:
 
     lowered = str(text or "").lower()
     match = re.search(
-        r"^\s*(?:the\s+)?top\s+([a-z0-9 _,-]+?)\s+by\s+[a-z0-9 _-]+?(?:[.?!,;]|$)", lowered
+        r"^\s*(?:the\s+)?(?:top|bottom)\s+([a-z0-9 _,-]+?)\s+by\s+[a-z0-9 _-]+?(?:[.?!,;]|$)",
+        lowered,
     )
     if match:
         raw_terms = _strip_leading_rank_count(match.group(1).strip())
@@ -224,8 +353,17 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
 
 
 def _maybe_group_by(
-    config: Any, text: str, *, target_terms: Iterable[str] = (), clock: str = ""
+    config: Any,
+    text: str,
+    *,
+    target_terms: Iterable[str] = (),
+    clock: str = "",
+    each: bool = False,
 ) -> list[str]:
+    """The dimensions the question's groupings ask for ("by", "top N … by", and with ``each``
+    "each" or "every"). A term naming an entity is that entity's stand-ins
+    (``_entity_grouping``), never a dimension scored by its description."""
+
     lowered = str(text or "").lower()
     terms = _runtime_composition_terms(text)
     target_set = {term for term in target_terms if term}
@@ -238,7 +376,15 @@ def _maybe_group_by(
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:
             group_by.append(dim.id)
-    for term in _requested_grouping_terms(text):
+    # A stated window ends the name a "by" term gives an entity ("by account last week"), as it
+    # ends a listed grouping for readiness.
+    windows = [start for start, _end in _time_window(text).spans]
+    listed = [
+        (lowered[low:high], lowered[low : min([high, *(at for at in windows if low < at)])], False)
+        for low, high in _requested_grouping_spans(text)
+    ]
+    cued = [(term, term, True) for term in (_each_terms(config, text) if each else [])]
+    for term, named, outright in [*listed, *cued]:
         term_tokens = set(_tokens(term))
         if (
             "geo" in term_tokens
@@ -247,7 +393,8 @@ def _maybe_group_by(
             or _term_matches_value_domain(config, term)
         ):
             continue
-        if target_set and term_tokens:
+        # "each" names a grouping outright; a "by" term may restate the measure.
+        if target_set and term_tokens and not outright:
             metric_qualifier_words = {
                 "count",
                 "volume",
@@ -263,7 +410,11 @@ def _maybe_group_by(
                 continue
             if content_tokens and not (content_tokens - target_set):
                 continue
-        dim = _dimension(config, term_tokens)
-        if dim is not None:
-            group_by.append(dim.id)
+        entity = _entity_grouping(config, named.strip())
+        if entity is not None:
+            group_by.extend(entity[1])
+            continue
+        # A name "each" asks a row of is a whole declared name, never a scored guess.
+        dim = _named_dimension(config, term) if outright else _dimension(config, term_tokens)
+        group_by.extend([dim.id] if dim is not None else [])
     return list(dict.fromkeys(group_by))

@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import sysconfig
+from dataclasses import replace
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -1676,6 +1677,42 @@ def _parse_path_preferences(
     return out
 
 
+def _with_displays(
+    entities: list[EntityConfig],
+    graph_entities: dict[str, Any],
+    model_rows: dict[str, dict[str, Any]],
+    dimension_lookup: dict[tuple[str, str], str],
+    dimensions: list[DimensionConfig],
+    *,
+    path: str,
+) -> list[EntityConfig]:
+    """Each graph entity with the dimension its ``display:`` names, which must be one of its own
+    model's ``dimensions:`` and not its key. ``entities`` are in ``graph_entities`` order."""
+
+    columns = {row.id: row.column for row in dimensions}
+    out: list[EntityConfig] = []
+    for entity, (entity_key, spec) in zip(entities, graph_entities.items(), strict=True):
+        display = dict(spec or {}).get("display")
+        if display is None:
+            out.append(entity)
+            continue
+        model_id = str(dict(spec or {}).get("model", "")).strip()
+        declared = dict(model_rows[model_id].get("dimensions", {}) or {})
+        dimension_id = (
+            dimension_lookup.get((model_id, display))
+            if isinstance(display, str) and display in declared
+            else None
+        )
+        if dimension_id is None or columns.get(dimension_id) in entity.key:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: graph entity '{entity_key}' display {display!r} must name a dimension "
+                f"of model '{model_id}' other than its key",
+            )
+        out.append(replace(entity, display=dimension_id))
+    return out
+
+
 def _package_object_ids(config: PackageConfig) -> set[str]:
     return {
         *[row.id for row in config.entities],
@@ -2346,6 +2383,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     ),
                 )
             )
+    entities = _with_displays(
+        entities, graph_entities, model_rows, dimension_lookup, dimensions, path=path
+    )
     path_preferences = _parse_path_preferences(
         raw,
         entities=entities,

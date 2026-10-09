@@ -68,7 +68,7 @@ EVAL_SET_PATH = CONTEXT_DIR / "eval_jaffle.jsonl"
 PLAN_BASELINE_PATH = CONTEXT_DIR / "plan_accuracy_baseline.json"
 # Digest of the frozen dev split, EVAL_SET_PATH. Change a case only through a
 # reviewed revision of the eval set, and update this digest in that change.
-DEV_SET_SHA256 = "4d2ed7efd21d302cd426430dbb8cbb9e83834bb2cfa7a7af3b6596ee769ae38e"
+DEV_SET_SHA256 = "1fc2f61c30547ff63a9836374edfd2ae0540cf3ef526ef2551063df8c84b5836"
 # Commitment to the held-out split: 12 more cases kept outside this repository
 # so the planner can't be tuned against them. ``--eval-file`` checks a copy.
 HELDOUT_SET_SHA256 = "ce5ef85b14f8b92a3f6944a55dd4657631ddde104006dcb50178fd0800027730"

@@ -57,10 +57,15 @@ def test_fallback_refusal_is_independent_of_hashes(
         payload = plan_module.plan_payload(
             runtime, intent="orders by store, customer type", detail=detail
         )
+        # The fallback groups by the store it names and drops the customer type, whatever the
+        # candidates' hashes.
         assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
-        assert payload["best"]["validation_ok"] is False
-        assert payload["why"]["details"]["fallback_slots"]["target"] == [delivered]
+        assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
+        assert payload["best"]["query_ir"]["group_by"] == [
+            "dimension.jaffle_store_id",
+            "dimension.jaffle_store_name",
+        ]
         assert "ready_for" not in payload["next"]
     finally:
         runtime.close()

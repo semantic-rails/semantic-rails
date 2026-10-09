@@ -99,7 +99,8 @@ def test_plan_lets_reasonable_intents_through(runtime_factory, intent):
     finally:
         runtime.close()
     if intent == "orders per store":
-        held_candidate(payload, "PLAN_UNMATCHED_TERMS")
+        # "store" names the rows: it doesn't pick the same-store conversion rate for "orders".
+        held_candidate(payload, "PLAN_INTENT_COVERAGE_GAP")
     elif intent == "revenue by store last month":
         held_candidate(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     else:

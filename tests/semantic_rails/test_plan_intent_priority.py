@@ -28,7 +28,6 @@ from typing import Any
 import pytest
 
 from tests.plan_candidate_envelope import plan_candidate_envelope
-from tests.semantic_rails.result_helpers import held_candidate
 
 _DERIVATIVE_MARKERS = (
     "ratio",
@@ -115,12 +114,8 @@ def test_monthly_revenue_returns_base_revenue_measure(runtime_factory) -> None:
 def test_revenue_intent_returns_base_measure(runtime_factory, intent, expected_measure) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_candidate_envelope(runtime, intent=intent, limit=5, verbosity="full")
-        top = (
-            held_candidate(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-            if intent == "revenue by store last month"
-            else _top_candidate(payload)
-        )
+        payload = plan_candidate_envelope(runtime, intent=intent, limit=5)
+        top = _top_candidate(payload)
         top_id = _candidate_measure_id(top)
         assert top_id == expected_measure, f"expected {expected_measure} at rank 0, got {top_id!r}"
         assert "share" not in top_id.lower()

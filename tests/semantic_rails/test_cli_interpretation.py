@@ -501,18 +501,13 @@ def test_ask_prints_what_the_query_computes(tmp_path: Path) -> None:
             text=True,
             timeout=120,
         )
-        assert proc.returncode == (1 if args[-1] == "monthly revenue by store" else 0), proc.stderr
+        assert proc.returncode == 0, proc.stderr
         return proc.stdout
 
-    assert "PLAN_UNMATCHED_TERMS" in run()
-    refused = json.loads(run("--json"))
-    assert refused["ok"] is False
-    assert refused["errors"][0]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert "interpretation" not in refused
-    args = ("ask", "--package", "jaffle_shop", "monthly revenue by store name")
+    # "store" names the Store entity: its key, with its name beside it.
     expected = (
-        "Revenue (sum) by Store name, per month of Order time, "
-        "ordered by time ascending, Store name ascending"
+        "Revenue (sum) by Store Id, Store name, per month of Order time, "
+        "ordered by time ascending, Store Id ascending, Store name ascending"
     )
     assert f"\nInterpreted as: {expected}\n" in run()
     assert json.loads(run("--json"))["interpretation"] == expected

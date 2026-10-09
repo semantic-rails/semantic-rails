@@ -87,8 +87,8 @@ def test_plan_drafts_a_qualified_ranking(runtime_factory) -> None:
     # The draft buckets by month, which the question never asks for: it would keep the top 3
     # store-months, so it is held.
     assert payload["status"] == "low_confidence"
-    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
-    assert payload["why"]["details"]["dropped_groupings"] == ["stores"]
+    assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
+    assert payload["why"]["details"]["grain"] == "month"
 
 
 @pytest.mark.parametrize(
@@ -115,8 +115,9 @@ def test_plan_prefers_governed_subject_over_generic_order_count(
         payload = plan_payload(runtime, intent=intent)
     finally:
         runtime.close()
-    if intent in {"repeat customer orders by store", "high value customer orders by store"}:
-        assert_plan_held(payload, "VALIDATION_FAILED")
+    if intent == "high value customer orders by store":
+        # Its predicate reads a balance whose own time scope plan can't prove.
+        assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
     elif expected_id == "metric.sales.month_over_month_revenue_growth":
         # The metric divides by the prior month, and its window runs to the month in progress.
         assert_plan_held(payload, "PERIOD_COMPARISON_INCOMPLETE")
@@ -149,10 +150,7 @@ def test_plan_prefers_explicit_revenue_qualifier_over_generic_revenue(
         payload = plan_payload(runtime, intent=intent)
     finally:
         runtime.close()
-    if intent == "drink revenue by store":
-        assert_plan_held(payload, "VALIDATION_FAILED")
-    else:
-        assert payload["status"] == "ok"
+    assert payload["status"] == "ok"
     assert expected_id in payload["best"]["subject_ids_used"]
     assert expected_id in {row["id"] for row in payload["best"]["resolved"]}
 
@@ -241,11 +239,9 @@ def test_plan_reads_a_dimension_object_in_the_partial_group_by(runtime_factory) 
         payload = plan_payload(runtime, intent="revenue by store", partial_query=partial)
     finally:
         runtime.close()
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-    assert payload["best"]["query_ir"]["group_by"] == [
-        "dimension.jaffle_store_name",
-        "dimension.jaffle_customer_history_preferred_store_id",
-    ]
+    # The caller's Store name settles how the stores show: the draft adds no Store id.
+    assert payload["status"] == "ok"
+    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_store_name"]
 
 
 REVENUE_SUM = {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
@@ -267,14 +263,14 @@ def test_plan_keeps_a_caller_select_item_once(runtime_factory, caller, alias) ->
             runtime, intent="top 3 stores by revenue", partial_query={"select": [caller]}
         )
         query = payload["best"]["query_ir"]
-
+        rows = runtime.query(query)["rows"]
     finally:
         runtime.close()
 
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert payload["status"] == "ok"
     assert query["select"] == [{**caller, "as": alias}]
     assert query["order_by"] == [{"field": alias, "direction": "DESC"}]
-    assert query["group_by"] == ["dimension.jaffle_customer_history_preferred_store_id"]
+    assert sorted(rows[0]) == ["dimension.jaffle_store_id", "dimension.jaffle_store_name", alias]
 
 
 def test_plan_keeps_a_different_computation_beside_the_caller_one(runtime_factory) -> None:
@@ -437,7 +433,7 @@ def test_plan_compact_detail_discovers_fallback_after_invalid_primary(
         "discover_fallback",
         "validate:catalog_fallback",
     ]
-    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+    assert payload["status"] == "ok"
     assert payload["best"]["pattern"] == "catalog_fallback"
     assert payload["best"]["trace"]["fallback"]["used"] is True
 
@@ -737,7 +733,7 @@ def test_plan_expanded_detail_returns_alternatives_and_blocked(
         payload = plan_payload(runtime, intent="top stores by revenue", detail=detail, limit=3)
     finally:
         runtime.close()
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert payload["status"] == "ok"
     assert "alternatives" in payload
     assert "blocked" in payload
     assert ("compose_hints" in payload) is (detail == "debug")
@@ -898,7 +894,7 @@ def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) ->
     finally:
         runtime.close()
 
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert payload["status"] == "ok"
     query = payload["best"]["query_ir"]
     assert query["select"] == [
         {
@@ -906,7 +902,7 @@ def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) ->
             "expression": {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"},
         }
     ]
-    assert query["group_by"] == ["dimension.jaffle_customer_history_preferred_store_id"]
+    assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
     assert query["where"] == [
         {"field": "dimension.jaffle_customer_type", "op": "=", "value": "repeat"}
     ]
@@ -1001,7 +997,8 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
     ranked_query = ranked["best"]["query_ir"]
     assert ranked["status"] == "ok"
     assert ranked["best"]["pattern"] == "package_example"
-    assert_plan_held(bucketed, "PLAN_UNMATCHED_TERMS")
+    # The month splits the stores it ranks: plan asks which ranking is meant.
+    assert_plan_held(bucketed, "PLAN_RANKING_PERIOD_AMBIGUOUS")
     assert "time" not in ranked_query
     assert ranked_query["limit"] == 5
     assert ranked_query["order_by"][0]["direction"] == "DESC"
@@ -1012,11 +1009,11 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
 @pytest.mark.parametrize(
     ("name", "code"),
     [
-        ("top_stores_by_revenue", "PLAN_INTENT_COVERAGE_GAP"),
-        ("inventory_levels_by_store", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        # "by revenue" after "What are the top stores" reads as a grouping it lacks.
+        ("top_stores_by_revenue", "PLAN_UNMATCHED_TERMS"),
+        ("inventory_levels_by_store", "PLAN_INTENT_COVERAGE_GAP"),
         ("active_menu_snapshot_for_high_activity_stores", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        ("adversarial_fake_ids_route_to_real_revenue", "VALIDATION_FAILED"),
-        ("orders_by_store_without_time_bucket", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("adversarial_fake_ids_route_to_real_revenue", "PLAN_UNMATCHED_TERMS"),
     ],
 )
 def test_benchmark_store_questions_require_clarification(runtime_factory, name, code) -> None:

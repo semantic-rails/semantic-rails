@@ -374,8 +374,15 @@ def _noun_phrase(words: list[str], start: int) -> tuple[str, int]:
     return (head[:-2] if head.endswith("'s") else head), end
 
 
-def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
-    """A ranking request loses its limit, its sort or the thing being ranked."""
+def _ranking_gaps(
+    runtime: Any, text: str, query: dict[str, Any], partial_query: dict[str, Any] | None = None
+) -> list[CoverageGap]:
+    """A ranking request loses its limit, its sort or the thing being ranked.
+
+    The ranked value must be named: by one measure or metric's whole name, label or alias in
+    the question, or by the caller's ``partial_query.select``. A value the draft picked any
+    other way ("which store had the most customers") holds as ``ranked_measure_uncertain``.
+    """
 
     config = runtime._config
     request = _ranking_request(text, _dimension_nouns(config))
@@ -406,9 +413,12 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
     )
     if first and not ordered and "order" not in problems:
         problems.append("order")
+    chosen = _caller_value_ids(partial_query or {})
     if len(ranked_ids) == 1 and ordered_id not in ranked_ids:
         problems.append("ranked_measure")
-    elif len(ranked_ids) > 1 or (not ranked_ids and len(selected) > 1):
+    elif len(ranked_ids) > 1 or (
+        not ranked_ids and (len(selected) > 1 or ordered_id not in chosen)
+    ):
         problems.append("ranked_measure_uncertain")
     noun = _singular(request["noun"])
     time = _time_block(query)
@@ -457,6 +467,21 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
             },
         )
     ]
+
+
+def _caller_value_ids(partial_query: dict[str, Any]) -> set[str]:
+    """The measures and metrics the caller's ``partial_query.select`` names by id."""
+
+    choices = partial_query.get("select")
+    return {
+        node[key]
+        for item in (choices if isinstance(choices, list) else [])
+        if isinstance(item, dict)
+        for node in (item, item.get("expression"))
+        if isinstance(node, dict)
+        for key in ("measure", "metric")
+        if isinstance(node.get(key), str)
+    }
 
 
 def _orders_by_a_value(order: dict[str, Any], query: dict[str, Any]) -> bool:
@@ -510,6 +535,8 @@ def _ranking_measure_ids(config: Any, text: str, request: dict[str, Any]) -> set
     for row in [*getattr(config, "measures", []), *getattr(config, "metric_recipes", [])]:
         object_id = str(getattr(row, "id", "") or "")
         fields = [
+            # The whole id: a metric the question names stands in its text as its id.
+            object_id,
             object_id.rsplit(".", 1)[-1],
             str(getattr(row, "name", "") or "").rsplit(".", 1)[-1],
             str(getattr(row, "label", "") or ""),
@@ -517,9 +544,11 @@ def _ranking_measure_ids(config: Any, text: str, request: dict[str, Any]) -> set
         ]
         for candidate in fields:
             tokens = [_singular(word) for word in _plain(candidate).split()]
+            forms = {tuple(tokens)}
             while tokens and tokens[-1] in {"usd"}:
                 tokens.pop()
-            if tuple(tokens) == sought:
+                forms.add(tuple(tokens))
+            if sought in forms:
                 matched.add(object_id)
                 break
     return matched

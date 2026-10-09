@@ -19,9 +19,9 @@ from semantic_rails.planner.generators import (
 from semantic_rails.planner.plan_query import _merge_partial_query
 from semantic_rails.runtime import runtime_request_scope
 from semantic_rails.schema import SemanticPolicyConfig
-from tests.semantic_rails.result_helpers import assert_plan_held
 
 STORE = "dimension.jaffle_store_name"
+STORE_ID = "dimension.jaffle_store_id"
 PRODUCT_TYPE = "dimension.jaffle_item_product_type"
 CATALOG_PRODUCT_TYPE = "dimension.jaffle_product_type"
 STORE_DISTRICT = "dimension.store_district"
@@ -183,7 +183,7 @@ def test_multi_value_draft_executes_combined_values_per_group(runtime_factory) -
                 {"field": STORE, "op": "=", "value": "Brooklyn"},
                 {"field": PRODUCT_TYPE, "op": "=", "value": "jaffle"},
             ],
-            [STORE],
+            [STORE_ID, STORE],
         ),
     ],
 )
@@ -195,15 +195,11 @@ def test_single_values_negation_and_distinct_dimensions_keep_their_behavior(
         payload = plan_payload(runtime, intent=intent)
     finally:
         runtime.close()
-    if intent == "item revenue for food from Brooklyn by store":
-        assert_plan_held(payload, "VALIDATION_FAILED")
-        status = "low_confidence"
-        expected_groups = ["dimension.jaffle_customer_history_preferred_store_id"]
     assert payload["status"] == status
     query = payload["best"]["query_ir"]
     assert query["where"] == expected_where
     assert query.get("group_by", []) == expected_groups
-    if status == "low_confidence" and intent != "item revenue for food from Brooklyn by store":
+    if status == "low_confidence":
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
         # The planner drafts the null-keeping exclusion, and every exclusion holds.
         assert "negation_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
@@ -743,6 +739,8 @@ def test_plan_keeps_both_product_groupings_or_refuses_readiness(
                 "dimension.jaffle_product_id",
                 "dimension.jaffle_product_name",
                 "dimension.jaffle_item_product_name",
+                # The Product entity's key: its two naming dimensions leave it alone.
+                "dimension.jaffle_product_sku",
             }
         else:
             assert payload["status"] == "low_confidence", payload.get("why")
@@ -859,7 +857,13 @@ def test_ambiguous_added_grouping_cannot_bypass_readiness_guard(
             [PRODUCT_TYPE, CATALOG_PRODUCT_TYPE],
             True,
         ),
-        ("primary", "item revenue by store", [PRODUCT_TYPE], [PRODUCT_TYPE, STORE], False),
+        (
+            "primary",
+            "item revenue by store",
+            [PRODUCT_TYPE],
+            [PRODUCT_TYPE, STORE_ID, STORE],
+            False,
+        ),
     ],
 )
 def test_grouping_added_beside_caller_group_by_is_not_execute_ready(
@@ -882,13 +886,6 @@ def test_grouping_added_beside_caller_group_by_is_not_execute_ready(
     finally:
         runtime.close()
     assert partial == before
-    if intent == "item revenue by store":
-        assert_plan_held(payload, "VALIDATION_FAILED")
-        assert payload["best"]["query_ir"]["group_by"] == [
-            PRODUCT_TYPE,
-            "dimension.jaffle_customer_history_preferred_store_id",
-        ]
-        return
     assert payload["best"]["query_ir"]["group_by"] == group_by
     assert payload["status"] == "low_confidence", payload.get("why")
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
@@ -907,14 +904,10 @@ def test_caller_group_by_naming_every_grouping_is_execute_ready(runtime_factory)
     try:
         payload = plan_payload(runtime, intent="item revenue by store", partial_query=partial)
         query = payload["best"]["query_ir"]
-        assert query["group_by"] == [
-            PRODUCT_TYPE,
-            STORE,
-            "dimension.jaffle_customer_history_preferred_store_id",
-        ]
-        assert_plan_held(payload, "VALIDATION_FAILED")
-        # Preserve the reference check for an explicitly authored intended grouping.
-        query = {**query, "group_by": [PRODUCT_TYPE, STORE], "order_by": []}
+        # The caller's Store name settles how stores show: the draft adds no Store id.
+        assert query["group_by"] == [PRODUCT_TYPE, STORE]
+        assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"].get("ready_for", [])
         measure = query["select"][0]["as"]
         rows = runtime.query(query)["rows"]
         actual = sorted((row[PRODUCT_TYPE], row[STORE], row[measure]) for row in rows)
@@ -961,18 +954,37 @@ def _with_districts(runtime, monkeypatch) -> None:
     )
 
 
-@pytest.mark.parametrize("intent", ["item revenue by orders", "item revenue by customers"])
-def test_fallback_plural_in_the_planner_word_table_is_not_execute_ready(
-    runtime_factory, monkeypatch, intent
+@pytest.mark.parametrize(
+    ("intent", "key", "column"),
+    [
+        ("item revenue by orders", "dimension.jaffle_order_id", "o.order_id"),
+        ("item revenue by customers", "dimension.jaffle_customer_id", "o.customer_id"),
+    ],
+)
+def test_a_plural_entity_on_the_fallback_groups_by_its_key(
+    runtime_factory, monkeypatch, intent, key, column
 ) -> None:
+    # A plural naming an entity is that entity's key, never a dimension discovery scores.
     runtime = runtime_factory("jaffle_shop")
     _force_fallback(runtime, monkeypatch, intent, "fallback")
     try:
         payload = plan_payload(runtime, intent=intent)
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query_ir"]
+        assert query["group_by"] == [key]
+        measure = query["select"][0]["as"]
+        actual = sorted((row[key], row[measure]) for row in runtime.query(query)["rows"])
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = sorted(
+                connection.execute(
+                    f"SELECT {column}, SUM(i.item_revenue_cents / 100.0) FROM jaffle_item i "
+                    "JOIN jaffle_order o ON i.order_id = o.order_id GROUP BY 1"
+                ).fetchall()
+            )
     finally:
         runtime.close()
-    assert payload["status"] == "low_confidence", payload.get("why")
-    assert "execute" not in payload["next"].get("ready_for", [])
+    assert [row[0] for row in actual] == [row[0] for row in expected]
+    assert [row[1] for row in actual] == pytest.approx([row[1] for row in expected])
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])

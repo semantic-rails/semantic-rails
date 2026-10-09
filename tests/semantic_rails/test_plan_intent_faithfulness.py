@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import duckdb
 import pytest
 
 from semantic_rails.planner import plan_payload
@@ -50,9 +51,6 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
     finally:
         runtime.close()
 
-    if intent == "Revenue and order count by store last quarter":
-        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-        return
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     assert expected_gap in _gap_kinds(payload)
@@ -61,17 +59,42 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
     assert payload["why"]["recovery_hints"]
 
 
-def test_conjoined_store_quarter_stays_held_with_pattern_enabled(runtime_factory) -> None:
+def test_conjoined_store_quarter_answers_with_the_keyed_store(runtime_factory) -> None:
+    # "store" names the Store entity, so the conjoined subjects group by its key and name.
     runtime = runtime_factory("jaffle_shop")
+    now = {"now": "2017-04-15"}
     try:
         payload = plan_payload(
             runtime,
             intent="Revenue and order count by store last quarter",
-            partial_query={"policy_context": {"now": "2026-10-05T06:00:00Z"}},
+            partial_query={"policy_context": now},
         )
-        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query_ir"]
+        assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
+        rows = runtime.query({**query, "policy_context": now})["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute(
+                "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0), "
+                "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN jaffle_store s USING "
+                "(store_id) WHERE o.ordered_at >= TIMESTAMP '2017-01-01' AND o.ordered_at < "
+                "TIMESTAMP '2017-04-01' GROUP BY 1, 2 ORDER BY 1"
+            ).fetchall()
     finally:
         runtime.close()
+    actual = [
+        (
+            row["dimension.jaffle_store_id"],
+            row["dimension.jaffle_store_name"],
+            round(float(row["revenue_usd"]), 2),
+            row["order_count"],
+        )
+        for row in rows
+    ]
+    assert reference
+    assert actual == [
+        (key, name, round(float(revenue), 2), count) for key, name, revenue, count in reference
+    ]
 
 
 @pytest.mark.parametrize(
@@ -109,16 +132,9 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
     finally:
         runtime.close()
 
-    holds = {
+    if intent == "revenue vs prior year by store":
         # Its window runs to now, so the month in progress would sit beside a complete one.
-        "revenue vs prior year by store": "PERIOD_COMPARISON_INCOMPLETE",
-        "revenue vs order count by store last quarter": "PLAN_FALLBACK_SEMANTIC_DRIFT",
-        "orders by store and month": "PLAN_UNMATCHED_TERMS",
-        "orders by store in Brooklyn": "PLAN_FALLBACK_SEMANTIC_DRIFT",
-        "food revenue share vs drink revenue share by store": "PLAN_UNMATCHED_TERMS",
-    }
-    if intent in holds:
-        assert_plan_held(payload, holds[intent])
+        assert_plan_held(payload, "PERIOD_COMPARISON_INCOMPLETE")
         return
     assert payload["best"]["pattern"] == pattern
     if unasked:
@@ -176,7 +192,7 @@ def test_positive_value_filter_is_not_mistaken_for_negation(runtime_factory) -> 
     finally:
         runtime.close()
 
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert payload["status"] == "ok"
     assert payload["best"]["query_ir"]["where"] == [
         {"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}
     ]

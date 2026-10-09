@@ -22,10 +22,20 @@ def _merge_partial_query(
     merged shallowly so generated temporal roles can still fill missing
     fields. The question's values on one field form one generated filter
     for one total or combined ranking, without adding grouping. Caller
-    rows stay as written, with only string predicate fields stripped.
+    rows stay as written, with only string predicate fields stripped. A caller's group_by holding
+    one dimension that stands for an entity's rows (``_entity_stand_ins``) settles how they show:
+    the draft's other stand-ins of that entity, and their order_by entries, are left out.
     """
 
+    from .groupings import _entity_stand_ins  # noqa: WPS433
+
     partial = dict(partial_query or {})
+    chosen = {str(item) for item in partial.get("group_by") or [] if isinstance(item, str)}
+    settled: set[str] = set()
+    for entity in config.entities if chosen else []:
+        keys, shown = _entity_stand_ins(config, entity, str(entity.label or ""))
+        if chosen & {*keys, *shown}:
+            settled |= {*keys, *shown} - chosen
     # Context is validation authority, not portable Query IR. _validate_query
     # receives it separately so every draft remains governed without asking
     # callers to replay trusted claims in a later compile/execute request.
@@ -33,6 +43,15 @@ def _merge_partial_query(
     partial.pop("request_context", None)
     partial.pop("request_id", None)
     merged = dict(draft_query or {})
+    if settled:
+        for key in ("group_by", "order_by"):
+            rows = [
+                row
+                for row in merged.get(key) or []
+                if (row.get("field") if isinstance(row, dict) else row) not in settled
+            ]
+            if key in merged:
+                merged[key] = rows
     if partial.get("select"):
         merged, partial["select"] = _without_caller_selects(config, merged, partial["select"])
     for key, value in partial.items():

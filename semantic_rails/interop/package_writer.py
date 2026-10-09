@@ -113,9 +113,12 @@ class _Writer:
                 "key": columns if role == "primary" else {"columns": columns, "role": role},
                 "model": key,
                 **_described(
-                    entity, skip={*skip, "foreign_keys", "foreign_key_roles", *_MODEL_FIELDS}
+                    entity,
+                    skip={*skip, "foreign_keys", "foreign_key_roles", "display", *_MODEL_FIELDS},
                 ),
             }
+            if entity.display:  # the display dimension's key on this entity's model
+                entities[key]["display"] = _keyed(entity.display, f"dimension.{self.ns}_{key}_")[0]
             model = self.model(entity.id)[1]
             model.update(_authored(entity, skip={f.name for f in fields(entity)} - _MODEL_FIELDS))
             if entity.foreign_keys:  # graph.relationships states every join, so infer none

@@ -94,7 +94,7 @@ def test_qualified_rollup_synthesizes_metric_filters_order_by_limit(runtime_fact
         # top 3 store-months), so it is held; its synthesized shape is checked here.
         assert not payload["candidates"]
         candidate = payload["blocked"][0]
-        held_candidate(payload, "PLAN_UNMATCHED_TERMS")
+        assert candidate["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING"
         query = candidate["candidate_ir"]
         assert candidate["validation"]["ok"] is True
         # metric_filters must be present and non-empty (phase 5 contract)

@@ -26,17 +26,20 @@ from .._base import (
     _TERM_SYNONYMS,
     RuntimeCompositionDraft,
     _aggregation_from_text,
+    _declared_name_forms,
     _named_metric,
     _object_by_id,
     _preferred_measure,
     _preferred_metric,
     _resolved,
+    _singular,
     _tokens,
 )
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
-from ..groupings import _explicit_grain, _maybe_group_by, _time_spec
+from ..groupings import _entity_grouping, _explicit_grain, _maybe_group_by, _time_spec
 from ..intent_ir import _FALLBACK_STOPWORDS
 from ..qualifiers import _add_order, _target_measure_terms, _top_n_intent
+from ..ranking_checks import _dimension_nouns, _ranking_request
 from ..time_windows import _time_bounds_from_text, _time_window
 from ._protocol import IntentPattern
 
@@ -137,8 +140,22 @@ _TIME_SERIES_PHRASES = (
 )
 
 
+def _named_by_rows(target: Any, noun: str, question: str) -> bool:
+    """Whether the only words naming the subject are the ranked rows' noun.
+
+    "top 5 customers" and "the 5 customers who spent the most" name no value to rank by: the
+    word that picked Customers to count names the rows, and every row counts one.
+    """
+
+    rows = {_singular(word) for word in _tokens(noun)}
+    said = {_singular(word) for word in _tokens(question)} - _FALLBACK_STOPWORDS
+    names = {_singular(word) for name in _declared_name_forms(target) for word in _tokens(name)}
+    return bool(names & said) and names & said <= rows
+
+
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
     config = runtime._config
+    question = text
     named = _named_metric(config, text)
     if named is not None:
         text = named[1]
@@ -151,7 +168,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         or _target_measure_terms(text, terms)
         or sorted(target_focus_terms - _FALLBACK_STOPWORDS)
     )
-    group_by = _maybe_group_by(config, text, target_terms=target_terms)
+    group_by = _maybe_group_by(config, text, target_terms=target_terms, each=True)
     metric_first = bool(
         (set(target_terms) | target_focus_terms)
         & {
@@ -228,7 +245,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         # The grouping above, without the clock, only picked measure or metric.
         role = _object_by_id(config.temporal_roles, temporal_role)
         clock = str(getattr(role, "label", "") or "")
-        group_by = _maybe_group_by(config, text, target_terms=target_terms, clock=clock)
+        group_by = _maybe_group_by(config, text, target_terms=target_terms, clock=clock, each=True)
         time_spec = _time_spec(temporal_role, text, clock)
         if (
             not _explicit_grain(text, clock)
@@ -263,15 +280,24 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if time_spec is not None:
         query["time"] = time_spec
 
+    # A ranking keeps what the ranking parser reads: its count ("top three"), its direction
+    # ("bottom", "least") and the entity it ranks ("which 2 accounts had the most MRR").
+    request = _ranking_request(question, _dimension_nouns(config))
+    direction = "DESC"
+    if request is not None and request["direction"] and (is_top or request["limit"] is not None):
+        is_top, direction = True, str(request["direction"])
+        top_n = request["limit"] if request["limit"] is not None else top_n
+        ranked = _entity_grouping(config, str(request["noun"]))
+        if ranked is not None and not _named_by_rows(target, str(request["noun"]), question):
+            group_by = list(dict.fromkeys([*group_by, *ranked[1]]))
     if group_by:
         query["group_by"] = group_by
     query = _normalize_value_filters(
         query, _matched_value_rows(runtime, query, text), text=text, config=config
     )
     if is_top:
-        query["order_by"] = [{"field": select_alias, "direction": "DESC"}]
+        query["order_by"] = [{"field": select_alias, "direction": direction}]
         query["limit"] = top_n
-
     else:
         _add_order(query)
 

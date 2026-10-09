@@ -661,7 +661,7 @@ JAFFLE_MOVES = [
     ("revenue year over year", "PLAN_UNASKED_GROUPING"),
     ("revenue vs last year", "PLAN_UNASKED_GROUPING"),
     ("revenue compared to last year", "PLAN_UNASKED_GROUPING"),
-    ("revenue vs prior year by store", "PLAN_UNMATCHED_TERMS"),
+    ("revenue vs prior year by store", "PLAN_UNASKED_GROUPING"),
     ("revenue this month vs last month", "TIME_WINDOW_START_DROPPED"),
 ]
 

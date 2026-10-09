@@ -67,6 +67,9 @@ _VALID_METRIC_KINDS: frozenset[str] = frozenset(
 _VALID_ACCUMULATION_KINDS: frozenset[str] = frozenset({"event", "flow", "stock", "population"})
 # What the loader reads from an `accumulation:` block (config.py `_normalize_accumulation`).
 _ACCUMULATION_KEYS: frozenset[str] = frozenset({"kind", "snapshot"})
+# The loader reads any other snapshot as end_of_period, so a typo would read the closing balance.
+_VALID_ACCUMULATION_SNAPSHOTS: frozenset[str] = frozenset({"start_of_period", "end_of_period"})
+_REPLACES_DEFAULT = "a measure's `accumulation:` replaces `defaults.measure.accumulation` whole"
 
 # Allowed-key sets for every authored spec shape. The loader ignores keys
 # it does not read, so a typo'd key (`agg:` for `default_agg:`) silently
@@ -186,6 +189,7 @@ _GRAPH_ENTITY_KEYS: frozenset[str] = frozenset(
         "kind",
         "model",
         "synonyms",
+        "display",
         "description",
         "topics",
         "allowed_as_root",
@@ -539,6 +543,7 @@ def _check_model_shape(
     errors: list[str],
     graph_entities: dict[str, Any] | None = None,
     namespace: str,
+    default_accumulation: Any = None,
 ) -> None:
     """Authoring-shape checks for one model: unknown keys, list-typed fields, and the
     entities: block in place of keys and a singular entity."""
@@ -614,7 +619,13 @@ def _check_model_shape(
                 f"{measure_label} has unknown kind {kind_value!r}. Valid kinds: "
                 f"{', '.join(sorted(_VALID_MEASURE_KINDS))}.",
             )
-        _check_accumulation(measure_raw.get("accumulation"), label=measure_label, errors=errors)
+        if "accumulation" in measure_raw:
+            _check_accumulation(
+                measure_raw["accumulation"],
+                label=measure_label,
+                errors=errors,
+                default=default_accumulation,
+            )
 
     variants = model.get("variants")
     if isinstance(variants, dict):
@@ -780,21 +791,63 @@ def _check_metric(
         )
 
 
-def _check_accumulation(accumulation: Any, *, label: str, errors: list[str]) -> None:
-    """Unknown keys and the kind of an ``accumulation:`` value, in the mapping or scalar form."""
-    acc_kind = ""
+def _accumulation_parts(accumulation: Any) -> tuple[str, str | None]:
+    """The kind and snapshot the loader reads from an ``accumulation:`` value
+    (config.py ``_normalize_accumulation``); the snapshot is None when the value sets none."""
+    if not isinstance(accumulation, dict):
+        return str(accumulation or "").strip().lower(), None
+    kind = str(accumulation.get("kind", "") or "").strip().lower()
+    if "snapshot" not in accumulation:
+        return kind, None
+    return kind, str(accumulation["snapshot"] or "").strip().lower()
+
+
+def _check_accumulation(
+    accumulation: Any, *, label: str, errors: list[str], default: Any = None
+) -> None:
+    """Unknown keys, kind and snapshot of an ``accumulation:`` value, in the mapping or scalar
+    form. The loader reads a measure's value in place of ``default`` (the
+    ``defaults.measure.accumulation``), not merged with it, so the value must state the kind,
+    and the snapshot the default sets, itself."""
+    acc_kind, snapshot = _accumulation_parts(accumulation)
     if isinstance(accumulation, dict):
         _unknown_key_errors(
             accumulation, _ACCUMULATION_KEYS, label=f"{label} accumulation", errors=errors
         )
-        acc_kind = str(accumulation.get("kind", "") or "").strip().lower()
-    elif accumulation is not None:
-        acc_kind = str(accumulation or "").strip().lower()
     if acc_kind and acc_kind not in _VALID_ACCUMULATION_KINDS:
         add_error(
             errors,
             f"{label} has unknown accumulation kind {acc_kind!r}. Valid "
             f"kinds: {', '.join(sorted(_VALID_ACCUMULATION_KINDS))}.",
+        )
+    if snapshot is not None:
+        if snapshot not in _VALID_ACCUMULATION_SNAPSHOTS:
+            add_error(
+                errors,
+                f"{label} has unknown accumulation snapshot {snapshot!r}. Valid snapshots: "
+                f"{', '.join(sorted(_VALID_ACCUMULATION_SNAPSHOTS))}; {_REPLACES_DEFAULT}.",
+            )
+        if acc_kind != "stock":
+            add_error(
+                errors,
+                f"{label} accumulation sets 'snapshot:' without 'kind: stock'; only a stock "
+                f"reads a snapshot, so write the kind beside it ({_REPLACES_DEFAULT}).",
+            )
+        return
+    if default is None:
+        return
+    default_kind, default_snapshot = _accumulation_parts(default)
+    if not acc_kind and (default_kind or default_snapshot):
+        add_error(
+            errors,
+            f"{label} accumulation names no 'kind:'; {_REPLACES_DEFAULT}, so write the kind "
+            "the measure means.",
+        )
+    elif acc_kind == "stock" and default_snapshot:
+        add_error(
+            errors,
+            f"{label} accumulation names no 'snapshot:' although the default sets "
+            f"{default_snapshot!r}; {_REPLACES_DEFAULT}, so write the snapshot the measure means.",
         )
 
 
@@ -942,6 +995,10 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
         # The namespace the loader derives ids from (`normalize_package`).
         block = package if isinstance(package, dict) else {}
         namespace = str(block.get("namespace", block.get("id", "")) or "").strip()
+        measure_defaults = defaults.get("measure") if isinstance(defaults, dict) else None
+        default_accumulation = (
+            measure_defaults.get("accumulation") if isinstance(measure_defaults, dict) else None
+        )
         for model_id, model in models.items():
             if isinstance(model, dict) and str(model.get("id", model_id)).strip() != str(model_id):
                 add_error(
@@ -957,6 +1014,7 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
                     errors=errors,
                     graph_entities=graph_entities,
                     namespace=namespace,
+                    default_accumulation=default_accumulation,
                 )
 
     metrics = raw.get("metrics")

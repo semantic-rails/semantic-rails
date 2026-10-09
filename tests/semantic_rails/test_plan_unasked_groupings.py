@@ -33,6 +33,7 @@ from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_listed_groupings import _upkeep
 
 STORE = "dimension.jaffle_store_name"
+STORE_ID = "dimension.jaffle_store_id"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
 ORDER_TIME = "temporal_role.jaffle_order_time"
 MONTH = f"{ORDER_TIME}__month"
@@ -106,18 +107,10 @@ def test_a_comparison_never_splits_by_a_month_the_question_never_asks_for(
         jaffle, intent="food revenue vs drink revenue by store and customer type"
     )
 
-    _held(payload, UNMATCHED)
-    # Check the original grain obligation on an explicitly authored store grouping.
-    query = {
-        **payload["best"]["query_ir"],
-        "group_by": [STORE, CUSTOMER_TYPE],
-        "order_by": [{"field": "time", "direction": "ASC"}],
-    }
-    why = unasked_groupings._unasked_grouping_why(jaffle, payload["intent"], query)
-    assert why["code"] == UNASKED
-    assert why["details"] == {"unasked_groupings": ["month"], "grain": "month"}
+    assert _held(payload, UNASKED) == {"unasked_groupings": ["month"], "grain": "month"}
+    query = payload["best"]["query_ir"]
     assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
-    assert query["group_by"] == [STORE, CUSTOMER_TYPE]
+    assert query["group_by"] == [STORE_ID, STORE, CUSTOMER_TYPE]
     reference = sorted(
         (store, kind, round(float(food), 2), round(float(drink), 2))
         for store, kind, food, drink in _reference(
@@ -149,7 +142,6 @@ def test_a_comparison_never_splits_by_a_month_the_question_never_asks_for(
     [
         "top 3 stores by revenue at month level",
         "top 1 store by revenue at month level",
-        "top 3 stores by monthly revenue",
         "top 3 stores by revenue by month",
     ],
 )
@@ -160,24 +152,20 @@ def test_a_ranking_split_by_a_period_asks_which_ranking_it_means(
     stores = "store" if limit == 1 else "stores"
     payload = plan_payload(jaffle, intent=intent)
 
-    _held(payload, UNMATCHED)
-    query = {**payload["best"]["query_ir"], "group_by": [STORE]}
-    why = unasked_groupings._unasked_grouping_why(jaffle, intent, query)
-    assert why["code"] == RANKING
-    details = why["details"]
-    assert details == {"limit": limit, "ranked": [STORE], "grain": "month"}
+    details = _held(payload, RANKING)
+    assert details == {"limit": limit, "ranked": [STORE_ID, STORE], "grain": "month"}
     assert "clarification" not in details
     assert "execute" not in payload["next"].get("ready_for", [])
     # The message states both readings; no option runs either one.
-    assert why["message"].endswith(
+    assert payload["why"]["message"].endswith(
         f"The top {limit} {stores} over the whole window, or the top {limit} {stores} in each "
         "month?"
     )
-    assert [hint["kind"] for hint in why["recovery_hints"]] == ["ask_which_ranking"]
-    assert "query_ir" not in json.dumps(why)
+    assert [hint["kind"] for hint in payload["why"]["recovery_hints"]] == ["ask_which_ranking"]
+    assert "query_ir" not in json.dumps(payload["why"])
 
     # The draft keeps the top N store-months, which is neither reading.
-    draft = _cents(typed_rows(jaffle.query(query)), STORE, MONTH)
+    draft = _cents(typed_rows(jaffle.query(payload["best"]["query_ir"])), STORE, MONTH)
     assert draft == [
         (store, str(month), round(float(revenue), 2))
         for store, month, revenue in _reference(
@@ -189,7 +177,7 @@ def test_a_ranking_split_by_a_period_asks_which_ranking_it_means(
 @pytest.mark.parametrize(
     ("intent", "grain"),
     [
-        ("which 3 stores have the highest monthly revenue by customer type", {"grain": "month"}),
+        ("which 3 stores have the highest revenue by customer type by month", {"grain": "month"}),
         ("which 3 stores have the highest revenue by customer type", {}),
     ],
 )
@@ -198,19 +186,12 @@ def test_a_ranking_of_more_than_its_entity_offers_no_runnable_option(
 ) -> None:
     payload = plan_payload(jaffle, intent=intent)
 
-    _held(payload, GAP)
-    query = {
-        **payload["best"]["query_ir"],
-        "group_by": [STORE, CUSTOMER_TYPE],
-        "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
-        "limit": 3,
-    }
-    why = unasked_groupings._unasked_grouping_why(jaffle, intent, query)
-    assert why["code"] == RANKING
-    assert why["details"] == {"limit": 3, "ranked": [STORE, CUSTOMER_TYPE], **grain}
-    assert "query_ir" not in json.dumps(why)
+    ranked = [CUSTOMER_TYPE, STORE_ID, STORE]
+    assert _held(payload, RANKING) == {"limit": 3, "ranked": ranked, **grain}
+    assert "query_ir" not in json.dumps(payload["why"])
     # Run anyway, the draft keeps the top 3 (store, customer type) rows, not the top 3 stores.
-    assert query["group_by"] == [STORE, CUSTOMER_TYPE]
+    query = payload["best"]["query_ir"]
+    assert query["group_by"] == ranked
     stores = [row[STORE] for row in typed_rows(jaffle.query(query))]
     assert stores != [
         store
@@ -225,19 +206,16 @@ def test_a_ranking_of_more_than_its_entity_offers_no_runnable_option(
         # Said as "top 3 stores by revenue by customer type", the draft drops the customer type
         # and is held for that, with no option either.
         payload = plan_payload(jaffle, intent="top 3 stores by revenue by customer type")
-        assert "clarification" not in _held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        assert "clarification" not in _held(payload, UNMATCHED)
 
 
 def test_a_ranking_of_a_time_axis_value_offers_no_runnable_option(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="top 3 stores by cumulative revenue by month")
 
-    _held(payload, UNMATCHED)
-    query = {**payload["best"]["query_ir"], "group_by": [STORE]}
-    why = unasked_groupings._unasked_grouping_why(jaffle, payload["intent"], query)
-    assert why["code"] == RANKING
-    assert why["details"] == {"limit": 3, "ranked": [STORE], "grain": "month"}
-    assert "query_ir" not in json.dumps(why)
+    assert _held(payload, RANKING) == {"limit": 3, "ranked": [STORE_ID, STORE], "grain": "month"}
+    assert "query_ir" not in json.dumps(payload["why"])
     # A running total needs its time axis: the draft without its grain doesn't validate.
+    query = payload["best"]["query_ir"]
     assert query["select"][0]["expression"] == {"metric": "metric.sales.cumulative_revenue"}
     totals = {key: value for key, value in query.items() if key not in {"time", "order_by"}}
     assert jaffle.validate(totals)["ok"] is False
@@ -337,17 +315,11 @@ def test_a_window_of_whole_years_never_splits_by_a_year_the_question_never_asks_
         "start": "2016-01-01",
         "end": "2018-01-01",
     }
-    _held(payload, UNMATCHED)
-    # The additional grain check still holds an authored store grouping when unasked.
-    query = {**payload["best"]["query_ir"], "group_by": [STORE]}
-    if "customer type" in intent:
-        query["group_by"].append(CUSTOMER_TYPE)
-    why = unasked_groupings._unasked_grouping_why(jaffle, intent, query)
     if held:
-        assert why["code"] == UNASKED
-        assert why["details"] == {"unasked_groupings": ["year"], "grain": "year"}
+        assert _held(payload, UNASKED) == {"unasked_groupings": ["year"], "grain": "year"}
     else:
-        assert why is None
+        assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"]["ready_for"]
 
 
 @pytest.mark.parametrize("window", ["last month", "January 2026"])
@@ -382,14 +354,9 @@ def test_a_grouping_after_a_window_keeps_the_window(incident: Runtime, jaffle: R
     assert typed_rows(incident.query({**query, "policy_context": {"now": "2026-03-15"}})) == []
 
     payload = plan_payload(jaffle, intent="revenue by store last month and customer type")
-    _held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-    # The window remains available in the diagnostic draft; author the intended grouping.
-    query = {
-        **payload["best"]["query_ir"],
-        "group_by": [STORE, CUSTOMER_TYPE],
-        "order_by": [{"field": "time", "direction": "ASC"}],
-    }
-    assert query["group_by"] == [STORE, CUSTOMER_TYPE]
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query_ir"]
+    assert query["group_by"] == [STORE_ID, STORE, CUSTOMER_TYPE]
     rows = typed_rows(jaffle.query({**query, "policy_context": {"now": "2017-04-15"}}))
     assert sorted(
         (row[STORE], row[CUSTOMER_TYPE], round(float(row["revenue_usd"]), 2)) for row in rows
@@ -528,118 +495,78 @@ def _ranking(intent: str) -> _Case:
 _CASES = [
     # A grain the question names, or one bucket.
     _Case("revenue by month", OK),
-    _Case("monthly revenue by store", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("show monthly revenue by store", "ok", "PLAN_UNMATCHED_TERMS"),
+    _Case("monthly revenue by store", OK),
+    _Case("show monthly revenue by store", OK),
     _Case("weekly revenue last 3 months", OK),
     _Case("daily revenue for the last 30 days", OK),
     _Case("revenue by order date", OK),
     _Case("revenue by order date in March 2017", OK),
-    _Case("revenue in Q1 2017 by store", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("revenue last month by store", "ok", "PLAN_UNMATCHED_TERMS"),
+    _Case("revenue in Q1 2017 by store", OK),
+    _Case("revenue last month by store", OK),
     _Case("revenue yesterday", OK),
-    _Case(
-        "revenue by store from January 1 2016 to December 31 2017 by year",
-        "ok",
-        "PLAN_UNMATCHED_TERMS",
-    ),
+    _Case("revenue by store from January 1 2016 to December 31 2017 by year", OK),
     _Case("revenue in 2017", OK),
-    _Case("top 5 stores by revenue in 2017", "ok", "PLAN_UNMATCHED_TERMS"),
+    _Case("top 5 stores by revenue in 2017", OK),
     _Case("new customer orders over time", OK),
     _Case("revenue trend over time", OK),
     _ended(_Case("revenue vs last month", OK)),
     _ended(_Case("monthly revenue with YoY", OK)),
     _ended(_Case("month over month revenue growth by month", OK)),
-    _Case("revenue by store in each month", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case(
-        "revenue vs order count by store last quarter",
-        "PLAN_FALLBACK_SEMANTIC_DRIFT",
-        "PLAN_FALLBACK_SEMANTIC_DRIFT",
-    ),
-    _Case("orders by store and month", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("food revenue vs drink revenue in Q1 2017 by store", "ok", "PLAN_UNMATCHED_TERMS"),
+    _Case("revenue by store in each month", OK),
+    # The comparison names no prior period to compare with.
+    _Case("revenue vs order count by store last quarter", OK, GAP),
+    _Case("orders by store and month", OK),
+    _Case("food revenue vs drink revenue in Q1 2017 by store", OK, GAP),
     # A dimension the question asks for, or filters to values it names.
-    _Case("revenue by store", "PLAN_FALLBACK_SEMANTIC_DRIFT", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-    _Case("top stores by revenue", "PLAN_FALLBACK_SEMANTIC_DRIFT", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-    _Case(
-        "which 5 stores had the most orders", "PLAN_INTENT_COVERAGE_GAP", "PLAN_INTENT_COVERAGE_GAP"
-    ),
+    _Case("revenue by store", OK),
+    _Case("top stores by revenue", OK),
+    _Case("which 5 stores had the most orders", OK),
     _Case("revenue per store", "PLAN_FALLBACK_SEMANTIC_DRIFT", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-    _Case("orders per store", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("revenue for each store", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
+    _Case("revenue for each store", OK),
     _Case("revenue for Brooklyn store by month", OK),
     _Case("revenue for Brooklyn and Philadelphia stores by month", OK),
-    _Case(
-        "revenue by store last month and customer type",
-        "PLAN_FALLBACK_SEMANTIC_DRIFT",
-        "PLAN_FALLBACK_SEMANTIC_DRIFT",
-    ),
+    _Case("revenue by store last month and customer type", OK),
     # Held before, for another reason.
     _Case("top 3 stores by revenue in each month", GAP, GAP),
+    # "store" names the rows, so it doesn't pick the same-store conversion rate for "orders".
+    _Case("orders per store", GAP, GAP),
+    # "monthly revenue" is no measure's or metric's name, so the ranked value isn't named.
+    _Case("top 3 stores by monthly revenue", GAP, GAP),
+    _Case("which 3 stores have the highest monthly revenue by customer type", GAP, GAP),
     _Case("revenue by store, last month and customer type", UNMATCHED, UNMATCHED),
     # A ranking split by a period the question names.
-    _Case("top 3 stores by revenue at month level", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("top 1 store by revenue at month level", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("top 3 stores by monthly revenue", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("top 3 stores by revenue by month", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("top stores by revenue by month", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("top 3 stores by cumulative revenue by month", "ok", "PLAN_UNMATCHED_TERMS"),
+    _ranking("top 3 stores by revenue at month level"),
+    _ranking("top 1 store by revenue at month level"),
+    _ranking("top 3 stores by revenue by month"),
+    _ranking("top stores by revenue by month"),
+    _ranking("top 3 stores by cumulative revenue by month"),
     # A ranking of more than the entity it ranks.
-    _Case(
-        "which 3 stores have the highest monthly revenue by customer type",
-        "PLAN_INTENT_COVERAGE_GAP",
-        "PLAN_INTENT_COVERAGE_GAP",
-    ),
-    _Case(
-        "which 3 stores have the highest revenue by customer type",
-        "PLAN_INTENT_COVERAGE_GAP",
-        "PLAN_INTENT_COVERAGE_GAP",
-    ),
+    _ranking("which 3 stores have the highest revenue by customer type by month"),
+    _ranking("which 3 stores have the highest revenue by customer type"),
     # A month plan picks for a comparison, a year-over-year shift or a qualified ranking.
-    _Case("food revenue vs drink revenue by store and customer type", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("food revenue share vs drink revenue share by store", "ok", "PLAN_UNMATCHED_TERMS"),
+    _moved("food revenue vs drink revenue by store and customer type", "month"),
+    _moved("food revenue share vs drink revenue share by store", "month"),
     _moved("What share of revenue comes from food vs drink?", "month"),
     _moved("orders by customer type, new vs repeat", "month"),
-    _ended(_Case("revenue vs prior year by store", "ok", "PLAN_UNMATCHED_TERMS")),
+    _ended(_moved("revenue vs prior year by store", "month")),
     _ended(_moved("revenue with YoY", "month")),
     _ended(_moved("revenue year over year", "month")),
     _ended(_moved("revenue vs last year", "month")),
     _ended(_moved("revenue compared to last year", "month")),
+    _Case("top 3 stores by revenue with at least 4 distinct customers", GAP, UNASKED, ("month",)),
     _Case(
-        "top 3 stores by revenue with at least 4 distinct customers",
-        "PLAN_INTENT_COVERAGE_GAP",
-        "PLAN_UNMATCHED_TERMS",
+        "top 3 stores by order count with at least 4 distinct customers", GAP, UNASKED, ("month",)
     ),
-    _Case(
-        "top 3 stores by order count with at least 4 distinct customers",
-        "PLAN_INTENT_COVERAGE_GAP",
-        "PLAN_UNMATCHED_TERMS",
-    ),
-    _Case(
-        "top stores by order count with at least 4 distinct customers",
-        "PLAN_INTENT_COVERAGE_GAP",
-        "PLAN_UNMATCHED_TERMS",
-    ),
-    _Case(
-        "top 10 stores by revenue with at least 10 orders",
-        "PLAN_INTENT_COVERAGE_GAP",
-        "PLAN_UNMATCHED_TERMS",
-    ),
-    _Case(
-        "revenue from customers with at least 10 orders by store",
-        "PLAN_INTENT_COVERAGE_GAP",
-        "PLAN_UNMATCHED_TERMS",
-    ),
+    _Case("top stores by order count with at least 4 distinct customers", GAP, UNASKED, ("month",)),
+    _Case("top 10 stores by revenue with at least 10 orders", GAP, UNASKED, ("month",)),
+    _Case("revenue from customers with at least 10 orders by store", GAP, UNASKED, ("month",)),
     # A window of several periods, split into them.
-    _Case(
-        "which 3 stores have the highest revenue in the last 6 months",
-        "PLAN_INTENT_COVERAGE_GAP",
-        "PLAN_INTENT_COVERAGE_GAP",
-    ),
-    _Case("What is revenue in the last 3 months by store?", "ok", "PLAN_UNMATCHED_TERMS"),
-    _Case("revenue for the last 3 months by store", "ok", "PLAN_UNMATCHED_TERMS"),
+    _moved("which 3 stores have the highest revenue in the last 6 months", "month"),
+    _moved("What is revenue in the last 3 months by store?", "month"),
+    _moved("revenue for the last 3 months by store", "month"),
     _moved("revenue in the last 3 months", "month"),
     _moved("revenue over the past 3 months", "month"),
-    _Case("revenue by store over the last 2 weeks", "ok", "PLAN_UNMATCHED_TERMS"),
+    _moved("revenue by store over the last 2 weeks", "week"),
     _moved("revenue in the trailing 12 months", "month"),
     _moved("revenue trailing 12 months", "month"),
     _moved("Revenue, trailing 7 days", "day"),
@@ -647,13 +574,13 @@ _CASES = [
     _moved("revenue last 30 days", "day"),
     _moved("revenue for the last 7 days", "day"),
     _moved("revenue last 7 days", "day"),
-    _Case("revenue by store last 7 days", "ok", "PLAN_UNMATCHED_TERMS"),
+    _moved("revenue by store last 7 days", "day"),
     _moved("orders past 2 weeks", "week"),
     _moved("orders last three quarters", "quarter"),
     _moved("orders from December 30, 2016 to January 2, 2017", "month"),
     _moved("revenue in 2016 and 2017", "year"),
     _moved("revenue between 2016 and 2017", "year"),
-    _Case("revenue by store from January 1 2016 to December 31 2017", "ok", "PLAN_UNMATCHED_TERMS"),
+    _moved("revenue by store from January 1 2016 to December 31 2017", "year"),
     # A store split the question never asks for.
     _Case("new store revenue by month", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
     _Case(

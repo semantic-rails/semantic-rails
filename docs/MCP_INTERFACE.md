@@ -383,7 +383,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   accounts right now") stays `TIME_WINDOW_UNRESOLVED`;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
-  including count-free requests such as "top stores by revenue";
+  including count-free requests such as "top stores by revenue". The ranked value must be
+  named: by one measure's or metric's whole name, label or alias in the question, or by the
+  caller's `partial_query.select`. A value the draft picked any other way ("which store had
+  the most customers", where no measure is named "customers") is `ranked_measure_uncertain`;
 - excludes a value requested positively, or cannot prove that its filter keeps or drops
   each named value with the requested polarity (`filter_values_unrealized`). Scalar `=`/`!=`
   and scalar or list `IN`/`NOT IN` can prove it; list-valued `=`/`!=`, empty membership
@@ -411,7 +414,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
   "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
-  Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first;
+  Gross Revenue and Net Revenue it names neither. The words of a grouping the question asks
+  for name its rows, not the subject: in "how many customers did each store have", "store"
+  doesn't pick a count of storefront sessions from the customer counts. `plan` reports every
+  other reason first;
 - returns a result without the part the question's shape asks for. "who", "whom", "whose",
   "which" or "list" opening a clause asks for the rows of the entity the clause names: its
   first word outside a time window and a "by" grouping that names an entity or, for "which"
@@ -527,7 +533,8 @@ the comma: "repair cost by incident name, incident" grouped by Incident name alo
 as two incidents can share a name, and neither is "repair cost by incident name, last month and
 incident". It also checks terms after `by` with a comma, tab or newline, after `per`,
 `each`, `for each` or `every`, in lists joined by commas, `and`, `&` or repeated clauses, and
-the nouns before `by` in `top`, `highest` and `lowest` rankings. Each term records its source
+the nouns before `by` in `top`, `bottom`, `highest` and `lowest` rankings. A term after `each`
+or `every` ends at the first word that names nothing more. Each term records its source
 span. Pieces consisting only of connector words add none, and a marker inside a declared name
 ("Sends per account") opens no clause.
 A `level`, `levels`, `grain` or `grains` word outside every declared name holds the plan unless
@@ -568,10 +575,11 @@ metric, temporal role or calendar, so a hidden object answers exactly as an abse
 clock is no clock, and its words keep their obligation. It only holds a plan; the draft and its
 filters are unchanged.
 A listed grouping that names an entity is satisfied only by that entity's own key
-dimension, or by the single declared dimension of that entity whose own words name it, and an
-entity with a composite key is never satisfied. A term names an entity only with every word of
-its label ("customer" names Customer, not Customer history), and a declared time, such as Store
-opened at, never stands in for its entity. Any other grouping matches a dimension whose own
+dimension, or by its `display` dimension (without one, the single declared dimension of that
+entity whose own words name it), and an entity with a composite key is never satisfied. A term
+names an entity only with every word of its label or of one of its synonyms ("customer" names
+Customer, not Customer history), and a declared time, such as Store opened at, never stands in
+for its entity. Any other grouping matches a dimension whose own
 words name it: its label, its aliases and the last part of its name, not the prefix of its id.
 A grouping that dimensions of two or more entities match, none of them the measure's own
 ("name" for an order count: Customer name or Store name), is ambiguous and never a pick: the
@@ -801,6 +809,20 @@ aggregate) keep the holds above, and a window in `query.time` is used as passed:
 balance window is read
 only when both bounds are whole days and it ends on or before the last complete day;
 otherwise `stock_as_of_unrealized`.
+**How plan answers by, each and top N.** A term that names an entity by its label or a synonym
+(plurals allowed, never its description), after "by", "each", "every" or "for each", or the noun
+a ranking ranks ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the most
+MRR"), groups by the entity's key dimension and the dimension that names a row: its
+[`display:`](PACKAGE_AUTHORING.md#display--the-name-of-one-row), else its one dimension whose own
+words name it, else the key alone with an assumption line saying so (none when the question
+names the key itself, "by store id"). A ranking keeps the count the question states (digits or
+"one" to "ten") and its direction ("bottom", "least", "lowest" sort ascending); ties at the cut
+follow `execute`'s ordering. A ranking whose subject only the ranked noun names ("top 5
+customers", "the 3 stores that sold the most") has no value to rank by: it groups by nothing and
+stays held. Any other ranking is ready only when its value is named (see `ranking_unrealized`
+above). A term after "each" or "every" ends at the first word that names nothing more
+("each plan make" groups by plan). The readiness checks read the same stand-ins, so a draft
+grouped by another entity's column stays held.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.
