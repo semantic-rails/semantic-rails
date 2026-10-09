@@ -9,9 +9,9 @@
    bare AttributeError / TypeError that surfaced as INTERNAL_ERROR instead
    of a structured INVALID_QUERY. ``path_policy`` is no longer a query key,
    so a payload that sends it is refused like any unknown key.
-6. The schema advertised ``time.range.last.unit`` values ``minute`` /
-   ``hour`` that the runtime rejects; the schema enum now matches the
-   runtime's supported units exactly.
+6. The schema advertised relative-window units ``minute`` / ``hour``
+   that the runtime rejects; the schema enum for ``time.last.unit`` now
+   matches the runtime's supported units exactly.
 """
 
 from __future__ import annotations
@@ -21,13 +21,15 @@ from pathlib import Path
 
 import pytest
 
-from semantic_rails.ast import _SUPPORTED_RELATIVE_UNITS, normalize_partial_query, normalize_query
+from semantic_rails.ast import normalize_partial_query, normalize_query
+from semantic_rails.clock import UNITS
 from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
+SCHEMA_PATH = REPO_ROOT / "schemas" / "query.v2.json"
 
 
 def _select_revenue() -> list[dict]:
@@ -176,9 +178,9 @@ def test_path_policy_is_refused_as_an_unknown_key(normalize, policy):
 @pytest.mark.parametrize("unit", ["minute", "hour"])
 def test_sub_day_relative_units_are_rejected_with_structured_error(unit):
     with pytest.raises(SemanticLayerError) as exc:
-        normalize_query(
+        read_call(
             {
-                "select": _select_revenue(),
+                "select": ["measure.jaffle.revenue_usd"],
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
                     "last": {"unit": unit, "value": 3},
@@ -186,16 +188,14 @@ def test_sub_day_relative_units_are_rejected_with_structured_error(unit):
             }
         )
     assert exc.value.code == "INVALID_QUERY"
-    assert exc.value.details["path"] == "time.range.last.unit"
-    assert unit not in exc.value.details["supported_units"]
+    assert exc.value.details["path"] == "time.last.unit"
+    (hint,) = exc.value.details["recovery_hints"]
+    assert unit not in hint["message"]
 
 
 def test_schema_relative_unit_enum_matches_runtime_supported_units():
     schema = json.loads(SCHEMA_PATH.read_text())
-    enum = schema["$defs"]["TimeBlock"]["properties"]["range"]["properties"]["last"]["properties"][
-        "unit"
-    ]["enum"]
-    assert set(enum) == set(_SUPPORTED_RELATIVE_UNITS), (
-        "schemas/query_ir.v1.json time.range.last.unit enum must match "
-        "semantic_rails.ast._SUPPORTED_RELATIVE_UNITS"
+    enum = schema["properties"]["time"]["properties"]["last"]["properties"]["unit"]["enum"]
+    assert set(enum) == set(UNITS), (
+        "schemas/query.v2.json time.last.unit enum must match semantic_rails.clock.UNITS"
     )
