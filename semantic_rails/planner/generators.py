@@ -358,6 +358,7 @@ _CADENCE_RE = re.compile(
     r"\b(?:daily|weekly|monthly|quarterly|yearly|annually)\b"
     r"|\b(?:by|per|each)\s+(?:day|week|month|quarter|year)s?\b"
     r"|\bat\s+(?:the\s+)?(?:day|week|month|quarter|year)\s+(?:level|grain)\b"
+    r"|\b(?:day|week|month|quarter|year)\s+before\b"
 )
 
 

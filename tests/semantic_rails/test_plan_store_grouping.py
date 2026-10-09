@@ -679,8 +679,10 @@ def test_selected_customer_count_does_not_prove_qualification_scope(
                 lambda *args, **kwargs: [(result.draft, result.pattern)],
             )
         payload = plan_payload(runtime, intent=question, partial_query=partial_query)
+        # The caller's customer count can't be read on the orders' clock the qualification
+        # takes, so the draft never validates; either way it is held.
         assert payload["status"] == "low_confidence", payload
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert payload["why"]["code"] in {"PLAN_FALLBACK_SEMANTIC_DRIFT", "VALIDATION_FAILED"}
         assert "execute" not in payload["next"].get("ready_for", [])
     finally:
         runtime.close()
@@ -720,10 +722,21 @@ def test_grouped_customer_qualification_matches_reference_or_holds(
         payload = plan_payload(
             runtime, intent=question, partial_query={"group_by": ["dimension.jaffle_customer_id"]}
         )
-        if omit_threshold or payload["status"] != "ok":
+        if omit_threshold:
+            # The draft drops the threshold the question states.
             assert payload["status"] == "low_confidence", payload
-            assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+            assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+            assert payload["why"]["details"]["terms"] == ["3"]
             assert "execute" not in payload["next"].get("ready_for", [])
+        elif payload["status"] != "ok":
+            # More than 3 orders in 2017, or over every order: plan asks, each option grouped
+            # by the caller's customer.
+            assert payload["status"] == "needs_clarification", payload
+            assert payload["why"]["code"] == "ENTITY_FILTER_PERIOD_UNSTATED"
+            assert "execute" not in payload["next"].get("ready_for", [])
+            for option in payload["why"]["details"]["options"]:
+                call = payload["best"]["query"] if "$ref" in option["call"] else option["call"]
+                assert call["group_by"] == ["dimension.jaffle_customer_id"]
         else:
             actual = typed_rows(runtime.query(payload["best"]["query"]))
             with duckdb.connect(runtime.db_path, read_only=True) as connection:
