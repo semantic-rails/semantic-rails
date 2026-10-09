@@ -1,12 +1,6 @@
 {
-  "version": 1,
   "select": [
-    {
-      "expression": {
-        "metric": "metric.jaffle.repeat_customer_orders"
-      },
-      "as": "repeat_customer_orders"
-    }
+    "metric.jaffle.repeat_customer_orders"
   ],
   "group_by": [
     "dimension.jaffle_store_name"
@@ -17,12 +11,12 @@
   },
   "order_by": [
     {
-      "field": "temporal_role.jaffle_order_time__month",
-      "direction": "ASC"
+      "field": "period",
+      "direction": "asc"
     },
     {
       "field": "dimension.jaffle_store_name",
-      "direction": "ASC"
+      "direction": "asc"
     }
   ]
 }

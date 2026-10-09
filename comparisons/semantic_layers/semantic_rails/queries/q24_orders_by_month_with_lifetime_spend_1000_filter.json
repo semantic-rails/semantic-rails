@@ -1,27 +1,21 @@
 {
-  "version": 1,
   "select": [
     {
-      "expression": {
-        "metric": "metric.jaffle.orders"
-      },
+      "expression": "metric.jaffle.orders",
       "as": "filtered_orders"
     }
   ],
-  "metric_filters": [
+  "where": [
     {
-      "expression": {
-        "kind": "metric_predicate",
-        "entity": "entity.jaffle_customer",
-        "scope_mode": "entity_only",
-        "input": {
-          "measure": "measure.jaffle.revenue_usd"
-        },
-        "op": ">=",
-        "value": 1000
-      },
-      "op": "=",
-      "value": true
+      "entity": "entity.jaffle_customer",
+      "having": [
+        {
+          "field": "measure.jaffle.revenue_usd",
+          "op": "gte",
+          "value": 1000
+        }
+      ],
+      "over": "all_time"
     }
   ],
   "time": {
@@ -30,8 +24,8 @@
   },
   "order_by": [
     {
-      "field": "temporal_role.jaffle_order_time__month",
-      "direction": "ASC"
+      "field": "period",
+      "direction": "asc"
     }
   ]
 }
