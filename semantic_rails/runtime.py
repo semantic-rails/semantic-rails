@@ -36,6 +36,7 @@ from .acceleration.routing import (
 )
 from .ast import (
     every_filter,
+    is_child_group,
     normalize_query,
     plain_filters,
     time_output_alias,
@@ -122,7 +123,7 @@ from .policies import (
     row_filters_for_context,
     withheld_rank_order,
 )
-from .query_call import read_call, route_options
+from .query_call import call_where, read_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_select_for_profile
@@ -1090,15 +1091,38 @@ def _compiled_warnings(
     return warnings
 
 
+_OVER_MEANING = {
+    "all_time": "over all of its rows, ignoring the query window",
+    "window": "over its rows inside the query window",
+    "period": "per output period",
+}
+
+
+def _entity_filter_assumptions(query: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each entity filter's ``over``: how each entity's aggregate was taken."""
+    return [
+        {
+            "code": "ENTITY_FILTER_OVER",
+            "entity": row["entity"],
+            "over": row["over"],
+            "message": f"Each {row['entity']}'s aggregate was taken {_OVER_MEANING[row['over']]}.",
+        }
+        for row in call_where([], query.get("metric_filters"))
+    ]
+
+
 def _window_total_fields(
     config, compiled, payload: dict[str, Any], hidden: dict[str, list[Any]] | None = None
 ) -> dict[str, Any]:
     """``assumptions`` for every response, plus ``time_shape`` when the window was collapsed."""
-    stated = call_assumptions(config, compiled, payload, hidden)
+    assumptions = [
+        *_entity_filter_assumptions(compiled["logical_plan"].query),
+        *call_assumptions(config, compiled, payload, hidden),
+    ]
     if not compiled["logical_plan"].time.get("window_total"):
-        return {"assumptions": stated}
+        return {"assumptions": assumptions}
     return {
-        "assumptions": [WINDOW_TOTAL_ASSUMPTION, *stated],
+        "assumptions": [WINDOW_TOTAL_ASSUMPTION, *assumptions],
         "time_shape": TIME_SHAPE_WINDOW_TOTAL,
     }
 
@@ -1810,8 +1834,8 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
     for item in filters:
         field, raw = str(item["field"]), item.get("value")
         literals = [v for v in (raw if isinstance(raw, list) else [raw]) if isinstance(v, str)]
-        op = operators.ALIASES.get(str(item.get("op", "is")).strip().lower(), item.get("op", "is"))
-        if not literals or field not in dimensions or op != "is":
+        op = operators.word_of(item.get("op", "is"))
+        if not literals or field not in dimensions or op not in {"is", "not"}:
             continue
         for literal in literals:
             if (field, literal) in checked:
@@ -1862,6 +1886,81 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
                 stage="execution",
                 details={"filters": unverified},
                 object_ids=sorted({v["dimension"] for v in unverified}),
+            )
+        )
+    return warnings
+
+
+def _unknown_rows_kept_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
+    """Say how many rows each ``not`` kept because their value is unknown.
+
+    ``not`` keeps unknown rows, so ``not web`` includes the rows with no channel. A probe
+    replaces the condition with ``missing: true`` under the query's other filters, window,
+    entity filters and policy context, and counts the rows of the answer's source entity it
+    reads. Nothing is said when it reads none or cannot be read.
+    """
+    from .compiler_parts.paths import _entity_key_dimension_ids
+    from .runtime_parts.limits import max_valid_values_limit
+
+    config = runtime._config
+    plan = compiled["logical_plan"]
+    query = plan.query
+    where = list(query.get("where") or [])
+    negated = [
+        (index, item)
+        for index, item in enumerate(where)
+        if not is_child_group(item) and operators.word_of(item.get("op")) == "not"
+    ]
+    if not negated or not plan.measure_plans:
+        return []
+    keys = _entity_key_dimension_ids(plan.measure_plans[0].source_entity, config)
+    time = {key: value for key, value in dict(query.get("time") or {}).items() if key != "fill"}
+    probe: dict[str, Any] = {
+        "version": 1,
+        "select": list(query.get("select") or []),
+        "group_by": keys,
+        "observation_scope": "query",
+        "limit": max_valid_values_limit(),
+        **({"time": time} if time else {}),
+    }
+    entity_filters = [
+        row
+        for row in list(query.get("metric_filters") or [])
+        if dict(row.get("expression") or {}).get("kind") == "metric_predicate"
+    ]
+    if entity_filters:
+        probe["metric_filters"] = entity_filters
+    for key in ("policy_context", "limits", "request_id", "route_decisions"):
+        if key in payload:
+            probe[key] = payload[key]
+    dimensions = {row.id: row for row in config.dimensions}
+    warnings = []
+    for index, item in negated:
+        field = str(item["field"])
+        unknown = {"field": field, "op": "missing", "value": True}
+        try:
+            result = runtime.query_internal(
+                {**probe, "where": [*where[:index], unknown, *where[index + 1 :]]}
+            )
+        except SemanticLayerError:
+            continue
+        rows = len({tuple(row.get(key) for key in keys) for row in result["rows"]})
+        if not rows:
+            continue
+        dimension = dimensions.get(field)
+        values = [None, *(getattr(dimension, "unknown_values", None) or [])]
+        warnings.append(
+            semantic_issue(
+                code="UNKNOWN_ROWS_KEPT",
+                message=(
+                    f"'not' keeps rows whose {field} is unknown: the answer includes "
+                    f"{rows}{'+' if result.get('truncated') else ''} with no value. Add "
+                    f'{{"field": "{field}", "op": "missing", "value": false}} to leave them out.'
+                ),
+                severity="warning",
+                stage="execution",
+                details={"field": field, "rows": rows, "values": values},
+                object_ids=[field],
             )
         )
     return warnings
@@ -3167,6 +3266,7 @@ class Runtime:
                     payload=payload,
                 ),
                 *_filter_value_warnings(self, compiled, payload),
+                *_unknown_rows_kept_warnings(self, compiled, payload),
                 *limits_warnings,
                 *tie_warnings,
                 *self._seed_warnings,

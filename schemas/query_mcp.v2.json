@@ -757,1066 +757,651 @@
                 "$ref": "#/$defs/Ref"
               },
               {
-                "allOf": [
+                "anyOf": [
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "aggregate"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "aggregation": {},
+                      "filter": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "all": {
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "aggregate"
+                      },
+                      "measure": {},
+                      "parameters": {},
+                      "temporal_role": {},
+                      "window": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_aggregate"
-                    }
+                    "required": [
+                      "kind",
+                      "measure"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "aggregate_if"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "aggregation": {},
+                      "condition": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "aggregate_if"
+                      },
+                      "value": {
+                        "$ref": "#/$defs/Expression"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_aggregate_if"
-                    }
+                    "required": [
+                      "kind",
+                      "aggregation",
+                      "condition"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "arithmetic"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "arithmetic"
+                      },
+                      "left": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "op": {},
+                      "right": {
+                        "$ref": "#/$defs/Expression"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_arithmetic"
-                    }
+                    "required": [
+                      "kind",
+                      "op",
+                      "left",
+                      "right"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "between"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "high": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "between"
+                      },
+                      "low": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "negated": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_between"
-                    }
+                    "required": [
+                      "kind",
+                      "expr",
+                      "low",
+                      "high"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "binary"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "binary"
+                      },
+                      "left": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "op": {},
+                      "right": {
+                        "$ref": "#/$defs/Expression"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_binary"
-                    }
+                    "required": [
+                      "kind",
+                      "op",
+                      "left",
+                      "right"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "boolean"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "args": {
+                        "items": {
+                          "$ref": "#/$defs/Expression"
+                        },
+                        "type": "array"
+                      },
+                      "kind": {
+                        "const": "boolean"
+                      },
+                      "op": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_boolean"
-                    }
+                    "required": [
+                      "kind",
+                      "op",
+                      "args"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "call"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "args": {
+                        "items": {
+                          "$ref": "#/$defs/Expression"
+                        },
+                        "type": "array"
+                      },
+                      "distinct": {},
+                      "kind": {
+                        "const": "call"
+                      },
+                      "name": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_call"
-                    }
+                    "required": [
+                      "kind",
+                      "name"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "case"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "else": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "case"
+                      },
+                      "whens": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "then": {
+                              "$ref": "#/$defs/Expression"
+                            },
+                            "when": {
+                              "$ref": "#/$defs/Expression"
+                            }
+                          },
+                          "required": [
+                            "when",
+                            "then"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_case"
-                    }
+                    "required": [
+                      "kind",
+                      "whens"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "column"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "column": {},
+                      "entity": {},
+                      "kind": {
+                        "const": "column"
+                      },
+                      "table": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_column"
-                    }
+                    "required": [
+                      "kind",
+                      "column"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "comparison"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "comparison"
+                      },
+                      "left": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "op": {},
+                      "right": {
+                        "$ref": "#/$defs/Expression"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_comparison"
-                    }
+                    "required": [
+                      "kind",
+                      "op",
+                      "left",
+                      "right"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "conversion"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "base": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "constant_properties": {},
+                      "converted": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "dimension_bindings": {},
+                      "entity": {},
+                      "kind": {
+                        "const": "conversion"
+                      },
+                      "matching": {},
+                      "matching_mode": {},
+                      "window": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_conversion"
-                    }
+                    "required": [
+                      "kind",
+                      "base",
+                      "converted",
+                      "entity",
+                      "window",
+                      "matching_mode"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "cumulative"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "input": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "cumulative"
+                      },
+                      "partition_by": {},
+                      "window_scope": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_cumulative"
-                    }
+                    "required": [
+                      "kind",
+                      "input"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "date_add"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "date": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "date_add"
+                      },
+                      "unit": {},
+                      "value": {
+                        "$ref": "#/$defs/Expression"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_date_add"
-                    }
+                    "required": [
+                      "kind",
+                      "unit",
+                      "value",
+                      "date"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "distribution"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "function": {},
+                      "kind": {
+                        "const": "distribution"
+                      },
+                      "over": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "p": {},
+                      "parameters": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_distribution"
-                    }
+                    "required": [
+                      "kind",
+                      "function",
+                      "over"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "entity_value"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "entity": {},
+                      "input": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "entity_value"
+                      },
+                      "where": {
+                        "items": {
+                          "type": "object"
+                        },
+                        "type": "array"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_entity_value"
-                    }
+                    "required": [
+                      "kind",
+                      "entity",
+                      "input"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "in"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "in"
+                      },
+                      "left": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "negated": {},
+                      "values": {
+                        "items": {
+                          "$ref": "#/$defs/Expression"
+                        },
+                        "type": "array"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_in"
-                    }
+                    "required": [
+                      "kind",
+                      "values"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "literal"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "literal"
+                      },
+                      "value": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_literal"
-                    }
+                    "required": [
+                      "kind",
+                      "value"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "measure"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "aggregation": {},
+                      "kind": {
+                        "const": "measure"
+                      },
+                      "measure": {},
+                      "parameters": {},
+                      "temporal_role": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_measure"
-                    }
+                    "required": [
+                      "kind",
+                      "measure"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "metric_predicate"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "entity": {},
+                      "input": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "metric_predicate"
+                      },
+                      "op": {},
+                      "over": {
+                        "enum": [
+                          "all_time",
+                          "window",
+                          "period"
+                        ]
+                      },
+                      "value": {},
+                      "window": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_metric_predicate"
-                    }
+                    "required": [
+                      "kind",
+                      "entity",
+                      "input",
+                      "op",
+                      "value",
+                      "over"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "not_between"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "high": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "not_between"
+                      },
+                      "low": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "negated": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_not_between"
-                    }
+                    "required": [
+                      "kind",
+                      "expr",
+                      "low",
+                      "high"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "not_in"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "expr": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "not_in"
+                      },
+                      "left": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "negated": {},
+                      "values": {
+                        "items": {
+                          "$ref": "#/$defs/Expression"
+                        },
+                        "type": "array"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_not_in"
-                    }
+                    "required": [
+                      "kind",
+                      "values"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "nullif"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "nullif"
+                      },
+                      "null_value": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "value": {
+                        "$ref": "#/$defs/Expression"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_nullif"
-                    }
+                    "required": [
+                      "kind",
+                      "value",
+                      "null_value"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "period_to_date"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "input": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "period_to_date"
+                      },
+                      "partition_by": {},
+                      "period": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_period_to_date"
-                    }
+                    "required": [
+                      "kind",
+                      "input",
+                      "period"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "prior_period"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "input": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "prior_period"
+                      },
+                      "offset": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_prior_period"
-                    }
+                    "required": [
+                      "kind",
+                      "input",
+                      "offset"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "ratio"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "denominator": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "ratio"
+                      },
+                      "numerator": {
+                        "$ref": "#/$defs/Expression"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_ratio"
-                    }
+                    "required": [
+                      "kind",
+                      "numerator",
+                      "denominator"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "rolling"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "input": {
+                        "$ref": "#/$defs/Expression"
+                      },
+                      "kind": {
+                        "const": "rolling"
+                      },
+                      "partition_by": {},
+                      "window": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_rolling"
-                    }
+                    "required": [
+                      "kind",
+                      "input",
+                      "window"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "scoped_aggregate"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "aggregation": {},
+                      "anchor": {},
+                      "kind": {
+                        "const": "scoped_aggregate"
+                      },
+                      "measure": {},
+                      "parameters": {},
+                      "predicates": {
+                        "items": {
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "temporal_role": {},
+                      "where": {
+                        "items": {
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "window": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_scoped_aggregate"
-                    }
+                    "required": [
+                      "kind",
+                      "measure"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "semi_additive"
-                        }
-                      }
+                    "additionalProperties": false,
+                    "properties": {
+                      "aggregation": {},
+                      "filter": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "all": {
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "semi_additive"
+                      },
+                      "measure": {},
+                      "parameters": {},
+                      "temporal_role": {},
+                      "window": {}
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_semi_additive"
-                    }
+                    "required": [
+                      "kind",
+                      "measure"
+                    ]
                   },
                   {
-                    "if": {
-                      "properties": {
-                        "kind": {
-                          "const": "share"
-                        }
+                    "additionalProperties": false,
+                    "properties": {
+                      "input": {
+                        "pattern": "^(measure|metric)\\.",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "share"
+                      },
+                      "over": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array"
                       }
                     },
-                    "then": {
-                      "$ref": "#/$defs/Kind_share"
-                    }
-                  }
-                ],
-                "properties": {
-                  "kind": {
-                    "enum": [
-                      "aggregate",
-                      "aggregate_if",
-                      "arithmetic",
-                      "between",
-                      "binary",
-                      "boolean",
-                      "call",
-                      "case",
-                      "column",
-                      "comparison",
-                      "conversion",
-                      "cumulative",
-                      "date_add",
-                      "distribution",
-                      "entity_value",
-                      "in",
-                      "literal",
-                      "measure",
-                      "metric_predicate",
-                      "not_between",
-                      "not_in",
-                      "nullif",
-                      "period_to_date",
-                      "prior_period",
-                      "ratio",
-                      "rolling",
-                      "scoped_aggregate",
-                      "semi_additive",
-                      "share"
+                    "required": [
+                      "kind",
+                      "input",
+                      "over"
                     ]
                   }
-                },
-                "required": [
-                  "kind"
                 ],
                 "type": "object"
               }
             ]
-          },
-          "Kind_aggregate": {
-            "additionalProperties": false,
-            "properties": {
-              "aggregation": {},
-              "filter": {
-                "additionalProperties": false,
-                "properties": {
-                  "all": {
-                    "items": {
-                      "type": "object"
-                    },
-                    "type": "array"
-                  }
-                },
-                "type": "object"
-              },
-              "kind": {
-                "const": "aggregate"
-              },
-              "measure": {},
-              "parameters": {},
-              "temporal_role": {},
-              "window": {}
-            },
-            "required": [
-              "kind",
-              "measure"
-            ],
-            "type": "object"
-          },
-          "Kind_aggregate_if": {
-            "additionalProperties": false,
-            "properties": {
-              "aggregation": {},
-              "condition": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "aggregate_if"
-              },
-              "value": {
-                "$ref": "#/$defs/Expression"
-              }
-            },
-            "required": [
-              "kind",
-              "aggregation",
-              "condition"
-            ],
-            "type": "object"
-          },
-          "Kind_arithmetic": {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "arithmetic"
-              },
-              "left": {
-                "$ref": "#/$defs/Expression"
-              },
-              "op": {},
-              "right": {
-                "$ref": "#/$defs/Expression"
-              }
-            },
-            "required": [
-              "kind",
-              "op",
-              "left",
-              "right"
-            ],
-            "type": "object"
-          },
-          "Kind_between": {
-            "additionalProperties": false,
-            "properties": {
-              "expr": {
-                "$ref": "#/$defs/Expression"
-              },
-              "high": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "between"
-              },
-              "low": {
-                "$ref": "#/$defs/Expression"
-              },
-              "negated": {}
-            },
-            "required": [
-              "kind",
-              "expr",
-              "low",
-              "high"
-            ],
-            "type": "object"
-          },
-          "Kind_binary": {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "binary"
-              },
-              "left": {
-                "$ref": "#/$defs/Expression"
-              },
-              "op": {},
-              "right": {
-                "$ref": "#/$defs/Expression"
-              }
-            },
-            "required": [
-              "kind",
-              "op",
-              "left",
-              "right"
-            ],
-            "type": "object"
-          },
-          "Kind_boolean": {
-            "additionalProperties": false,
-            "properties": {
-              "args": {
-                "items": {
-                  "$ref": "#/$defs/Expression"
-                },
-                "type": "array"
-              },
-              "kind": {
-                "const": "boolean"
-              },
-              "op": {}
-            },
-            "required": [
-              "kind",
-              "op",
-              "args"
-            ],
-            "type": "object"
-          },
-          "Kind_call": {
-            "additionalProperties": false,
-            "properties": {
-              "args": {
-                "items": {
-                  "$ref": "#/$defs/Expression"
-                },
-                "type": "array"
-              },
-              "distinct": {},
-              "kind": {
-                "const": "call"
-              },
-              "name": {}
-            },
-            "required": [
-              "kind",
-              "name"
-            ],
-            "type": "object"
-          },
-          "Kind_case": {
-            "additionalProperties": false,
-            "properties": {
-              "else": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "case"
-              },
-              "whens": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "then": {
-                      "$ref": "#/$defs/Expression"
-                    },
-                    "when": {
-                      "$ref": "#/$defs/Expression"
-                    }
-                  },
-                  "required": [
-                    "when",
-                    "then"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "kind",
-              "whens"
-            ],
-            "type": "object"
-          },
-          "Kind_column": {
-            "additionalProperties": false,
-            "properties": {
-              "column": {},
-              "entity": {},
-              "kind": {
-                "const": "column"
-              },
-              "table": {}
-            },
-            "required": [
-              "kind",
-              "column"
-            ],
-            "type": "object"
-          },
-          "Kind_comparison": {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "comparison"
-              },
-              "left": {
-                "$ref": "#/$defs/Expression"
-              },
-              "op": {},
-              "right": {
-                "$ref": "#/$defs/Expression"
-              }
-            },
-            "required": [
-              "kind",
-              "op",
-              "left",
-              "right"
-            ],
-            "type": "object"
-          },
-          "Kind_conversion": {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "$ref": "#/$defs/Expression"
-              },
-              "constant_properties": {},
-              "converted": {
-                "$ref": "#/$defs/Expression"
-              },
-              "dimension_bindings": {},
-              "entity": {},
-              "kind": {
-                "const": "conversion"
-              },
-              "matching": {},
-              "matching_mode": {},
-              "window": {}
-            },
-            "required": [
-              "kind",
-              "base",
-              "converted",
-              "entity",
-              "window",
-              "matching_mode"
-            ],
-            "type": "object"
-          },
-          "Kind_cumulative": {
-            "additionalProperties": false,
-            "properties": {
-              "input": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "cumulative"
-              },
-              "partition_by": {},
-              "window_scope": {}
-            },
-            "required": [
-              "kind",
-              "input"
-            ],
-            "type": "object"
-          },
-          "Kind_date_add": {
-            "additionalProperties": false,
-            "properties": {
-              "date": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "date_add"
-              },
-              "unit": {},
-              "value": {
-                "$ref": "#/$defs/Expression"
-              }
-            },
-            "required": [
-              "kind",
-              "unit",
-              "value",
-              "date"
-            ],
-            "type": "object"
-          },
-          "Kind_distribution": {
-            "additionalProperties": false,
-            "properties": {
-              "function": {},
-              "kind": {
-                "const": "distribution"
-              },
-              "over": {
-                "$ref": "#/$defs/Expression"
-              },
-              "p": {},
-              "parameters": {}
-            },
-            "required": [
-              "kind",
-              "function",
-              "over"
-            ],
-            "type": "object"
-          },
-          "Kind_entity_value": {
-            "additionalProperties": false,
-            "properties": {
-              "entity": {},
-              "input": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "entity_value"
-              },
-              "where": {
-                "items": {
-                  "type": "object"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "kind",
-              "entity",
-              "input"
-            ],
-            "type": "object"
-          },
-          "Kind_in": {
-            "additionalProperties": false,
-            "properties": {
-              "expr": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "in"
-              },
-              "left": {
-                "$ref": "#/$defs/Expression"
-              },
-              "negated": {},
-              "values": {
-                "items": {
-                  "$ref": "#/$defs/Expression"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "kind",
-              "values"
-            ],
-            "type": "object"
-          },
-          "Kind_literal": {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "literal"
-              },
-              "value": {}
-            },
-            "required": [
-              "kind",
-              "value"
-            ],
-            "type": "object"
-          },
-          "Kind_measure": {
-            "additionalProperties": false,
-            "properties": {
-              "aggregation": {},
-              "kind": {
-                "const": "measure"
-              },
-              "measure": {},
-              "parameters": {},
-              "temporal_role": {}
-            },
-            "required": [
-              "kind",
-              "measure"
-            ],
-            "type": "object"
-          },
-          "Kind_metric_predicate": {
-            "additionalProperties": false,
-            "properties": {
-              "entity": {},
-              "input": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "metric_predicate"
-              },
-              "op": {},
-              "over": {
-                "enum": [
-                  "all_time",
-                  "window",
-                  "period"
-                ]
-              },
-              "value": {},
-              "window": {}
-            },
-            "required": [
-              "kind",
-              "entity",
-              "input",
-              "op",
-              "value",
-              "over"
-            ],
-            "type": "object"
-          },
-          "Kind_not_between": {
-            "additionalProperties": false,
-            "properties": {
-              "expr": {
-                "$ref": "#/$defs/Expression"
-              },
-              "high": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "not_between"
-              },
-              "low": {
-                "$ref": "#/$defs/Expression"
-              },
-              "negated": {}
-            },
-            "required": [
-              "kind",
-              "expr",
-              "low",
-              "high"
-            ],
-            "type": "object"
-          },
-          "Kind_not_in": {
-            "additionalProperties": false,
-            "properties": {
-              "expr": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "not_in"
-              },
-              "left": {
-                "$ref": "#/$defs/Expression"
-              },
-              "negated": {},
-              "values": {
-                "items": {
-                  "$ref": "#/$defs/Expression"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "kind",
-              "values"
-            ],
-            "type": "object"
-          },
-          "Kind_nullif": {
-            "additionalProperties": false,
-            "properties": {
-              "kind": {
-                "const": "nullif"
-              },
-              "null_value": {
-                "$ref": "#/$defs/Expression"
-              },
-              "value": {
-                "$ref": "#/$defs/Expression"
-              }
-            },
-            "required": [
-              "kind",
-              "value",
-              "null_value"
-            ],
-            "type": "object"
-          },
-          "Kind_period_to_date": {
-            "additionalProperties": false,
-            "properties": {
-              "input": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "period_to_date"
-              },
-              "partition_by": {},
-              "period": {}
-            },
-            "required": [
-              "kind",
-              "input",
-              "period"
-            ],
-            "type": "object"
-          },
-          "Kind_prior_period": {
-            "additionalProperties": false,
-            "properties": {
-              "input": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "prior_period"
-              },
-              "offset": {}
-            },
-            "required": [
-              "kind",
-              "input",
-              "offset"
-            ],
-            "type": "object"
-          },
-          "Kind_ratio": {
-            "additionalProperties": false,
-            "properties": {
-              "denominator": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "ratio"
-              },
-              "numerator": {
-                "$ref": "#/$defs/Expression"
-              }
-            },
-            "required": [
-              "kind",
-              "numerator",
-              "denominator"
-            ],
-            "type": "object"
-          },
-          "Kind_rolling": {
-            "additionalProperties": false,
-            "properties": {
-              "input": {
-                "$ref": "#/$defs/Expression"
-              },
-              "kind": {
-                "const": "rolling"
-              },
-              "partition_by": {},
-              "window": {}
-            },
-            "required": [
-              "kind",
-              "input",
-              "window"
-            ],
-            "type": "object"
-          },
-          "Kind_scoped_aggregate": {
-            "additionalProperties": false,
-            "properties": {
-              "aggregation": {},
-              "anchor": {},
-              "kind": {
-                "const": "scoped_aggregate"
-              },
-              "measure": {},
-              "parameters": {},
-              "predicates": {
-                "items": {
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "temporal_role": {},
-              "where": {
-                "items": {
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "window": {}
-            },
-            "required": [
-              "kind",
-              "measure"
-            ],
-            "type": "object"
-          },
-          "Kind_semi_additive": {
-            "additionalProperties": false,
-            "properties": {
-              "aggregation": {},
-              "filter": {
-                "additionalProperties": false,
-                "properties": {
-                  "all": {
-                    "items": {
-                      "type": "object"
-                    },
-                    "type": "array"
-                  }
-                },
-                "type": "object"
-              },
-              "kind": {
-                "const": "semi_additive"
-              },
-              "measure": {},
-              "parameters": {},
-              "temporal_role": {},
-              "window": {}
-            },
-            "required": [
-              "kind",
-              "measure"
-            ],
-            "type": "object"
-          },
-          "Kind_share": {
-            "additionalProperties": false,
-            "properties": {
-              "input": {
-                "pattern": "^(measure|metric)\\.",
-                "type": "string"
-              },
-              "kind": {
-                "const": "share"
-              },
-              "over": {
-                "items": {
-                  "type": "string"
-                },
-                "minItems": 1,
-                "type": "array"
-              }
-            },
-            "required": [
-              "kind",
-              "input",
-              "over"
-            ],
-            "type": "object"
           },
           "Ref": {
             "pattern": "^(measure|metric)\\.[^\\s]+$",

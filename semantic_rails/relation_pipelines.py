@@ -212,15 +212,10 @@ def _column_fields(columns: Iterable[str], *, alias: str = "src") -> list[SqlFie
 def _predicate(raw: Any, *, default_alias: str = "src", warehouse: str = "duckdb") -> SqlExpr:
     if isinstance(raw, dict) and "field" in raw:
         left = SqlIdentifier(parts=[default_alias, str(raw["field"])])
-        op = str(raw.get("op", "=")).upper()
-        value = raw.get("value")
-        if op in {"IN", "NOT IN"}:
-            return SqlIn(
-                expr=left,
-                values=[SqlLiteral(item) for item in list(value or [])],
-                negated=op == "NOT IN",
-            )
-        return build_filter_condition(left, op, value, path="relation.filter")
+        # The query's filter words: `not` (and its NOT IN / != spellings) keeps unknown rows.
+        return build_filter_condition(
+            left, raw.get("op", "is"), raw.get("value"), path="relation.filter"
+        )
     return _expr(raw, default_alias=default_alias, warehouse=warehouse)
 
 

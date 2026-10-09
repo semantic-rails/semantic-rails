@@ -269,6 +269,7 @@ _DIMENSION_KEYS: frozenset[str] = frozenset(
         "sample_values_strategy",
         "filterable",
         "groupable",
+        "unknown_values",
     }
 )
 _TIME_KEYS: frozenset[str] = frozenset(
@@ -446,6 +447,22 @@ def _expect_value_list(value: Any, *, label: str, errors: list[str]) -> None:
     )
 
 
+def _check_unknown_values(value: Any, *, label: str, errors: list[str]) -> None:
+    """``unknown_values`` lists the strings or numbers the source writes for "unknown"."""
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(
+            isinstance(item, (str, int, float)) and not isinstance(item, bool) for item in value
+        )
+    ):
+        add_error(
+            errors,
+            f"{label} unknown_values must be a non-empty list of strings or numbers (NULL is "
+            "always unknown); write it as ['', 'XX']",
+        )
+
+
 def _key_columns(model_id: str, model: dict[str, Any], graph_entities: dict[str, Any]) -> set[str]:
     """The key and foreign-key columns the loader turns into ``kind: id`` dimensions."""
     entities = model.get("entities")
@@ -585,6 +602,8 @@ def _check_model_shape(
         for field in ("domain", "valid_values"):
             if field in dim_raw:
                 _expect_value_list(dim_raw.get(field), label=f"{dim_label} {field}", errors=errors)
+        if "unknown_values" in dim_raw:
+            _check_unknown_values(dim_raw["unknown_values"], label=dim_label, errors=errors)
 
     for time_key, time_raw in (model.get("times") or {}).items():
         if not isinstance(time_raw, dict):
@@ -908,6 +927,15 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
     if isinstance(defaults, dict):
         label = f"{path_label}: defaults"
         _unknown_key_errors(defaults, _DEFAULTS_KEYS, label=label, errors=errors)
+        if (
+            isinstance(defaults.get("dimension"), dict)
+            and "unknown_values" in defaults["dimension"]
+        ):
+            add_error(
+                errors,
+                f"{label}.dimension: unknown_values is declared on each dimension that needs "
+                "it, never as a package default",
+            )
         for key, allowed in (
             ("dimension", _DIMENSION_KEYS),
             ("time", _TIME_KEYS),

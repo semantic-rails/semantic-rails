@@ -219,8 +219,7 @@ def _signals_for_query(
 
 
 def _where_values(row: dict[str, Any]) -> set[str]:
-    op = str(row.get("op", "") or "").strip().lower()
-    if operators.ALIASES.get(op, op) != "is":
+    if operators.word_of(row.get("op")) != "is":
         return set()
     raw = row.get("value")
     if isinstance(raw, list):

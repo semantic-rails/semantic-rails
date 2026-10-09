@@ -1134,7 +1134,7 @@ def test_null_test_spellings_refused_before_execution(request, backend_name, fie
     error = report["errors"][0]
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"] == "where[0].op"
-    hint = error["details"]["recovery_hints"][0]
+    hint = error["recovery_hints"][0]
     assert hint["code"] == "USE_FILTER_WORD"
     assert '"op": "missing"' in hint["message"]
     with pytest.raises(SemanticLayerError) as exc:

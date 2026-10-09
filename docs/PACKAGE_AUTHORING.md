@@ -404,7 +404,8 @@ package:
   seed: { kind: sql_script, source: data/seed.sql }
 
 defaults:
-  dimension: { groupable: true, filterable: true }
+  dimension: { groupable: true, filterable: true }   # filterable: false refuses it in every
+                                                      # caller's filter (POLICY_DENIED)
   time:
     timezone: UTC
     supported_grains: [day, week, month, quarter, year]
@@ -736,12 +737,19 @@ kind names must match exactly.
   counts. `allow_metric_filters: false` refuses any cut that counts for the
   governed object.
   A filter the caller writes inside an expression (an aggregate's or
-  `semi_additive` expression's `filter`, a scoped aggregate's `where`, at any
-  depth in `select` or `metric_filters`, predicate inputs included) is checked
-  like a `where` filter when it counts for the governed object, by the same leaf
-  rule: its field must be in `allowed_where` (a violation carries
+  `semi_additive` expression's `filter`, a scoped aggregate's `where`, an
+  `aggregate_if` condition, at any depth in `select`, `having` or an entity
+  filter, predicate inputs included) is checked like a `where` filter when it
+  counts for the governed object, by the same leaf rule: its field, read by the
+  id a name or alias binds to, must be in `allowed_where` (a violation carries
   `"source": "inline_expression"`), and it always counts as a metric filter. It
-  never satisfies `required_where`, which requires an outer `where` filter.
+  never satisfies `required_where`, which requires an outer `where` filter with
+  the same word and, when the spec names them, the same values: a spec without an
+  `op` is met only by `is` (a `not`, range, `contains` or `missing` on the field
+  never meets it). An entity filter (`{entity, having, over}`) or a scoped
+  aggregate's predicate takes its aggregate over the entity's rows, outside the
+  outer `where`, so a governed object with `required_where` read there is refused
+  (`required_where_outside_entity_filter`).
   Fields nested under an aggregate-filter `expression`, a scoped aggregate's
   `predicates[].input`, a metric predicate, `metric_filters`, or a conversion
   operand count for every governed object in the query. This conservative rule
@@ -760,9 +768,10 @@ kind names must match exactly.
   `case` value) follows the count measure's constraints. A column whose values happen
   to be constant cannot be told apart from a count, so constrain a measure reading it
   to govern it too. An `aggregate_if` condition reads
-  columns, not fields, so `allowed_where` refuses it under either a package-wide
-  or an inherited measure constraint. Its condition also counts as a metric filter,
-  and only outer `where` filters satisfy `required_where`. Constraints on unrelated
+  columns: each counts as the dimensions over it, and a column no dimension declares
+  (named `<entity>.<column>`) is in no `allowed_where`, so a condition on it is refused
+  under either a package-wide or an inherited measure constraint. Its condition also
+  counts as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to
   aggregate by time.
@@ -1418,6 +1427,24 @@ Supported `kind:` values: `categorical`, `boolean`, `integer`, `continuous`,
 `number`, `percent`, `currency`, `date`, `timestamp`. `kind: id` is no longer
 authored — entity keys are auto-created from `graph.entities.<x>.key`.
 
+NULL is always unknown. Normalise other unknown spellings to NULL in your
+transformation layer when you can, and label empties that mean something (an
+empty referrer may be "direct"). When the source writes an unknown as a value you
+cannot change, declare it on that dimension:
+
+```yaml
+dimensions:
+  country:
+    kind: categorical
+    unknown_values: ['', 'XX']   # read as unknown wherever the dimension is read
+```
+
+Grouping puts those rows in the unknown (`null`) group, `missing: true` matches
+them, `not` keeps them (and the answer's `UNKNOWN_ROWS_KEPT` counts them), and a
+call that writes one of them in `is` or `not` is refused with the `missing` form.
+`unknown_values` is a non-empty list of strings or numbers on one dimension; it is
+never a package default. A rollup is not read for a query on such a dimension.
+
 ### Measures
 
 Each measure declares the explicit triple (`kind`, `accumulation`, `value_type`)
@@ -1739,7 +1766,10 @@ aggregates. There is intentionally no top-level `filter:` direct field on
 filter expression. Each `all:` item is either a dimension
 condition with `field`, `op`, and `value`, or an `expression:` containing a
 `metric_predicate`. All items are combined with AND. Other filter combinators,
-including `any:`, are unsupported.
+including `any:`, are unsupported. A condition uses the query's filter words
+(`is`, `not`, `gt`, `gte`, `lt`, `lte`, `contains`, `missing`) and accepts their SQL
+spellings (`=`, `!=`, `IN`, `NOT IN`, `>`, ...) with the same meaning: `not` and
+`!=` keep rows whose value is unknown; add `missing: false` to leave them out.
 
 ### Building-block measures
 

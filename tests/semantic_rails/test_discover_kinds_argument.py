@@ -306,8 +306,9 @@ def test_resource_grant_mode_refuses_a_kind_it_cannot_produce_and_says_which(
 def test_resource_grant_mode_mcp_refusal_keeps_its_recovery_hint(
     runtime: Any, adapter: SemanticLayerMCPAdapter, kinds: list[str]
 ) -> None:
+    granted = context_from_policy_context(_granted(runtime))
     out = adapter.call_tool(
-        "discover", {"terms": "revenue", "kinds": kinds, "policy_context": _granted(runtime)}
+        "discover", {"terms": "revenue", "kinds": kinds}, request_context=granted
     )
     assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
     (hint,) = [h for h in out["errors"][0]["recovery_hints"] if h["kind"] == "use_valid_kind"]
@@ -316,7 +317,7 @@ def test_resource_grant_mode_mcp_refusal_keeps_its_recovery_hint(
     # Following the hint must work on the same transport: no hint names a refused kind.
     for kind in hint["details"]["valid_kinds"]:
         followed = adapter.call_tool(
-            "discover", {"terms": "revenue", "kinds": [kind], "policy_context": _granted(runtime)}
+            "discover", {"terms": "revenue", "kinds": [kind]}, request_context=granted
         )
         assert followed["ok"] is True, kind
 
@@ -325,10 +326,10 @@ def _grant_discover(
     runtime: Any, adapter: SemanticLayerMCPAdapter, transport: str, kinds: list[str]
 ) -> dict[str, Any]:
     body = {"terms": "revenue", "kinds": kinds}
-    if transport == "mcp":
-        return adapter.call_tool("discover", {**body, "policy_context": _granted(runtime)})
-    service = SemanticHTTPService(runtime)
     context = context_from_policy_context(_granted(runtime))
+    if transport == "mcp":
+        return adapter.call_tool("discover", body, request_context=context)
+    service = SemanticHTTPService(runtime)
     try:
         out, status = service.handle("POST", "/discover", body, context=context)
     except SemanticLayerError as exc:
@@ -370,7 +371,9 @@ def test_grant_catalog_keeps_its_shape(runtime: Any) -> None:
         assert granted["counts"][plural.get(kind, f"{kind}s")] == 0, kind
     assert granted["metric_ids"]
     service = SemanticHTTPService(runtime)
-    out, _ = service.handle("POST", "/catalog", {"verbosity": "summary", "policy_context": grant})
+    out, _ = service.handle(
+        "POST", "/catalog", {"verbosity": "summary"}, context=context_from_policy_context(grant)
+    )
     assert out["catalog"] == granted
 
 
@@ -381,9 +384,8 @@ def test_resource_grant_mode_listing_refuses_a_kind_it_cannot_produce(
     runtime: Any, adapter: SemanticLayerMCPAdapter, kinds: list[str]
 ) -> None:
     """Empty terms list ids; the kind check is the ranked path's, not the wider catalog's."""
-    out = adapter.call_tool(
-        "discover", {"terms": "", "kinds": kinds, "policy_context": _granted(runtime)}
-    )
+    granted = context_from_policy_context(_granted(runtime))
+    out = adapter.call_tool("discover", {"terms": "", "kinds": kinds}, request_context=granted)
     assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
     issue = out["errors"][0]
     assert issue["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
@@ -393,7 +395,7 @@ def test_resource_grant_mode_listing_refuses_a_kind_it_cannot_produce(
     # Following the hint on the same call shape lists that kind's ids.
     for kind in hint["details"]["valid_kinds"]:
         followed = adapter.call_tool(
-            "discover", {"terms": "", "kinds": [kind], "policy_context": _granted(runtime)}
+            "discover", {"terms": "", "kinds": [kind]}, request_context=granted
         )
         assert followed["ok"] is True, kind
         assert f"{kind}_ids" in followed["catalog"], kind
@@ -426,9 +428,11 @@ def test_resource_grant_mode_never_claims_no_match(
     )
     assert not _ids(empty) and "no_matches" not in empty
     miss = adapter.call_tool(
-        "discover", {"terms": "zxqv", "kinds": ["dimension"], "policy_context": context}
+        "discover",
+        {"terms": "zxqv", "kinds": ["dimension"]},
+        request_context=context_from_policy_context(context),
     )
-    assert not _ids(miss)
+    assert miss["ok"] is True and not _ids(miss)
     assert NO_MATCH not in _hints_text(miss)
 
 
@@ -470,7 +474,6 @@ def test_cli_kinds_use_the_shared_list_normaliser(
     args = argparse.Namespace(
         terms="revenue", kinds=kinds, query_json="", stage="", verbosity="compact", limit=10
     )
-    monkeypatch.setattr(cli_query, "_query_with_policy_context", lambda query, args: None)
     cli_query.cmd_discover(args)
     assert seen["kinds"] == expected
 
@@ -481,7 +484,6 @@ def test_cli_refuses_a_kinds_value_that_does_not_parse(monkeypatch: pytest.Monke
             pass
 
     monkeypatch.setattr(cli_query, "_runtime_from_package_or_path", lambda args: FakeRuntime())
-    monkeypatch.setattr(cli_query, "_query_with_policy_context", lambda query, args: None)
     args = argparse.Namespace(
         terms="revenue", kinds='["metric"', query_json="", stage="", verbosity="compact", limit=10
     )

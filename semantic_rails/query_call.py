@@ -101,15 +101,8 @@ _PREDICATE_SCOPES: dict[str, dict[str, str]] = {
     "period": {"scope_mode": "entity_period"},
 }
 _PREDICATE_RETIRED = ("scope_mode", "time_grain", "time_alignment")
-_SQL_COMPARISON = {"is": "=", "not": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
-_SQL_MEMBERSHIP = {"is": "IN", "not": "NOT IN"}
-
-
-def _predicate_op(word: str, value: Any) -> str:
-    """A predicate's comparison in the engine's spelling; a list compares by membership."""
-    if isinstance(value, list) and word in _SQL_MEMBERSHIP:
-        return _SQL_MEMBERSHIP[word]
-    return _SQL_COMPARISON[word]
+# The words that compare an aggregate: an entity's value is never text to search or unknown.
+_AGGREGATE_WORDS = ("is", "not", "gt", "gte", "lt", "lte")
 
 
 V2_POINTER = f"See the query schema at {SCHEMA_ID}."
@@ -633,13 +626,13 @@ def _predicate(node: dict[str, Any], path: str) -> dict[str, Any]:
     op = node.get("op")
     if op is not None:
         word = operators.operator_word(op, path=f"{path}.op")
-        if word not in _SQL_COMPARISON:
+        if word not in _AGGREGATE_WORDS:
             raise refusal(
                 f"{path}.op",
                 "compares an aggregate: use is, not, gt, gte, lt or lte",
                 fix="Use gt, gte, lt, lte, is or not.",
             )
-        node["op"] = _predicate_op(word, node.get("value"))
+        node["op"] = word
     return {**node, **_PREDICATE_SCOPES[over]}
 
 
@@ -771,7 +764,7 @@ def _entity_filter(
         word, value = operators.normalize_condition(
             condition.get("op"), condition.get("value"), path=at
         )
-        if word not in _SQL_COMPARISON:
+        if word not in _AGGREGATE_WORDS:
             raise refusal(
                 f"{at}.op", "compares an aggregate", fix="Use gt, gte, lt, lte, is or not."
             )
@@ -781,7 +774,7 @@ def _entity_filter(
                     "kind": "metric_predicate",
                     "entity": entity.strip(),
                     "input": _reference(field_id, f"{at}.field"),
-                    "op": _predicate_op(word, value),
+                    "op": word,
                     "value": value,
                     **_PREDICATE_SCOPES[over],
                 },
@@ -1065,23 +1058,11 @@ def route_options(call: Any, details: dict[str, Any]) -> None:
     details["hint"] = (
         "Which route is meant is a business definition. Ask which option the question means, "
         "then send that option's query (this query only), or record the option's decision as "
-        "the package default."
+        "the package default with record_route_decision (a graph.path_preferences row)."
     )
 
 
 # --- The call an engine query states, for echoes and the planner. ---------------------------
-
-_SQL_WORDS = {
-    "=": "is",
-    "!=": "not",
-    "<>": "not",
-    ">": "gt",
-    ">=": "gte",
-    "<": "lt",
-    "<=": "lte",
-    "IN": "is",
-    "NOT IN": "not",
-}
 
 
 def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
@@ -1186,7 +1167,7 @@ def _over_word(scope: str, alignment: str) -> str:
 
 
 def _call_entity_having(expression: Mapping[str, Any]) -> dict[str, Any]:
-    op = _SQL_WORDS.get(" ".join(str(expression.get("op", "=")).upper().split()), "is")
+    op = operators.word_of(expression.get("op", "is"))
     condition = {
         "field": _call_expression(expression.get("input")),
         "op": op,
@@ -1266,7 +1247,5 @@ def _call_expression(expression: Any) -> Any:
         alignment = node.pop("time_alignment", "")
         node.pop("time_grain", None)
         node["over"] = _over_word(str(scope), str(alignment))
-        node["op"] = _SQL_WORDS.get(
-            " ".join(str(node.get("op", "=")).upper().split()), node.get("op")
-        )
+        node["op"] = operators.word_of(node.get("op", "is"))
     return node

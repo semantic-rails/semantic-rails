@@ -40,7 +40,17 @@ from ..fanout import (
 )
 from ..ir import BoundMeasure, PathSelection
 from ..schema import PackageConfig, RelationshipConfig
-from ..sql_ast import SqlBinary, SqlIdentifier, SqlIsNull, SqlJoin, SqlLiteral, SqlTableRef
+from ..sql_ast import (
+    SqlBinary,
+    SqlCase,
+    SqlCaseWhen,
+    SqlIdentifier,
+    SqlIn,
+    SqlIsNull,
+    SqlJoin,
+    SqlLiteral,
+    SqlTableRef,
+)
 from .dependencies import record_bound_object
 from .indexes import (
     _default_temporal_role,
@@ -65,7 +75,22 @@ def _split_column_ref(value: str) -> tuple[str, str]:
     return table or column, column
 
 
-def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[SqlIdentifier, str]:
+def unknown_as_null(expr: Any, dim: Any) -> Any:
+    """The dimension read with its declared unknown spellings as NULL, so grouping, ``missing``,
+    ``not`` and every other filter word treat them as unknown."""
+    if not getattr(dim, "unknown_values", None):
+        return expr
+    return SqlCase(
+        [
+            SqlCaseWhen(
+                SqlIn(expr, [SqlLiteral(value) for value in dim.unknown_values]), SqlLiteral(None)
+            )
+        ],
+        else_expr=expr,
+    )
+
+
+def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[Any, str]:
     dim_index = _dimension_index(config)
     dim = dim_index.get(dim_id)
     if dim is None:
@@ -75,7 +100,7 @@ def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[SqlIden
             details={"dimension": dim_id},
         )
     table = _entity_index(config)[dim.entity].table
-    return _column_ref(table, dim.column), dim.id
+    return unknown_as_null(_column_ref(table, dim.column), dim), dim.id
 
 
 def _pair_orientations(
@@ -205,7 +230,7 @@ def _direct_dimension_source_expr(
     config: PackageConfig,
     *,
     source_relation_override: str = "",
-) -> tuple[SqlIdentifier, str] | None:
+) -> tuple[Any, str] | None:
     dim_index = _dimension_index(config)
     dim = dim_index.get(dim_id)
     if dim is None:
@@ -226,7 +251,7 @@ def _direct_dimension_source_expr(
     )
     if expr is None:
         return None
-    return expr, dim.id
+    return unknown_as_null(expr, dim), dim.id
 
 
 def keyed_entity(config: PackageConfig, dimension_id: str) -> Any:

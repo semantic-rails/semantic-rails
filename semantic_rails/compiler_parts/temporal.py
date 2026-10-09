@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from .. import operators
 from ..ast import ChildGroup, Filter, NormalizedQuery
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -992,8 +993,7 @@ def _clock_where_cuts(
         dim = analysis.dimensions.get(item.field)
         if dim is None or _column_name(dim.column) not in temporal_columns:
             continue
-        op = " ".join(str(item.op).upper().split())
-        if op in {"<", "<="} and dim.data_type in {"date", "timestamp"}:
+        if operators.word_of(item.op) in {"lt", "lte"} and dim.data_type in {"date", "timestamp"}:
             continue
         cuts.append((path, item))
     return cuts
@@ -1055,7 +1055,7 @@ def _validate_restrictive_time_semantics(
                 )
             else:
                 details = {"where_path": path, "where": asdict(item)}
-                if " ".join(str(item.op).upper().split()) in {">=", ">"}:
+                if operators.word_of(item.op) in {"gte", "gt"}:
                     details["start"] = item.value
                 bound = f"a where filter on a date or calendar dimension ({path}) other than an upper bound"
                 remedy = f"remove {path} (an upper bound or query.time.end still runs)"

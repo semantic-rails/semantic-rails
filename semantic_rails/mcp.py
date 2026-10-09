@@ -166,17 +166,13 @@ MCP_SERVER_INSTRUCTIONS = (
 
 
 def _call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
-    """The published query call schema as execute's ``query`` property, and its ``$defs``.
+    """The query call schema as execute's ``query`` property, and its ``$defs``.
 
     The definitions move to the tool schema's root so its ``#/$defs/...`` references resolve.
     """
-    from .contracts.query_schema import query_call_schema_document
+    from .contracts.query_schema import embedded_query_call_schema
 
-    document = query_call_schema_document()
-    definitions = document.pop("$defs")
-    for key in ("$schema", "$id", "title", "x-fields"):
-        document.pop(key, None)
-    return document, definitions
+    return embedded_query_call_schema()
 
 
 QUERY_SCHEMA, QUERY_SCHEMA_DEFS = _call_schema()
