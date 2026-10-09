@@ -585,7 +585,7 @@ def test_contract_and_release_boundaries_have_codeowners():
         "/scripts/generate_contract_artifacts.py",
         "/scripts/check_contract_compatibility.py",
         "/docs/CONTRACTS.md",
-        "/docs/QUERY_IR_SCHEMA.md",
+        "/docs/QUERY_CALL.md",
         "/semantic_rails/embedding.py",
         "/semantic_rails/mcp*.py",
         "/semantic_rails/architect_*.py",

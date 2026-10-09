@@ -32,13 +32,14 @@ TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "cl
 TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days"]
 DEFINITIONS = str(SHOP.relative_to(ROOT)) + "/models/"
 DECISIONS = {
-    "docs/QUERY_IR_SCHEMA.md#wherefilter",
-    "docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0",
-    "docs/QUERY_IR_SCHEMA.md#timeblock",
-    "docs/QUERY_IR_SCHEMA.md#child-groups",
-    "docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union",
-    "docs/QUERY_IR_SCHEMA.md#metricfilter-expressions",
-    "docs/QUERY_IR_SCHEMA.md#orderby",
+    "docs/QUERY_CALL.md#select",
+    "docs/QUERY_CALL.md#where",
+    "docs/QUERY_CALL.md#entity-filters",
+    "docs/QUERY_CALL.md#having",
+    "docs/QUERY_CALL.md#time",
+    "docs/QUERY_CALL.md#order_by",
+    "docs/QUERY_CALL.md#inline-expression-kinds",
+    "docs/QUERY_CALL.md#empty-groups-null-or-0",
 }
 KINDS = {
     "answer": "query_matches_snapshot",

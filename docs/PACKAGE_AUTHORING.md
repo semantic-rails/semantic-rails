@@ -83,7 +83,7 @@ amounts: as currency they would print cents as dollars. Publish them in dollars
 with a measure such as `amount_cents / 100.0`.
 
 Rolling windows, prior periods and growth fill empty periods from the engine's
-implicit Gregorian calendar (QUERY_IR_SCHEMA "Which calendar fills"), whether or
+implicit Gregorian calendar ([Fill and the calendar](QUERY_CALL.md#time-windows-in-depth)), whether or
 not the package authors a calendar; ClickHouse has none, so it refuses them.
 `author metric` offers these metrics only once the package has a calendar. A
 calendar is a model whose graph entity has `kind: time`: one row per day in a
@@ -95,10 +95,10 @@ dimensions: an authored default calendar's `date_day` and `week_start` to
 even if its `week_start` names Sundays.
 
 Fiscal and other non-default calendars (a `calendar_id` other than `default`) are
-not supported in this release. A query that names one, or that sets a `grain` on a
-time whose model is bound to one, refuses with `REWRITE_NOT_SUPPORTED`
-(`details.reason: calendar_not_supported_yet`); authored fiscal calendars return in
-a later release.
+not supported in this release. A call cannot name a calendar (`time.calendar_id` is
+refused), and a `grain` on a clock whose model is bound to one refuses with
+`REWRITE_NOT_SUPPORTED` (`details.reason: calendar_not_supported_yet`); authored fiscal
+calendars return in a later release.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh
@@ -421,7 +421,7 @@ no apples, "apples at store 5" reads `0`, as in a breakdown by store. `query` ju
 each query's filters, so the same question reads `NULL` with `NO_DATA_IN_SCOPE`; experiments
 that must not mistake a filtered-out population for zero want it. A query's own
 `observation_scope` overrides it, and any other value is `INVALID_CONFIG`. See
-[Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+[Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
 
 ### DuckDB seeds and externally built databases
 
@@ -490,7 +490,7 @@ package:
 `package.environments` declares the environment names the package recognizes.
 `promote-package --environment <name>` rejects undeclared environments with
 `INVALID_CONFIG` (`details.allowed_environments`). Every governed runtime request
-with a nonempty `policy_context.environment` must name a declared environment;
+with a nonempty environment must name a declared environment;
 otherwise it is refused with `INVALID_QUERY` before evaluating policies or caveats.
 The error names the declared environments in its message and
 `details.allowed_environments`, including an empty list when none are declared.
@@ -597,7 +597,8 @@ These network limits apply per driver operation/attempt; driver retries and
 Databricks polling can extend total elapsed time. MotherDuck and Snowflake CLI
 are outside these client-wait defaults.
 
-Per-request `limits.statement_timeout_ms` sets each supported warehouse's
+Per-request `limits.statement_timeout_ms` (the Python `limits=` argument beside the
+call) sets each supported warehouse's
 statement deadline. ClickHouse, Databricks, Snowflake native, BigQuery and
 Athena client waits accommodate a longer request with a five-second margin.
 BigQuery sets a server job deadline to the read wait when no request limit is
@@ -721,15 +722,20 @@ kind names must match exactly.
   protected objects as release-gated.
 - **`metric_constraint`** — enforced at query time for scoped callers. It
   restricts how governed metrics or measures may be cut by `group_by`,
-  `where`, temporal role, and metric-filter predicates.
+  `where`, temporal role, `having` and entity filters.
+  A package metric's own `filter:` is the package author's governed definition and is
+  trusted: `allowed_where` checks, and `required_where` looks for, only the conditions the
+  caller adds (its `where`, the conditions in its entity filters, and the filters inside
+  its inline kinds, all checked when the call is bound). To keep a caller away from a
+  metric, deny the metric (`object_access`).
   `allowed_metric_filter_entities` and `allowed_metric_filter_metrics` apply
-  to compiler-resolved cuts in `metric_filters` and inside select or recipe
+  to compiler-resolved cuts in `having`, in entity filters, and inside select or recipe
   expressions, including aggregate filters and scoped predicates. Measures,
   columns and dimensions count as their owning entities; referenced recipes
   count even when nested. The outer query's grouping, where, time axis and
   attachment joins are excluded from these filter dependency sets. Constant
   cuts have no object reads; unresolved cut bindings are refused under these
-  allowlists. A cut in `metric_filters` counts for every governed object in
+  allowlists. A cut in `having` or an entity filter counts for every governed object in
   the query. A cut inside a select or recipe expression counts only for the
   measures and recipes whose values it filters, so an unfiltered governed
   measure may sit beside a separately filtered one. When a cut has no single
@@ -738,8 +744,8 @@ kind names must match exactly.
   governed object.
   A filter the caller writes inside an expression (an aggregate's or
   `semi_additive` expression's `filter`, a scoped aggregate's `where`, an
-  `aggregate_if` condition, at any depth in `select`, `having` or an entity
-  filter, predicate inputs included) is checked like a `where` filter when it
+  `aggregate_if` condition, at any depth in `select`, predicate inputs included)
+  is checked like a `where` filter when it
   counts for the governed object, by the same leaf rule: its field, read by the
   id a name or alias binds to, must be in `allowed_where` (a violation carries
   `"source": "inline_expression"`), and it always counts as a metric filter. It
@@ -751,7 +757,7 @@ kind names must match exactly.
   outer `where`, so a governed object with `required_where` read there is refused
   (`required_where_outside_entity_filter`).
   Fields nested under an aggregate-filter `expression`, a scoped aggregate's
-  `predicates[].input`, a metric predicate, `metric_filters`, or a conversion
+  `predicates[].input`, a metric predicate, `having`, an entity filter, or a conversion
   operand count for every governed object in the query. This conservative rule
   can refuse a nested filter even when it affects only a sibling expression.
   Direct leaf filters retain the leaf rule above. A caller-created aggregate
@@ -789,7 +795,7 @@ kind names must match exactly.
   so is any query outside the qualified family: the compiled statement must
   read one ordinary scan of the filtered relation, as its only relation. Engine-generated
   observation and coverage scans may repeat that relation; each receives the same policy
-  filter. Joins, metric filters, calendar spines (prior-period comparisons, fill) and
+  filter. Joins, entity filters, calendar spines (prior-period comparisons, fill) and
   other second scans are refused, and rollups are not routed to. The zero-row
   data-coverage probe is skipped. Such a policy loads for any warehouse, but only
   DuckDB and Postgres execute these statements today; every other adapter
@@ -806,12 +812,13 @@ kind names must match exactly.
 
 Scoping works the same way as caveats: `audiences:`, `environments:`, and
 `roles:` lists restrict when a policy applies, and an empty list means
-"applies to every context". Role matching uses intersection with
-`policy_context.roles`, so `roles: [sales, csm]` applies when either role is
-present. The query-side context arrives via `policy_context` in the Query IR
-payload (`{"policy_context": {"environment": "production", "audience":
-"finance", "roles": ["sales"]}}`) or the CLI flags `--environment` /
-`--audience`. A `rationale:` string is strongly encouraged — it is echoed in
+"applies to every context". Role matching uses intersection with the
+request's roles, so `roles: [sales, csm]` applies when either role is
+present. The request's context never travels in the call: over HTTP and remote MCP it
+comes from the caller's credentials, and a trusted local caller passes it as `context`
+(Python `context={"environment": "production", "audience": "finance", "roles":
+["sales"]}`, the CLI flags `--environment` / `--audience`, or `context:` in a package
+example or test); see [Identity](QUERY_CALL.md#identity). A `rationale:` string is strongly encouraged — it is echoed in
 policy-effect reports so the person whose query was denied learns why.
 
 ```yaml
@@ -967,7 +974,7 @@ Every other use is refused with `POLICY_DENIED`, `details.withheld_objects`, a `
 and a recovery hint naming the accepted shape, on validate, compile, execute and MCP:
 selecting it in any expression, metric or measure that reads it (ratios, arithmetic,
 comparisons, prior period, rolling and other windows), ordering by such an expression, a
-`where`, `metric_filters` or threshold reading it, a segment defined on it, `export`, a
+`where`, `having` or entity filter reading it, a segment defined on it, a
 missing or larger `limit`, and other tie orders. Dependencies are the compiler's own, so a
 derived metric cannot stand in for the withheld one. Compiled SQL still contains the
 metric's expression; values come only from the warehouse and never appear in errors,
@@ -1123,14 +1130,13 @@ warning naming the hop (`details`: `use`, `dimension`, `entity` (the versioned e
   `null_rows`, `rows` and, for each visible sum or count of the query's own rows, `measures:
   [{output, null_value, total}]`. If any grouping dimension's route has a many hop, or no
   suitable output remains visible, it uses row counts and omits `measures`. A complete
-  answer (not truncated, no `limit`, no metric
-  filter) with no empty value carries no warning; any other answer keeps the compiled one.
-- **Filtered by it** (`use: filter`): for known NULL-excluding forms, every stage says
+  answer (not truncated, no `limit`, no `having` or entity filter on aggregates) with no
+  empty value carries no warning; any other answer keeps the compiled one.
+- **Filtered by it** (`use: filter`): for a `where` condition that drops unknown rows
+  (`is`, `gt`, `gte`, `lt`, `lte`, `contains`, `missing: false`), every stage says
   "Plan filter: rows with no Billing version valid at their time are left out by this filter."
-  These are `IS NOT NULL`, `IN` / `NOT IN`, inequality to NULL, and ordinary comparisons or
-  `LIKE` / `NOT LIKE` with a non-NULL value. Operator case and spacing follow SQL lowering.
-  `IS NULL`, `=` / `IS` with NULL, null-safe comparisons and boolean `IS` / `IS NOT` carry no
-  such warning. Multiple excluding filters on the same dimension produce one filter warning.
+  `not` and `missing: true` keep those rows and carry no such warning. Several such
+  conditions on the same dimension produce one filter warning.
 
 A path that only leaves the versioned table (`customer_history → customer` here) reads one
 version per row and gets no warning. A version written moments after its event (a billing
@@ -1306,11 +1312,11 @@ arbitrary multi-hop traversal.
 
 Time is optional. A package without dates can omit every model's `times:` block.
 Counts, sums, ratios, grouping, filters and lookups work without a time axis.
-Explicit Query IR requests for time ranges, grains, windows, temporal overrides,
+Calls that ask for time windows, grains, clock overrides,
 prior-period or cumulative expressions are refused with
 `INVALID_TEMPORAL_ROLE`: the package declares no time. Declare a `times:` entry
 before requesting time analysis. On a package without time, every
-natural-language plan with a draft returns `low_confidence`, retains its Query IR
+natural-language plan with a draft returns `low_confidence`, retains its call
 and adds the same `INVALID_TEMPORAL_ROLE` warning: "This package has no time; check
 the question doesn't ask for a time breakdown or window." This includes plain
 catalogue questions and catalogue labels or dimension values containing time words.
@@ -1527,7 +1533,7 @@ answer. Only filters on the stock's clock (the same entity and column) or a cale
 week reads Wednesday's snapshots. Other date or timestamp attributes refuse, as in
 `group_by`, with `REWRITE_NOT_SUPPORTED`, reason `stock_filtered_by_date_attribute`, and
 the dimension id; choosing between a time bound and a closing-snapshot attribute would
-be ambiguous. This also applies to conditions inside child groups. The
+be ambiguous. This also applies to conditions inside entity filters. The
 stock's own clock and calendar dimensions instead split the period: grouped by the
 snapshot day, each day keeps its own snapshot. Ratios whose numerator alone has extra
 conditions keep one snapshot per series per time bucket, so grouping one by the clock, a
@@ -1573,10 +1579,10 @@ visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages 
   `ROLLUP_UNSAFE` (`details.unsupported_construct: non_additive_sum`). A stock sums its
   series' last snapshots, so there each series must be one output row.
 - An output row holds one row when every column of the row key (for a stock, the key
-  without its clock) is grouped by, pinned with a top-level `=` filter or a one-value
-  `in`, or reached through the key of a many-to-one relationship on that column (when
+  without its clock) is grouped by, pinned by a top-level `is` condition with one value,
+  or reached through the key of a many-to-one relationship on that column (when
   it's the only relationship between the two entities); a `date` clock also counts at
-  `grain: day`. Metric and segment filters don't count.
+  `grain: day`. Entity filters, a metric's own filter and segment filters don't count.
   The refusal points to the measure's key or a finer grain.
 - `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
   visitors is a real question), and so does `prior_period`. Cumulative, rolling and
@@ -1617,7 +1623,7 @@ a flow accumulation. Authoring `expr`, an aggregation, `additive`, `accumulation
 The invariant: a carried total appears at most once per output row's `via` key. It is
 never added across two parents, or repeated over the child's own child rows.
 
-- An output row must hold one parent: group by or pin (`=`) the `via` entity's key, or
+- An output row must hold one parent: group by or pin (a one-value `is`) the `via` entity's key, or
   every column of the measure's own key. Anything coarser is refused with `ROLLUP_UNSAFE`
   (`details.construct: parent_lookup`), and `project validate` probes the measure grouped by
   the `via` key.
@@ -1635,7 +1641,7 @@ never added across two parents, or repeated over the child's own child rows.
 - Time: the carried value is the parent's all-time total. A query's `where`, `time`
   window and buckets on the child's own clocks select child rows, and leave the value
   unchanged. Bucketing by the source's clock, prior-period, cumulative, rolling and
-  period-to-date wrappers, and `temporal_role_overrides` on a lookup are refused with
+  period-to-date wrappers, and a clock override on a lookup are refused with
   `REWRITE_NOT_SUPPORTED` (`details.unsupported_construct: lookup_time`).
 
 The load refuses a lookup with `INVALID_CONFIG`, naming the key at fault, when:
@@ -1760,10 +1766,14 @@ aggregates. There is intentionally no top-level `filter:` direct field on
 filter expression. Each `all:` item is either a dimension
 condition with `field`, `op`, and `value`, or an `expression:` containing a
 `metric_predicate`. All items are combined with AND. Other filter combinators,
-including `any:`, are unsupported. A condition uses the query's filter words
+including `any:`, are unsupported. A condition uses the call's [filter words](QUERY_CALL.md#filter-words)
 (`is`, `not`, `gt`, `gte`, `lt`, `lte`, `contains`, `missing`) and accepts their SQL
 spellings (`=`, `!=`, `IN`, `NOT IN`, `>`, ...) with the same meaning: `not` and
 `!=` keep rows whose value is unknown; add `missing: false` to leave them out.
+A package `metric_predicate` states its scope with `scope_mode` where a call writes
+`over`: `entity_only` is `all_time` (`window` with `time_alignment: query_window`),
+`entity_period` is `period`, and `contextual` (the outer query's time bucket and grouped
+entities) is for package metrics only.
 
 ### Building-block measures
 
@@ -1787,7 +1797,7 @@ A measure authored `publish: false` is not offered to agents: `discover` doesn't
 and `plan` doesn't answer with it unless `partial_query.select` names it by id. When a metric
 reads it through a filter, it is a building block. `plan` answers with the metric when it is
 the only one that filters the measure or the question names it, and otherwise holds the
-draft. `inspect` and Query IR still take the measure by id. A measure never publishes a
+draft. `inspect` and a query call still take the measure by id. A measure never publishes a
 metric of its own name, and `publish:` is `true` or `false` only. A metric that aggregates
 the measure whole publishes it. `plan` also holds a draft over a published measure while a metric
 filters its rows on a dimension of the measure's entity, such as a class; to count every row,
@@ -1983,10 +1993,11 @@ condition or a measure expression), and whatever shape the query takes (pre-aggr
 before its joins, de-duplicated across a one-to-many hop, filtered with `EXISTS`, an
 entity-set ratio, or dimensions alone), the hop is a left join. A row whose foreign key is
 NULL or matches no row stays, with NULL for everything the hop looks up: it groups under
-NULL, and grouped rows add up to the ungrouped total. A filter on such a dimension treats
-the row as it treats a NULL value in the row itself, wherever the filter is written: `IS
-NULL` selects it, so "passengers excluding crew" through a crew-roster lookup is a
-`crew_role IS NULL` filter, while `=`, `!=`, `IN` and `NOT IN` never match it.
+NULL, and grouped rows add up to the ungrouped total. A filter condition on such a
+dimension treats the row as it treats a NULL value in the row itself, wherever the
+condition is written: `missing: true` selects it, so "passengers excluding crew" through a
+crew-roster lookup is `crew_role` with `missing: true`; `is` never matches it and `not`
+keeps it.
 
 Only these reads join a lookup with an inner join, so a row with no match is left out:
 
@@ -2044,12 +2055,12 @@ Grouping retains a narrower exception: a path that only goes down one-to-many ho
 (`order → order_item → product`), each hop joined on the declared key of its
 one side, lets a distinct parent count be grouped by the far dimension; the entity's key is what
 the engine de-duplicates on.
-A query states which child rows its conditions mean with a child group in `where`
-(`{child, match: any|none, where}`, see
-[QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#child-groups)); two or more positive plain filters
-on one child, or one negated one, are refused with `AMBIGUOUS_CHILD_SCOPE` and a
-clarification. Its readings are child groups, so it is offered only when a group on that
-child takes the plain filters' own route; otherwise the refusal is `MIXED_GRAIN_INVALID`,
+A call states which child rows its conditions mean with an entity filter in `where`
+(`{entity, any | none}`, see [Entity filters](QUERY_CALL.md#entity-filters)); two or more
+positive plain conditions on one child, or one `not` or `missing` one, are refused with
+`AMBIGUOUS_CHILD_SCOPE` and a clarification. Its readings are entity filters, so it is
+offered only when a filter on that child takes the plain conditions' own route; otherwise
+the refusal is `MIXED_GRAIN_INVALID`,
 naming the `graph.path_preferences` row that records that route. A
 measure's own `filter` may cross a one-to-many hop with one positive condition;
 negated ones stay refused because "has a non-matching child" and "has no matching
@@ -2082,9 +2093,9 @@ business definition. The engine never guesses: the decision is recorded once
 in the package, then every query uses it, and adding a route never silently
 changes an existing answer. A route is chosen only by a recorded decision or
 the start entity's own key. For each start entity and target entity, over
-every route within the hop ceiling, in this order (a query's own
-[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions) row for exactly the
-pair comes first, for that query only):
+every route within the hop ceiling, in this order (a call's own
+[`routes`](QUERY_CALL.md#routes) entry for exactly the
+pair comes first, for that call only):
 
 1. **Decided.** A `graph.path_preferences` row for exactly the pair (below)
    wins.
@@ -2114,7 +2125,7 @@ pair comes first, for that query only):
 
 Hop count and weights never decide. Every path choice goes through this rule:
 grouping, filters, a measure's own filter, metric predicates, time roles,
-conversions, the direct read of a foreign key, a child filter's `EXISTS`, the
+conversions, the direct read of a foreign key, an entity filter's `EXISTS`, the
 distinct count read from a child's rows, and discovery, grain recovery,
 catalog and error hints. A calendar dimension reached only through other
 facts' rows is refused the same way, and its recovery hint points at
@@ -2138,9 +2149,9 @@ relationship), and `details.fixes`:
   reads one of that name;
 - `declare_link_table`: `entities: {bridge: true}` on the crossed model;
 - `record_route`: the `graph.path_preferences` row for the pair;
-- `child_group`: ask about the crossed rows themselves, a
-  [child group](QUERY_IR_SCHEMA.md#child-groups) carrying the query's
-  conditions on the target.
+- `child_group`: ask about the crossed rows themselves, an `any`
+  [entity filter](QUERY_CALL.md#entity-filters) on the crossed entity carrying the
+  query's conditions on the target.
 
 Three declarations allow the crossing, and then no warning is given: the
 crossed model's `bridge: true`; a validity window on the crossed entity (a
@@ -2181,13 +2192,14 @@ words built only from package labels:
 - `decision` is the `graph.path_preferences` row that makes the option the
   package default, with `label` set to the meaning. When that row would
   disagree with existing rows (see "Rows must agree" below), the option adds
-  `conflicts_with`: those rows, to change before recording it. Its `decision`
-  still answers per query.
+  `conflicts_with`: those rows, to change before recording it. Its `query`
+  still answers per call.
+- `query` is the refused call with the option's route added to
+  [`routes`](QUERY_CALL.md#routes) (`{from, to, via}`), ready to send.
 
 Every option can be applied two ways. For the person who asked, the agent
-resends the query with the option's `decision` in
-[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions): that query only, not a
-default. For everyone, a maintainer records the same row in the package (Architect
+sends the option's `query`: that call only, not a
+default. For everyone, a maintainer records the option's `decision` in the package (Architect
 `record_route_decision` writes it for review); then the question answers
 without asking.
 
@@ -2505,9 +2517,9 @@ Routing is conservative in the MVP:
   anything else, such as customers or one column of a composite key, can't be
   added up across rollup rows. A column declared `holds: count_distinct` still
   answers them at the rollup's own time grain when every rollup dimension is
-  grouped or pinned to one value by an `=` filter, so each result row is one
+  grouped or pinned to one value by an `is` condition, so each result row is one
   rollup row. The rollup must have one row per time bucket and dimension columns
-  (and per key of any `grain.entities`); an `IN` list or a range on a rollup
+  (and per key of any `grain.entities`); an `is` list of several values or a range on a rollup
   dimension that isn't grouped runs on the base tables.
 - A time role whose `column_timezone` differs from its `timezone` runs on the
   base tables: the rollup path buckets the stored column's clock, without the
@@ -2536,8 +2548,8 @@ Routing is conservative in the MVP:
 - Every grouped or filtered dimension must be covered by the variant. If a
   query groups by `customer_id` and the monthly table excludes that dimension,
   the planner scans the raw relation.
-- Query-time `metric_predicate` shapes, including a `metric_predicate` inside an
-  aggregate's `filter`, do not route through variants yet.
+- Entity filters on aggregates (`{entity, having, over}`) and other `metric_predicate`
+  shapes, including one inside an aggregate's `filter`, do not route through variants yet.
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
@@ -2588,7 +2600,7 @@ metrics often span entities.
 ## Examples and tests
 
 Examples also teach `plan` the package's own questions. An example answers only
-its exact question, with the authored Query IR and pattern `package_example`.
+its exact question, with the authored call and pattern `package_example`.
 Case and whitespace aside (and the contractions `plan` expands in every
 question, so "What's" reads as "What is"), any other wording gets normal
 planning: different punctuation, plurals, numbers, signs or symbols, a different
@@ -2598,8 +2610,8 @@ whole matched question is recorded as a consumed span. The query still passes
 the normal validation and caller visibility checks. There is no fuzzy matching.
 Several valid, visible examples matching the same question require clarification with
 their IDs. Invalid examples fall through to normal planning with their IDs in
-`why.details.invalid_examples`. An example referring to a hidden object, in a value
-or in a mapping key such as `temporal_role_overrides`, is invalid for that caller,
+`why.details.invalid_examples`. An example referring to a hidden object anywhere in
+its call is invalid for that caller,
 exactly as it would be in a package without the object; the response never names
 the hidden object.
 
@@ -2621,66 +2633,90 @@ Both are loaded from **directories only** — the package root's `examples/` and
 `package.yml` are silently ignored by `run-examples` and `test-package`; keep
 them in sibling files.
 
-An `examples/` file maps example IDs to a question, a Query IR, and an expected
+Each entry's `query:` is a [query call](QUERY_CALL.md). The arguments beside the call are
+entry keys: `now:`, the instant `last` and `this` windows resolve against (see
+[`now`](QUERY_CALL.md#now)), and `context:`, the identity the entry runs as, such as
+`context: {audience: external_partner}` (see [Identity](QUERY_CALL.md#identity)). A `now:`
+at a file's top level applies to every entry in that file that doesn't set its own;
+`--now` on `run-examples`, `test-package` and `check` covers the rest. Pin `now` wherever a
+call reads a relative window, so the entry answers the same on every run.
+
+An `examples/` file maps example IDs to a question, a call, and an expected
 shape (`uv run semantic-rails run-examples` executes them). Columns are checked
 against the result's output descriptors even when a time window returns no rows;
-checks request compact responses even if the example declares `verbosity: minimal`,
-and reports retain the authored query. `min_rows` and `max_rows` still enforce the
-declared row counts:
+checks request compact responses, and reports retain the authored query. `min_rows` and
+`max_rows` still enforce the declared row counts:
 
 ```yaml
 # examples/core.yml
+now: "2026-03-02"            # every example in this file that sets no now of its own
 examples:
   top_stores_by_revenue:
     question: Top stores by revenue
     query:
-      version: 1
-      select:
-        - expression: {measure: measure.shop.revenue_usd}
-          as: revenue_usd
+      select: [measure.shop.revenue_usd]
       group_by: [dimension.shop_store_name]
       order_by:
         - field: revenue_usd
-          direction: DESC
+          direction: desc
       limit: 5
     expected_shape:
       columns: [dimension.shop_store_name, revenue_usd]
       min_rows: 2
       max_rows: 2
+
+  revenue_last_month:
+    question: Revenue last month
+    query:
+      select: [measure.shop.revenue_usd]
+      time: {last: {unit: month, value: 1}}
+    expected_shape:
+      columns: [revenue_usd]
 ```
 
 A `tests/` file maps test IDs to a `kind:` and its kind-specific assertion
-fields (`uv run semantic-rails test-package` runs them):
+fields (`uv run semantic-rails test-package` runs them). A grain series' columns start
+with `period`; `period_partial` is compared only when the expectation names it:
 
 ```yaml
 # tests/core.yml
+now: "2026-03-02"
 tests:
   monthly_revenue_columns:
     kind: query_returns_columns
     query:
-      version: 1
-      select:
-        - expression: {measure: measure.shop.revenue_usd}
-          as: revenue_usd
+      select: [measure.shop.revenue_usd]
       time:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: month
       order_by:
-        - field: time
-          direction: ASC
+        - field: period
+          direction: asc
       limit: 5
-    columns: [temporal_role.shop_order_ordered_at__month, revenue_usd]
+    columns: [period, revenue_usd]
+
+  last_week_daily_orders:
+    kind: query_row_count_bounds
+    now: "2026-02-02"        # this test's own instant
+    query:
+      select: [measure.shop.order_count]
+      time: {last: {unit: week, value: 1}, grain: day}
+    min_rows: 7              # a named window answers every day
+    max_rows: 7
+
+  partner_revenue_denied:
+    kind: validate_fails_with_code
+    context: {audience: external_partner}
+    query:
+      select: [measure.shop.revenue_usd]
+    code: POLICY_DENIED
 
   duplicate_alias_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.shop.order_count}
-          as: value
-        - expression: {measure: measure.shop.revenue_usd}
-          as: value
-      limit: 5
+        - {expression: measure.shop.order_count, as: value}
+        - {expression: measure.shop.revenue_usd, as: value}
     code: DUPLICATE_OUTPUT_ALIAS
 ```
 
@@ -2844,7 +2880,7 @@ clock. Measures with different constraint policies remain distinct.
 
 Validation that reads the data (`validate-config`, `check`, and the `runtime`
 and `full` modes) looks up the values of each string dimension a metric's
-`filter` compares with `=`, `!=`, `IN` or `NOT IN`, through the same live
+`filter` compares with `is` or `not` (or their spellings `=`, `!=`, `IN`, `NOT IN`), through the same live
 lookup as `valid-values`. A literal that matches no value, such as `'Completed'`
 over data holding `completed`, gets a `FILTER_VALUE_NOT_FOUND` warning that
 names the closest value. It is a warning because sample data can lack a value
@@ -2948,7 +2984,7 @@ named definition by hand before upgrading.
 | `query-path-policy` | 0.3.2rc3 | The query key `path_policy` in example, test and segment membership queries | Deleted; `graph.path_policy` is unchanged |
 | `policy-flat` | 0.3.2 | Nested policy `config:`, `visibility`, `rule`, and `description` (except nested row filters) | Flat kind-specific fields, `action` and `rationale`; nested scope or identity fields, disagreements, and release-label changes stop without choices |
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
-| `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
+| `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`; a call ignores `version`, so answers don't change |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
 | `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 | `package-schema-strict` | 0.3.2 | `package.schema_strict` | Deleted (a drop: only that field of the fingerprint changes) |
