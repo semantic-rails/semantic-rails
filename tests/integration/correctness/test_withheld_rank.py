@@ -1,9 +1,9 @@
 """A rank by withheld values names the reference SQL's groups, in its order, without values.
 
 Revenue by customer at stores a and b: 103 (23), 101 (17), then 102 and 106 tie at 9 for
-third place, 104 (8), 108 (2) and 105 (0: its one order has no amount). Ties are ordered by
-the customer in the rank's direction, so the third place goes to 106 and ascending is the
-exact reverse of descending.
+third place, 104 (8), 108 (2) and 105 (NULL: its one order has no amount). Ties are ordered
+by the customer in the rank's direction, so the third place goes to 106. The NULL sorts last
+in both directions, so ascending reverses the valued customers and then reads 105.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ POLICY = SemanticPolicyConfig(
 )
 REFERENCE = (
     "SELECT o.customer_id FROM orders AS o WHERE o.store_id IN ('a', 'b') "
-    "GROUP BY o.customer_id ORDER BY COALESCE(SUM(o.amount), 0) {0}, o.customer_id {0} LIMIT {1}"
+    "GROUP BY o.customer_id ORDER BY SUM(o.amount) {0} NULLS LAST, o.customer_id {0} LIMIT {1}"
 )
 
 
@@ -73,7 +73,7 @@ def test_rank_by_withheld_values_matches_reference(request, backend_name):
                 reference = backend.reference(REFERENCE.format(direction, limit))
                 assert answers[direction, limit] == [row[0] for row in reference]
     assert answers["DESC", 3] == [103, 101, 106]
-    assert answers["ASC", 7] == answers["DESC", 7][::-1]
+    assert answers["ASC", 7] == [*answers["DESC", 7][-2::-1], 105]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -147,7 +147,7 @@ def test_permitted_outputs_keep_their_no_data_diagnostic(request, backend_name):
 @pytest.mark.parametrize("explicit_ties", [False, True])
 @pytest.mark.parametrize("nullable", ["value", "group_key"])
 @pytest.mark.parametrize("sql_profile", ["audit", "compact"])
-def test_null_rank_order_matches_reference_and_reverses(
+def test_null_rank_order_matches_reference_in_both_directions(
     request, backend_name, explicit_ties, nullable, sql_profile
 ):
     backend = _backend(request, backend_name)
@@ -186,7 +186,7 @@ def test_null_rank_order_matches_reference_and_reverses(
             "group_by": [STORE],
             "where": [{"field": "dimension.shop_order_id", "op": "IN", "value": [1, 2, 3, 8, 9]}],
         }
-        reference = "SELECT store_id FROM orders WHERE order_id IN (1, 2, 3, 8, 9) GROUP BY store_id ORDER BY (SUM(CASE WHEN store_id = 'b' THEN 100 WHEN store_id = 'a' THEN 3 ELSE 6 END) IS NULL), SUM(CASE WHEN store_id = 'b' THEN 100 WHEN store_id = 'a' THEN 3 ELSE 6 END) DESC, (store_id IS NULL), store_id DESC"
+        reference = "SELECT store_id FROM orders WHERE order_id IN (1, 2, 3, 8, 9) GROUP BY store_id ORDER BY (SUM(CASE WHEN store_id = 'b' THEN 100 WHEN store_id = 'a' THEN 3 ELSE 6 END) IS NULL), SUM(CASE WHEN store_id = 'b' THEN 100 WHEN store_id = 'a' THEN 3 ELSE 6 END) {0}, (store_id IS NULL), store_id {0}"
         key = STORE
     else:
         query = {
@@ -197,7 +197,7 @@ def test_null_rank_order_matches_reference_and_reverses(
         runtime._config.semantic_policies[:] = [
             replace(POLICY, object_ids=["measure.shop.average_order"])
         ]
-        reference = "SELECT customer_id FROM orders GROUP BY customer_id ORDER BY (AVG(amount) IS NULL), AVG(amount) DESC, (customer_id IS NULL), customer_id DESC"
+        reference = "SELECT customer_id FROM orders GROUP BY customer_id ORDER BY (AVG(amount) IS NULL), AVG(amount) {0}, (customer_id IS NULL), customer_id {0}"
         key = CUSTOMER
     try:
         answers = {}
@@ -207,13 +207,15 @@ def test_null_rank_order_matches_reference_and_reverses(
                 order.append({"field": key, "direction": direction})
             result = runtime.query({**query, "order_by": order, "sql_profile": sql_profile})
             answers[direction] = [row[key] for row in result["rows"]]
-        assert answers["DESC"] == [row[0] for row in backend.reference(reference)]
-        assert answers["ASC"] == answers["DESC"][::-1]
+            reference_rows = backend.reference(reference.format(direction))
+            assert answers[direction] == [row[0] for row in reference_rows]
         if nullable == "group_key":
-            assert answers["DESC"] == ["b", "a", None]
+            # a and the NULL store tie at 6; the NULL store sorts after a either way.
+            assert answers == {"DESC": ["b", "a", None], "ASC": ["a", None, "b"]}
             values = runtime.query({**query, "policy_context": {}})["rows"]
             assert {row[STORE]: row["revenue"] for row in values} == {"a": 6, None: 6, "b": 200}
         else:
-            assert answers["DESC"][-1] == 105
+            assert answers["DESC"][-1] == answers["ASC"][-1] == 105
+            assert answers["ASC"][:-1] == answers["DESC"][-2::-1]
     finally:
         runtime.close()
