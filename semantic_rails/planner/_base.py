@@ -513,10 +513,12 @@ def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | No
     governing = governing_metrics(config, measure.id)
     visible = set(visible_object_ids(config, (metric.id for metric in governing)))
     governing = [metric for metric in governing if metric.id in visible]
+    # A stock is shaped to its read day only as a bare aggregate (snapshot._balance).
+    form = whole_aggregate if measure.measure_class == "semi_additive" else governed_form
     candidates = {
         metric.id: (metric, governed[2])
         for metric in governing
-        if (governed := governed_form(metric)) is not None
+        if (governed := form(metric)) is not None
         and governed[0] == measure.id
         and (governed[1] or measure.default_aggregation) == aggregation
     }

@@ -48,9 +48,11 @@ EVENTS_ALL = "measure.subscriptions.events_all"
 ACCOUNTS_ALL = "measure.subscriptions.accounts_all"
 CALLS_ALL = "measure.subscriptions.calls_all"
 CALLS = "metric.subscriptions.calls"
+MRR_ALL = "measure.subscriptions.mrr_all"
 UPGRADES = "metric.subscriptions.upgraded_accounts"
 SEGMENT = "dimension.subscriptions_account_segment"
 EVENT_CLOCK = "temporal_role.subscriptions_event_occurred_at"
+DAY_CLOCK = "temporal_role.subscriptions_account_day_day"
 CALL_CLOCK = "temporal_role.subscriptions_call_called_at"
 END_CLOCK = "temporal_role.subscriptions_call_ended_at"
 LAST_WEEK = "{} >= DATE '2026-09-28' AND {} < DATE '2026-10-05'"
@@ -63,10 +65,13 @@ def _package(
     calls: str = "zero_filled",
     clock: str = CALL_CLOCK,
     governors: tuple[str, ...] = ("calls",),
+    published_calls: bool = False,
+    customer_mrr: bool = False,
 ) -> Path:
     """Accounts with their events, daily balances and calls. ``calls`` is the form of the
     governed call metrics: ``zero_filled`` (``COALESCE(<filtered count>, 0)``), ``bare`` or
-    ``one_filled``."""
+    ``one_filled``. ``published_calls`` publishes the calls measure; ``customer_mrr`` replaces
+    MRR with one zero-filled metric of the customers' balances."""
 
     customer = {"field": SEGMENT, "op": "=", "value": "customer"}
 
@@ -97,9 +102,20 @@ def _package(
         "temporal_role": "temporal_role.subscriptions_account_day_day",
         "expression": {"kind": "semi_additive", "measure": "measure.subscriptions.mrr_all"},
     }  # fmt: skip
+    if customer_mrr:
+        del metrics["mrr"]
+        balances = {"kind": "aggregate", "measure": MRR_ALL, "aggregation": "last_value",
+                    "filter": {"all": [customer]}}  # fmt: skip
+        metrics["customer_mrr"] = {
+            "label": "Customer MRR", "kind": "derived", "value_type": "currency",
+            "temporal_role": DAY_CLOCK,
+            "expression": {"kind": "call", "name": "COALESCE",
+                           "args": [balances, {"kind": "literal", "value": 0}]},
+        }  # fmt: skip
     filtered = counted(CALLS_ALL)
     filled = {"zero_filled": 0, "one_filled": 1}
-    labels = {"calls": "Calls", "customer_calls": "Customer calls", "paid_calls": "Paid calls"}
+    labels = {"calls": "Calls", "customer_calls": "Customer calls", "paid_calls": "Paid calls",
+              "call": "Customer calls"}  # fmt: skip
     for key in governors:
         metrics[key] = {
             "label": labels[key], "kind": "aggregate" if calls == "bare" else "derived",
@@ -168,7 +184,10 @@ def _package(
                       "ended_at": {"column": "ended_at", "kind": "date", "class": "event_time"}},
             "measures": {"calls_all": {"label": "Calls (all segments)", "kind": "entity_count",
                                        "entity_key": "call_id", "value_type": "count",
-                                       "publish": False}},
+                                       "publish": published_calls},
+                         **({"callers": {"label": "Callers", "kind": "entity_count",
+                                         "entity_key": "account_id", "value_type": "count"}}
+                            if published_calls else {})},
         }},
         "metrics/accounts.yml": {"metrics": metrics},
     }  # fmt: skip

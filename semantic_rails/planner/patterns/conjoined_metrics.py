@@ -67,9 +67,11 @@ def _part_query(
     query = _normalize_value_filters(
         query, _matched_value_rows(runtime, query, filter_text), text=filter_text
     )
+    # A part swaps only to the bare governed aggregate, on its own clock.
     governed = _governed_target(config, phrase, query)
     if (
         governed is not None
+        and whole_aggregate(governed) is not None
         and (query.get("time") or {}).get("temporal_role", "") == governed.temporal_role
     ):
         target = governed
