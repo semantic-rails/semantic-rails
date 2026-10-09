@@ -109,7 +109,7 @@ LEGACY = {
         "    query:\n"
         "      version: 1\n"
         "      select:\n"
-        "      - {expression: {metric: metric.shop.amount_per_event}, as: amount_per_event}\n"
+        "      - {expression: metric.shop.amount_per_event, as: amount_per_event}\n"
         "      group_by: [dimension.shop_event_event_type]\n"
     ),
     "tests/core.yml": (
@@ -119,7 +119,7 @@ LEGACY = {
         "    query:\n"
         "      version: 1\n"
         "      select:\n"
-        "      - {expression: {measure: measure.shop.event_count}, as: row_count}\n"
+        "      - {expression: measure.shop.event_count, as: row_count}\n"
         "      time: {temporal_role: temporal_role.shop_event_occurred_at, grain: day}\n"
         "    min_rows: 1\n"
     ),
@@ -273,11 +273,11 @@ def _sum_to_max(files):
 def _other_metric(files):
     for file, path, query in files.queries():
         select = query.get("select") or []
-        if select and select[0]["expression"].get("metric") == "metric.shop.amount_per_event":
+        if select and select[0]["expression"] == "metric.shop.amount_per_event":
             edit = Edit(
                 file,
                 "replace",
-                (*path, "select", 0, "expression", "metric"),
+                (*path, "select", 0, "expression"),
                 value="metric.shop.total_amount",
             )
             yield Finding("other-metric", file, 1, path, "select", (edit,))
@@ -428,7 +428,8 @@ def test_upgraded_query_version_compiles(tmp_path, monkeypatch, capsys, version)
     assert code == 0, text
     report = json.loads(text)
     assert report["status"] == "upgraded"
-    assert report["rules"][0]["tier"] == "certified"
+    # A call ignores its version: the rewrite is proven on the example's answer.
+    assert report["rules"][0]["tier"] == "proven"
     assert _contents(project) == UPGRADED
     runtime = Runtime.from_snapshot(load_package_snapshot(project))
     try:
@@ -540,12 +541,13 @@ def test_refused_same_meaning_rule_forms_a_certified_baseline(
     assert tiers == {
         "metric-as": "proven",
         "primitive-kind": "certified",
-        **({"query-ir-version": "certified"} if query_version == 2 else {}),
+        # A call ignores its version, so rewriting it changes no answer.
+        **({"query-ir-version": "proven"} if query_version == 2 else {}),
         **({"null-behavior": "certified", "measure-parent-rollup": "certified"} if retired else {}),
         **({"relabel": "choice"} if choice else {}),
     }
     assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
-    assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (int(query_version == 1), 1)
+    assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (1, 1)
     assert _contents(project) == files
     code, text = _cli(
         monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
@@ -675,19 +677,13 @@ def test_legacy_policy_forms_upgrade_in_one_certified_write(tmp_path):
         from semantic_rails.policies import package_release_labels
 
         assert package_release_labels(runtime.config) == ["demo"]
-        ratio = {
-            "version": 1,
-            "select": [{"expression": {"metric": "metric.shop.events_per_event"}, "as": "ratio"}],
-        }
+        ratio = {"select": [{"expression": "metric.shop.events_per_event", "as": "ratio"}]}
         with pytest.raises(service.SemanticLayerError) as denied:
             runtime.compile(ratio)
         assert denied.value.code == "POLICY_DENIED"
         assert denied.value.details["blocked_objects"] == ["metric.shop.events_per_event"]
         assert [row["action"] for row in denied.value.details["policy_effects"]] == ["deny"]
-        amount = {
-            "version": 1,
-            "select": [{"expression": {"metric": "metric.shop.amount_per_event"}, "as": "amount"}],
-        }
+        amount = {"select": [{"expression": "metric.shop.amount_per_event", "as": "amount"}]}
         assert runtime.compile(amount)["rendered_sql"]
     finally:
         runtime.close()
@@ -926,7 +922,7 @@ def test_single_file_starter_preview_and_apply(tmp_path, monkeypatch, capsys, cw
     examples.mkdir()
     (examples / "revenue.yml").write_text(
         "examples:\n  revenue:\n    query:\n"
-        "      select: [{expression: {metric: metric.shop.revenue_usd}, as: revenue}]\n"
+        "      select: [{expression: metric.shop.revenue_usd, as: revenue}]\n"
     )
     directory = tmp_path if cwd == "parent" else tmp_path / "elsewhere"
     directory.mkdir(exist_ok=True)
@@ -1246,7 +1242,7 @@ def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
     )
     (project / "examples/broken.yml").write_text(
         "examples:\n  broken:\n    query:\n      version: 1\n"
-        "      select: [{expression: {metric: metric.jaffle.missing}, as: missing}]\n"
+        "      select: [{expression: metric.jaffle.missing, as: missing}]\n"
     )
     rule = Rule("default-version", "9.9", "same_meaning", "Delete version: 1", _default_version)
 

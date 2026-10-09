@@ -323,16 +323,14 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         **overrides.get("entity", {}),
     }
     entities = {"order": order}
-    if overrides.get("fiscal_calendar") or overrides.get("fact_days"):  # quarters start in Feb
+    if overrides.get("fact_days"):  # a fact model whose rows repeat a day across stores
         entities["fiscal"] = {"kind": "time", "key": ["date_day"], "model": "fiscal_days"}
         day = {"column": "date_day", "kind": "date", "class": "calendar_time"}
-        # A fact model's days bucket on the default calendar; fiscal ones are refused.
-        calendar_id = "fiscal" if overrides.get("fiscal_calendar") else "default"
-        calendar = {"id": "fiscal_days", "relation": "fiscal_days", "calendar_id": calendar_id}
+        # A fact model's days bucket on the default calendar.
+        calendar = {"id": "fiscal_days", "relation": "fiscal_days", "calendar_id": "default"}
         calendar |= {"entities": {"fiscal": {}}, "times": {"date_day": day}}
         calendar["dimensions"] = {"quarter_start": {"kind": "date"}}
         _write_yaml(package_dir / "models" / "fiscal_days.yml", {"model": calendar})
-    if overrides.get("fact_days"):  # a fact model whose rows repeat a day across stores
         day = {"id": "temporal_role.day", "column": "date_day", "kind": "date", "default": True}
         fact = {"id": "order_days", "kind": "fact", "relation": "order_days"}
         fact |= {"time_entity": "fiscal", "time_column": "date_day"}
@@ -926,12 +924,6 @@ _SHIP_TO_KEY = {
         ),
         pytest.param(
             _MONTHLY_ONLY,
-            _rollup_query(_REVENUE, "sum", "quarter", calendar_id="default"),
-            None,
-            id="default-calendar",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
             _with_filter(
                 _rollup_query(_REVENUE, "sum", "month"),
                 {"field": "dimension.store_id", "op": "=", "value": "s1"},
@@ -950,15 +942,6 @@ def test_rollup_routing_matches_base_tables(
 
     assert routing["selected"] == ([] if reason else [relation])
     assert _decisions(routing) == {f"leaf_1:{relation}": reason or "selected"}
-
-
-def test_a_non_default_calendar_refuses_before_routing(tmp_path: Path) -> None:
-    query = _rollup_query(_REVENUE, "sum", "quarter", calendar_id="fiscal", fill=True)
-    with pytest.raises(SemanticLayerError) as refused:
-        _routed_answers(tmp_path, ({"monthly": _MONTHLY}, {"fiscal_calendar": True}), query)
-
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
 @pytest.mark.parametrize(
@@ -1203,10 +1186,10 @@ def _decisions(routing: dict) -> dict[str, str]:
 def test_routing_switch_applies_on_a_warm_compile_cache(tmp_path: Path, monkeypatch):
     _rollup_package(tmp_path / "p", {"monthly": _MONTHLY})
     runtime = Runtime.from_path(str(tmp_path / "p"))
-    payload = {**_rollup_query(_REVENUE, "sum", "quarter"), "verbosity": "full"}
+    payload = _rollup_query(_REVENUE, "sum", "quarter")
 
     def compile_once(runtime: Runtime) -> tuple[list[str], bool]:
-        compiled = runtime.compile(payload)
+        compiled = runtime.compile(payload, verbosity="full")
         routing = compiled["performance_plan"]["aggregate_routing"]
         return routing["selected"], compiled["compile_stats"]["cache_hit"]
 

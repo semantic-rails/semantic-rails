@@ -19,7 +19,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import asdict, replace
 from functools import wraps
@@ -122,7 +122,7 @@ from .policies import (
     row_filters_for_context,
     withheld_rank_order,
 )
-from .query_call import read_call
+from .query_call import read_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_select_for_profile
@@ -433,12 +433,12 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
                     message += (
                         "Other meanings (one-step switches): "
                         + "; ".join(alternative["label"] for alternative in alternatives[:shown])
-                        + ". Use a decision in route_decisions. "
+                        + ". Send one as routes: [{from, to, via}]. "
                     )
                 if len(alternatives) > shown:
                     details["more_alternatives"] = len(alternatives) - shown
                     message += (
-                        "Validate the query without route_decisions for every option; "
+                        "Validate the query without routes for every option; "
                         "no warehouse query runs. "
                     )
                 message += "A reviewed package default using details.row would remove the question."
@@ -649,6 +649,17 @@ def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
         return sorted(bind_query(config, None, payload).object_ids)
     query = normalize_query(payload)
     return collect_object_references(query.to_dict())
+
+
+@contextlib.contextmanager
+def _routes_offered(call: Any) -> Iterator[None]:
+    """An ``AMBIGUOUS_PATH`` refusal offers one complete call per route option."""
+    try:
+        yield
+    except SemanticLayerError as exc:
+        if exc.code == "AMBIGUOUS_PATH":
+            route_options(call, exc.details)
+        raise
 
 
 # A seed call's keys in the engine's names (``having`` and entity filters read as
@@ -1423,7 +1434,8 @@ def _expression_normalized_away_warnings(
                 semantic_issue(
                     code="EXPRESSION_NORMALIZED_AWAY",
                     message=(
-                        f"metric_filters[{index}] expression with kind={original_kind!r} was normalized to kind={compiled_kind!r}"
+                        f"A having or entity-filter expression with kind={original_kind!r} was "
+                        f"normalized to kind={compiled_kind!r}"
                     ),
                     severity="warning",
                     stage="compile",
@@ -2833,26 +2845,29 @@ class Runtime:
         try:
             payload = self.engine_payload(query, now=now, context=context, **options)
         except SemanticLayerError as exc:
-            return {
-                "ok": False,
-                "status": "error",
-                "errors": [{"code": exc.code, "message": str(exc), "details": exc.details}],
-            }
-        return self.validate_internal(payload)
+            issue = exception_issue(exc, stage="validate")
+            return {"ok": False, "status": "error", "errors": [issue], "warnings": []}
+        result = self.validate_internal(payload)
+        for error in result.get("errors") or []:
+            if error.get("code") == "AMBIGUOUS_PATH":
+                route_options(query, error["details"])
+        return result
 
     def compile(
         self, query: Any, *, now: Any = None, context: Any = None, **options: Any
     ) -> dict[str, Any]:
         """The SQL and plan a call compiles to."""
-        return self.compile_internal(
-            self.engine_payload(query, now=now, context=context, **options)
-        )
+        payload = self.engine_payload(query, now=now, context=context, **options)
+        with _routes_offered(query):
+            return self.compile_internal(payload)
 
     def query(
         self, query: Any, *, now: Any = None, context: Any = None, **options: Any
     ) -> dict[str, Any]:
         """Answer a call."""
-        return self.query_internal(self.engine_payload(query, now=now, context=context, **options))
+        payload = self.engine_payload(query, now=now, context=context, **options)
+        with _routes_offered(query):
+            return self.query_internal(payload)
 
     @runtime_request_scope
     def validate_internal(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -21,7 +21,16 @@ import copy
 from semantic_rails.mcp import list_tool_definitions
 
 LOOP_KEYWORDS = ("after", "before", "step", "first")
-GOTCHA_KEYWORDS = ("gotcha", "must be", "do not", "don't", "skip", "only after", "cost")
+GOTCHA_KEYWORDS = (
+    "gotcha",
+    "must be",
+    "do not",
+    "don't",
+    "skip",
+    "only after",
+    "cost",
+    "needs no",
+)
 
 
 def test_every_tool_description_says_when_to_use_it():
@@ -81,10 +90,12 @@ def test_plan_description_mentions_out_of_scope_branch():
     )
 
 
-def test_execute_description_shapes_and_empty_select_validate(runtime_factory):
+def test_execute_schema_is_the_call_and_empty_select_lists_rows(runtime_factory):
     tools = list_tool_definitions()
-    execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
-    assert "{aggregation, measure} | {metric}" in execute_desc
+    execute = next(t for t in tools if t["name"] == "execute")
+    execute_desc = execute["description"]
+    # The query schema lists every inline kind; the description stays short.
+    kinds = execute["inputSchema"]["$defs"]["Expression"]["anyOf"][1]["properties"]["kind"]["enum"]
     for kind in (
         "prior_period",
         "rolling",
@@ -95,13 +106,9 @@ def test_execute_description_shapes_and_empty_select_validate(runtime_factory):
         "between",
         "arithmetic",
     ):
-        assert kind in execute_desc
-    assert "ratio: per-order sum / order count" in execute_desc
-    assert "arithmetic composes expressions" in execute_desc
-    assert "aggregation: avg" in execute_desc
-    assert "{kind: call, name: date_diff, args: [...]}" in execute_desc
-    assert "select may be empty: group_by alone lists rows" in execute_desc
-    assert "a query that already ran needs no validate" in execute_desc
+        assert kind in kinds
+    assert "group_by dimension ids (alone, it lists rows)" in execute_desc
+    assert "a call that already ran needs no validate" in execute_desc
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
     adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
@@ -143,63 +150,40 @@ def test_no_orphan_explain_tool_references():
 
 
 def test_ir_accepting_tool_descriptions_teach_positional_shapes():
-    """Round-six finding B6: select/group_by/where/order_by use three
-    different key vocabularies (`as`, bare string, `field`). A blind
-    agent had to discover each by validator rejection. The positional
-    teach ships once, on execute.
-    """
+    """select, group_by, where and order_by each have their own item shape; the
+    positional teach ships once, on execute (the schema has the rest)."""
     tools = list_tool_definitions()
     execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
-    for marker in ("select[]", "group_by[]", "where[]", "order_by[]"):
+    for marker in ("select", "group_by", "where/having [{field, op, value}]", "order_by"):
         assert marker in execute_desc, (
             f"execute description must teach the {marker} shape; got {execute_desc!r}"
         )
 
 
-def test_range_last_query_schema_describes_object_shape():
-    """Round-six finding B1: the QUERY_SCHEMA `range.last` used to say
-    `string` and showed `{last: '90 days'}` while the runtime + JSON
-    Schema both demand `{unit, value}`. Pin the corrected schema."""
+def test_last_query_schema_describes_object_shape():
+    """``time.last`` is an object ``{unit, value}``, never a string like '90 days'."""
     from semantic_rails.mcp import QUERY_SCHEMA
 
     time_block = QUERY_SCHEMA["properties"]["time"]
-    range_block = time_block["properties"]["range"]
-    last = range_block["properties"]["last"]
-    assert last["type"] == "object", f"range.last must be declared as object; got {last['type']!r}"
-    assert set(last["required"]) == {"unit", "value"}, (
-        f"range.last must require unit + value; got required={last['required']!r}"
-    )
-    assert "unit" in last["properties"]
-    assert "value" in last["properties"]
-    # Description should also drop the misleading string shorthand.
-    desc = range_block["description"]
-    assert "unit" in desc and "value" in desc, (
-        f"range block description should mention unit + value; got {desc!r}"
-    )
+    assert "range" not in time_block["properties"]
+    last = time_block["properties"]["last"]
+    assert last["type"] == "object", f"time.last must be declared as object; got {last!r}"
+    assert set(last["required"]) == {"unit", "value"}
+    assert last["additionalProperties"] is False
 
 
 def test_expression_shapes_examples_parse(runtime_factory):
-    """Round-six finding B2: `_EXPRESSION_SHAPES["rolling"].example` was
-    `{window: 7, grain: "day"}` — both invalid (window must be dict; grain
-    is not a valid key). Verify every shipped example actually parses
-    through the AST so future shape edits stay self-consistent."""
-    from semantic_rails.expressions import parse_semantic_expression
+    """Every shipped example reads through the call's front door, so shape edits stay
+    self-consistent (a rolling window is ``{unit, value}``, never an int)."""
     from semantic_rails.metadata_parts.capabilities import _EXPRESSION_SHAPES
+    from semantic_rails.query_call import read_call
 
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        for shape in _EXPRESSION_SHAPES:
-            # Deep copy: the placeholder swap must not edit the shared shapes.
-            example = copy.deepcopy(shape["example"])
-            # Replace placeholder ids with real ones the parser can resolve
-            # at validate-time. The parser only checks the IR shape; entity
-            # resolution happens later.
-            _replace_placeholder_ids(example)
-            # parse_semantic_expression raises SemanticLayerError on shape
-            # problems — the test passes as long as no exception escapes.
-            parse_semantic_expression(example, context="query")
-    finally:
-        runtime.close()
+    for shape in _EXPRESSION_SHAPES:
+        # Deep copy: the placeholder swap must not edit the shared shapes.
+        example = copy.deepcopy({"expression": shape["example"], "as": "x"})
+        _replace_placeholder_ids(example)
+        # read_call raises SemanticLayerError on a shape problem.
+        read_call({"select": [example]}, partial=True)
 
 
 def _replace_placeholder_ids(node):
@@ -356,6 +340,6 @@ def test_capabilities_payload_ships_expression_shapes(runtime_factory):
             assert isinstance(shape, dict)
             assert shape.get("name"), f"shape missing name: {shape}"
             assert shape.get("description"), f"shape missing description: {shape}"
-            assert isinstance(shape.get("example"), dict), f"shape missing example dict: {shape}"
+            assert isinstance(shape.get("example"), (dict, str)), f"shape missing example: {shape}"
     finally:
         runtime.close()

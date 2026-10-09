@@ -71,8 +71,8 @@ def test_uses_file_is_canonical() -> None:
         ("AuditSink{emit(self, payload)}", None),
         ("AuditSink{emit(self)}", "AuditSink is now {emit(self, payload)}"),
         (
-            "PolicyContextResolver{resolve(self, headers, *, payload=)}",
-            "PolicyContextResolver is now {resolve(self, headers, *, payload=, request_id=)}",
+            "PolicyContextResolver{resolve(self, headers, *, payload=, request_id=)}",
+            "PolicyContextResolver is now {resolve(self, headers, *, request_id=)}",
         ),
     ],
 )

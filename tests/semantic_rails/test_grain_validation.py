@@ -8,8 +8,7 @@ mistake only surfaced at execute time as a raw DuckDB error
 recovery hint and no list of valid grains.
 
 These tests pin the contract: validate must reject unsupported grains
-structurally, list the supported ones, and emit a ``replace_grain``
-recovery hint when a near-miss is available.
+structurally and name the supported ones.
 """
 
 from __future__ import annotations
@@ -18,18 +17,22 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 
 
 def _select_revenue() -> list[dict[str, object]]:
-    return [
-        {
-            "expression": {"measure": "measure.jaffle.revenue_usd"},
-            "as": "revenue",
-        }
-    ]
+    return [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}]
 
 
-def test_unknown_grain_rejected_with_closest_matches(runtime_factory):
+def _grain_refusal(error: dict) -> None:
+    """A grain outside the call's words is refused at ``time.grain`` with the one hint."""
+    assert error["code"] == "INVALID_QUERY"
+    details = error.get("details") or {}
+    assert details.get("path") == "time.grain"
+    (hint,) = details["recovery_hints"]
+    assert hint["code"] == "FIX_QUERY_CALL"
+    assert "day, week, month, quarter or year" in hint["message"]
+
+
+def test_unknown_grain_rejected_with_the_grains(runtime_factory):
     """``fortnight`` is not a valid grain — validate must reject it
-    with a structured INVALID_QUERY envelope listing supported grains
-    and at least one closest match."""
+    with a structured INVALID_QUERY envelope naming the grains."""
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
@@ -43,24 +46,7 @@ def test_unknown_grain_rejected_with_closest_matches(runtime_factory):
         )
         assert report["ok"] is False
         assert report["errors"], "expected at least one error"
-        err = report["errors"][0]
-        assert err["code"] == "INVALID_QUERY"
-        details = err.get("details") or {}
-        assert details.get("path") == "time.grain"
-        assert details.get("received") == "fortnight"
-        assert details.get("temporal_role") == "temporal_role.jaffle_order_time"
-        # jaffle_order_time supports day/week/month/quarter/year
-        supported = list(details.get("supported_grains") or [])
-        assert set(supported) >= {"day", "week", "month", "quarter", "year"}
-        closest = list(details.get("closest_matches") or [])
-        assert closest, "closest_matches must be populated for fortnight"
-        # The replace_grain recovery hint should be available.
-        hints = list(report.get("recovery_hints") or [])
-        assert hints, "recovery_hints must be populated for typo grain"
-        replace_hints = [h for h in hints if h.get("kind") == "replace_grain"]
-        assert replace_hints, f"expected a replace_grain hint, got {hints!r}"
-        patch = replace_hints[0].get("patch") or {}
-        assert "replace" in patch and "time.grain" in patch["replace"]
+        _grain_refusal(report["errors"][0])
     finally:
         runtime.close()
 
@@ -99,8 +85,7 @@ def test_grain_unsupported_by_specific_role_rejected(runtime_factory):
 
 
 def test_empty_grain_passes(runtime_factory):
-    """Empty/missing grain is allowed — separate ungrained-time-projection
-    warnings handle that case. The grain validator must not raise."""
+    """A window without a grain is one total. The grain validator must not raise."""
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
@@ -109,6 +94,8 @@ def test_empty_grain_passes(runtime_factory):
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
                     # No grain — should not raise INVALID_QUERY from grain check.
+                    "start": "2016-09-01",
+                    "end": "2016-10-01",
                 },
             }
         )
@@ -125,11 +112,9 @@ def test_empty_grain_passes(runtime_factory):
         runtime.close()
 
 
-def test_uppercase_grain_normalized_and_passes(runtime_factory):
-    """The validator normalizes grain to lowercase before checking
-    against ``supported_grains``. ``"Month"`` is treated as ``"month"``
-    and passes — consistent with the codebase's de-facto invariant
-    of lowercasing grain at every downstream use site."""
+def test_uppercase_grain_is_refused(runtime_factory):
+    """Grains are lowercase words, like every word of the call: ``"Month"`` is refused
+    with the grains rather than read as ``"month"``."""
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
@@ -141,25 +126,16 @@ def test_uppercase_grain_normalized_and_passes(runtime_factory):
                 },
             }
         )
-        grain_errors = [
-            e
-            for e in (report.get("errors") or [])
-            if e.get("code") == "INVALID_QUERY"
-            and (e.get("details") or {}).get("path") == "time.grain"
-        ]
-        assert not grain_errors, f"'Month' must normalize to 'month', got {grain_errors!r}"
-        # And the overall query should compile.
-        assert report["ok"] is True
+        assert report["ok"] is False
+        _grain_refusal(report["errors"][0])
     finally:
         runtime.close()
 
 
 def test_mcp_adapter_surfaces_grain_error_with_recovery_hints(runtime_factory):
     """End-to-end probe through the MCP adapter: the response envelope
-    must carry the INVALID_QUERY code on ``errors[0]``, surface it at
-    the top-level ``error`` key, and aggregate ``recovery_hints`` at
-    the top level so agents reading the conventional envelope shape
-    can recover."""
+    must carry the INVALID_QUERY code on ``errors[0]`` with its hint and
+    surface it at the top-level ``error`` key."""
     runtime = runtime_factory("jaffle_shop")
     try:
         adapter = SemanticLayerMCPAdapter(runtime)
@@ -184,15 +160,6 @@ def test_mcp_adapter_surfaces_grain_error_with_recovery_hints(runtime_factory):
         # Top-level `error` mirrors errors[0] for conventional MCP clients.
         top_error = out.get("error") or {}
         assert top_error.get("code") == "INVALID_QUERY"
-        # closest_matches and supported_grains are present in details.
-        details = first.get("details") or {}
-        assert details.get("received") == "fortnight"
-        assert details.get("closest_matches"), "closest_matches must be set"
-        # Recovery hints belong to the full issue.
-        top_hints = list(first.get("recovery_hints") or [])
-        replace_hints = [h for h in top_hints if h.get("kind") == "replace_grain"]
-        assert replace_hints, (
-            f"expected replace_grain in the issue recovery_hints, got {top_hints!r}"
-        )
+        _grain_refusal(first)
     finally:
         runtime.close()

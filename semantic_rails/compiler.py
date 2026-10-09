@@ -2139,9 +2139,9 @@ def _cross_clock_predicate_error(
                 {
                     "code": "CHOOSE_PREDICATE_CLOCK",
                     "message": (
-                        "To apply the threshold per period, set query.time.temporal_role "
-                        "to one of `compatible`. To apply it over all time, set "
-                        "scope_mode to 'entity_only'."
+                        "To apply the threshold per period, set time.temporal_role "
+                        "to one of `compatible`. To apply it over all time, write "
+                        "over: all_time."
                     ),
                 }
             ],
@@ -2174,8 +2174,8 @@ def _validate_predicate_metric_clocks(
                             "code": "CHOOSE_PREDICATE_CLOCK",
                             "message": (
                                 f"The input is bound to {', '.join(clocks)}; set "
-                                "query.time.temporal_role to one of them, or omit "
-                                "time_alignment to apply the predicate over all time."
+                                "time.temporal_role to one of them, or write over: "
+                                "all_time to apply the predicate over all time."
                             ),
                         }
                     ],
@@ -2299,9 +2299,9 @@ def _predicate_time_spec(
                                             "Set query.time.temporal_role to one of the listed clocks. "
                                             if isinstance(predicate.input, MetricRecipeRefExpr)
                                             else "Set the predicate input's temporal_role to a candidate "
-                                            "clock, or set temporal_role_overrides for its measures. "
+                                            "clock, or pin its measures' clock in a package metric. "
                                         )
-                                        + "Omit time_alignment to apply the predicate over all time."
+                                        + "Write over: all_time to apply the predicate over all time."
                                     ),
                                 }
                             ],
@@ -3041,9 +3041,9 @@ def _checked_where_dimension(
                         {
                             "kind": "use_metric_filter_or_segment",
                             "message": (
-                                "Move aggregate/cohort predicates to metric_filters, "
-                                "or filter by a reachable dimension/segment that encodes "
-                                "the governed cohort."
+                                "Keep entities by an aggregate with an entity filter in "
+                                "where ({entity, having, over}), or filter by a reachable "
+                                "dimension or segment that encodes the governed cohort."
                             ),
                         }
                     ],
@@ -3358,8 +3358,8 @@ def _conversion_operand_filters(
                 "CONVERSION_NOT_SUPPORTED",
                 (
                     f"Expression clauses (e.g. metric_predicate) inside conversion {side} "
-                    "operand filters are not supported. Use query-level metric_filters to "
-                    "constrain the conversion population instead."
+                    "operand filters are not supported. Constrain the conversion population "
+                    "with an entity filter in the call's where, or with having, instead."
                 ),
                 details={"side": side, "clause": clause},
             )

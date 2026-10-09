@@ -217,16 +217,29 @@ def _predicate(entity: str, input_: dict, op: str, value, **extra) -> dict:
     }
 
 
+def _having(entity: str, input_: dict, op: str, value) -> dict:
+    """An entity filter on a measure's aggregate over all time, as a call spells it."""
+    return {
+        "entity": entity,
+        "having": [{"field": input_["measure"], "op": op, "value": value}],
+        "over": "all_time",
+    }
+
+
 def _run(runtime: Runtime, measure: str, filters: list[dict], **extra) -> list[dict]:
-    result = runtime.query(
-        {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"measure": f"measure.pred.{measure}"}}],
-            "metric_filters": filters,
-            **extra,
-        }
-    )
-    return result["rows"]
+    """Rows of ``measure`` under entity filters.
+
+    A filter from ``_having`` is a call's; one from ``_predicate`` reads an inline input or a
+    scope the call does not spell, so it goes through the engine's own form.
+    """
+    if all("entity" in item for item in filters):
+        call = {"select": [{"as": "n", "expression": f"measure.pred.{measure}"}], "where": filters}
+        return runtime.query({**call, **extra})["rows"]
+    query = {
+        "select": [{"as": "n", "expression": {"measure": f"measure.pred.{measure}"}}],
+        "metric_filters": filters,
+    }
+    return runtime.query_internal({**query, **extra})["rows"]
 
 
 def _scalar(runtime: Runtime, measure: str, filters: list[dict]) -> int | None:
@@ -280,12 +293,12 @@ def test_customers_by_order_count_include_customers_with_no_orders(
         "(select count(*) from orders o where o.customer_id = c.customer_id) n "
         f"from customers c) where {gold_predicate}"
     )[0]
-    filters = [_predicate(CUSTOMER, ORDERS, op, value)]
+    filters = [_having(CUSTOMER, ORDERS, op, value)]
     assert _scalar(runtime, "customer_count", filters) == expected
 
 
 def test_zero_orders_returns_the_customers_that_never_ordered(runtime):
-    filters = [_predicate(CUSTOMER, ORDERS, "=", 0)]
+    filters = [_having(CUSTOMER, ORDERS, "=", 0)]
     assert _scalar(runtime, "customer_count", filters) == 2
 
 
@@ -297,22 +310,27 @@ def test_sum_thresholds_count_customers_with_no_orders_as_zero(runtime, op, valu
         "coalesce((select sum(amount) from orders o where o.customer_id = c.customer_id), 0) n "
         f"from customers c) where n {sql_op} {value}"
     )[0]
-    filters = [_predicate(CUSTOMER, REVENUE, op, value)]
+    filters = [_having(CUSTOMER, REVENUE, op, value)]
     assert _scalar(runtime, "customer_count", filters) == expected
 
 
 def test_members_with_zero_activity(runtime):
-    assert _scalar(runtime, "member_count", [_predicate(MEMBER, ACTIVITIES, "=", 0)]) == 1
+    assert _scalar(runtime, "member_count", [_having(MEMBER, ACTIVITIES, "=", 0)]) == 1
     (expected,) = _gold(
         "select count(*) from (select m.member_id, "
         "(select count(*) from activities a where a.member_id = m.member_id) n "
         "from members m) where n < 2"
     )[0]
-    assert _scalar(runtime, "member_count", [_predicate(MEMBER, ACTIVITIES, "<", 2)]) == expected
+    assert _scalar(runtime, "member_count", [_having(MEMBER, ACTIVITIES, "<", 2)]) == expected
 
 
 def _net_orders() -> dict:
     return {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": RETURNED_ORDERS}
+
+
+def _call_net(subtracted: dict) -> dict:
+    """Orders less ``subtracted``, as a call spells it: references are id strings."""
+    return {"kind": "arithmetic", "op": "subtract", "left": ORDERS["measure"], "right": subtracted}
 
 
 NET_ORDERS_GOLD = (
@@ -349,9 +367,9 @@ def test_a_predicate_and_a_projection_of_the_same_difference_agree(runtime, op, 
     net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": RETURNED_ORDERS}
     by_customer = runtime.query(
         {
-            "select": [{"as": "net", "expression": net}],
+            "select": [{"as": "net", "expression": _call_net(RETURNED_ORDERS)}],
             "group_by": [CUSTOMER_ID],
-            "metric_filters": [{"expression": net, "op": op, "value": value}],
+            "having": [{"field": "net", "op": op, "value": value}],
         }
     )["rows"]
     kept = {row[CUSTOMER_ID] for row in by_customer}
@@ -380,11 +398,15 @@ def test_an_operand_with_no_data_reads_null_for_every_customer_present_or_absent
     """
     net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": CANCELLED_ORDERS}
     assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, net, op, value)]) == 0
+    having = [{"field": "net", "op": op, "value": value}]
+    if op == "!=":
+        # A result filter's `not` keeps an unknown result; this one asks for known results.
+        having.append({"field": "net", "op": "missing", "value": False})
     by_customer = runtime.query(
         {
-            "select": [{"as": "net", "expression": net}],
+            "select": [{"as": "net", "expression": _call_net(CANCELLED_ORDERS)}],
             "group_by": [CUSTOMER_ID],
-            "metric_filters": [{"expression": net, "op": op, "value": value}],
+            "having": having,
         }
     )["rows"]
     assert by_customer == []
@@ -468,17 +490,17 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer
     )[0]
     assert kept == 0
     query = {
-        "select": [{"as": "n", "expression": "measure.pred.order_count"}],
+        "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
         "where": [{"field": "dimension.pred_status", "op": "is", "value": "returned"}],
         "metric_filters": [_predicate(CUSTOMER, large, op, value, scope_mode="contextual")],
     }
-    response = runtime.query({**query, "observation_scope": "query"})
+    response = runtime.query_internal({**query, "observation_scope": "query"})
     assert response["rows"] == [{"n": None}]
     (warning,) = _no_data_warnings(response)
     assert warning["details"]["outputs"] == ["n"]
     assert warning["object_ids"] == ["measure.pred.order_count"]
     with pytest.raises(SemanticLayerError) as raised:
-        runtime.query(query)
+        runtime.query_internal(query)
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
     assert raised.value.details["observation_scope"] == "dataset"
 
@@ -517,9 +539,9 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_member_w
         "from tickets u where u.member_id = m.member_id and u.ticket_id >= 100) = 0)"
     )[0]
     assert kept == 0
-    response = runtime.query(
+    response = runtime.query_internal(
         {
-            "select": [{"as": "n", "expression": "measure.pred.activity_count"}],
+            "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
             "metric_filters": [_predicate(MEMBER, late, op, value)],
         }
     )
@@ -571,7 +593,7 @@ def test_orders_without_a_customer_are_not_customers_with_no_orders(runtime):
         "from customers c where coalesce((select sum(amount) from orders x "
         "where x.customer_id = c.customer_id), 0) < 60)"
     )[0]
-    filters = [_predicate(CUSTOMER, REVENUE, "<", 60)]
+    filters = [_having(CUSTOMER, REVENUE, "<", 60)]
     assert _scalar(runtime, "order_count", filters) == expected == 1
 
 
@@ -582,13 +604,13 @@ def test_a_fact_measure_restricted_to_entities_with_no_related_rows(runtime):
         "where not exists (select 1 from tickets t where t.member_id = a.member_id)"
     )[0]
     tickets = {"measure": "measure.pred.ticket_count"}
-    filters = [_predicate(MEMBER, tickets, "=", 0)]
+    filters = [_having(MEMBER, tickets, "=", 0)]
     assert _scalar(runtime, "activity_count", filters) == expected == 4
 
 
 def test_a_distinct_count_of_a_population_is_zero_over_no_rows(runtime):
     ticketing_members = {"measure": "measure.pred.ticketing_member_count"}
-    filters = [_predicate(MEMBER, ticketing_members, "=", 0)]
+    filters = [_having(MEMBER, ticketing_members, "=", 0)]
     assert _scalar(runtime, "activity_count", filters) == 4
 
 
@@ -600,8 +622,8 @@ def test_zero_threshold_composes_with_a_second_predicate(runtime):
         "and (select count(*) from activities a where a.member_id = m.member_id) < 2"
     )[0]
     filters = [
-        _predicate(MEMBER, {"measure": "measure.pred.ticket_count"}, "=", 0),
-        _predicate(MEMBER, ACTIVITIES, "<", 2),
+        _having(MEMBER, {"measure": "measure.pred.ticket_count"}, "=", 0),
+        _having(MEMBER, ACTIVITIES, "<", 2),
     ]
     assert _scalar(runtime, "member_count", filters) == expected
 
@@ -638,11 +660,10 @@ def test_zero_threshold_by_period_keeps_each_period_apart(runtime):
 
 
 def test_zero_threshold_sql_is_an_anti_join(runtime):
-    filters = [_predicate(CUSTOMER, ORDERS, "=", 0)]
     compiled = runtime.compile(
         {
             "select": [{"as": "n", "expression": "measure.pred.customer_count"}],
-            "metric_filters": filters,
+            "where": [_having(CUSTOMER, ORDERS, "=", 0)],
         }
     )
     sql = " ".join(compiled["rendered_sql"].upper().split())
@@ -652,7 +673,7 @@ def test_zero_threshold_sql_is_an_anti_join(runtime):
 def test_explain_marks_the_predicate_set_as_an_anti_join(runtime):
     def predicate_sets(op, value):
         query = {
-            "select": [{"as": "n", "expression": "measure.pred.customer_count"}],
+            "select": [{"as": "n", "expression": {"measure": "measure.pred.customer_count"}}],
             "metric_filters": [_predicate(CUSTOMER, ORDERS, op, value)],
         }
         compiled = compile_query(runtime._config, Registry(runtime._config), query)
@@ -822,16 +843,16 @@ def test_a_same_clock_contextual_anti_join_by_a_grouped_dimension_keeps_only_rea
         )
     }
     query = {
-        "select": [{"as": "n", "expression": "measure.pred.order_count"}],
+        "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
         "metric_filters": [_predicate(CUSTOMER, REVENUE, "<", 60, scope_mode="contextual")],
         "group_by": ["dimension.pred_status"],
         "time": {"temporal_role": "temporal_role.pred_ordered_at", "grain": "month"},
     }
-    rows = runtime.query(query)["rows"]
+    rows = runtime.query_internal(query)["rows"]
     got = {(row["dimension.pred_status"], str(row["period"])[:7]): int(row["n"]) for row in rows}
     assert got == expected == {(None, "2025-02"): 1, ("placed", "2025-02"): 1}
     # Entity and period keys must be present; a NULL attribute is a valid context group.
-    sql = " ".join(runtime.compile(query)["rendered_sql"].split())
+    sql = " ".join(runtime.compile_internal(query)["rendered_sql"].split())
     for key in (
         "orders.customer_id",
         "DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))",

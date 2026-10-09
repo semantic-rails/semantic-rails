@@ -183,11 +183,20 @@ def _closest(name: str, candidates: Any) -> list[str]:
     return get_close_matches(str(name), list(candidates), n=3, cutoff=0.6)
 
 
+# Keys a caller often sends for the call's own key.
+_KEY_FOR: dict[str, str] = {
+    "dimension": "field",
+    "aggregation_params": "parameters",
+    "params": "parameters",
+}
+
+
 def _check_keys(item: Mapping[str, Any], allowed: tuple[str, ...], path: str) -> None:
     unknown = sorted(key for key in item if key not in allowed)
     if unknown:
         key = unknown[0]
-        matches = _closest(key, allowed)
+        meant = _KEY_FOR.get(key)
+        matches = [meant] if meant in allowed else _closest(key, allowed)
         raise refusal(
             f"{path}.{key}",
             f"unknown key; the keys are {list(allowed)}",
@@ -418,7 +427,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             ),
         )
     if not (kind == "prior_period" and "measure" in raw):
-        _check_keys(raw, ("kind", *kinds[kind]), path)
+        _check_keys(raw, tuple(dict.fromkeys(("kind", *kinds[kind]))), path)
     node: dict[str, Any] = {}
     for key, value in raw.items():
         child = f"{path}.{key}"
@@ -451,9 +460,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
         node = _predicate(node, path)
     if kind == "scoped_aggregate":
         node["predicates"] = [
-            _predicate(dict(item), f"{path}.predicates[{index}]")
-            if isinstance(item, Mapping)
-            else item
+            _scoped_predicate(item, f"{path}.predicates[{index}]", context)
             for index, item in enumerate(list(node.get("predicates") or []))
         ]
         node["where"] = [
@@ -491,6 +498,16 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
         return item
     word, value = operators.normalize_condition(item.get("op", "is"), item.get("value"), path=path)
     return {**item, "op": word, "value": value}
+
+
+def _scoped_predicate(item: Any, path: str, context: CallContext) -> Any:
+    """A scoped aggregate's predicate: its input is read like any operand, then its ``over``."""
+    if not isinstance(item, Mapping):
+        return item
+    node = dict(item)
+    if "input" in node:
+        node["input"] = _operand(node["input"], f"{path}.input", context)
+    return _predicate(node, path)
 
 
 def _predicate(node: dict[str, Any], path: str) -> dict[str, Any]:
@@ -930,6 +947,27 @@ def _routes(raw: Any) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def route_options(call: Any, details: dict[str, Any]) -> None:
+    """Make each option of an ``AMBIGUOUS_PATH`` refusal a complete call: ``call`` with the
+    option's route added to ``routes``, ready to send."""
+    options = (details.get("clarification") or {}).get("options") or []
+    if not isinstance(call, Mapping) or not options:
+        return
+    for option in options:
+        decision = option["decision"]
+        route = {
+            "from": decision["source_entity"],
+            "to": decision["target_entity"],
+            "via": list(decision["relationship_path"]),
+        }
+        option["query"] = {**call, "routes": [*list(call.get("routes") or []), route]}
+    details["hint"] = (
+        "Which route is meant is a business definition. Ask which option the question means, "
+        "then send that option's query (this query only), or record the option's decision as "
+        "the package default."
+    )
 
 
 # --- The call an engine query states, for echoes and the planner. ---------------------------

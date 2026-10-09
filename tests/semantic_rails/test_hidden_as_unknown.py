@@ -68,16 +68,23 @@ OBJECTS = {
     "relationship": ORDERS_STORE,
     "value_domain": STORE_NAMES,
 }
-CARRIER = {"expression": {"metric": "metric.sales.inventory_on_hand_eop"}, "as": "value"}
+# The clock every call reads, so two responses never differ by the time they were asked.
+NOW = "2025-03-01T00:00:00Z"
 
 
-def _select(expression: dict[str, Any], alias: str = "value") -> dict[str, Any]:
+def _select(expression: Any, alias: str = "value") -> dict[str, Any]:
     return {"select": [{"expression": expression, "as": alias}]}
 
 
 def _carried(**parts: Any) -> dict[str, Any]:
     """A visible measure the position decorates, so the hidden id is the only problem."""
-    return {"select": [{"expression": {"measure": ORDERS}, "as": "value"}], **parts}
+    return {"select": [{"expression": ORDERS, "as": "value"}], **parts}
+
+
+def _entity_filter(entity: str, measure: str) -> list[dict[str, Any]]:
+    """Entities with at least one row of ``measure`` over all their rows."""
+    having = [{"field": measure, "op": "gte", "value": 1}]
+    return [{"entity": entity, "having": having, "over": "all_time"}]
 
 
 def _conversion(**changes: Any) -> dict[str, Any]:
@@ -100,17 +107,12 @@ _JAFFLE = _Jaffle()
 
 # Each position: (the binder key it exercises, the kind of id it takes, the query holding ``x``).
 POSITIONS: dict[str, tuple[str, str, Callable[[str], dict[str, Any]]]] = {
-    "select.metric": ("metric", "metric", lambda x: _select({"metric": x})),
-    "select.measure": ("measure", "measure", lambda x: _select({"measure": x})),
-    "select.metric_recipe": (
-        "metric_recipe",
-        "metric",
-        lambda x: _select({"kind": "metric", "metric_recipe": x}),
-    ),
+    "select.metric": ("metric", "metric", lambda x: _select(x)),
+    "select.measure": ("measure", "measure", lambda x: _select(x)),
     "select.dimension": (
         "dimension",
         "dimension",
-        lambda x: {"select": [{"expression": {"measure": ORDERS}, "as": "v"}, {"dimension": x}]},
+        lambda x: {"select": [{"expression": ORDERS, "as": "v"}, x]},
     ),
     "group_by": ("group_by", "dimension", lambda x: _carried(group_by=[x])),
     "where.field": (
@@ -131,47 +133,13 @@ POSITIONS: dict[str, tuple[str, str, Callable[[str], dict[str, Any]]]] = {
     "select.measure.temporal_role": (
         "temporal_role",
         "temporal_role",
-        lambda x: _select({"measure": ORDERS, "temporal_role": x}),
+        lambda x: _select({"kind": "measure", "measure": ORDERS, "temporal_role": x}),
     ),
-    "metric_filters.entity": (
-        "entity",
-        "entity",
-        lambda x: _carried(
-            metric_filters=[
-                {
-                    "expression": {
-                        "kind": "metric_predicate",
-                        "entity": x,
-                        "scope_mode": "entity_only",
-                        "input": {"measure": ORDERS},
-                        "op": ">=",
-                        "value": 1,
-                    },
-                    "op": "=",
-                    "value": True,
-                }
-            ]
-        ),
-    ),
-    "metric_filters.input.measure": (
+    "where.entity": ("entity", "entity", lambda x: _carried(where=_entity_filter(x, ORDERS))),
+    "where.entity.having.field": (
         "measure",
         "measure",
-        lambda x: _carried(
-            metric_filters=[
-                {
-                    "expression": {
-                        "kind": "metric_predicate",
-                        "entity": CUSTOMER,
-                        "scope_mode": "entity_only",
-                        "input": {"measure": x},
-                        "op": ">=",
-                        "value": 1,
-                    },
-                    "op": "=",
-                    "value": True,
-                }
-            ]
-        ),
+        lambda x: _carried(where=_entity_filter(CUSTOMER, x)),
     ),
     "select.aggregate.filter.field": (
         "field",
@@ -192,7 +160,7 @@ POSITIONS: dict[str, tuple[str, str, Callable[[str], dict[str, Any]]]] = {
             {
                 "kind": "distribution",
                 "function": "avg",
-                "over": {"kind": "entity_value", "entity": x, "input": {"measure": ORDERS}},
+                "over": {"kind": "entity_value", "entity": x, "input": ORDERS},
             }
         ),
     ),
@@ -200,7 +168,7 @@ POSITIONS: dict[str, tuple[str, str, Callable[[str], dict[str, Any]]]] = {
         "partition_by",
         "dimension",
         lambda x: {
-            **_select({"kind": "cumulative", "input": {"measure": ORDERS}, "partition_by": [x]}),
+            **_select({"kind": "cumulative", "input": ORDERS, "partition_by": [x]}),
             "time": {"temporal_role": ORDER_TIME, "grain": "month"},
         },
     ),
@@ -221,55 +189,32 @@ POSITIONS: dict[str, tuple[str, str, Callable[[str], dict[str, Any]]]] = {
             "group_by": [x],
         },
     ),
-    "temporal_role_overrides.key": (
-        "temporal_role_overrides",
-        "measure",
-        lambda x: _carried(temporal_role_overrides={x: ORDER_TIME}),
-    ),
-    "temporal_role_overrides.value": (
-        "temporal_role_overrides",
-        "temporal_role",
-        lambda x: _carried(temporal_role_overrides={ORDERS: x}),
-    ),
-    "route_decisions.relationship_path": (
+    "routes.via": (
         "route_decisions",
         "relationship",
         lambda x: _carried(
             group_by=[STORE],
-            route_decisions=[
-                {
-                    "source_entity": "entity.jaffle_order",
-                    "target_entity": STORE_ENTITY,
-                    "relationship_path": [x],
-                }
-            ],
+            routes=[{"from": "entity.jaffle_order", "to": STORE_ENTITY, "via": [x]}],
         ),
     ),
-    "route_decisions.target_entity": (
+    "routes.to": (
         "route_decisions",
         "entity",
         lambda x: _carried(
-            route_decisions=[
-                {
-                    "source_entity": "entity.jaffle_order",
-                    "target_entity": x,
-                    "relationship_path": [ORDERS_STORE],
-                }
-            ],
+            routes=[{"from": "entity.jaffle_order", "to": x, "via": [ORDERS_STORE]}],
         ),
     ),
 }
 # Keys a request has no place for: an object holding them is reached through the segment that
 # reads it (its basis metric, preview dimensions and membership filters).
 SEGMENT_KEYS = {"basis_metric", "preview_dimensions"}
+# The engine's own key for a metric reference; a call names a metric by its id (select.metric).
+ENGINE_KEYS = {"metric_recipe"}
 
 
 def test_the_matrix_covers_every_reference_key_the_binder_reads():
-    covered = {key for key, _, _ in POSITIONS.values()} | SEGMENT_KEYS
-    assert set(REFERENCE_KEYS) | set(REFERENCE_LISTS) | {
-        "dimension_bindings",
-        "temporal_role_overrides",
-    } <= covered | {"route_decisions"}
+    covered = {key for key, _, _ in POSITIONS.values()} | SEGMENT_KEYS | ENGINE_KEYS
+    assert set(REFERENCE_KEYS) | set(REFERENCE_LISTS) | {"dimension_bindings"} <= covered
 
 
 def _spellings(config: PackageConfig, position: str, object_id: str) -> dict[str, str]:
@@ -325,7 +270,7 @@ def _variants(config: PackageConfig) -> list[tuple[str, str, str, dict[str, Any]
                 **build(object_id),
                 "select": [
                     *build(object_id).get("select", []),
-                    {"expression": {"measure": "measure.jaffle.item_count"}, "as": "denied"},
+                    {"expression": "measure.jaffle.item_count", "as": "denied"},
                 ],
             }
             out.append((position, "id", "with_denied", denied))
@@ -339,6 +284,8 @@ Call = Callable[[Runtime, dict[str, Any] | str], dict[str, Any]]
 def _mcp(tool: str, **fixed: Any) -> Call:
     def call(runtime: Runtime, value: Any) -> dict[str, Any]:
         arguments = {**fixed, "policy_context": CALLER}
+        if tool in {"execute", "plan"}:
+            arguments["now"] = NOW
         key = next(name for name, text in fixed.items() if text is None)
         arguments[key] = value
         return mcp_call(runtime, tool, arguments)
@@ -351,7 +298,7 @@ def _http(route: str, **fixed: Any) -> Call:
         body = {**fixed, "policy_context": CALLER}
         key = next(name for name, text in fixed.items() if text is None)
         if key == "query" and route in {"/validate", "/compile", "/query"}:
-            body = {**value, "policy_context": CALLER}
+            body = {"query": value, "options": {"now": NOW}, "policy_context": CALLER}
         else:
             body[key] = value
         return http_call(runtime, route, body)
@@ -554,7 +501,7 @@ def test_a_visible_denied_object_keeps_its_policy_denial(runtimes, package, acti
     """``deny`` governs an object the caller can see: the refusal names it and its policy."""
     deny = access_policy("deny", ORDERS)
     runtime = runtimes(deny, visibility_policy(action, REVENUE))
-    report = runtime.validate({**_select({"measure": ORDERS}), "policy_context": CALLER})
+    report = runtime.validate(_select(ORDERS), context=CALLER)
     assert [issue["code"] for issue in report["errors"]] == ["POLICY_DENIED"]
     details = report["errors"][0]["details"]
     assert details["blocked_objects"] == [ORDERS]
@@ -565,11 +512,7 @@ def test_a_visible_denied_object_keeps_its_policy_denial(runtimes, package, acti
 def test_an_eligible_caller_still_answers(package, action):
     """visible_only names finance as eligible; hidden names only the support role."""
     root, config = package
-    query = {
-        **_select({"metric": CUSTOMERS}),
-        "group_by": [STORE],
-        "policy_context": {"roles": ["finance"]},
-    }
+    query = {**_select(CUSTOMERS), "group_by": [STORE]}
     rows = []
     for policies in (
         [],
@@ -580,7 +523,8 @@ def test_an_eligible_caller_still_answers(package, action):
             Runtime.from_config(with_policies(config, *policies), source_path=str(root))
         )
         try:
-            rows.append(sorted(runtime.query(query)["rows"], key=lambda row: row[STORE]))
+            answer = runtime.query(query, context={"roles": ["finance"]})
+            rows.append(sorted(answer["rows"], key=lambda row: row[STORE]))
         finally:
             runtime.close()
     assert rows[0]
@@ -596,7 +540,7 @@ WITHHOLD = replace(
 
 def _ranked(alias: str) -> dict[str, Any]:
     return {
-        "select": [{"expression": {"metric": CUSTOMERS}, "as": alias}],
+        "select": [{"expression": CUSTOMERS, "as": alias}],
         "group_by": [STORE],
         "order_by": [{"field": alias, "direction": "desc"}],
         "limit": 1,
@@ -618,17 +562,22 @@ def test_an_output_alias_named_like_a_hidden_id_keeps_values_withheld(runtimes, 
                 "query": query,
                 "mode": mode,
                 "verbosity": "full",
+                "now": NOW,
                 "policy_context": CALLER,
             }
             return mcp_call(runtime, "execute", arguments)
-        return http_call(runtime, surface.split()[1], {**query, "policy_context": CALLER})
+        body = {"query": query, "options": {"now": NOW}, "policy_context": CALLER}
+        return http_call(runtime, surface.split()[1], body)
 
     def modulo(response: dict[str, Any], alias: str) -> Any:
         """The response with the caller's output name, quoted in SQL or not, as one marker."""
         text = json.dumps(envelope(response)).replace(f'\\"{alias}\\"', "@alias@")
         return json.loads(text.replace(alias, "@alias@"))
 
-    named, plain = call(REVENUE), call("rank_value")
+    try:
+        named, plain = call(REVENUE), call("rank_value")
+    finally:
+        runtime.close()
     assert named["ok"] is True, named
     assert named["withheld"] == [CUSTOMERS]
     for row in named.get("rows", []):
@@ -654,14 +603,14 @@ def test_plan_seed_filters_and_orderings_on_a_hidden_dimension_match_an_absent_o
 ):
     _, config = package
     governed, missing, hidden = _pair(runtimes, package, action, STORE)
-    query = {**_select({"metric": CUSTOMERS}), **PLAN_SEEDS[seed]}
+    query = {**_select(CUSTOMERS), **PLAN_SEEDS[seed]}
 
     def call(runtime: Runtime) -> dict[str, Any]:
+        arguments = {"intent": "how many customers", "query": query, "now": NOW}
+        arguments["policy_context"] = CALLER
         if surface == "mcp":
-            arguments = {"intent": "how many customers", "query": query, "policy_context": CALLER}
             return mcp_call(runtime, "plan", arguments)
-        body = {"intent": "how many customers", "query": query, "policy_context": CALLER}
-        return http_call(runtime, "/plan", body)
+        return http_call(runtime, "/plan", arguments)
 
     _check(call(governed), call(missing), config, hidden, query)
 
@@ -680,7 +629,7 @@ def test_a_dimension_alias_equal_to_a_hidden_metric_id_does_not_resolve_the_metr
             for row in config.dimensions
         ],
     )
-    query = {**_select({"metric": CUSTOMERS}), "policy_context": CALLER}
+    query = _select(CUSTOMERS)
     for action in ACTIONS:
         target = CUSTOMERS if hide == "metric" else STORE
         governed = with_policies(config, visibility_policy(action, target))
@@ -689,7 +638,7 @@ def test_a_dimension_alias_equal_to_a_hidden_metric_id_does_not_resolve_the_metr
         missing = Runtime.from_config(absent(governed, hidden), source_path=str(root))
         try:
             for mode in ("run", "validate", "sql"):
-                arguments = {"query": query, "mode": mode, "policy_context": CALLER}
+                arguments = {"query": query, "mode": mode, "now": NOW, "policy_context": CALLER}
                 response = mcp_call(runtime, "execute", arguments)
                 assert envelope(response) == envelope(mcp_call(missing, "execute", arguments))
                 assert response["ok"] is (hide == "dimension"), response
@@ -709,8 +658,8 @@ from semantic_rails.visible_view import hidden_object_ids
 root, action, reverse = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
 metric = "metric.sales.customer_count"
 rows = [
-    {"expression": {"metric": metric}, "as": "plain"},
-    {"expression": {"metric": f" {metric} "}, "as": "padded"},
+    {"expression": metric, "as": "plain"},
+    {"expression": f" {metric} ", "as": "padded"},
 ]
 query = {"select": rows[::-1] if reverse else rows}
 config = with_policies(load_package_config(root), visibility_policy(action, metric))
@@ -720,7 +669,8 @@ for package in (config, absent(config, hidden)):
     runtime = Runtime.from_config(package, source_path=root)
     out.append([
         envelope(SemanticLayerMCPAdapter(runtime).call_tool(
-            "execute", {"query": query, "mode": mode, "policy_context": CALLER}
+            "execute",
+            {"query": query, "mode": mode, "now": "2025-03-01", "policy_context": CALLER},
         ))
         for mode in ("run", "validate", "sql")
     ])
@@ -761,7 +711,7 @@ def test_a_policy_rationale_naming_a_hidden_object_is_not_returned(runtimes, pac
         rationale=f"Block orders and {REVENUE} for support",
     )
     runtime = runtimes(visibility_policy("hidden", REVENUE), deny)
-    query = _select({"measure": ORDERS})
+    query = _select(ORDERS)
     if surface.startswith("mcp"):
         arguments = {"query": query, "mode": surface.split()[1], "policy_context": CALLER}
         response = mcp_call(runtime, "execute", arguments)
@@ -788,9 +738,9 @@ def test_padded_hidden_ids_match_padded_absent_ids(runtimes, package, action, ki
     _, config = package
     object_id = OBJECTS[kind]
     governed, missing, hidden = _pair(runtimes, package, action, object_id)
-    query = _select({kind: f"  {object_id} "})
+    query = _select(f"  {object_id} ")
     for mode in ("run", "validate", "sql"):
-        arguments = {"query": query, "mode": mode, "policy_context": CALLER}
+        arguments = {"query": query, "mode": mode, "now": NOW, "policy_context": CALLER}
         response = mcp_call(governed, "execute", arguments)
         assert response["ok"] is False
         _check(response, mcp_call(missing, "execute", arguments), config, hidden, query)
@@ -799,25 +749,7 @@ def test_padded_hidden_ids_match_padded_absent_ids(runtimes, package, action, ki
 GROUPING_SEEDS = {
     "group_by_dimension": ({"group_by": [STORE]}, STORE),
     "time_role": ({"time": {"temporal_role": ORDER_TIME, "grain": "month"}}, ORDER_TIME),
-    "nested_entity": (
-        {
-            "metric_filters": [
-                {
-                    "expression": {
-                        "kind": "metric_predicate",
-                        "entity": STORE_ENTITY,
-                        "scope_mode": "entity_only",
-                        "input": {"measure": ORDERS},
-                        "op": ">=",
-                        "value": 1,
-                    },
-                    "op": "=",
-                    "value": True,
-                }
-            ]
-        },
-        STORE_ENTITY,
-    ),
+    "nested_entity": ({"where": _entity_filter(STORE_ENTITY, ORDERS)}, STORE_ENTITY),
 }
 
 
@@ -832,7 +764,7 @@ def test_plan_seed_groupings_on_a_hidden_dimension_match_an_absent_one(
     _, config = package
     parts, target = GROUPING_SEEDS[seed]
     governed, missing, hidden = _pair(runtimes, package, action, target)
-    query = {**_select({"metric": CUSTOMERS}), **parts}
+    query = {**_select(CUSTOMERS), **parts}
     call = QUERY_SURFACES[surface]
     _check(call(governed, query), call(missing, query), config, hidden, query)
 
@@ -844,9 +776,9 @@ def test_a_conversion_metric_reading_a_hidden_binding_dimension_is_hidden(
     _, config = package
     governed, missing, hidden = _pair(runtimes, package, action, PRODUCT_TYPE)
     assert CONVERSION in hidden
-    query = _select({"metric": CONVERSION})
+    query = _select(CONVERSION)
     for mode in ("run", "validate", "sql"):
-        arguments = {"query": query, "mode": mode, "policy_context": CALLER}
+        arguments = {"query": query, "mode": mode, "now": NOW, "policy_context": CALLER}
         response = mcp_call(governed, "execute", arguments)
         assert response["ok"] is False
         _check(response, mcp_call(missing, "execute", arguments), config, hidden, query)
@@ -854,7 +786,7 @@ def test_a_conversion_metric_reading_a_hidden_binding_dimension_is_hidden(
 
 def test_a_denied_binding_dimension_refuses_the_conversion_query(runtimes):
     runtime = runtimes(access_policy("deny", PRODUCT_TYPE))
-    report = runtime.validate({**_select({"metric": CONVERSION}), "policy_context": CALLER})
+    report = runtime.validate(_select(CONVERSION), context=CALLER)
     assert [issue["code"] for issue in report["errors"]] == ["POLICY_DENIED"]
     assert report["errors"][0]["details"]["blocked_objects"] == [PRODUCT_TYPE]
 
@@ -868,7 +800,7 @@ def test_a_metric_over_a_hidden_measure_is_unknown_everywhere(runtimes, package,
     for surface, call in QUERY_SURFACES.items():
         if not surface.startswith("mcp execute") and not surface.startswith("http /"):
             continue
-        query = _select({"metric": AOV})
+        query = _select(AOV)
         _check(call(governed, query), call(missing, query), config, hidden, query)
     for _, call in ID_SURFACES.values():
         _check(call(governed, AOV), call(missing, AOV), config, hidden, AOV)
@@ -896,9 +828,9 @@ RAW_COLUMN = _select(
 
 @pytest.mark.parametrize("action", ACTIONS)
 def test_raw_column_aggregates_are_refused_while_anything_is_hidden(runtimes, action):
-    visible = runtimes().validate({**RAW_COLUMN, "policy_context": CALLER})
+    visible = runtimes().validate(RAW_COLUMN, context=CALLER)
     refused = runtimes(visibility_policy(action, LIFETIME_SPEND)).validate(
-        {**RAW_COLUMN, "policy_context": CALLER}
+        RAW_COLUMN, context=CALLER
     )
     assert visible["ok"] is True, visible
     assert [issue["code"] for issue in refused["errors"]] == ["POLICY_DENIED"]

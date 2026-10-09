@@ -12,6 +12,7 @@ from semantic_rails.compiler_parts.sql_lowering import _query_metric_predicates
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 
 
@@ -139,7 +140,8 @@ def test_distribution_entity_only_input_predicate_keeps_its_own_clock():
         "time": {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"},
     }
     # A lifetime signup predicate remains valid in an order-clock distribution.
-    assert compile_query(config, Registry(config), query)["sql"]
+    engine, _notes = read_call(query, config=config)
+    assert compile_query(config, Registry(config), engine)["sql"]
 
 
 def _write_yaml(path: Path, payload: dict) -> None:

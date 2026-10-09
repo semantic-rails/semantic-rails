@@ -323,7 +323,7 @@ def intent_faithfulness_why(
                         "kind": "provide_multiple_selects",
                         "message": (
                             "Use 'X vs Y' for a supported side-by-side comparison, or provide "
-                            "one explicit Query IR select entry per requested subject."
+                            "one select entry per requested subject."
                         ),
                     },
                 )
@@ -486,10 +486,10 @@ def _governed_metric_gaps(
                 recovery_hint={
                     "kind": "use_governed_metric",
                     "message": (
-                        "Select the governed metric in the call. Name the measure by id in "
-                        "partial_query.select only when the question asks for every row it counts."
+                        "Select the governed metric in the call. Name the measure by id in the "
+                        "seed's select only when the question asks for every row it counts."
                         if expected["metrics"] or "narrowed_by" in expected
-                        else "Name the measure by id in partial_query.select when the question asks "
+                        else "Name the measure by id in the seed's select when the question asks "
                         "for every row it counts, or pick an offered metric."
                     ),
                 },

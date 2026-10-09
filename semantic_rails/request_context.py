@@ -211,29 +211,16 @@ def without_trusted_attributes(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def context_from_headers(
-    headers: Mapping[str, Any] | None,
-    *,
-    payload: Mapping[str, Any] | None = None,
-    request_id: str = "",
+    headers: Mapping[str, Any] | None, *, request_id: str = ""
 ) -> RequestContext:
-    body_context = context_from_policy_context(
-        dict((payload or {}).get("policy_context", {}) or {}), request_id=request_id
-    )
     return RequestContext(
         request_id=request_id,
-        actor=_header(headers, "X-Semantic-Actor", "X-Actor", "X-User", "X-User-ID")
-        or body_context.actor,
-        tenant=_header(headers, "X-Semantic-Tenant", "X-Tenant", "X-Tenant-ID")
-        or body_context.tenant,
-        project=_header(headers, "X-Semantic-Project", "X-Project", "X-Project-ID")
-        or body_context.project,
-        roles=_split_roles(_header(headers, "X-Semantic-Roles", "X-Roles", "X-Role"))
-        or body_context.roles,
-        environment=_header(headers, "X-Semantic-Environment", "X-Environment")
-        or body_context.environment,
-        audience=_header(headers, "X-Semantic-Audience", "X-Audience") or body_context.audience,
-        metric_allowlist=body_context.metric_allowlist,
-        dimension_allowlist=body_context.dimension_allowlist,
+        actor=_header(headers, "X-Semantic-Actor", "X-Actor", "X-User", "X-User-ID"),
+        tenant=_header(headers, "X-Semantic-Tenant", "X-Tenant", "X-Tenant-ID"),
+        project=_header(headers, "X-Semantic-Project", "X-Project", "X-Project-ID"),
+        roles=_split_roles(_header(headers, "X-Semantic-Roles", "X-Roles", "X-Role")),
+        environment=_header(headers, "X-Semantic-Environment", "X-Environment"),
+        audience=_header(headers, "X-Semantic-Audience", "X-Audience"),
     )
 
 
@@ -248,9 +235,9 @@ class PolicyContextResolver(Protocol):
     they can bypass visibility, redaction, and MNPI-style policy gating.
 
     The default `HeaderPolicyContextResolver` reads these fields from request
-    headers (and falls back to the body's `policy_context`). That is safe for
-    local development and single-tenant trusted-network deployments where the
-    upstream caller is the operator.
+    headers. That is safe for local development and single-tenant trusted-network
+    deployments where the upstream caller is the operator. A request body never
+    says who is asking: a `policy_context` in it is refused.
 
     **Hosted deployments MUST replace this resolver** with one that derives
     audience / environment / tenant from an authenticated identity (JWT,
@@ -262,30 +249,20 @@ class PolicyContextResolver(Protocol):
     """
 
     def resolve(
-        self,
-        headers: Mapping[str, Any] | None,
-        *,
-        payload: Mapping[str, Any] | None = None,
-        request_id: str = "",
+        self, headers: Mapping[str, Any] | None, *, request_id: str = ""
     ) -> RequestContext: ...
 
 
 class HeaderPolicyContextResolver:
-    """Default resolver. Reads policy context from request headers + payload.
+    """Default resolver. Reads policy context from request headers.
 
     Suitable for local dev, single-tenant on-prem, and any deployment where
     the caller is trusted. **Not safe** as-is for multi-tenant hosted use —
     callers can self-assert any audience or environment value.
     """
 
-    def resolve(
-        self,
-        headers: Mapping[str, Any] | None,
-        *,
-        payload: Mapping[str, Any] | None = None,
-        request_id: str = "",
-    ) -> RequestContext:
-        return context_from_headers(headers, payload=payload, request_id=request_id)
+    def resolve(self, headers: Mapping[str, Any] | None, *, request_id: str = "") -> RequestContext:
+        return context_from_headers(headers, request_id=request_id)
 
 
 _default_resolver: PolicyContextResolver = HeaderPolicyContextResolver()
@@ -306,9 +283,7 @@ def set_policy_context_resolver(resolver: PolicyContextResolver) -> None:
     """
     global _default_resolver
     if not hasattr(resolver, "resolve"):
-        raise TypeError(
-            "PolicyContextResolver must implement .resolve(headers, *, payload, request_id)"
-        )
+        raise TypeError("PolicyContextResolver must implement .resolve(headers, *, request_id)")
     _default_resolver = resolver
 
 
@@ -321,8 +296,8 @@ def warn_if_default_policy_resolver_exposed(host: str, *, transport: str) -> boo
     """Print a hard warning when binding beyond loopback with the default resolver.
 
     The default ``HeaderPolicyContextResolver`` trusts caller-supplied
-    ``X-Semantic-Audience`` / ``X-Semantic-Environment`` headers and body
-    ``policy_context``, so any remote caller can self-assert the context
+    ``X-Semantic-Audience`` / ``X-Semantic-Environment`` headers, so any remote
+    caller can self-assert the context
     that object visibility and access policies key on. Binding to a
     non-loopback interface without replacing the resolver is the footgun
     this warning exists for. Returns True when the warning fired.
@@ -338,8 +313,8 @@ def warn_if_default_policy_resolver_exposed(host: str, *, transport: str) -> boo
     )
     print(
         f"WARNING: {transport} is binding to {host or 'all interfaces'!r} with the default "
-        "header-trusting policy-context resolver — callers can self-assert policy_context "
-        f"fields (audience, environment, roles, tenant) and bypass object policies.{auth_note} "
+        "header-trusting policy-context resolver — callers can self-assert identity headers "
+        f"(audience, environment, roles, tenant) and bypass object policies.{auth_note} "
         "For hosted or multi-tenant deployments, install an identity-aware resolver via "
         "set_policy_context_resolver(...) before serving traffic. "
         "See docs/QUERY_API.md (trusted upstream context).",

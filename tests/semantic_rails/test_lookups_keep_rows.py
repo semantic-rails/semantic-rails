@@ -5,8 +5,8 @@ grouping, a filter, the measure's own filter, an aggregate_if or a measure expre
 every leaf (the plain leaf, the pre-aggregation shortcut, the de-duplicated leaf, the
 entity_in_terms_of leaf, the EXISTS leaf and the snapshot of an entity-set ratio). A row whose
 foreign key is NULL or matches no row stays, with NULL for everything the hop looks up: it
-groups under NULL, so grouped rows add up to the ungrouped total, `IS NULL` selects it, and
-`=`, `!=`, `IN` and `NOT IN` never match it, wherever the filter is written.
+groups under NULL, so grouped rows add up to the ungrouped total, `missing` selects it, `not`
+keeps it and `is` never matches it, wherever the filter is written.
 
 Fixture: orders -> customer -> region -> country, three lookup hops. At each hop one row has a
 NULL foreign key, one a foreign key with no record, and one a match whose attribute is NULL:
@@ -37,6 +37,7 @@ from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.ir import PathSelection
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import AggregateRelationConfig
@@ -218,9 +219,9 @@ def _aggregate_if(condition: dict[str, Any]) -> dict[str, Any]:
 # (expression, gold aggregate over orders AS o). The count's condition reads the order alone,
 # so a grouping two hops away takes the pre-aggregation shortcut, as the sum does.
 AGGREGATIONS = {
-    "sum": ({"measure": "measure.geo.amount"}, "SUM(o.amount)"),
+    "sum": ("measure.geo.amount", "SUM(o.amount)"),
     "count": (_aggregate_if(_comparison(_column("order", "amount"), ">", 0)), "COUNT(o.order_id)"),
-    "count_distinct": ({"measure": "measure.geo.order_count"}, "COUNT(DISTINCT o.order_id)"),
+    "count_distinct": ("measure.geo.order_count", "COUNT(DISTINCT o.order_id)"),
     "avg": (
         {"kind": "aggregate", "measure": "measure.geo.amount", "aggregation": "avg"},
         "AVG(o.amount)",
@@ -229,9 +230,9 @@ AGGREGATIONS = {
 
 # Per segment name: a filter clause, and the same condition in gold SQL.
 CONDITIONS = {
-    "no_region": ({"field": REGION, "op": "IS NULL"}, f"{SQL_REGION} IS NULL"),
-    "north": ({"field": REGION, "op": "=", "value": "North"}, f"{SQL_REGION} = 'North'"),
-    "no_country": ({"field": COUNTRY, "op": "IS NULL"}, f"{SQL_COUNTRY} IS NULL"),
+    "no_region": ({"field": REGION, "op": "missing", "value": True}, f"{SQL_REGION} IS NULL"),
+    "north": ({"field": REGION, "op": "is", "value": "North"}, f"{SQL_REGION} = 'North'"),
+    "no_country": ({"field": COUNTRY, "op": "missing", "value": True}, f"{SQL_COUNTRY} IS NULL"),
 }
 
 
@@ -307,7 +308,7 @@ def _number(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
-def _query(expression: dict[str, Any], **extra: Any) -> dict[str, Any]:
+def _query(expression: Any, **extra: Any) -> dict[str, Any]:
     return {"version": 1, "select": [{"as": "value", "expression": expression}], **extra}
 
 
@@ -322,7 +323,8 @@ def _rows(runtime: Runtime, query: dict[str, Any]) -> dict[Any, float | None]:
 
 
 def _sql(config: Any, query: dict[str, Any]) -> str:
-    return " ".join(compile_query(config, Registry(config), query)["sql"].split())
+    engine, _ = read_call(query, config=config)
+    return " ".join(compile_query(config, Registry(config), engine)["sql"].split())
 
 
 def _lookup_joins(sql: str) -> list[tuple[str, str]]:
@@ -352,11 +354,11 @@ def test_grouped_rows_add_up_to_the_total(runtime, gold, aggregation, dimension)
 @pytest.mark.parametrize("condition", list(CONDITIONS))
 def test_one_answer_however_the_filter_is_written(runtime, gold, condition):
     clause, gold_condition = CONDITIONS[condition]
-    count = {"measure": "measure.geo.order_count"}
+    count = "measure.geo.order_count"
     expected = gold(f"SELECT COUNT(*) FROM orders AS o WHERE {gold_condition}")[None]
 
     as_where = _rows(runtime, _query(count, where=[clause]))[None]
-    measure_filter = {**count, "kind": "aggregate", "filter": {"all": [clause]}}
+    measure_filter = {"kind": "aggregate", "measure": count, "filter": {"all": [clause]}}
     as_measure_filter = _rows(runtime, _query(measure_filter))[None]
     as_segment = runtime.segment_preview(f"segment.geo.{condition}")["member_count"]
 
@@ -364,9 +366,12 @@ def test_one_answer_however_the_filter_is_written(runtime, gold, condition):
     entity, column = {REGION: ("region", "region_name"), COUNTRY: ("country", "country_name")}[
         clause["field"]
     ]
-    op = "IS" if clause["op"] == "IS NULL" else clause["op"]
-    as_aggregate_if = _aggregate_if(_comparison(_column(entity, column), op, clause.get("value")))
-    if op == "IS":
+    null_test = clause["op"] == "missing"
+    value = None if null_test else clause["value"]
+    as_aggregate_if = _aggregate_if(
+        _comparison(_column(entity, column), "IS" if null_test else "=", value)
+    )
+    if null_test:
         # A few reads still join a lookup inner (on ClickHouse, inside a metric predicate's own
         # query, beside a time role), so a condition a row with no match could satisfy is
         # refused, never answered differently by where it is read.
@@ -379,22 +384,15 @@ def test_one_answer_however_the_filter_is_written(runtime, gold, condition):
 
 # Orders of at least 10: every order but 3 and 4. It reads the orders alone.
 EVERY_TENNER = {
-    "expression": {
-        "kind": "metric_predicate",
-        "entity": "entity.geo_order",
-        "scope_mode": "entity_only",
-        "input": {"measure": "measure.geo.amount"},
-        "op": ">=",
-        "value": 10,
-    },
-    "op": "=",
-    "value": True,
+    "entity": "entity.geo_order",
+    "having": [{"field": "measure.geo.amount", "op": "gte", "value": 10}],
+    "over": "all_time",
 }
 
 
 @pytest.mark.parametrize("dimension", list(HOPS), ids=["one_hop", "two_hops", "three_hops"])
 def test_a_metric_filter_leaves_the_groups_adding_up(runtime, gold, dimension):
-    query = _query({"measure": "measure.geo.amount"}, metric_filters=[EVERY_TENNER])
+    query = _query("measure.geo.amount", where=[EVERY_TENNER])
 
     grouped = _rows(runtime, {**query, "group_by": [dimension]})
 
@@ -422,7 +420,7 @@ ORDERS_BY_TYPE_AND_COUNTRY = {
     ("food", None): 3,
 }
 BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
-ORDER_COUNT = {"measure": "measure.geo.order_count"}
+ORDER_COUNT = "measure.geo.order_count"
 POPULATION = "measure.geo.order_population"
 
 
@@ -436,7 +434,13 @@ def _scoped_population(*predicates: dict[str, Any]) -> dict[str, Any]:
 
 
 def _order_predicate(measure: str, value: int) -> dict[str, Any]:
-    return {"measure": measure, "entity": "entity.geo_order", "op": ">=", "value": value}
+    return {
+        "measure": measure,
+        "entity": "entity.geo_order",
+        "op": "gte",
+        "value": value,
+        "over": "all_time",
+    }
 
 
 # Of each country's orders, the share of at least 15: a ratio of two scoped populations,
@@ -467,10 +471,10 @@ LEAVES = {
         _query(ORDER_COUNT),
     ),
     "pre_aggregation_shortcut": Leaf(
-        _query({"measure": "measure.geo.amount"}, group_by=[COUNTRY]),
+        _query("measure.geo.amount", group_by=[COUNTRY]),
         "_source_rollup",
         f"SELECT {SQL_COUNTRY}, SUM(o.amount) FROM orders AS o GROUP BY 1",
-        _query({"measure": "measure.geo.amount"}),
+        _query("measure.geo.amount"),
     ),
     "de_duplicated": Leaf(
         _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]),
@@ -556,12 +560,13 @@ def test_a_leaf_that_joins_its_lookups_inner_fails_the_check(
     assert any("is not gold" in text for text in violations)
 
 
+# Per filter: its op and value, and the same condition on {region} in gold SQL.
 OPERATORS = {
-    "=": ("North", "= 'North'"),
-    "!=": ("North", "<> 'North'"),
-    "IN": (["North", "East"], "IN ('North', 'East')"),
-    "NOT IN": (["North", "East"], "NOT IN ('North', 'East')"),
-    "IS NULL": (None, "IS NULL"),
+    "is": ("is", "North", "{region} = 'North'"),
+    "not": ("not", "North", "{region} IS DISTINCT FROM 'North'"),
+    "in": ("is", ["North", "East"], "{region} IN ('North', 'East')"),
+    "not_in": ("not", ["North", "East"], "({region} IS NULL OR {region} NOT IN ('North', 'East'))"),
+    "missing": ("missing", True, "{region} IS NULL"),
 }
 # Per leaf: the query without the region filter, and the gold with a {condition} to fill in.
 FILTERED_LEAVES = {
@@ -587,21 +592,21 @@ FILTERED_LEAVES = {
 }
 
 
-@pytest.mark.parametrize("op", list(OPERATORS))
+@pytest.mark.parametrize("operator", list(OPERATORS))
 @pytest.mark.parametrize("name", list(FILTERED_LEAVES))
-def test_filters_on_a_looked_up_field_follow_sql_null_rules_in_each_leaf(
-    runtime, rollup_safe_runtime, gold, name, op
+def test_filters_on_a_looked_up_field_follow_the_null_rules_in_each_leaf(
+    runtime, rollup_safe_runtime, gold, name, operator
 ):
-    """`IS NULL` selects the rows the region lookup found no match for (orders 6, 7, 8, 10
-    and 11); `=`, `!=`, `IN` and `NOT IN` never match them."""
+    """`missing` selects the rows the region lookup found no match for, as it does a NULL
+    region (orders 6, 7, 8, 10 and 11); `not` keeps them and `is` never matches them."""
     query, gold_sql, rollup_safe = FILTERED_LEAVES[name]
-    value, sql = OPERATORS[op]
-    clause = {"field": REGION, "op": op, **({"value": value} if value is not None else {})}
+    op, value, sql = OPERATORS[operator]
+    clause = {"field": REGION, "op": op, "value": value}
     filtered = {**query, "where": [*query.get("where", []), clause]}
 
     got = _rows(rollup_safe_runtime if rollup_safe else runtime, filtered)
 
-    expected = gold(gold_sql.format(condition=f"{SQL_REGION} {sql}"))
+    expected = gold(gold_sql.format(condition=sql.format(region=SQL_REGION)))
     assert got == pytest.approx({key: value for key, value in expected.items() if value})
 
 
@@ -638,7 +643,7 @@ def _distribution(function: str) -> dict[str, Any]:
         "over": {
             "kind": "entity_value",
             "entity": "entity.geo_region",
-            "input": {"measure": "measure.geo.amount"},
+            "input": "measure.geo.amount",
         },
     }
 

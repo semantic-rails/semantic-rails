@@ -10,7 +10,7 @@ answer is checked against independent SQL over the same table.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -130,8 +130,7 @@ def _answer(package: Path, grain: str) -> list[tuple[date, Decimal]]:
     finally:
         engine.close()
     return sorted(
-        (datetime.fromisoformat(row[f"{ROLE}__{grain}"]).date(), Decimal(str(row["amount"])))
-        for row in result["rows"]
+        (date.fromisoformat(row["period"]), Decimal(str(row["amount"]))) for row in result["rows"]
     )
 
 
@@ -179,15 +178,11 @@ def test_a_role_override_on_a_clockless_measure_gets_the_same_hint(tmp_path):
     """The natural first fix, an override or an explicit role, must not dead-end."""
     engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
     time = {"temporal_role": ROLE, "grain": "month"}
+    override = {"kind": "measure", "measure": "measure.ins.claim_amount", "temporal_role": ROLE}
     explicit = {"kind": "aggregate", "measure": "measure.ins.claim_amount", "temporal_role": ROLE}
     queries = [
-        {
-            "version": 1,
-            "select": SELECT,
-            "time": time,
-            "temporal_role_overrides": {"measure.ins.claim_amount": ROLE},
-        },
-        {"version": 1, "select": [{"expression": explicit, "as": "amount"}]},
+        {"select": [{"expression": override, "as": "amount"}], "time": time},
+        {"select": [{"expression": explicit, "as": "amount"}]},
     ]
     try:
         reports = [engine.validate(query) for query in queries]
@@ -259,26 +254,19 @@ MONTHLY = {"temporal_role": ROLE, "grain": "month"}
 @pytest.mark.parametrize(
     "query",
     [
-        {
-            "select": [
-                {
-                    "expression": {"kind": "metric", "metric": "metric.ins.claim_total"},
-                    "as": "value",
-                }
-            ]
-        },
+        {"select": [{"expression": "metric.ins.claim_total", "as": "value"}]},
         {"select": [{"expression": CLOCKED, "as": "paid"}, {"expression": AMOUNT, "as": "amount"}]},
         {
             "select": [{"expression": CLOCKED, "as": "paid"}],
-            "metric_filters": [{"expression": AMOUNT, "op": ">", "value": 0}],
+            "having": [{"field": "measure.ins.claim_amount", "op": "gt", "value": 0}],
         },
     ],
-    ids=["metric_ref", "mixed_select", "metric_filters"],
+    ids=["metric_ref", "mixed_select", "having"],
 )
 def test_the_refusal_names_the_clockless_measure_however_it_is_reached(tmp_path, query):
     engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
     try:
-        report = engine.validate({"version": 1, **query, "time": MONTHLY})
+        report = engine.validate({**query, "time": MONTHLY})
     finally:
         engine.close()
     assert [item["code"] for item in report["errors"]] == ["INCOMPATIBLE_TEMPORAL_ROLE"]

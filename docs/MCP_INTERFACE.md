@@ -72,7 +72,7 @@ the hints are not repeated at the response root, in `query_ir_hints`, or in that
 issue's `details`. Distinct query-IR hints and independent discovery next steps remain.
 MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
-`request_context` appears only when a transport or `policy_context` set one.
+`request_context` appears only when a transport or host passed the caller's identity.
 
 Within a stdio query MCP session, repeated successful calls still run normally and add
 `same_as`, the first matching response's `request_id`. Matching uses the tool name
@@ -117,7 +117,7 @@ tool/schema drift cannot be merged silently.
 - `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values.
-- `plan`: draft Query IR from a natural-language question. A fully matched
+- `plan`: draft a query call from a natural-language question. A fully matched
   package example uses its validated authored query (`best.pattern:
   package_example`), including its groupings, filters and limit. An example
   answers only its exact question: case and whitespace aside (and the
@@ -130,14 +130,14 @@ tool/schema drift cannot be merged silently.
   `why.details.invalid_examples`; an example that reads a hidden object is
   invalid for that caller, as in a package without the object.
   Runtimes without a source path have no package examples.
-- `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
+- `execute` (`/api/v1/query`): validate, compile and run a query call. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
   Listed only when the current package defines segments; its instruction and workflow prompt
   are omitted otherwise. Tool availability follows `Runtime.reload()` on the same adapter.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
-`discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
+`discover`, draft the call with `plan`, and run it with `execute`, which validates and compiles
 first, so its `validate` and `sql` modes are optional dry runs. The instructions also carry the
 conventions every tool shares: full ids, response detail controls, and recovery hints.
 Instructions use static `jaffle_shop` examples for every package and never insert package
@@ -147,17 +147,23 @@ Each tool description then says what the tool does, when to use it, and its
 one gotcha. Every tool returns its smallest response by default (`verbosity="minimal"`, `plan`
 `detail="query"`); ask for more only when you need it.
 
-Every tool accepts optional `request_id` and `policy_context` at runtime, including tools
-with closed schemas, but leaves these transport fields out of its advertised input schema.
-`policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
-transports supply the trusted context and ignore the argument.
+Every tool accepts an optional `request_id` at runtime, including tools with closed schemas,
+but leaves this transport field out of its advertised input schema. Arguments never say who is
+asking: identity comes from credentials (the `request_context` a transport resolved, or a host
+passed to `call_tool`). A `policy_context` beside or inside `query` is refused, with
+`IDENTITY_CLAIM_REFUSED` behind an authenticated transport and as an unknown key on stdio and
+in-process calls; it is never stripped and answered.
 
-`tools/list` is paid once at connect time, before the first call. To keep it bounded, the IR
-cheat-sheet and the full Query-IR time-block schema ship once, on `execute`; the other
-IR-accepting tools point at it. The description includes the expression-shape list, per-order ratio, arithmetic and
-conditional-count hints, and lists rows with an empty `select`
-and `group_by` alone. `validate` checks a query before it runs; a query that already ran
-needs no validation.
+`now` (an ISO date or date-time) is the instant relative windows (`time.last`, `time.this`)
+resolve against, for `execute` and `plan`; it defaults to the current time. `discover` takes no
+`now`.
+
+`tools/list` is paid once at connect time, before the first call. The query call's generated
+schema (`query.v2.json`) ships once, as `execute`'s `query` property with its `$defs` at the
+schema root; `plan` and the metadata tools take a partial call to start from.
+`tests/semantic_rails/test_mcp_response_budget.py` caps `tools/list` in bytes, and the cap may
+only shrink. `validate` checks a call before it runs; a call that already ran needs no
+validation.
 
 ### Writing Tool Descriptions
 
@@ -178,7 +184,7 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
   (`readOnlyHint`, `openWorldHint`).
 - **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
   meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Keep
-  transport fields `request_id` and `policy_context` accepted without advertising them.
+  the transport field `request_id` accepted without advertising it.
 - **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
   and the instructions (see "Measuring Context Cost").
 
@@ -223,29 +229,21 @@ returns member rows, the preview and member counts, and the derived query. `verb
 returns the whole response with compiler plans. Minimal responses still include query and
 segment policy effects, warnings, errors, and actionable recovery hints when present.
 
-MCP accepts a `query` object or a JSON string encoding that object. Tool arguments
-placed inside it are lifted; conflicting tool options refuse with
-`INVALID_QUERY`. Query IR's `verbosity` and `sql_profile` retain inner precedence. The response's `normalized` list reports each spelling change:
-`eq`/`equals` → `=`, `neq` → `!=`, `gt`/`gte`/`lt`/`lte` → `>`/`>=`/`<`/`<=`,
-and `is_not_null` → `IS NOT NULL`; arithmetic `sub`/`mul`/`div` →
-`subtract`/`multiply`/`divide` (`add` is already canonical). Arithmetic `operands`
-or `terms` with at least two expressions fold left, including subtraction and
-division. Mixing operand shapes refuses. Select dimension shorthand uses the shared
-[Query IR rules](QUERY_IR_SCHEMA.md#selectitem): a bare `{dimension: "<id>"}`
-moves to `group_by`; an `expression` wrapper moves only when `group_by` is empty
-or already lists that dimension. Both shapes accept `kind: dimension|group|ref`.
-Aliases and competing targets refuse with `INVALID_EXPRESSION_AST`; a wrapped
-dimension beside other grouping dimensions carries `MOVE_DIMENSION_TO_GROUP_BY`.
-Each move appears as a `QUERY_SHORTHAND_NORMALIZED` warning with
-`details.canonical`, on `execute` in every mode.
-Unsupported expression kinds refuse before their children are read. Excessive
-expression or predicate nesting returns `INVALID_QUERY` as a structured tool error.
-Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
+MCP reads tool arguments in one place: a `query` sent as a JSON string is parsed, and a tool
+argument sent inside `query` (`now`, `mode`, `max_rows`, `row_format`, `verbosity`,
+`sql_profile`) is refused naming the argument, with the hint to pass it beside `query`. The call
+has one spelling: filter ops are the operator words (`is`, `not`, `gt`, `gte`, `lt`, `lte`,
+`contains`, `missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused
+with the word form. A `"dimension.<id>"` string in `select` moves to `group_by` (a
+`QUERY_SHORTHAND_NORMALIZED` warning with `details.canonical`); beside another grouping it is
+refused with the corrected call. Excessive expression nesting returns `INVALID_QUERY` as a
+structured tool error. Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
 closest visible matches.
 
-`execute` accepts either `{"query": {...}}` or Query IR fields at the top level. Metadata tools
-accept the same request fields documented in [QUERY_API.md](QUERY_API.md), including optional
-`policy_context`.
+`execute` takes the call in `query` only; call fields sent as its own arguments are refused.
+An `AMBIGUOUS_PATH` refusal offers one complete call per route option
+(`details.clarification.options[i].query`, the call with `routes` filled in), ready to send.
+Metadata tools read their `query` seed through the same front door.
 
 ### Plan
 
@@ -835,15 +833,12 @@ keeps `rows` as objects (`[{...}]`). The opt-in columnar form returns
 `columns: [...]`, `rows: [[...]]`, `row_format: "columns"`, and the same
 `row_count`, warnings, and errors while avoiding repeated field names.
 
-In mode `run`, `execute` returns at most `max_rows` rows (default 200, up to 100,000). A larger
-result comes back with `truncated: true`, `total_row_count` and an `EXECUTE_ROWS_TRUNCATED`
-warning that says how to narrow the query. Execute asks the warehouse for up to 10,000 rows (or
-`max_rows`, if larger) to count them, so `total_row_count` is `null` when more rows exist than
-were fetched. Some warehouse adapters fetch the whole result and then clip it; the cap bounds the
-response, not the warehouse work.
-
-A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower the `max_rows`
-cap (and then `total_row_count` is `null` once it is reached), but it never raises it.
+In mode `run`, `execute` returns at most `max_rows` rows (default 200, up to 100,000). It fetches
+only that many (the warehouse adapter reads one more row to tell whether more exist), so a larger
+result comes back with `truncated: true`, `total_row_count: null` (the rest is not counted) and an
+`EXECUTE_ROWS_TRUNCATED` warning that says how to narrow the query. Some warehouse adapters fetch
+the whole result and then clip it; the cap bounds the response, not the warehouse work. The call's
+own `limit` is the question's top-N, not a transport cap.
 
 Every tool and mode shares one response budget: `MCP_DEFAULT_MAX_RESULT_CHARS`, default
 32,000 characters of the final compact JSON payload. Both `structuredContent` and
@@ -869,8 +864,8 @@ The `query` that execute echoes back carries the caller's own `limits`; a transp
 `max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.
 
-Query patches returned by `discover` and `inspect` contain only Query IR fields and validate as
-returned. They never carry the caller's `policy_context` or the tool's own arguments, so pass the
+Query patches returned by `discover` and `inspect` contain only the call's fields and validate as
+returned. They never carry the caller's identity or the tool's own arguments, so pass the
 policy context again on the call that uses a patch. A patch that selects a metric needing a time
 window carries the metric's default one. These tools read Query IR only from their `query`
 argument, not from Query IR fields passed at the top level.
@@ -896,7 +891,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain: `ok: false`, `status: needs_live_query`, and `next_call` gives the exact opt-in `valid-values` call with `allow_live_query=true`. No warehouse lookup runs by default; a declared empty domain remains a successful empty result |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
-| `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
+| `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned the first `max_rows` rows; more exist — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
 | `NO_DATA_YET` | `execute` | Guarded `NULL` series buckets beyond visible coverage, empty totals with coverage proven before the window, or no visible coverage. `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`. `last_bucket` names the SQL bucket key (date for day or coarser grains, full ISO timestamp for sub-day grains); `before_window` names the resolved window start. Both `edge` and `edge_source` are null with no visible coverage. Empty series with dated coverage keep existing warnings. Replaces `EMPTY_RESULT_WINDOW`; covered outputs are excluded from `NO_DATA_IN_SCOPE`. Granted only when every named measure is granted. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |

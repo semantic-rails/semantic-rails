@@ -43,7 +43,6 @@ def _compile(package_config, warehouse, profile):
         config,
         Registry(config),
         {
-            "version": 1,
             "select": [{"expression": {"metric": "metric.sales.aov_usd"}, "as": _ALIAS}],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {
@@ -336,14 +335,12 @@ def test_runtime_query_segment_and_live_values_execute_prepared_sql(package_conf
     )
     runtime.set_adapter(adapter)
     request = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov"}],
+        "select": [{"expression": "metric.sales.aov_usd", "as": "aov"}],
         "group_by": [store_name],
-        "sql_profile": "compact",
     }
     try:
-        compiled = runtime.compile(request)
-        result = runtime.query(request)
+        compiled = runtime.compile(request, sql_profile="compact")
+        result = runtime.query(request, sql_profile="compact")
         assert statements == [compiled["rendered_sql"]]
         assert result["rows"][0][store_name] == "Portland"
         assert (
