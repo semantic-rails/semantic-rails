@@ -6,7 +6,14 @@ import re
 from collections import Counter
 from typing import Any
 
-from ._base import _NUMBER_WORDS, _TERM_SYNONYMS, _name_matches, _singular, _tokens
+from ._base import (
+    _NUMBER_WORDS,
+    _TERM_SYNONYMS,
+    _name_matches,
+    _requested_grouping_spans,
+    _singular,
+    _tokens,
+)
 from .consumed_spans import _TERM_RE, _ZONE_NAME_RE, _consumed_spans
 from .coverage import (
     _PRIOR_PERIOD_RE,
@@ -22,7 +29,7 @@ from .coverage import (
 )
 from .exclusions import exclusion_regions, exclusion_words
 from .filter_checks import _field_predicates, _positive_filter_evidence
-from .groupings import _explicit_grain, _requested_grouping_spans
+from .groupings import _explicit_grain
 from .time_checks import _fiscal_calendar_gaps
 from .time_phrases import (
     _FISCAL_RE,

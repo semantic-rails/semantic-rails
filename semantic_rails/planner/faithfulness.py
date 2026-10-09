@@ -299,7 +299,7 @@ def intent_faithfulness_why(
             )
         )
 
-    # Every item of every exclusion clause needs its own exact predicate.
+    # Every exclusion clause holds: the planner doesn't answer exclusions yet.
     window = _time_window(text, policy_context=query.get("policy_context"))
     gaps.extend(exclusion_gaps(runtime._config, text, query, window))
 

@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..ast import is_child_group
+from ._base import _requested_grouping_spans
 from .coverage import CoverageGap, _is_number
 from .visibility import visible_value_domains
 
@@ -404,8 +405,6 @@ def _marker_inside_a_name(lowered: str, tokens: list[_Token], names: Names) -> b
 def _marker_inside_a_grouping(lowered: str) -> bool:
     """Whether a marker sits inside a grouping phrase as the grouping reader reads it ("revenue
     by store excluding Brooklyn" reads "store excluding brooklyn"), which drops its grouping."""
-
-    from .groupings import _requested_grouping_spans  # noqa: WPS433 - groupings reads this module
 
     spans = _requested_grouping_spans(lowered)
     return any(start <= marker < end for start, end in spans for marker, _end in _markers(lowered))
