@@ -32,6 +32,8 @@ from .plan_query import _where_filters
 
 _WORD_RE = re.compile(r"[^\W_]+")
 _POSSESSIVE_RE = re.compile(r"['’]s(?![^\W_])", re.IGNORECASE)
+# The text before a sentence's first word: nothing, or the end of another sentence.
+_SENTENCE_START_RE = re.compile(r"(?:^|[.?!:;])[\s\"'“‘(]*$")
 # The most rows one lookup reads. A full read may have missed a row, so it never makes one match.
 _LOOKUP_ROWS = 6
 _P = ParamSpec("_P")
@@ -98,7 +100,11 @@ def with_name_lookups(operation: Callable[_P, _R]) -> Callable[_P, _R]:
 
 def _runs(question: str, held: set[str]) -> list[_Run]:
     """Quoted text holding a held word, and each longest run of capitalized held words side by
-    side, with the possessive "'s" after it."""
+    side, with the possessive "'s" after it.
+
+    A sentence capitalizes its first word, so one word there is a name only with a possessive
+    ("Acme's MRR") or a capital past its first letter ("ACME"); "Roughly how many …" is none.
+    """
 
     quoted = [match.span() for match in re.finditer(QUOTED, question)]
     runs: list[_Run] = []
@@ -114,7 +120,13 @@ def _runs(question: str, held: set[str]) -> list[_Run]:
             start, end = current[0].start(), current[-1].end()
             tail = _POSSESSIVE_RE.match(question, end)
             words = tuple(match.group().lower() for match in current)
-            runs.append(_Run(words, question[start:end], (start, tail.end() if tail else end)))
+            if (
+                tail
+                or len(current) > 1
+                or any(char.isupper() for char in current[0].group()[1:])
+                or not _SENTENCE_START_RE.search(question[:start])
+            ):
+                runs.append(_Run(words, question[start:end], (start, tail.end() if tail else end)))
             current.clear()
 
     for match in _WORD_RE.finditer(question):

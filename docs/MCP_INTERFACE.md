@@ -634,7 +634,9 @@ offered: without its "t", "can't" says the opposite. A single unknown
 value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan
 never guesses its dimension. The one exception is a name: capitalized or quoted words, held as
 unknown this way, that may name a row of an entity with a text `display` dimension
-([PACKAGE_AUTHORING](PACKAGE_AUTHORING.md#display--the-name-of-one-row)). Plan looks each such
+([PACKAGE_AUTHORING](PACKAGE_AUTHORING.md#display--the-name-of-one-row)). A sentence's first
+word alone is a name only with a possessive ("Acme's MRR") or a capital past its first letter
+("ACME"), since every sentence capitalizes it ("Roughly how many …" names nothing). Plan looks each such
 name up once, in the display of every entity the draft's measure reaches: one query per name and
 entity, run through `execute`'s own path under the caller's `policy_context` (so row filters and
 policies apply), reading at most 6 rows whose display contains the name's words (`ILIKE`). It is

@@ -1079,8 +1079,6 @@ _COMPLEMENT_OPS = {
     "NOT IN": "IN",
     "LIKE": "NOT LIKE",
     "NOT LIKE": "LIKE",
-    "ILIKE": "NOT ILIKE",
-    "NOT ILIKE": "ILIKE",
     "IS NULL": "IS NOT NULL",
     "IS NOT NULL": "IS NULL",
 }

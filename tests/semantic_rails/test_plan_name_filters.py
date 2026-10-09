@@ -55,7 +55,7 @@ PARTNER = {
 }
 
 
-def _files(policies: list[dict[str, Any]]) -> dict[str, Any]:
+def _files(policies: list[dict[str, Any]], titles: bool) -> dict[str, Any]:
     customer = {"field": SEGMENT, "op": "=", "value": "customer"}
     metrics: dict[str, Any] = {
         key: {
@@ -205,19 +205,26 @@ def _files(policies: list[dict[str, Any]]) -> dict[str, Any]:
             },
         }
         files["policies.yml"] = {"semantic_policies": policies}
+    if titles:
+        # Events named by a title: a second entity a name can find rows of.
+        files["models/events.yml"]["model"]["dimensions"]["title"] = {"kind": "categorical"}
+        files["graph.yml"]["graph"]["entities"]["event"]["display"] = "title"
     return files
 
 
 @pytest.fixture()
 def subscriptions(tmp_path: Path) -> Iterator[Callable[..., Runtime]]:
     """The neutral subscriptions package, account named by ``display: name``; ``extra`` SQL
-    runs after the seed, and ``policies`` are its semantic policies."""
+    runs after the seed, ``policies`` are its semantic policies, and ``titles`` names events
+    by a ``title`` column the extra SQL adds."""
 
     runtimes: list[Runtime] = []
 
-    def build(extra: str = "", policies: list[dict[str, Any]] | None = None) -> Runtime:
+    def build(
+        extra: str = "", policies: list[dict[str, Any]] | None = None, titles: bool = False
+    ) -> Runtime:
         root = tmp_path / f"subscriptions_{len(runtimes)}"
-        for name, content in _files(policies or []).items():
+        for name, content in _files(policies or [], titles).items():
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(yaml.safe_dump(content), encoding="utf-8")
@@ -298,6 +305,8 @@ GROUP BY a.name
         # With or without the entity's own word.
         ("What is the MRR of account Globex?", "Globex", "b", _MRR_ON_OCTOBER_4, [("Globex", 0.0)]),
         ("MRR of the Globex account", "Globex", "b", _MRR_ON_OCTOBER_4, [("Globex", 0.0)]),
+        # A sentence's first word, with its possessive.
+        ("Globex's MRR", "Globex", "b", _MRR_ON_OCTOBER_4, [("Globex", 0.0)]),
     ],
 )
 def test_a_name_reads_the_one_row_it_gives(
@@ -339,6 +348,21 @@ def test_a_name_of_several_rows_asks_which(subscriptions: Callable[..., Runtime]
     )
 
 
+def test_a_name_of_rows_of_two_entities_asks_which(subscriptions: Callable[..., Runtime]) -> None:
+    runtime = subscriptions(
+        "ALTER TABLE events ADD COLUMN title VARCHAR; "
+        "UPDATE events SET title = CASE event_id WHEN 6 THEN 'Acme renewal' ELSE 'Other' END;",
+        titles=True,
+    )
+    payload = _plan(runtime, "How many new accounts did Acme have last month?")
+    assert payload["status"] == "needs_clarification", payload.get("why")
+    [gap] = payload["why"]["details"]["gaps"]
+    assert [(row["entity"], row["display"], row["key"]) for row in gap["expected"]["matches"]] == [
+        ("entity.subscriptions_account", "Acme Data Co", "a"),
+        ("entity.subscriptions_event", "Acme renewal", 6),
+    ]
+
+
 @pytest.mark.parametrize(
     ("question", "terms"),
     [
@@ -354,6 +378,24 @@ def test_a_name_without_one_row_is_held(
     subscriptions: Callable[..., Runtime], question: str, terms: list[str]
 ) -> None:
     _held_on(_plan(subscriptions(), question), terms)
+
+
+def test_a_word_capitalized_by_its_sentence_alone_is_no_name(
+    subscriptions: Callable[..., Runtime],
+) -> None:
+    runtime = subscriptions(
+        "INSERT INTO accounts VALUES ('r','Roughly Speaking','customer'); "
+        "INSERT INTO events VALUES (7,'r','signup','2026-09-15');"
+    )
+    _held_on(_plan(runtime, "Roughly how many new accounts last month?"), ["roughly"])
+    named = _plan(runtime, "How many new accounts did Roughly have last month?")
+    assert named["status"] == "ok", named.get("why")
+    rows = runtime.query(named["best"]["query_ir"])["rows"]
+    assert (
+        [(row[ACCOUNT_NAME], row["new_accounts"]) for row in rows]
+        == _reference(runtime, _NEW_ACCOUNTS_IN_SEPTEMBER.format(key="r"))
+        == [("Roughly Speaking", 1)]
+    )
 
 
 @pytest.mark.parametrize(("others", "ready"), [(4, True), (5, False)])
