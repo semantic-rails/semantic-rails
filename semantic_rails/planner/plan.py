@@ -526,7 +526,9 @@ def plan_payload(
     assumptions = _time_assumptions(intent_str, best_draft.query) if best_ok else []
     assumptions += [read.reading] if read is not None and read.reading else []
     if best_ok:
-        assumptions += _key_only_assumptions(runtime._config, best_draft.query, partial_query)
+        assumptions += _key_only_assumptions(
+            runtime._config, intent_str, best_draft.query, partial_query
+        )
     if assumptions:
         payload["assumptions"] = assumptions
     if unmatched:

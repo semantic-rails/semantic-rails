@@ -35,6 +35,15 @@ ANSWERED = {
     "revenue by store label",
     "revenue by store id and store name",
 }
+# "each" and "every" name a grouping the primary draft reads; the catalog fallback holds them.
+ANSWERED_PRIMARY = {
+    "revenue each store id",
+    "revenue every store id",
+    "revenue for each store id",
+    "revenue each store name",
+    "revenue every store name",
+    "revenue for each store name",
+}
 
 
 @pytest.fixture()
@@ -121,7 +130,12 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
             [{"field": STORE_LABEL, "op": "IN", "value": ["East", "West", "South"]}],
         ),
         ("revenue by store", None, []),
+        ("revenue by stores", None, []),
         ("revenue by stores", None, [ID_FILTER]),
+        ("revenue each store id", [STORE_ID], [ID_FILTER]),
+        ("revenue every store id", [STORE_ID], [ID_FILTER]),
+        ("revenue each store name", [STORE_NAME], [NAME_FILTER]),
+        ("revenue every store name", [STORE_NAME], [NAME_FILTER]),
         ("revenue by, store name", [STORE_NAME], [NAME_FILTER]),
         ("revenue by, store name and store id", [STORE_NAME, STORE_ID], [NAME_FILTER, ID_FILTER]),
         ("revenue for each store name", [STORE_NAME], [NAME_FILTER]),
@@ -156,8 +170,10 @@ def test_store_attribute_matches_reference_sql_or_withholds_execution(
 ) -> None:
     _force_fallback(retail, monkeypatch, intent, path)
     payload = plan_payload(retail, intent=intent, partial_query={"where": filters})
-    if intent in ANSWERED:
+    if intent in ANSWERED or (path == "primary" and intent in ANSWERED_PRIMARY):
         assert payload["status"] == "ok", payload
+        # The question names the dimension it groups by, so no row name is assumed.
+        assert "assumptions" not in payload, payload
     if payload["status"] != "ok":
         assert "execute" not in payload["next"].get("ready_for", []), payload
         return

@@ -14,6 +14,7 @@ from ._base import (
     _object_by_id,
     _requested_grouping_spans,
     _runtime_composition_terms,
+    _said_name,
     _singular,
     _strip_leading_rank_count,
     _tokens,
@@ -206,11 +207,12 @@ def _display_entities(config: Any, query: dict[str, Any]) -> list[Any]:
 
 
 def _key_only_assumptions(
-    config: Any, query: dict[str, Any], partial_query: dict[str, Any] | None = None
+    config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None = None
 ) -> list[str]:
     """A line for each entity the draft shows by its key alone because nothing else names its
     rows: the caller sees no display for it and no one dimension of its own names it. A
-    caller's grouping needs none."""
+    caller's grouping needs none, nor a key the question names beyond its entity ("by store
+    id")."""
 
     caller = set((partial_query or {}).get("group_by") or [])
     grouped = [
@@ -224,6 +226,7 @@ def _key_only_assumptions(
         if (
             entity is None
             or row.id in caller
+            or _said_name(row, question) - {_singular(word) for word in _tokens(entity.label)}
             or _entity_stand_ins(config, entity, str(entity.label or "")) != ([row.id], [])
             or any(other.entity == row.entity for other in grouped if other is not row)
         ):
