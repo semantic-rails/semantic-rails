@@ -281,10 +281,10 @@ def test_api_key_shim_and_trusted_request_context_headers(runtime_factory, monke
             base + "/api/v1/validate",
             {
                 "query": {
-                    "version": 1,
                     "select": [
                         {
                             "expression": {
+                                "kind": "measure",
                                 "measure": "measure.jaffle.order_count",
                                 "aggregation": "count_distinct",
                             },
@@ -394,10 +394,10 @@ def test_api_string_boolean_include_blocked_matches_json_boolean(runtime_factory
     runtime = runtime_factory("jaffle_shop")
     with _serve_runtime(runtime) as base:
         query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.order_count",
                         "aggregation": "count_distinct",
                     },
@@ -520,10 +520,10 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             base + "/api/v1/build-options",
             {
                 "query": {
-                    "version": 1,
                     "select": [
                         {
                             "expression": {
+                                "kind": "measure",
                                 "measure": "measure.jaffle.order_count",
                                 "aggregation": "count_distinct",
                             },
@@ -541,10 +541,9 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             base + "/api/v1/build-options",
             {
                 "query": {
-                    "version": 1,
                     "select": [
                         {
-                            "expression": {"measure": "measure.jaffle.delivered_revenue_usd"},
+                            "expression": "measure.jaffle.delivered_revenue_usd",
                             "as": "Delivered revenue",
                         }
                     ],
@@ -928,10 +927,9 @@ def test_asgi_partial_resolver_drops_all_outer_and_nested_policy_spoofs(route: s
             "environment": "spoofed-outer-environment",
         },
         "query": {
-            "version": 1,
             "select": [
                 {
-                    "expression": {"measure": "measure.jaffle.order_count"},
+                    "expression": "measure.jaffle.order_count",
                     "as": "orders",
                 }
             ],

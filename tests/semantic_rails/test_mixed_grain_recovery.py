@@ -133,7 +133,7 @@ def _first_error(report: dict) -> dict:
 
 def _validate(runtime, *, measure: str, group_by: list[str], time: dict | None = None) -> dict:
     payload: dict = {
-        "select": [{"expression": {"measure": measure}, "as": "value"}],
+        "select": [{"expression": measure, "as": "value"}],
         "group_by": group_by,
     }
     if time is not None:

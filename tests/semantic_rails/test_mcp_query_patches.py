@@ -26,15 +26,15 @@ ORDER_MONTH = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "mon
 BUILDER_STEPS = {
     "measure": {},
     "aggregation": {"step": "aggregation", "focus_object_id": "measure.jaffle.revenue_usd"},
-    "group_by": {"query": {"version": 1, "select": REVENUE}},
-    "filter_dimension": {"query": {"version": 1, "select": REVENUE, "group_by": [STORE]}},
+    "group_by": {"query": {"select": REVENUE}},
+    "filter_dimension": {"query": {"select": REVENUE, "group_by": [STORE]}},
     "filter_value": {
         "step": "filter_value",
         "focus_object_id": STORE,
-        "query": {"version": 1, "select": REVENUE, "group_by": [STORE]},
+        "query": {"select": REVENUE, "group_by": [STORE]},
     },
-    "time": {"step": "time", "query": {"version": 1, "select": REVENUE, "group_by": [STORE]}},
-    "review": {"step": "review", "query": {"version": 1, "select": REVENUE, "group_by": [STORE]}},
+    "time": {"step": "time", "query": {"select": REVENUE, "group_by": [STORE]}},
+    "review": {"step": "review", "query": {"select": REVENUE, "group_by": [STORE]}},
 }
 POLICY_CONTEXT = {"environment": "development", "audience": "internal", "roles": ["analyst"]}
 CALLS = [

@@ -239,7 +239,7 @@ def test_a_caller_select_keeps_its_measure_and_alias(runtime: Runtime) -> None:
     }}]  # fmt: skip
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
         "policy_context": NOW, "select": select,
-        "order_by": [{"field": "all_mrr", "direction": "DESC"}],
+        "order_by": [{"field": "all_mrr", "direction": "desc"}],
     })  # fmt: skip
     assert plan["status"] == "ok", plan.get("why")
     assert plan["next"]["ready_for"] == ["execute"]
@@ -324,7 +324,7 @@ def test_a_balance_window_without_a_clock_reading_is_held(
         lambda bounds, clock: None if bounds is snapshot_module._LAST_DAY else days(bounds, clock),
     )
     query = {
-        "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day",
                  "start": "2026-10-04", "end": "2026-10-05"},
     }  # fmt: skip

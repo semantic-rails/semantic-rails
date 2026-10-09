@@ -18,14 +18,12 @@ tests:
   query_revenue_by_store_returns_columns:
     kind: query_returns_columns
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
-          as: revenue_usd
+        - measure.jaffle.revenue_usd
       group_by: [dimension.jaffle_store_name]
       order_by:
         - field: dimension.jaffle_store_name
-          direction: ASC
+          direction: asc
       limit: 5
     columns: [dimension.jaffle_store_name, revenue_usd]
 
@@ -33,18 +31,17 @@ tests:
   query_rolling_metric_returns_columns:
     kind: query_returns_columns
     query:
-      version: 1
       select:
-        - expression: {metric: metric.sales.rolling_7d_revenue_direct}
+        - expression: metric.sales.rolling_7d_revenue_direct
           as: rev_7d
       time:
         temporal_role: temporal_role.jaffle_order_time
         grain: day
       order_by:
-        - field: temporal_role.jaffle_order_time__day
-          direction: ASC
+        - field: period
+          direction: asc
       limit: 3
-    columns: [temporal_role.jaffle_order_time__day, rev_7d]
+    columns: [period, rev_7d]
 
   # compile's explain payload — verifies path provenance contains the expected
   # join. Different from the explain test in tests/explain.yml which
@@ -53,9 +50,8 @@ tests:
   explain_query_surfaces_provenance:
     kind: explain_contains
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       group_by: [dimension.jaffle_store_name]
     text: selected_paths

@@ -43,7 +43,7 @@ def test_plan_route_preserves_partial_query(runtime_factory) -> None:
             "/api/v1/plan",
             {
                 "intent": "revenue",
-                "query": {"version": 1, "group_by": ["dimension.jaffle_store_name"]},
+                "query": {"group_by": ["dimension.jaffle_store_name"]},
             },
         )
     finally:

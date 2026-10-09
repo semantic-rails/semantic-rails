@@ -194,9 +194,9 @@ active_jaffle_coverage:
       step: group_by
       focus_terms: orders by store
       query:
-        version: 1
         select:
           - expression:
+              kind: measure
               measure: measure.jaffle.order_count
               aggregation: count_distinct
             as: orders
@@ -212,11 +212,8 @@ active_jaffle_coverage:
     path: /api/v1/validate
     body:
       query:
-        version: 1
         select:
-          - expression:
-              measure: measure.jaffle.revenue_usd
-            as: revenue_usd
+          - measure.jaffle.revenue_usd
         group_by:
           - dimension.jaffle_store_name
         time:
@@ -228,36 +225,28 @@ active_jaffle_coverage:
     path: /api/v1/compile
     body:
       query:
-        version: 1
         select:
-          - expression:
-              metric: metric.sales.cumulative_revenue
-            as: cumulative_revenue
+          - metric.sales.cumulative_revenue
         time:
           temporal_role: temporal_role.jaffle_order_time
           grain: month
         order_by:
           - field: cumulative_revenue
-            direction: ASC
+            direction: asc
 
   query:
     method: POST
     path: /api/v1/query
     body:
       query:
-        version: 1
         select:
-          - expression:
-              measure: measure.jaffle.revenue_usd
-            as: revenue_usd
-          - expression:
-              metric: metric.sales.aov_usd
-            as: aov_usd
+          - measure.jaffle.revenue_usd
+          - metric.sales.aov_usd
         group_by:
           - dimension.jaffle_store_name
         order_by:
           - field: revenue_usd
-            direction: DESC
+            direction: desc
         limit: 5
 
 demo_scenarios:

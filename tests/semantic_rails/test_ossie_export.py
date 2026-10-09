@@ -196,8 +196,7 @@ def test_exported_metrics_compute_the_engine_numbers(runtime_factory) -> None:
         metric_id = sidecar["names"]["metrics"][metric["name"]]
         engine = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"kind": "metric", "metric": metric_id}, "as": "v"}],
+                "select": [{"expression": metric_id, "as": "v"}],
             }
         )
         assert runtime.adapter.query(ossie)[0]["v"] == pytest.approx(engine["rows"][0]["v"])

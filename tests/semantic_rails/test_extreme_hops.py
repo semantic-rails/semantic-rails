@@ -296,8 +296,7 @@ def _write_geo_package(
 
 def _query(measure: str, group_by: list[str]) -> dict:
     return {
-        "version": 1,
-        "select": [{"expression": {"measure": measure}, "as": "value"}],
+        "select": [{"expression": measure, "as": "value"}],
         "group_by": group_by,
         "order_by": [{"field": group_by[0], "direction": "ASC"}],
         "limit": 50,

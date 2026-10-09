@@ -182,6 +182,7 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
                 "display_label": meta.get("display_label", field),
                 "sql_alias": field,
                 "type": "time",
+                **({"grain": time["grain"]} if time.get("grain") else {}),
                 "lineage": [role_id],
             }
         )

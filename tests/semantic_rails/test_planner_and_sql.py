@@ -32,19 +32,17 @@ def _jaffle_query() -> dict:
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.order_count",
                     "aggregation": "count_distinct",
                 },
                 "as": "orders",
             },
-            {
-                "expression": {"metric": "metric.sales.aov_usd"},
-                "as": "aov_usd",
-            },
+            "metric.sales.aov_usd",
         ],
         "group_by": ["dimension.jaffle_store_name"],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-        "order_by": [{"field": "orders", "direction": "DESC"}],
+        "order_by": [{"field": "orders", "direction": "desc"}],
         "limit": 5,
     }
 
@@ -82,10 +80,9 @@ def test_validate_rejects_unsupported_query_ir_version(runtime_factory, version)
     try:
         report = runtime.validate(
             {
-                "version": version,
                 "select": [
                     {
-                        "expression": {"measure": "measure.jaffle.order_count"},
+                        "expression": "measure.jaffle.order_count",
                         "as": "orders",
                     }
                 ],
@@ -107,6 +104,7 @@ def test_invalid_temporal_role_is_reported_by_validate(runtime_factory):
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.order_count",
                             "aggregation": "count_distinct",
                         },
@@ -174,7 +172,6 @@ def test_entity_in_terms_of_uses_physical_anchor(
     try:
         report = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {"measure": measure, "aggregation": "count_distinct"},
@@ -203,10 +200,10 @@ def test_entity_in_terms_of_order_count_by_product_type_keeps_order_time_lookup(
     try:
         report = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.order_count",
                             "aggregation": "count_distinct",
                         },
@@ -247,10 +244,10 @@ def test_entity_in_terms_of_order_count_by_product_type_allows_root_lookup_filte
     try:
         report = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.order_count",
                             "aggregation": "count_distinct",
                         },
@@ -258,7 +255,9 @@ def test_entity_in_terms_of_order_count_by_product_type_allows_root_lookup_filte
                     }
                 ],
                 "group_by": ["dimension.jaffle_product_type"],
-                "where": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}],
+                "where": [
+                    {"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
+                ],
             }
         )
         assert report["ok"] is True
@@ -278,10 +277,10 @@ def test_supply_component_cost_by_store_uses_consumed_item_cost_config(runtime_f
     try:
         supply_report = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.item_cost_usd",
                             "aggregation": "sum",
                         },
@@ -306,10 +305,9 @@ def test_inventory_by_customer_type_remains_invalid(runtime_factory):
     try:
         inventory_report = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"metric": "metric.sales.inventory_on_hand_eop"},
+                        "expression": "metric.sales.inventory_on_hand_eop",
                         "as": "inventory",
                     }
                 ],
@@ -331,10 +329,9 @@ def test_product_grain_rolling_revenue_uses_item_revenue(runtime_factory):
     try:
         report = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"metric": "metric.sales.rolling_7d_revenue_direct"},
+                        "expression": "metric.sales.rolling_7d_revenue_direct",
                         "as": "rev_7d",
                     }
                 ],
@@ -355,17 +352,14 @@ def test_relative_time_range_expansion(runtime_factory):
     try:
         report = runtime.validate(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}
-                ],
+                "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
                     "grain": "month",
-                    "range": {"last": {"unit": "month", "value": 3}},
+                    "last": {"unit": "month", "value": 3},
                 },
-                "policy_context": {"now": "2026-05-04"},
-            }
+            },
+            now="2026-05-04",
         )
         assert report["ok"] is True
         assert report["normalized_query"]["time"]["start"] == "2026-02-01"
@@ -386,14 +380,11 @@ def test_time_range_last_string_shorthand_rejected_with_recovery_hint(runtime_fa
     try:
         report = runtime.validate(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}
-                ],
+                "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
                     "grain": "month",
-                    "range": {"last": "90 days"},
+                    "last": "90 days",
                 },
             }
         )
@@ -429,10 +420,7 @@ def test_where_payload_validation(runtime_factory):
     try:
         report = runtime.validate(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}
-                ],
+                "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
                 "where": [
                     {"expression": {"kind": "literal", "value": True}, "op": "=", "value": True}
                 ],
@@ -528,10 +516,10 @@ def test_object_not_found_close_matches_on_compile(runtime_factory):
         with pytest.raises(SemanticLayerError) as exc_info:
             runtime.compile(
                 {
-                    "version": 1,
                     "select": [
                         {
                             "expression": {
+                                "kind": "measure",
                                 "measure": "measure.jaffle.revenue_usd",
                                 "aggregation": "sum",
                             },
@@ -555,10 +543,10 @@ def test_invalid_temporal_role_close_matches(runtime_factory):
     try:
         report = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.revenue_usd",
                             "aggregation": "sum",
                         },
@@ -602,20 +590,18 @@ def test_duplicate_output_aliases_are_rejected(runtime_factory):
     try:
         duplicate_select = runtime.validate(
             {
-                "version": 1,
                 "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "dup"},
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "dup"},
+                    {"expression": "measure.jaffle.order_count", "as": "dup"},
+                    {"expression": "measure.jaffle.revenue_usd", "as": "dup"},
                 ],
                 "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             }
         )
         duplicate_group = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"measure": "measure.jaffle.order_count"},
+                        "expression": "measure.jaffle.order_count",
                         "as": "dimension.jaffle_store_name",
                     },
                 ],
@@ -625,11 +611,10 @@ def test_duplicate_output_aliases_are_rejected(runtime_factory):
         )
         duplicate_time = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"measure": "measure.jaffle.order_count"},
-                        "as": "temporal_role.jaffle_order_time__month",
+                        "expression": "measure.jaffle.order_count",
+                        "as": "period",
                     },
                 ],
                 "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
@@ -690,7 +675,7 @@ def test_time_only_distinct_values_compile_with_explicit_temporal_role(package_c
 def test_time_only_distinct_values_require_explicit_temporal_role(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        report = runtime.validate({"version": 1, "time": {"grain": "month"}})
+        report = runtime.validate({"time": {"grain": "month"}})
         assert report["ok"] is False
         assert report["errors"][0]["code"] == "INVALID_QUERY"
     finally:
@@ -705,10 +690,10 @@ def test_incompatible_temporal_role_is_reported_for_measure_and_metric(runtime_f
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.item_revenue_usd",
                             "aggregation": "sum",
                         },
-                        "as": "item_revenue_usd",
                     }
                 ],
                 "time": {"temporal_role": "temporal_role.jaffle_store_opened_at", "grain": "month"},
@@ -716,20 +701,13 @@ def test_incompatible_temporal_role_is_reported_for_measure_and_metric(runtime_f
         )
         metric_report = jaffle.validate(
             {
-                "select": [
-                    {
-                        "expression": {"metric": "metric.sales.rolling_28d_revenue"},
-                        "as": "rolling_28d_revenue",
-                    }
-                ],
+                "select": ["metric.sales.rolling_28d_revenue"],
                 "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             }
         )
         jaffle_metric_report = jaffle.validate(
             {
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "time": {"temporal_role": "temporal_role.jaffle_store_opened_at", "grain": "month"},
             }
         )
@@ -750,6 +728,7 @@ def test_mixed_grain_measures_are_rewritten_into_leaf_aggregates(package_config_
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.order_count",
                     "aggregation": "count_distinct",
                 },
@@ -757,6 +736,7 @@ def test_mixed_grain_measures_are_rewritten_into_leaf_aggregates(package_config_
             },
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.item_count",
                     "aggregation": "count_distinct",
                 },
@@ -785,6 +765,7 @@ def test_leaf_aggregate_rewrite_warning_is_classified_as_safe_alignment(runtime_
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.order_count",
                             "aggregation": "count_distinct",
                         },
@@ -792,6 +773,7 @@ def test_leaf_aggregate_rewrite_warning_is_classified_as_safe_alignment(runtime_
                     },
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.item_count",
                             "aggregation": "count_distinct",
                         },
@@ -815,8 +797,8 @@ def test_same_fact_measures_fold_into_one_leaf_scan(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
         "select": [
-            {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"},
-            {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+            {"expression": "measure.jaffle.revenue_usd", "as": "revenue"},
+            {"expression": "measure.jaffle.order_count", "as": "orders"},
         ],
         "group_by": ["dimension.jaffle_store_name"],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
@@ -846,8 +828,8 @@ def test_alias_tiering_uses_short_internal_columns_and_preserves_final_names(
     config, _ = package_config_factory("jaffle_shop")
     query = {
         "select": [
-            {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"},
-            {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+            {"expression": "measure.jaffle.revenue_usd", "as": "revenue"},
+            {"expression": "measure.jaffle.order_count", "as": "orders"},
         ],
         "group_by": ["dimension.jaffle_store_name"],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
@@ -871,8 +853,7 @@ def test_alias_tiering_uses_short_internal_columns_and_preserves_final_names(
 def test_bounded_time_filters_are_pushed_into_source_scan(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}],
+        "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
         "time": {
             "temporal_role": "temporal_role.jaffle_order_time",
             "grain": "month",
@@ -899,9 +880,9 @@ def test_multi_fact_metrics_align_on_common_metric_time(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
         "select": [
-            {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+            {"expression": "measure.jaffle.order_count", "as": "orders"},
             {
-                "expression": {"measure": "measure.jaffle.delivered_revenue_usd"},
+                "expression": "measure.jaffle.delivered_revenue_usd",
                 "as": "delivered_revenue",
             },
         ],
@@ -1062,9 +1043,8 @@ def _primitive_channel_config() -> PackageConfig:
 def test_primitive_only_parent_geo_plan_preaggregates_channel_facts_before_dimension_joins():
     config = _primitive_channel_config()
     query = {
-        "version": 1,
         "select": [
-            {"expression": {"metric": "metric.total_messages"}, "as": "total_messages"},
+            "metric.total_messages",
         ],
         "group_by": ["dimension.parent_account_geo"],
     }
@@ -1097,10 +1077,9 @@ def test_primitive_only_parent_geo_plan_preaggregates_channel_facts_before_dimen
 def test_duckdb_synthetic_parent_geo_total_messages_matches_oracle():
     config = _primitive_channel_config()
     query = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.total_messages"}, "as": "total_messages"}],
+        "select": ["metric.total_messages"],
         "group_by": ["dimension.parent_account_geo"],
-        "order_by": [{"field": "dimension.parent_account_geo", "direction": "ASC"}],
+        "order_by": [{"field": "dimension.parent_account_geo", "direction": "asc"}],
     }
     compiled = compile_query(config, Registry(config), query)
     db = Database.connect_in_memory()
@@ -1162,7 +1141,7 @@ def test_runtime_binary_expression_can_compose_mixed_clock_metric_primitives(
         "select": [
             {
                 "expression": {
-                    "kind": "binary",
+                    "kind": "arithmetic",
                     "op": "plus",
                     "left": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
                     "right": {
@@ -1186,7 +1165,6 @@ def test_runtime_binary_expression_can_compose_mixed_clock_metric_primitives(
 def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "version": 1,
         "select": [
             {
                 "as": "inventory_from_ordering_stores_share",
@@ -1200,9 +1178,9 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_fac
                             {
                                 "measure": "measure.jaffle.order_count",
                                 "entity": "entity.jaffle_store",
-                                "op": ">",
+                                "op": "gt",
                                 "value": 0,
-                                "time_alignment": "same_query_period",
+                                "over": "period",
                             }
                         ],
                     },
@@ -1239,7 +1217,6 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_fac
 def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "version": 1,
         "select": [
             {
                 "as": "inventory_from_ordering_stores_share",
@@ -1253,9 +1230,9 @@ def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(pack
                             {
                                 "measure": "measure.jaffle.order_count",
                                 "entity": "entity.jaffle_store",
-                                "op": ">",
+                                "op": "gt",
                                 "value": 0,
-                                "time_alignment": "same_query_period",
+                                "over": "period",
                             }
                         ],
                     },
@@ -1291,7 +1268,6 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
     config, _ = package_config_factory("jaffle_shop")
     config = replace(config, package=replace(config.package, warehouse="snowflake"))
     query = {
-        "version": 1,
         "select": [
             {
                 "as": "inventory_from_ordering_stores_share",
@@ -1305,9 +1281,9 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
                             {
                                 "measure": "measure.jaffle.order_count",
                                 "entity": "entity.jaffle_store",
-                                "op": ">",
+                                "op": "gt",
                                 "value": 0,
-                                "time_alignment": "same_query_period",
+                                "over": "period",
                             }
                         ],
                     },
@@ -1343,7 +1319,6 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
 def test_distribution_rolls_snapshot_to_entity_before_percentile(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "version": 1,
         "select": [
             {
                 "as": "p80_inventory",
@@ -1355,10 +1330,11 @@ def test_distribution_rolls_snapshot_to_entity_before_percentile(package_config_
                         "kind": "entity_value",
                         "entity": "entity.jaffle_store",
                         "input": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.inventory_on_hand_eop",
                             "aggregation": "sum",
                         },
-                        "where": [{"kind": "value_filter", "op": ">", "value": 0}],
+                        "where": [{"kind": "value_filter", "op": "gt", "value": 0}],
                     },
                 },
             }
@@ -1422,10 +1398,7 @@ def test_semi_additive_snapshots_choose_period_row_before_summing(package_config
     config, _ = package_config_factory("jaffle_shop")
     query = {
         "select": [
-            {
-                "expression": {"metric": "metric.sales.inventory_on_hand_eop"},
-                "as": "inventory_on_hand_eop",
-            },
+            "metric.sales.inventory_on_hand_eop",
         ],
         "group_by": ["dimension.jaffle_store_name"],
         "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
@@ -1446,7 +1419,7 @@ def test_advanced_time_sql_supports_calendar_dense_fill_and_period_rewrites(pack
             {
                 "expression": {
                     "kind": "prior_period",
-                    "input": {"measure": "measure.jaffle.order_count"},
+                    "input": "measure.jaffle.order_count",
                     "offset": {"unit": "year", "value": 1},
                 },
                 "as": "prior_year_orders",
@@ -1454,7 +1427,7 @@ def test_advanced_time_sql_supports_calendar_dense_fill_and_period_rewrites(pack
             {
                 "expression": {
                     "kind": "period_to_date",
-                    "input": {"measure": "measure.jaffle.order_count"},
+                    "input": "measure.jaffle.order_count",
                     "period": "quarter",
                 },
                 "as": "orders_qtd",
@@ -1463,7 +1436,6 @@ def test_advanced_time_sql_supports_calendar_dense_fill_and_period_rewrites(pack
         "time": {
             "temporal_role": "temporal_role.jaffle_order_time",
             "grain": "month",
-            "calendar_id": "default",
         },
     }
 
@@ -1483,6 +1455,7 @@ def test_native_percentile_and_median_aggregations_compile(package_config_factor
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.item_revenue_usd",
                     "aggregation": "median",
                 },
@@ -1495,6 +1468,7 @@ def test_native_percentile_and_median_aggregations_compile(package_config_factor
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.item_revenue_usd",
                     "aggregation": "percentile",
                     "parameters": {"p": 0.95},
@@ -1521,6 +1495,7 @@ def test_snowflake_percentile_uses_within_group_syntax(package_config_factory):
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.item_revenue_usd",
                     "aggregation": "percentile",
                     "parameters": {"p": 0.95},
@@ -1544,12 +1519,8 @@ def test_cumulative_metrics_reject_bounded_start_windows(runtime_factory):
     try:
         report = runtime.validate(
             {
-                "version": 1,
                 "select": [
-                    {
-                        "expression": {"metric": "metric.sales.cumulative_revenue"},
-                        "as": "cumulative_revenue",
-                    },
+                    "metric.sales.cumulative_revenue",
                 ],
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
@@ -1708,9 +1679,7 @@ def test_contextual_metric_predicates_support_coarser_ancestor_grains_and_reject
         )
         finer = runtime.validate(
             {
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "metric_filters": [
                     {
                         "expression": {
@@ -1731,9 +1700,7 @@ def test_contextual_metric_predicates_support_coarser_ancestor_grains_and_reject
         )
         misaligned = runtime.validate(
             {
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "metric_filters": [
                     {
                         "expression": {
@@ -1769,9 +1736,7 @@ def test_conversion_metrics_compile_with_supported_event_pair_semantics(runtime_
             {
                 "select": [
                     {
-                        "expression": {
-                            "metric": "metric.sales.session_to_order_conversion_rate_7d"
-                        },
+                        "expression": "metric.sales.session_to_order_conversion_rate_7d",
                         "as": "conversion_rate",
                     }
                 ],
@@ -1833,9 +1798,7 @@ def test_conversion_by_converted_side_product_type_uses_bound_denominator_policy
             {
                 "select": [
                     {
-                        "expression": {
-                            "metric": "metric.adoption.signup_to_send_conversion_rate_28d"
-                        },
+                        "expression": "metric.adoption.signup_to_send_conversion_rate_28d",
                         "as": "rate",
                     }
                 ],
@@ -1858,9 +1821,7 @@ def test_conversion_by_converted_side_product_type_uses_bound_denominator_policy
             {
                 "select": [
                     {
-                        "expression": {
-                            "metric": "metric.adoption.signup_to_send_conversion_rate_28d"
-                        },
+                        "expression": "metric.adoption.signup_to_send_conversion_rate_28d",
                         "as": "rate",
                     }
                 ],
@@ -1870,8 +1831,8 @@ def test_conversion_by_converted_side_product_type_uses_bound_denominator_policy
                     "grain": "month",
                 },
                 "order_by": [
-                    {"field": "time", "direction": "ASC"},
-                    {"field": "dimension.jaffle_product_type", "direction": "ASC"},
+                    {"field": "period", "direction": "asc"},
+                    {"field": "dimension.jaffle_product_type", "direction": "asc"},
                 ],
             }
         )
@@ -1941,9 +1902,7 @@ def test_same_store_conversion_with_mismatched_time_block_fails_validate(runtime
             {
                 "select": [
                     {
-                        "expression": {
-                            "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-                        },
+                        "expression": "metric.sales.session_to_order_conversion_rate_7d_same_store",
                         "as": "rate",
                     }
                 ],
@@ -1967,9 +1926,7 @@ def test_same_store_conversion_with_mismatched_time_block_fails_validate(runtime
                 {
                     "select": [
                         {
-                            "expression": {
-                                "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-                            },
+                            "expression": "metric.sales.session_to_order_conversion_rate_7d_same_store",
                             "as": "rate",
                         }
                     ],
@@ -1997,9 +1954,7 @@ def test_same_store_conversion_with_anchor_aligned_time_block_executes(runtime_f
         payload = {
             "select": [
                 {
-                    "expression": {
-                        "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-                    },
+                    "expression": "metric.sales.session_to_order_conversion_rate_7d_same_store",
                     "as": "rate",
                 }
             ],
@@ -2023,7 +1978,7 @@ def test_session_to_order_conversion_rate_corpus_case_still_compiles(runtime_fac
         payload = {
             "select": [
                 {
-                    "expression": {"metric": "metric.sales.session_to_order_conversion_rate_7d"},
+                    "expression": "metric.sales.session_to_order_conversion_rate_7d",
                     "as": "conversion_rate",
                 }
             ],
@@ -2041,7 +1996,7 @@ def _predicate_filter_query(*, predicate: dict, **extra) -> dict:
     """Build a runtime.validate payload that exercises a metric_predicate
     via the metric_filters path on top of a simple order_count select."""
     payload: dict = {
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
         "metric_filters": [{"expression": predicate, "op": "=", "value": True}],
     }
     payload.update(extra)
@@ -2191,9 +2146,7 @@ def test_out_of_scope_question_with_enforce_scope_raises_out_of_scope(runtime_fa
     try:
         report = runtime.validate(
             {
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}
-                ],
+                "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
                 "enforce_scope": True,
                 "question": "Why did revenue decline last quarter?",
             }
@@ -2213,7 +2166,6 @@ def test_anchored_ratio_refuses_a_threshold_that_zero_satisfies(package_config_f
         "aggregation": "sum",
     }
     query = {
-        "version": 1,
         "select": [
             {
                 "as": "inventory_from_idle_stores_share",

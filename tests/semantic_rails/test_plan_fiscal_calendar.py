@@ -343,7 +343,7 @@ def test_the_fiscal_gap_reads_the_drafted_query(
     group_by: list[str],
     gap: bool,
 ) -> None:
-    query: dict[str, Any] = {"version": 1, "select": [REVENUE], "group_by": group_by}
+    query: dict[str, Any] = {"select": [REVENUE], "group_by": group_by}
     if time is not None:
         query["time"] = time
     why = intent_faithfulness_why(

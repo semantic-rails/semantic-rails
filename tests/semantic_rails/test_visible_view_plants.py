@@ -155,7 +155,7 @@ def _calls(config: PackageConfig, hidden: frozenset[str]) -> dict[str, Callable[
         if row.id not in hidden and row.kind not in {"conversion", "ratio"}
     )
     measure = next(row.id for row in config.measures if row.id not in hidden)
-    query = {"select": [{"expression": {"metric": metric}, "as": "value"}]}
+    query = {"select": [{"expression": metric, "as": "value"}]}
     calls: dict[str, Callable[[Runtime], Any]] = {}
 
     def mcp(tool: str, **arguments: Any) -> Callable[[Runtime], Any]:
@@ -260,7 +260,7 @@ def test_no_planted_slot_reaches_a_caller(package, action, target, mode):
             tagged = next(
                 row.id for row in planted.measures if row.id not in hidden and row.meta.get("mnpi")
             )
-            query = {"select": [{"expression": {"measure": tagged}, "as": "value"}]}
+            query = {"select": [{"expression": tagged, "as": "value"}]}
             mine = runtime.query({**query, "policy_context": CALLER})
             theirs = base_runtime.query({**query, "policy_context": CALLER})
             assert mine["rows"] == theirs["rows"]

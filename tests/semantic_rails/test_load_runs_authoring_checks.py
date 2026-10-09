@@ -648,7 +648,6 @@ def _assert_monthly_max_from_rollup(source: Path, measure: str) -> None:
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {

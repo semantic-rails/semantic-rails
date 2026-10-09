@@ -358,7 +358,7 @@ def test_stock_upgrade_matches_weekly_reference_sql(tmp_path, inherited):
         reference = conn.execute(answer["reference_sql"]).fetchall()
     actual = sorted(
         (
-            datetime.fromisoformat(str(r["temporal_role.shop_account_day_snapshot_day__week"])),
+            datetime.fromisoformat(str(r["period"])),
             r["seats"],
         )
         for r in rows

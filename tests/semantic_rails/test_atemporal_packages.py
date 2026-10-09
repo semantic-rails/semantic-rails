@@ -141,7 +141,6 @@ def test_validate_and_check_package_without_dates(package_path: Path) -> None:
 )
 def test_non_time_answers_match_independent_sql(runtime, expression, group_by, where, sql) -> None:
     query = {
-        "version": 1,
         "select": [{"expression": expression, "as": "value"}],
         "group_by": group_by,
         "where": where,
@@ -707,7 +706,6 @@ def test_scalar_date_arithmetic_without_time_matches_independent_sql(runtime) ->
         "date": column("delivery_date"),
     }
     query = {
-        "version": 1,
         "select": [
             {
                 "expression": {
@@ -844,7 +842,7 @@ def test_normalized_time_expressions_refuse(runtime, variant: str, operation: st
 
 def test_plan_partial_time_refuses_before_it_can_be_dropped(runtime) -> None:
     with pytest.raises(SemanticLayerError, match="declares no time"):
-        plan_payload(runtime, intent="item count", partial_query={"time": {}})
+        plan_payload(runtime, intent="item count", partial_query={})
 
 
 def test_catalog_inspect_and_builder_without_dates(runtime) -> None:
@@ -896,7 +894,7 @@ def test_scaffold_whitespace_time_column_is_absent(data) -> None:
 
 @pytest.mark.parametrize("operation", ["inspect", "build-options", "discover", "valid-values"])
 def test_metadata_partial_time_refuses(runtime, operation) -> None:
-    query = {"time": {}}
+    query = {}
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
         if operation == "inspect":
             inspect_payload(runtime, object_id=COUNT, partial_query=query)

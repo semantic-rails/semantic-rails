@@ -308,7 +308,7 @@ def test_compat_sql_never_touches_string_literals():
 
 
 def test_safe_field_name_is_deterministic_and_bounded():
-    name = "temporal_role.jaffle_order_time__month"
+    name = "period"
     safe = _safe_field_name(name)
     assert safe == _safe_field_name(name)
     assert re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", safe)

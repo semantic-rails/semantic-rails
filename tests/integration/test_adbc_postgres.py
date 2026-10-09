@@ -187,7 +187,6 @@ def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
         with pytest.raises(SemanticLayerError) as caught:
             runtime.query(
                 {
-                    "version": 1,
                     "select": [
                         {
                             "expression": {
@@ -199,7 +198,7 @@ def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
                         }
                     ],
                     "group_by": ["dimension.rf_order_order_ref"],
-                    "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "ASC"}],
+                    "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "asc"}],
                 }
             )
         assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
@@ -266,7 +265,6 @@ def test_postgres_runtime_interval_row_encodes_identically_to_duckdb(adbc, tmp_p
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {

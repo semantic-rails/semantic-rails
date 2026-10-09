@@ -412,8 +412,7 @@ def test_constrained_probe_preserves_denials_and_policy_scope(tmp_path, constrai
         policy["roles"] = ["analyst"]
     _write_yaml(package_dir / "policies.yml", {"semantic_policies": policies})
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.demo.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.demo.order_count", "as": "orders"}],
     }
     if denial == "grouping" and constraint == "required_where":
         query["group_by"] = [field]
@@ -708,10 +707,7 @@ def test_runtime_from_path_prefers_package_relative_assets_for_external_packages
     try:
         result = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "limit": 0,
             }
         )
@@ -2343,8 +2339,7 @@ def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str
     runtime = Runtime.from_path(str(package_dir))
     try:
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.row_count"}, "as": "rows"}],
+            "select": [{"expression": "measure.jaffle.row_count", "as": "rows"}],
         }
         sql = runtime.compile(query)["rendered_sql"]
         assert "SUM(" in sql.upper(), sql
@@ -2352,8 +2347,7 @@ def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str
         result = runtime.query(query)
         expected = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "rows"}],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "rows"}],
             }
         )
         assert typed_rows(result) == typed_rows(expected)

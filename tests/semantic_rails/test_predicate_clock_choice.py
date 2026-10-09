@@ -74,7 +74,7 @@ def test_conversion_predicate_window_filters_only_base_events_matches_reference(
         rows = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
         assert [
             (
-                row["temporal_role.jaffle_session_started_at__month"],
+                row["period"],
                 row["dimension.jaffle_store_name"],
                 row["signup_to_send_28d"],
             )
@@ -225,7 +225,7 @@ def warehouse(tmp_path):
 
 def _query(input_=None, alignment="query_window"):
     return {
-        "select": [{"expression": {"measure": "measure.clocks.customers"}, "as": "n"}],
+        "select": [{"expression": "measure.clocks.customers", "as": "n"}],
         "group_by": ["dimension.clocks_customer_customer_id"],
         "time": {"temporal_role": SIGNED_UP, "start": "2025-01-01", "end": "2025-02-01"},
         "metric_filters": [

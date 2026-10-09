@@ -429,7 +429,7 @@ def test_a_nested_call_never_widens_the_pinned_view(runtimes, monkeypatch):
     runtime = runtimes(visibility_policy("visible_only", REVENUE))
     spy = _Spy()
     monkeypatch.setattr(runtime, "_get_adapter", spy)
-    query = {"select": [{"expression": {"measure": REVENUE}, "as": "revenue"}]}
+    query = {"select": [{"expression": REVENUE, "as": "revenue"}]}
 
     @runtime_request_scope
     def outer(runtime: Runtime, *, policy_context: dict[str, Any]) -> dict[str, Any]:
@@ -490,7 +490,7 @@ def test_a_hidden_row_kept_by_mistake_is_refused_after_binding(package, monkeypa
 
     monkeypatch.setattr(visible_view, "build_view", leaky)
     query = {
-        "select": [{"expression": {"measure": REVENUE}, "as": "revenue"}],
+        "select": [{"expression": REVENUE, "as": "revenue"}],
         "policy_context": CALLER,
     }
     try:
@@ -1272,7 +1272,7 @@ def test_hidden_prose_never_removes_validity_or_discontinuities(package, action,
     config = with_policies(config, visibility_policy(action, REVENUE))
     runtime = Runtime.from_config(config, source_path=str(root))
     query = {
-        "select": [{"expression": {"measure": ORDERS}, "as": "value"}],
+        "select": [{"expression": ORDERS, "as": "value"}],
         "time": {
             "temporal_role": "temporal_role.jaffle_order_time",
             "start": "2019-01-01",

@@ -124,9 +124,9 @@ def test_distribution_entity_only_input_predicate_keeps_its_own_clock():
                             "predicates": [
                                 {
                                     "entity": "entity.shop_customer",
-                                    "scope_mode": "entity_only",
+                                    "over": "all_time",
                                     "measure": "measure.shop.signup_count",
-                                    "op": ">=",
+                                    "op": "gte",
                                     "value": 1,
                                 }
                             ],

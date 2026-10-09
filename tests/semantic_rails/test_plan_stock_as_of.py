@@ -272,7 +272,7 @@ def test_a_stock_read_through_a_metric_filter_or_a_nested_metric_is_held(
         expression=ArithmeticExpr("*", MetricRecipeRefExpr(metric.id), LiteralExpr(2)),
     )
     nested = replace(config, metric_recipes=[*config.metric_recipes, doubled])
-    query = {"select": [{"expression": {"metric": doubled.id}, "as": "v"}]}
+    query = {"select": [{"expression": doubled.id, "as": "v"}]}
     [gap] = time_checks._stock_as_of_gaps(nested, query)
     assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
     selected = {"select": [{"expression": {"metric": metric.id}, "as": "mrr"}]}
@@ -396,9 +396,15 @@ def test_a_direct_daily_stock_with_a_nonstock_predicate_is_unchanged(
                     "kind": "scoped_aggregate",
                     "measure": MEASURE,
                     "predicates": [
-                        {"measure": "measure.billing.account_count", "op": ">", "value": 0}
+                        {
+                            "measure": "measure.billing.account_count",
+                            "op": "gt",
+                            "value": 0,
+                            "over": "period",
+                        }
                     ],
-                }
+                },
+                "as": "expr_1",
             }
         ],
         "time": {"grain": "day"},

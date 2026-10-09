@@ -151,7 +151,7 @@ def _query(
     expression: dict[str, Any] = {"measure": f"measure.{NS}.{measure}"}
     if aggregation:
         expression["aggregation"] = aggregation
-    payload: dict[str, Any] = {"version": 1, "select": [{"expression": expression, "as": "v"}]}
+    payload: dict[str, Any] = {"select": [{"expression": expression, "as": "v"}]}
     if group_by:
         payload["group_by"] = group_by
     if where:

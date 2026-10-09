@@ -19,7 +19,6 @@ def test_validate_accepts_inline_percentile_threshold(runtime_factory):
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -54,7 +53,6 @@ def test_compile_emits_threshold_cte_and_cross_join(runtime_factory):
     try:
         result = runtime.compile(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -101,7 +99,6 @@ def test_inline_percentile_matches_two_step_pipeline_within_tolerance(runtime_fa
         # Step 1 (two-step): compute P90 of lifetime_spend across customers.
         p90_result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -112,6 +109,7 @@ def test_inline_percentile_matches_two_step_pipeline_within_tolerance(runtime_fa
                                 "kind": "entity_value",
                                 "entity": "entity.jaffle_customer",
                                 "input": {
+                                    "kind": "measure",
                                     "measure": "measure.jaffle.lifetime_spend_usd",
                                     "aggregation": "sum",
                                 },
@@ -129,7 +127,6 @@ def test_inline_percentile_matches_two_step_pipeline_within_tolerance(runtime_fa
         # Step 2 (two-step): revenue from customers whose lifetime_spend ≥ P90.
         two_step = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -157,7 +154,6 @@ def test_inline_percentile_matches_two_step_pipeline_within_tolerance(runtime_fa
         # Step 1+2 inline: same query in one shot.
         inline = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -203,7 +199,6 @@ def test_invalid_inline_threshold_p_outside_range_returns_structured_error(runti
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -243,7 +238,6 @@ def test_unsupported_threshold_kind_returns_structured_error(runtime_factory):
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {

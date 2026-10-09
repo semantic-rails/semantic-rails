@@ -49,10 +49,10 @@ def test_mcp_normalizes_policy_context_once_per_tool_call(runtime_factory, monke
 
 def _orders_by_store_query() -> dict:
     return {
-        "version": 1,
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.order_count",
                     "aggregation": "count_distinct",
                 },
@@ -528,7 +528,7 @@ def test_mcp_jsonrpc_error_envelope_includes_recovery_hints_for_policy_context(r
                     "name": "execute",
                     "arguments": {
                         "mode": "validate",
-                        "query": {"version": 1, "select": []},
+                        "query": {"select": []},
                         "policy_context": "prod",
                     },
                 },

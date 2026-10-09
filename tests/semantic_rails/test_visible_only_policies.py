@@ -506,7 +506,7 @@ def test_a_segment_over_revenue_is_refused_outside_finance(engine, operation, na
 
 
 def test_unrelated_objects_stay_queryable(engine):
-    query = {"select": [{"expression": {"metric": CUSTOMERS}, "as": "customers"}]}
+    query = {"select": [{"expression": CUSTOMERS, "as": "customers"}]}
     for context, _ in CONTEXTS.values():
         assert engine.query(_with(query, context))["rows"]
 
@@ -623,7 +623,7 @@ def test_the_query_gate_reads_every_bound_object_not_policy_matches(engine, monk
     """Forcing the per-policy effects to report nothing still refuses a restricted read: the
     caller's view has no such object to bind."""
     monkeypatch.setattr("semantic_rails.policies.query_policy_effects", lambda *a, **k: [])
-    query = {"select": [{"expression": {"metric": AOV}, "as": "aov"}]}
+    query = {"select": [{"expression": AOV, "as": "aov"}]}
     codes = {code for code, _, _ in _refusals(engine, _with(query, {"roles": ["support"]}))}
     assert codes == {"OBJECT_NOT_FOUND"}
     assert enforce_query_policies(engine.package_config, [AOV], roles=["finance"]) == []

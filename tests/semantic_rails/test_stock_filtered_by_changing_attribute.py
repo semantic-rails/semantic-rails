@@ -204,7 +204,6 @@ def _query(
     **options: Any,
 ) -> list[tuple[Any, ...]]:
     query: dict[str, Any] = {
-        "version": 1,
         "select": [{"expression": expression or {"measure": f"measure.fees.{measure}"}, "as": "v"}],
         "group_by": list(group_by or []),
     }
@@ -418,7 +417,6 @@ def test_an_entity_set_share_reads_the_same_closing_snapshots(runtime: Runtime) 
         "time_alignment": "same_query_period",
     }
     query = {
-        "version": 1,
         "select": [
             {
                 "expression": {
@@ -614,14 +612,12 @@ def test_an_unknown_series_key_distinguishes_observed_and_missing_weeks(
         role = "temporal_role.shop_account_day_snapshot_day"
         result = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.seats"}, "as": "v"}],
+                "select": [{"expression": "measure.shop.seats", "as": "v"}],
                 "time": {
                     "temporal_role": role,
                     "grain": "week",
                     "start": "2024-01-01",
                     "end": "2024-01-22",
-                    "fill": True,
                 },
                 "where": [_is("dimension.shop_account_day_account_id", 999)],
                 "observation_scope": scope,

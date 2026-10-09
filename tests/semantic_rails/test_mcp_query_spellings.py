@@ -260,7 +260,7 @@ def test_unknown_list_dimension_is_actionable(adapter, mode, field):
         query = {
             "select": [],
             "group_by": [DIMENSION],
-            "where": [{"field": unknown, "op": "=", "value": "x"}],
+            "where": [{"field": unknown, "op": "is", "value": "x"}],
         }
     actual = adapter.call_tool("execute", {"mode": mode, "query": query})
     assert not actual["ok"], actual
@@ -305,8 +305,8 @@ def test_ambiguous_arithmetic_refuses(expr):
 def test_literals_and_predicate_values_are_unchanged():
     value = {"op": "eq", "kind": "arithmetic", "terms": [1, 2]}
     query = {
-        "where": [{"field": DIMENSION, "op": "=", "value": value}],
-        "select": [{"expression": {"kind": "literal", "value": value}}],
+        "where": [{"field": DIMENSION, "op": "is", "value": value}],
+        "select": [{"expression": {"kind": "literal", "value": value}, "as": "expr_1"}],
     }
     assert normalize_query_spellings(query, []) == query
 
@@ -328,7 +328,7 @@ def test_selected_dimension_custom_alias_refuses(adapter):
 
 
 def test_live_values_retry_keeps_filters_without_host_attributes(adapter):
-    query = {"where": [{"field": DIMENSION, "op": "is_not_null"}]}
+    query = {"where": [{"field": DIMENSION, "op": "missing", "value": False}]}
     out = adapter.call_tool(
         "valid-values",
         {"dimension_id": DIMENSION, "query": query},

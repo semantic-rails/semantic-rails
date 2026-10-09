@@ -106,7 +106,6 @@ def test_a_conversion_operand_keeps_its_own_clock_rules(package_config_factory):
         "matching_mode": "first_converted_after_base",
     }
     query = {
-        "version": 1,
         "select": [{"expression": conversion, "as": "conversion_rate"}],
         "time": {"temporal_role": _SESSION_TIME, "grain": "month"},
     }

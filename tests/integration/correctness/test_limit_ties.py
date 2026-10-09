@@ -96,7 +96,7 @@ def test_larger_tie_group_uses_nulls_last_and_an_observed_count(duckdb_backend, 
             }
         ],
         "group_by": ["dimension.shop_order_store_id"],
-        "order_by": [{"field": "score", "direction": "DESC"}],
+        "order_by": [{"field": "score", "direction": "desc"}],
         "limit": limit,
     }
     reference = duckdb_backend.reference(

@@ -32,10 +32,10 @@ from semantic_rails.mcp import (
 
 # Two-row query: jaffle_shop has more than two stores; limit pins rows=2.
 _TWO_ROW_QUERY: dict[str, Any] = {
-    "version": 1,
     "select": [
         {
             "expression": {
+                "kind": "measure",
                 "measure": "measure.jaffle.order_count",
                 "aggregation": "count_distinct",
             },
@@ -132,10 +132,9 @@ def test_error_envelopes_are_minimal_by_default(runtime_factory, mode: str) -> N
     grain through any execute mode must come back small, while
     still carrying the structured errors + recovery_hints contract."""
     bad_query = {
-        "version": 1,
         "select": [
             {
-                "expression": {"measure": "measure.jaffle.order_count"},
+                "expression": "measure.jaffle.order_count",
                 "as": "orders",
             }
         ],

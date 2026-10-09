@@ -170,7 +170,7 @@ def test_plan_validates_with_trusted_policy_despite_caller_spoofs(governed_app, 
     }
     if partial:
         arguments["query"] = {
-            "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}],
+            "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
             "policy_context": spoof,
         }
     status, plan = _call(governed_app, transport, "plan", arguments, key="test-plan-prod")

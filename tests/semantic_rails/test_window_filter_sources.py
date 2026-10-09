@@ -41,7 +41,6 @@ def _runtime(config, root):
 
 def _query(expression=HISTORY):
     return {
-        "version": 1,
         "select": [{"expression": deepcopy(expression), "as": "history"}],
         "time": {"temporal_role": ROLE, "grain": "month"},
     }

@@ -231,7 +231,7 @@ def test_a_conditional_aggregate_condition_is_never_an_allowed_field(config, mon
     Revenue does not read this customer key; its measure constraint leaves it a sibling."""
     query = {
         "select": [
-            {"expression": {"measure": REVENUE}, "as": "revenue"},
+            {"expression": REVENUE, "as": "revenue"},
             {"expression": CONDITIONAL, "as": "customers"},
         ]
     }

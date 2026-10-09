@@ -21,7 +21,6 @@ from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 
 QUERY = {
-    "version": 1,
     "select": [
         {"as": f"revenue_{i}", "expression": {"measure": f"measure.sales.revenue_{i}"}}
         for i in range(18)
@@ -45,8 +44,7 @@ def test_refused_run_never_advises_using_an_undelivered_answer(
 ) -> None:
     adapter = jaffle_adapter
     query = {
-        "version": 1,
-        "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+        "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
     }
     monkeypatch.setattr(
         adapter.runtime,
@@ -83,12 +81,11 @@ def test_large_rendered_sql_is_optional_only_for_a_run(
 ) -> None:
     adapter = jaffle_adapter
     query = {
-        "version": 1,
-        "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+        "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
         "where": [
             {
                 "field": "dimension.jaffle_order_customer_order_number",
-                "op": "in",
+                "op": "is",
                 "value": [1, *[10**15 + i for i in range(3000)]],
             }
         ],

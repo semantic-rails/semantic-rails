@@ -334,7 +334,7 @@ def test_denied_metric_does_not_hide_allowed_equivalent_or_measure(
             ({"metric": alias.id}, True),
             ({"measure": measure_id}, True),
         ):
-            query = {"version": 1, "select": [{"as": "value", "expression": expression}]}
+            query = {"select": [{"as": "value", "expression": expression}]}
             result = runtime.validate(query)
             assert result["ok"] is ok, result
             if not ok:

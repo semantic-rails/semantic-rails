@@ -91,6 +91,7 @@ def test_runtime_query_normalization_uses_typed_expressions():
             "select": [
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.order_count",
                         "aggregation": "count_distinct",
                     },

@@ -101,8 +101,7 @@ def _runtime(monkeypatch: pytest.MonkeyPatch, package_dir: Path) -> Runtime:
 
 def _metric_query(key: str, *, by_product_type: bool = False) -> dict[str, Any]:
     query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": "value", "expression": {"metric": f"metric.probe.{key}"}}],
+        "select": [{"as": "value", "expression": f"metric.probe.{key}"}],
     }
     if by_product_type:
         query["time"] = {"temporal_role": ORDER_TIME, "grain": "day"}
@@ -350,10 +349,9 @@ def test_prior_period_shorthand_resolves_a_short_measure_key_and_answers(
     runtime = _runtime(monkeypatch, package_dir)
     try:
         query = {
-            "version": 1,
             "select": [
-                {"as": "prior", "expression": {"metric": "metric.probe.last_month"}},
-                {"as": "current", "expression": {"metric": "metric.probe.this_month"}},
+                {"as": "prior", "expression": "metric.probe.last_month"},
+                {"as": "current", "expression": "metric.probe.this_month"},
             ],
             "time": {"temporal_role": ORDER_TIME, "grain": "month"},
         }

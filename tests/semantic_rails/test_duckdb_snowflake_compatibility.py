@@ -59,8 +59,7 @@ def _probe_queries(config):
         )
     for recipe in config.metric_recipes:
         query = {
-            "version": 1,
-            "select": [{"expression": {"metric": recipe.id}, "as": "probe_value"}],
+            "select": [{"expression": recipe.id, "as": "probe_value"}],
             "limit": 0,
         }
         if _requires_query_time(recipe.expression, config):
@@ -244,7 +243,7 @@ EDGE_CASE_QUERIES = {
             "end": "2016-09-03 00:00:00",
             "fill": True,
         },
-        "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+        "order_by": [{"field": "period", "direction": "ASC"}],
     },
     "rolling": {
         "version": 1,
@@ -265,7 +264,7 @@ EDGE_CASE_QUERIES = {
             "grain": "day",
             "end": "2016-09-03 00:00:00",
         },
-        "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+        "order_by": [{"field": "period", "direction": "ASC"}],
     },
     "prior_period_period_to_date": {
         "version": 1,
@@ -294,7 +293,7 @@ EDGE_CASE_QUERIES = {
             "grain": "month",
             "end": "2018-02-01 00:00:00",
         },
-        "order_by": [{"field": "temporal_role.jaffle_order_time__month", "direction": "ASC"}],
+        "order_by": [{"field": "period", "direction": "ASC"}],
     },
 }
 

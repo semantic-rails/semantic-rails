@@ -48,9 +48,8 @@ def test_cli_query_accepts_path_flag_for_unregistered_packages() -> None:
     package_path = REPO_ROOT / "configs" / "semantic_rails" / "jaffle_shop"
     assert package_path.is_dir(), f"missing jaffle_shop package: {package_path}"
     query = {
-        "version": 1,
         "select": [
-            {"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov_usd"},
+            "metric.sales.aov_usd",
         ],
         "time": {
             "temporal_role": "temporal_role.jaffle_order_time",
@@ -88,12 +87,11 @@ def test_cli_query_accepts_path_flag_for_unregistered_packages() -> None:
 
 def test_cli_query_response_detail_flags_keep_first_run_output_small() -> None:
     query = {
-        "version": 1,
         "select": [
-            {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue_usd"},
+            "measure.jaffle.revenue_usd",
         ],
         "group_by": ["dimension.jaffle_store_name"],
-        "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
+        "order_by": [{"field": "revenue_usd", "direction": "desc"}],
         "limit": 5,
     }
     payload = _run_cli(

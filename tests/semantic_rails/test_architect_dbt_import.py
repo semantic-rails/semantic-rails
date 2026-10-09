@@ -88,8 +88,7 @@ def test_mcp_session_imports_the_marts_as_a_joined_star(workspace: Path) -> None
     try:
         rows = engine.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+                "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
                 "group_by": ["dimension.shop_customer_customer_country"],
                 "order_by": [{"field": "dimension.shop_customer_customer_country"}],
                 "limit": 10,
@@ -155,10 +154,7 @@ def test_dbt_imported_special_measure_names_query_the_physical_column(
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": f"measure.shop.{measure_id}"}, "as": "actual"}
-                ],
+                "select": [{"expression": f"measure.shop.{measure_id}", "as": "actual"}],
                 "limit": 5,
             }
         )["rows"]
@@ -214,8 +210,7 @@ def test_facts_sharing_a_column_each_get_their_own_measure(
         rates = [
             runtime.query(
                 {
-                    "version": 1,
-                    "select": [{"expression": {"measure": f"measure.shop.{key}"}, "as": "rate"}],
+                    "select": [{"expression": f"measure.shop.{key}", "as": "rate"}],
                     "limit": 5,
                 }
             )["rows"]

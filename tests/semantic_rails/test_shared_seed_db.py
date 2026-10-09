@@ -24,10 +24,7 @@ def test_shared_seed_query_and_explicit_reseed(tmp_path):
     try:
         result = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             }
         )
         assert result["row_count"] > 0

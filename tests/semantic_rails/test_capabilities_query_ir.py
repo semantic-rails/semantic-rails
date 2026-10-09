@@ -36,8 +36,7 @@ def test_capabilities_advertise_only_query_ir_v1(runtime_factory, surface):
 
         report = runtime.validate(
             {
-                "version": 2,
-                "select": [{"expression": {"measure": "measure.jaffle.order_count"}}],
+                "select": ["measure.jaffle.order_count"],
             }
         )
         assert report["ok"] is False

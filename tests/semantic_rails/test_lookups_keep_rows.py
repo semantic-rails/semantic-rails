@@ -606,7 +606,7 @@ def test_filters_on_a_looked_up_field_follow_sql_null_rules_in_each_leaf(
 
 
 def test_a_dimension_only_query_lists_the_rows_with_no_match(runtime, gold):
-    rows = runtime.query({"version": 1, "group_by": [SEGMENT, COUNTRY]})["rows"]
+    rows = runtime.query({"group_by": [SEGMENT, COUNTRY]})["rows"]
 
     pairs = {(row[SEGMENT], row[COUNTRY]) for row in rows}
     customers = (
@@ -656,10 +656,9 @@ def test_a_distribution_reads_only_the_entities_its_lookups_find(runtime, gold, 
     if function == "median":
         assert alone == 11
     query = {
-        "version": 1,
         "select": [
             {"as": "value", "expression": _distribution(function)},
-            {"as": "amount", "expression": {"measure": "measure.geo.amount"}},
+            "measure.geo.amount",
         ],
         "group_by": [SEGMENT],
     }

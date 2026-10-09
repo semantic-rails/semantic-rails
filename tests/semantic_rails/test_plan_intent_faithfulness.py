@@ -301,7 +301,7 @@ def test_the_period_is_the_bucket_else_the_whole_window(
 
     role = "temporal_role.f4win_repo_snapshot_snapshot_date"
     query = {
-        "select": [{"expression": {"metric": "metric.f4win.unique_visitors_14d"}, "as": "v"}],
+        "select": [{"expression": "metric.f4win.unique_visitors_14d", "as": "v"}],
         "time": {"temporal_role": role, **time},
     }
     gaps = _subject_window_gaps(trailing_window_runtime.config, query)

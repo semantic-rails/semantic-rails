@@ -293,8 +293,7 @@ def _values(
     text = _path(project, key).read_text(encoding="utf-8")
     grain = max((unit for unit in units if f"unit: {unit}" in text), key=units.index, default="day")
     query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": "v", "expression": {"metric": f"metric.shop.{key}"}}],
+        "select": [{"as": "v", "expression": f"metric.shop.{key}"}],
     }
     if clock:
         query["time"] = {"temporal_role": clock, "grain": grain}

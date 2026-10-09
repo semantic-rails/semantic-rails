@@ -82,18 +82,16 @@ def _model(workspace: Path, model_id: str) -> dict[str, Any]:
 def _monthly_orders(workspace: Path) -> tuple[list[tuple[Any, Any]], str]:
     """Orders per month from December 2023 to April 2024, filled, and the SQL that filled them."""
     engine = Runtime.from_path(str(workspace / "shop"))
-    month = "temporal_role.shop_order_ordered_at__month"
+    month = "period"
     try:
         result = engine.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+                "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
                 "time": {
                     "temporal_role": "temporal_role.shop_order_ordered_at",
                     "grain": "month",
                     "start": "2023-12-01 00:00:00",
                     "end": "2024-05-01 00:00:00",
-                    "fill": True,
                 },
                 "order_by": [{"field": month}],
             }
@@ -213,22 +211,18 @@ def test_a_second_calendar_is_refused_in_this_release(workspace: Path) -> None:
     project = _project(workspace)
     assert project.upsert_model(**_calendar()).report["ok"] is True
     assert project.upsert_model(**_fiscal_calendar()).report["ok"] is True
-    month = "temporal_role.shop_order_ordered_at__month"
+    month = "period"
     engine = Runtime.from_path(str(workspace / "shop"))
     try:
         with pytest.raises(SemanticLayerError) as refused:
             engine.query(
                 {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}
-                    ],
+                    "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
                     "time": {
                         "temporal_role": "temporal_role.shop_order_ordered_at",
                         "grain": "month",
                         "start": "2024-01-06 00:00:00",
                         "end": "2024-04-06 00:00:00",
-                        "fill": True,
                         "calendar_id": "fiscal",
                     },
                     "order_by": [{"field": month}],

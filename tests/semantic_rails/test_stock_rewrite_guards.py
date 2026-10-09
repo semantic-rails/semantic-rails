@@ -74,7 +74,6 @@ def _payload(measure: str = "fee", *, placement: str = "where") -> dict[str, Any
     elif placement == "child_group":
         where = [attribute, {"child": "entity.fees_notice", "match": "any", "where": [child]}]
     return {
-        "version": 1,
         "select": [{"expression": expression, "as": "v"}],
         "where": where,
     }
@@ -146,8 +145,7 @@ def test_a_parent_lookup_source_refuses_stock_and_keeps_flow(package: Path, sour
     engine = Runtime.from_path(str(package))
     try:
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.fees.carried_fee"}, "as": "v"}],
+            "select": [{"expression": "measure.fees.carried_fee", "as": "v"}],
             "group_by": ["dimension.fees_notice_account_id"],
             "where": [_is(NOTICE_KIND, "renewal")],
         }
@@ -231,8 +229,7 @@ def test_bypassing_the_stock_lookup_source_check_refuses_at_sql_lowering(
     engine = Runtime.from_path(str(package))
     try:
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.fees.carried_fee"}, "as": "v"}],
+            "select": [{"expression": "measure.fees.carried_fee", "as": "v"}],
             "group_by": ["dimension.fees_notice_account_id"],
         }
         plan = plan_query(engine.config, None, query)

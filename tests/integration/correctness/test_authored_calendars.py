@@ -26,7 +26,6 @@ def _fiscal_orders(runtime):
 
 def _query(**time):
     return {
-        "version": 1,
         "select": [{"expression": ORDERS, "as": "orders"}, {"expression": REVENUE, "as": "rev"}],
         "time": {"temporal_role": ROLE, **WINDOW, **time},
     }

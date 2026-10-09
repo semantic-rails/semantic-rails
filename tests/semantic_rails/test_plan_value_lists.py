@@ -273,7 +273,7 @@ def test_caller_equality_outside_named_values_lowers_confidence(
         payload = plan_payload(
             runtime,
             intent=intent,
-            partial_query={"where": [{"field": STORE, "op": "=", "value": "Brooklyn"}]},
+            partial_query={"where": [{"field": STORE, "op": "is", "value": "Brooklyn"}]},
         )
     finally:
         runtime.close()
@@ -298,7 +298,7 @@ def test_invalid_caller_literal_cannot_bypass_inclusion_normalization(
         payload = plan_payload(
             runtime,
             intent=INTENT,
-            partial_query={"where": [{"field": STORE, "op": "=", "value": value}]},
+            partial_query={"where": [{"field": STORE, "op": "is", "value": value}]},
         )
     finally:
         runtime.close()
@@ -503,7 +503,7 @@ def test_merge_keeps_caller_rows_first_without_adding_grouping(caller_has_list) 
 
 
 def test_single_value_strips_field_without_changing_caller_operator() -> None:
-    query = {"where": [{"field": f" {STORE} ", "op": " == ", "value": "Brooklyn"}]}
+    query = {"where": [{"field": f" {STORE} ", "op": "is", "value": "Brooklyn"}]}
     before = deepcopy(query)
     normalized = _normalize_value_filters(query, [{"dimension_id": STORE, "value": "Brooklyn"}])
     assert query == before
@@ -660,7 +660,7 @@ def test_compound_discovery_keeps_each_named_value_and_its_span(runtime_factory,
     runtime = runtime_factory("jaffle_shop")
     intent = ("item revenue for " + ", ".join(values[:-1]) + " and " + values[-1]).lower()
     try:
-        query = {"select": [{"expression": {"measure": CHOICE["id"]}}]}
+        query = {"select": [CHOICE["id"]]}
         matched = _matched_value_rows(runtime, query, intent)
         assert {row["value"] for row in matched} == set(values)
         assert all(row["dimension_id"] == STORE for row in matched)

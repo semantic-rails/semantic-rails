@@ -83,7 +83,7 @@ def series(tmp_path_factory):
 
 def _query(kind, scope="dataset", **time):
     return {
-        "select": [{"expression": {"metric": f"metric.obs.filtered_{kind}"}, "as": "value"}],
+        "select": [{"expression": f"metric.obs.filtered_{kind}", "as": "value"}],
         "observation_scope": scope,
         "time": {"temporal_role": SOLD, "grain": "week", **time},
     }
@@ -362,7 +362,7 @@ def test_a_routed_series_warns_about_its_missing_months(tmp_path):
                                 "all": [
                                     {
                                         "field": "dimension.shop_order_store_id",
-                                        "op": "=",
+                                        "op": "is",
                                         "value": "b",
                                     }
                                 ]
@@ -381,7 +381,7 @@ def test_a_routed_series_warns_about_its_missing_months(tmp_path):
             w for w in response["warnings"] if w["code"] == "FILTERED_SERIES_BUCKETS_DROPPED"
         )
         assert warning["details"]["dropped_buckets"] == [
-            {"temporal_role.shop_order_ordered_at__month": f"{month}-01T00:00:00"}
+            {"period": f"{month}-01T00:00:00"}
             for month in ["2023-12", "2024-01", "2024-05", "2024-08"]
         ]
     finally:

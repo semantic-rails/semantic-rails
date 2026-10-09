@@ -224,13 +224,12 @@ model:
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
-                    {"expression": {"measure": "measure.subtypes.a_amount"}, "as": "a_total"},
-                    {"expression": {"measure": "measure.subtypes.b_amount"}, "as": "b_total"},
+                    {"expression": "measure.subtypes.a_amount", "as": "a_total"},
+                    {"expression": "measure.subtypes.b_amount", "as": "b_total"},
                 ],
                 "where": [
-                    {"field": "dimension.subtypes_amount_typ", "op": "in", "value": ["A", "B"]}
+                    {"field": "dimension.subtypes_amount_typ", "op": "is", "value": ["A", "B"]}
                 ],
             }
         )

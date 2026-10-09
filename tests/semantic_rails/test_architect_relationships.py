@@ -277,8 +277,7 @@ def test_mcp_session_relates_dbt_marts_and_queries_across_them(tmp_path):
     try:
         rows = engine.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+                "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
                 "group_by": ["dimension.shop_customer_customer_country"],
                 "order_by": [{"field": "dimension.shop_customer_customer_country"}],
                 "limit": 10,

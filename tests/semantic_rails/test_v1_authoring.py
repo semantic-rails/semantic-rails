@@ -1521,8 +1521,7 @@ def test_start_of_period_stock_sums_each_series_opening_balance(tmp_path: Path) 
         role = next(r.id for r in runtime.config.temporal_roles)
         result = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": balance}, "as": "v"}],
+                "select": [{"expression": balance, "as": "v"}],
                 "time": {"temporal_role": role, "grain": "month"},
             }
         )

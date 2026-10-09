@@ -292,10 +292,7 @@ def test_generated_bounded_draft_cannot_answer_all_time(subscriptions):
     from semantic_rails.planner.time_checks import _time_window_gaps
 
     query = {
-        "version": 1,
-        "select": [
-            {"as": "new_accounts", "expression": {"metric": "metric.subscriptions.new_accounts"}}
-        ],
+        "select": ["metric.subscriptions.new_accounts"],
         "time": {
             "temporal_role": "temporal_role.subscriptions_event_occurred_at",
             "grain": "month",
@@ -376,7 +373,7 @@ def test_excluded_period_never_becomes_a_positive_window(shop, phrase, start, en
         intent=intent,
         partial_query={
             "policy_context": SHOP_NOW,
-            "where": [{"field": "dimension.shop_customer_channel", "op": "!=", "value": "store"}],
+            "where": [{"field": "dimension.shop_customer_channel", "op": "not", "value": "store"}],
         },
     )
     assert plan["status"] == "low_confidence", plan

@@ -17,8 +17,7 @@ from semantic_rails.mcp_session import MCPQuerySession
 from semantic_rails.mcp_streamable_http import handle_streamable_http_request
 
 QUERY = {
-    "version": 1,
-    "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+    "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
 }
 
 

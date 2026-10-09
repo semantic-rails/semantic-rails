@@ -102,7 +102,7 @@ def _run(adapter: SemanticLayerMCPAdapter, expression: dict[str, Any], **extra: 
 )
 def test_matching_mode_error_is_recoverable_in_one_step(adapter, overrides, problem):
     sent = {**SESSION_TO_ORDER, **overrides}
-    query = {"version": 1, "select": [{"as": "v", "expression": sent}]}
+    query = {"select": [{"as": "v", "expression": sent}]}
     error = adapter.call_tool("execute", {"mode": "validate", "query": query})["errors"][0]
 
     assert error["code"] == "CONVERSION_MATCHING_MODE_REQUIRED"
@@ -120,7 +120,7 @@ def test_matching_mode_error_is_recoverable_in_one_step(adapter, overrides, prob
 @pytest.mark.parametrize("window", [{"minutes": 50}, {"unit": "minute", "value": 0}, 50])
 def test_window_error_names_the_units_and_shape(adapter, window):
     sent = {**SESSION_TO_ORDER, "window": window, "matching_mode": "first_converted_after_base"}
-    query = {"version": 1, "select": [{"as": "v", "expression": sent}]}
+    query = {"select": [{"as": "v", "expression": sent}]}
     error = adapter.call_tool("execute", {"mode": "validate", "query": query})["errors"][0]
 
     assert error["code"] == "CONVERSION_WINDOW_REQUIRED"

@@ -401,7 +401,13 @@ def test_qualification_requires_entity_keys_or_a_selected_key_count(
         query = {
             "group_by": [f"dimension.jaffle_{group}" for group in groups],
             "select": [
-                {"expression": {"measure": f"measure.jaffle.{measure}", "aggregation": aggregation}}
+                {
+                    "expression": {
+                        "kind": "measure",
+                        "measure": f"measure.jaffle.{measure}",
+                        "aggregation": aggregation,
+                    }
+                }
             ],
         }
         why = _qualifying_entity_why(runtime, intent, query)
@@ -512,9 +518,7 @@ def test_named_store_revenue_is_one_combined_monthly_series(
                 ).fetchall()
             )
         assert len(actual) == len(expected)
-        assert {
-            row["temporal_role.jaffle_order_time__month"]: row[alias] for row in actual
-        } == pytest.approx(expected)
+        assert {row["period"]: row[alias] for row in actual} == pytest.approx(expected)
     finally:
         runtime.close()
 
@@ -598,6 +602,7 @@ def test_selected_customer_count_does_not_prove_qualification_scope(
             {
                 "as": "qualified_customers",
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.customer_count",
                     "aggregation": "count_distinct",
                 },

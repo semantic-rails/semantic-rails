@@ -15,14 +15,13 @@ from tests.semantic_rails.conftest import copy_package_config
 PACKAGE_CASES = {
     "jaffle_shop": {
         "query": {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
-                {"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov_usd"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
+                "metric.sales.aov_usd",
             ],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "order_by": [{"field": "orders", "direction": "DESC"}],
+            "order_by": [{"field": "orders", "direction": "desc"}],
             "limit": 5,
         },
         "valid_values_dimension": "dimension.jaffle_store_name",
@@ -39,10 +38,9 @@ def test_customer_key_grouping_matches_reference_sql(tmp_path, temporal):
         if temporal
         else "dimension.jaffle_customer_id"
     )
-    month = "temporal_role.jaffle_order_time__month"
+    month = "period"
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
         "group_by": [dimension],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
     }
@@ -131,7 +129,7 @@ def test_distinct_value_queries_execute_on_real_data(runtime_factory):
         assert grouped_result["row_count"] > 0
         assert set(grouped_result["rows"][0].keys()) == {"dimension.jaffle_store_name"}
         assert time_only_result["row_count"] > 0
-        assert set(time_only_result["rows"][0].keys()) == {"temporal_role.jaffle_order_time__month"}
+        assert set(time_only_result["rows"][0].keys()) == {"period"}
         assert joined_filter_result["row_count"] > 0
         assert set(joined_filter_result["rows"][0].keys()) == {"dimension.jaffle_store_name"}
     finally:
@@ -353,24 +351,22 @@ def test_time_fill_returns_dense_daily_series(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
             ],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": "day",
                 "start": "2016-08-25 00:00:00",
                 "end": "2016-09-03 00:00:00",
-                "fill": True,
             },
-            "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
         }
 
         result = runtime.query(query)
 
         assert result["row_count"] == 9
-        assert result["rows"][0]["temporal_role.jaffle_order_time__day"] == "2016-08-25T00:00:00"
+        assert result["rows"][0]["period"] == "2016-08-25T00:00:00"
         # Orders are loaded from 2016-09-01: the days before have no data, not 0.
         assert [row["orders"] for row in result["rows"][:7]] == [None] * 7
         assert all(row["orders"] > 0 for row in result["rows"][7:])
@@ -382,21 +378,20 @@ def test_time_axis_queries_accept_order_by_time_alias(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": "month",
                 "start": "2017-01-01 00:00:00",
                 "end": "2017-04-01 00:00:00",
             },
-            "order_by": [{"field": "time", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
         }
 
         result = runtime.query(query)
 
         assert result["row_count"] > 0
-        assert "temporal_role.jaffle_order_time__month" in result["rows"][0]
+        assert "period" in result["rows"][0]
     finally:
         runtime.close()
 
@@ -405,9 +400,8 @@ def test_time_fill_supports_grouped_series(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
             ],
             "group_by": ["dimension.jaffle_store_name"],
             # Brooklyn opens on 2017-03-12, inside the loaded orders.
@@ -416,18 +410,17 @@ def test_time_fill_supports_grouped_series(runtime_factory):
                 "grain": "day",
                 "start": "2017-03-10 00:00:00",
                 "end": "2017-03-14 00:00:00",
-                "fill": True,
             },
             "order_by": [
-                {"field": "dimension.jaffle_store_name", "direction": "ASC"},
-                {"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"},
+                {"field": "dimension.jaffle_store_name", "direction": "asc"},
+                {"field": "period", "direction": "asc"},
             ],
         }
 
         result = runtime.query(query)
 
         brooklyn = {
-            row["temporal_role.jaffle_order_time__day"]: row["orders"]
+            row["period"]: row["orders"]
             for row in result["rows"]
             if row["dimension.jaffle_store_name"] == "Brooklyn"
         }
@@ -510,12 +503,11 @@ def test_rolling_query_uses_dense_calendar_backed_series(runtime_factory):
         # so the window function sees the full lookback, then bound the
         # output via `end` + `limit`.
         rolling_query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
                         "kind": "rolling",
-                        "input": {"measure": "measure.jaffle.order_count"},
+                        "input": "measure.jaffle.order_count",
                         "window": {"unit": "day", "value": 3},
                     },
                     "as": "orders_3d",
@@ -527,7 +519,7 @@ def test_rolling_query_uses_dense_calendar_backed_series(runtime_factory):
                 "end": "2016-09-03 00:00:00",
                 "fill": True,
             },
-            "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "DESC"}],
+            "order_by": [{"field": "period", "direction": "desc"}],
             "limit": 9,
         }
 
@@ -558,10 +550,9 @@ def test_rolling_with_bounded_start_is_rejected(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         rolling_query = {
-            "version": 1,
             "select": [
                 {
-                    "expression": {"metric": "metric.sales.rolling_7d_revenue_direct"},
+                    "expression": "metric.sales.rolling_7d_revenue_direct",
                     "as": "v",
                 },
             ],
@@ -571,7 +562,7 @@ def test_rolling_with_bounded_start_is_rejected(runtime_factory):
                 "start": "2017-01-08",
                 "end": "2017-01-15",
             },
-            "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
         }
         with pytest.raises(SemanticLayerError) as excinfo:
             runtime.query(rolling_query)
@@ -579,10 +570,9 @@ def test_rolling_with_bounded_start_is_rejected(runtime_factory):
 
         # Same shape but for kind: prior_period
         prior_period_query = {
-            "version": 1,
             "select": [
                 {
-                    "expression": {"metric": "metric.sales.prior_week_revenue_direct"},
+                    "expression": "metric.sales.prior_week_revenue_direct",
                     "as": "v",
                 },
             ],
@@ -598,10 +588,9 @@ def test_rolling_with_bounded_start_is_rejected(runtime_factory):
 
         # Same shape but for kind: period_to_date
         ptd_query = {
-            "version": 1,
             "select": [
                 {
-                    "expression": {"metric": "metric.sales.revenue_mtd_direct"},
+                    "expression": "metric.sales.revenue_mtd_direct",
                     "as": "v",
                 },
             ],
@@ -617,10 +606,9 @@ def test_rolling_with_bounded_start_is_rejected(runtime_factory):
 
         # Derived metric containing prior_period (month-over-month growth)
         derived_query = {
-            "version": 1,
             "select": [
                 {
-                    "expression": {"metric": "metric.sales.month_over_month_revenue_growth"},
+                    "expression": "metric.sales.month_over_month_revenue_growth",
                     "as": "mom",
                 },
             ],
@@ -643,12 +631,11 @@ def test_grouped_rolling_respects_partitions_with_fill(runtime_factory):
         # Bounded `start` is rejected (CRITICAL #1) — keep only `end`
         # so the window function sees the full lookback.
         rolling_query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
                         "kind": "rolling",
-                        "input": {"measure": "measure.jaffle.order_count"},
+                        "input": "measure.jaffle.order_count",
                         "window": {"unit": "day", "value": 2},
                     },
                     "as": "orders_2d",
@@ -662,8 +649,8 @@ def test_grouped_rolling_respects_partitions_with_fill(runtime_factory):
                 "fill": True,
             },
             "order_by": [
-                {"field": "dimension.jaffle_store_name", "direction": "ASC"},
-                {"field": "temporal_role.jaffle_order_time__day", "direction": "DESC"},
+                {"field": "dimension.jaffle_store_name", "direction": "asc"},
+                {"field": "period", "direction": "desc"},
             ],
             "limit": 50,
         }
@@ -716,13 +703,12 @@ def test_prior_period_and_period_to_date_semantics_execute(runtime_factory):
         # Bounded `start` is rejected for windowed kinds (CRITICAL #1).
         # Use only `end` so the window function sees the full lookback.
         query = {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
                 {
                     "expression": {
                         "kind": "prior_period",
-                        "input": {"measure": "measure.jaffle.order_count"},
+                        "input": "measure.jaffle.order_count",
                         "offset": {"unit": "month", "value": 1},
                     },
                     "as": "orders_prior_month",
@@ -730,7 +716,7 @@ def test_prior_period_and_period_to_date_semantics_execute(runtime_factory):
                 {
                     "expression": {
                         "kind": "period_to_date",
-                        "input": {"measure": "measure.jaffle.order_count"},
+                        "input": "measure.jaffle.order_count",
                         "period": "quarter",
                     },
                     "as": "orders_qtd",
@@ -741,7 +727,7 @@ def test_prior_period_and_period_to_date_semantics_execute(runtime_factory):
                 "grain": "month",
                 "end": "2018-02-01 00:00:00",
             },
-            "order_by": [{"field": "temporal_role.jaffle_order_time__month", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
         }
 
         result = runtime.query(query)
@@ -750,7 +736,7 @@ def test_prior_period_and_period_to_date_semantics_execute(runtime_factory):
         previous_quarter = None
         previous_orders = None
         for row in result["rows"]:
-            month = datetime.fromisoformat(row["temporal_role.jaffle_order_time__month"])
+            month = datetime.fromisoformat(row["period"])
             quarter_key = (month.year, (month.month - 1) // 3)
             if quarter_key != previous_quarter:
                 expected_qtd = row["orders"]
@@ -843,7 +829,7 @@ def test_published_time_semantic_and_snapshot_metrics_execute(runtime_factory):
         assert jaffle_monthly_result["row_count"] > 0
         assert "month_over_month_revenue_growth" in jaffle_monthly_result["rows"][0]
         assert jaffle_quarter_year_result["row_count"] > 0
-        assert "temporal_role.jaffle_order_time__quarter" in jaffle_quarter_year_result["rows"][0]
+        assert "period" in jaffle_quarter_year_result["rows"][0]
         assert jaffle_median_result["row_count"] > 0
         assert "median_item_revenue" in jaffle_median_result["rows"][0]
         assert jaffle_percentile_result["row_count"] > 0
@@ -895,10 +881,9 @@ def test_average_customer_lifetime_value_is_mean_not_ratio(runtime_factory, pack
 
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "version": 1,
         "select": [
             {
-                "expression": {"metric": "metric.sales.average_customer_lifetime_value"},
+                "expression": "metric.sales.average_customer_lifetime_value",
                 "as": "avg_clv",
             },
         ],
@@ -918,10 +903,10 @@ def test_average_customer_lifetime_value_is_mean_not_ratio(runtime_factory, pack
         # don't depend on any other metric.
         avg_result = runtime.query(query)
         sum_ratio_query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.lifetime_spend_usd",
                         "aggregation": "sum",
                     },
@@ -929,6 +914,7 @@ def test_average_customer_lifetime_value_is_mean_not_ratio(runtime_factory, pack
                 },
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.lifetime_order_count",
                         "aggregation": "sum",
                     },
@@ -1083,68 +1069,47 @@ def test_metric_predicate_metrics_and_conversion_execute(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         predicate_query = {
-            "version": 1,
             "select": [
-                {
-                    "expression": {"metric": "metric.sales.repeat_customer_orders"},
-                    "as": "repeat_customer_orders",
-                },
-                {
-                    "expression": {"metric": "metric.sales.high_value_customer_orders"},
-                    "as": "high_value_customer_orders",
-                },
+                "metric.sales.repeat_customer_orders",
+                "metric.sales.high_value_customer_orders",
             ],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 10,
         }
         query_time_lifetime_predicate = {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
             ],
             "group_by": ["dimension.jaffle_store_name"],
-            "metric_filters": [
+            "where": [
                 {
-                    "expression": {
-                        "kind": "metric_predicate",
-                        "entity": "entity.jaffle_customer",
-                        "scope_mode": "entity_only",
-                        "input": {"measure": "measure.jaffle.lifetime_order_count"},
-                        "op": ">",
-                        "value": 1,
-                    },
-                    "op": "=",
-                    "value": True,
+                    "entity": "entity.jaffle_customer",
+                    "having": [
+                        {"field": "measure.jaffle.lifetime_order_count", "op": "gt", "value": 1}
+                    ],
+                    "over": "all_time",
                 }
             ],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 10,
         }
         contextual_query_time_predicate = {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
             ],
             "group_by": ["dimension.jaffle_store_name"],
-            "metric_filters": [
+            "where": [
                 {
-                    "expression": {
-                        "kind": "metric_predicate",
-                        "entity": "entity.jaffle_customer",
-                        "input": {"measure": "measure.jaffle.order_count"},
-                        "op": ">",
-                        "value": 10,
-                    },
-                    "op": "=",
-                    "value": True,
+                    "entity": "entity.jaffle_customer",
+                    "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
+                    "over": "period",
                 }
             ],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 50,
         }
         contextual_metric_query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
@@ -1153,10 +1118,11 @@ def test_metric_predicate_metrics_and_conversion_execute(runtime_factory):
                         "aggregation": "count_distinct",
                         "predicates": [
                             {
-                                "input": {"measure": "measure.jaffle.order_count"},
+                                "input": "measure.jaffle.order_count",
                                 "entity": "entity.jaffle_customer",
-                                "op": ">",
+                                "op": "gt",
                                 "value": 10,
+                                "over": "period",
                             }
                         ],
                     },
@@ -1217,7 +1183,6 @@ def test_metric_predicate_metrics_and_conversion_execute(runtime_factory):
             "limit": 10,
         }
         daily_query_on_month_metric = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
@@ -1238,14 +1203,13 @@ def test_metric_predicate_metrics_and_conversion_execute(runtime_factory):
                 }
             ],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
-            "order_by": [{"field": "time", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10,
         }
         conversion_query = {
-            "version": 1,
             "select": [
                 {
-                    "expression": {"metric": "metric.sales.session_to_order_conversion_rate_7d"},
+                    "expression": "metric.sales.session_to_order_conversion_rate_7d",
                     "as": "conversion_rate",
                 },
             ],
@@ -1260,12 +1224,9 @@ def test_metric_predicate_metrics_and_conversion_execute(runtime_factory):
         daily_monthly_contextual_metric_result = runtime.query(daily_monthly_contextual_metric)
         daily_query_on_month_metric_result = runtime.query(daily_query_on_month_metric)
         same_store_conversion_query = {
-            "version": 1,
             "select": [
                 {
-                    "expression": {
-                        "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-                    },
+                    "expression": "metric.sales.session_to_order_conversion_rate_7d_same_store",
                     "as": "same_store_conversion_rate",
                 },
             ],
@@ -1296,13 +1257,13 @@ def test_metric_predicate_metrics_and_conversion_execute(runtime_factory):
             contextual_query_time_predicate_result["rows"],
             key=lambda row: (
                 row["dimension.jaffle_store_name"],
-                row["temporal_role.jaffle_order_time__month"],
+                row["period"],
             ),
         ) == sorted(
             contextual_metric_result["rows"],
             key=lambda row: (
                 row["dimension.jaffle_store_name"],
-                row["temporal_role.jaffle_order_time__month"],
+                row["period"],
             ),
         )
         assert conversion_result["row_count"] > 0
@@ -1326,14 +1287,13 @@ def test_metric_filter_zero_count_returns_orders_with_no_items(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         zero_items_query = {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
             ],
-            "metric_filters": [
+            "having": [
                 {
-                    "expression": {"measure": "measure.jaffle.item_count"},
-                    "op": "=",
+                    "field": "measure.jaffle.item_count",
+                    "op": "is",
                     "value": 0,
                 }
             ],
@@ -1384,10 +1344,9 @@ def test_order_lifecycle_covers_full_order_date_range(runtime_factory):
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"measure": "measure.jaffle.delivered_revenue_usd"},
+                        "expression": "measure.jaffle.delivered_revenue_usd",
                         "as": "delivered_revenue",
                     },
                 ],
@@ -1414,10 +1373,10 @@ def test_dense_fill_does_not_fabricate_zeros_for_non_additive_measures(runtime_f
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.lifetime_spend_before_tax_usd",
                         "aggregation": "min",
                     },
@@ -1425,6 +1384,7 @@ def test_dense_fill_does_not_fabricate_zeros_for_non_additive_measures(runtime_f
                 },
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.lifetime_order_count",
                         "aggregation": "sum",
                     },
@@ -1437,7 +1397,6 @@ def test_dense_fill_does_not_fabricate_zeros_for_non_additive_measures(runtime_f
                 "grain": "day",
                 "start": "2016-10-01 00:00:00",
                 "end": "2016-10-15 00:00:00",
-                "fill": True,
             },
         }
 
@@ -1468,15 +1427,13 @@ def test_dense_fill_still_zero_fills_additive_measures(runtime_factory):
     try:
         # Brooklyn opens in March 2017, so it has no orders in the loaded January and February.
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-            "where": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+            "where": [{"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": "month",
                 "start": "2017-01-01 00:00:00",
                 "end": "2017-05-01 00:00:00",
-                "fill": True,
             },
         }
 

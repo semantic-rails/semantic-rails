@@ -158,7 +158,6 @@ def _query(
     if aggregation:
         expression["aggregation"] = aggregation
     query: dict[str, Any] = {
-        "version": 1,
         "select": [{"expression": expression, "as": "v"}],
         "group_by": group_by,
     }

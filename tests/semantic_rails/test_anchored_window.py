@@ -17,7 +17,6 @@ def test_validate_accepts_canonical_anchor_window_shape(runtime_factory):
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -91,7 +90,6 @@ def test_validate_rejects_invalid_anchor_window(
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [{"expression": expression, "as": "rev"}],
             }
         )
@@ -108,7 +106,6 @@ def test_validate_rejects_unknown_anchor_role(runtime_factory):
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -146,7 +143,6 @@ def test_scoped_aggregate_without_anchor_window_still_works(runtime_factory):
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {

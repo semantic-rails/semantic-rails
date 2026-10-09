@@ -199,7 +199,8 @@ def test_today_is_held_where_the_roles_zone_reads_another_day(
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts today",
-        partial_query={"policy_context": {"now": "2026-10-05T01:00:00Z"}},
+        partial_query={},
+        now="2026-10-05T01:00:00Z",
     )
     _assert_zone_hold(plan, ["today"])
     details = plan["why"]["details"]
@@ -210,7 +211,8 @@ def test_today_executes_where_both_zones_read_the_same_day(local_subscriptions: 
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts today",
-        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
+        partial_query={},
+        now="2026-10-05T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
@@ -236,7 +238,10 @@ def test_orders_windows_are_held_where_the_roles_zone_reads_other_days(
     local_orders: Runtime, phrase: str, now: str
 ) -> None:
     plan = plan_payload(
-        local_orders, intent=f"orders {phrase}", partial_query={"policy_context": {"now": now}}
+        local_orders,
+        intent=f"orders {phrase}",
+        partial_query={},
+        now=now,
     )
     _assert_zone_hold(plan, [phrase])
 
@@ -255,7 +260,10 @@ def test_orders_windows_run_as_returned_where_both_zones_agree(
     local_orders: Runtime, phrase: str, now: str, start: str, end: str
 ) -> None:
     plan = plan_payload(
-        local_orders, intent=f"orders {phrase}", partial_query={"policy_context": {"now": now}}
+        local_orders,
+        intent=f"orders {phrase}",
+        partial_query={},
+        now=now,
     )
     assert plan["status"] == "ok", plan.get("why")
     # The returned query runs without the caller's clock.
@@ -276,7 +284,8 @@ def test_a_period_comparison_is_held_where_the_roles_zone_reads_another_year(
     plan = plan_payload(
         local_orders,
         intent="monthly revenue this year compared to last year",
-        partial_query={"policy_context": {"now": "2027-01-01T02:00:00Z"}},
+        partial_query={},
+        now="2027-01-01T02:00:00Z",
     )
     _assert_zone_hold(plan, ["this year"])
     # No query is returned, so there are no rows to filter.
@@ -287,7 +296,8 @@ def test_a_period_comparison_drops_its_start_where_both_zones_agree(local_orders
     plan = plan_payload(
         local_orders,
         intent="monthly revenue this year compared to last year",
-        partial_query={"policy_context": {"now": "2026-07-01T12:00:00Z"}},
+        partial_query={},
+        now="2026-07-01T12:00:00Z",
     )
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "TIME_WINDOW_START_DROPPED", plan.get("why")
@@ -331,9 +341,9 @@ def test_a_caller_window_must_agree_in_the_planning_zone_and_utc(
         subscriptions,
         intent="new accounts today",
         partial_query={
-            "policy_context": {"now": "2026-10-05T16:00:00Z"},
             "time": {"start": start, "end": end},
         },
+        now="2026-10-05T16:00:00Z",
     )
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
@@ -355,9 +365,9 @@ def test_a_callers_range_is_held_where_the_roles_zone_reads_other_days(
         subscriptions,
         intent="monthly new accounts last month",
         partial_query={
-            "policy_context": {"now": "2026-10-01T16:00:00Z"},
-            "time": {"range": {"last": {"unit": "day", "value": 30}}},
+            "time": {"last": {"unit": "day", "value": 30}},
         },
+        now="2026-10-01T16:00:00Z",
     )
     _assert_zone_hold(plan, ["last month"])
 
@@ -505,7 +515,8 @@ def test_a_window_every_leg_reads_on_the_same_days_executes(shop: Runtime) -> No
     plan = plan_payload(
         shop,
         intent="purchase rate yesterday",
-        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
+        partial_query={},
+        now="2026-10-05T12:00:00Z",
     )
     # Each leg is read on its own local day.
     reference = _shop_reference(
@@ -523,7 +534,8 @@ def test_an_absolute_window_on_a_mixed_zone_metric_is_unchanged(shop: Runtime) -
     plan = plan_payload(
         shop,
         intent="purchase rate on 4 October 2026",
-        partial_query={"policy_context": {"now": SHOP_NOW.isoformat()}},
+        partial_query={},
+        now=SHOP_NOW.isoformat(),
     )
     assert _shop_value(shop, plan) == 0.25
 
@@ -532,7 +544,8 @@ def test_a_metric_whose_legs_share_the_planning_zone_is_unchanged(shop: Runtime)
     plan = plan_payload(
         shop,
         intent="session count yesterday",
-        partial_query={"policy_context": {"now": SHOP_NOW.isoformat()}},
+        partial_query={},
+        now=SHOP_NOW.isoformat(),
     )
     reference = _shop_reference(
         shop,
@@ -553,7 +566,8 @@ def test_roles_that_cannot_be_computed_are_held(
     plan = plan_payload(
         shop,
         intent="session count yesterday",
-        partial_query={"policy_context": {"now": SHOP_NOW.isoformat()}},
+        partial_query={},
+        now=SHOP_NOW.isoformat(),
     )
     _assert_zone_hold(plan, ["yesterday"])
 
@@ -650,9 +664,9 @@ def test_a_previously_held_explicit_local_window_stays_held(local_subscriptions:
         local_subscriptions,
         intent="new accounts today",
         partial_query={
-            "policy_context": {"now": "2026-10-05T01:00:00Z"},
             "time": {"start": "2026-10-04", "end": "2026-10-05"},
         },
+        now="2026-10-05T01:00:00Z",
     )
     _assert_zone_hold(plan, ["today"])
 
@@ -669,7 +683,8 @@ def test_local_fallback_uses_the_same_clock(
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts today",
-        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
+        partial_query={},
+        now="2026-10-05T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
     time = plan["best"]["query_ir"]["time"]
@@ -684,8 +699,9 @@ def test_a_returned_relative_window_keeps_the_supplied_clock(
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts yesterday",
-        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
+        partial_query={},
         detail=detail,
+        now="2026-10-05T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
@@ -715,7 +731,8 @@ def test_a_relative_window_the_clock_cannot_bound_is_held(
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts yesterday",
-        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
+        partial_query={},
+        now="2026-10-05T12:00:00Z",
     )
     _assert_zone_hold(plan, ["yesterday"])
 
@@ -729,10 +746,10 @@ def test_offset_bounds_on_another_local_day_are_held(
         local_subscriptions,
         intent="new accounts today",
         partial_query={
-            "policy_context": {"now": "2026-10-04T12:00:00Z"},
             "time": {"start": "2026-10-04T01:00:00Z", "end": "2026-10-04T02:00:00Z"},
         },
         detail=detail,
+        now="2026-10-04T12:00:00Z",
     )
     assert plan["status"] == "low_confidence", plan.get("why")
     assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
@@ -761,10 +778,10 @@ def test_a_caller_window_is_read_only_at_whole_days(
         local_subscriptions,
         intent="new accounts today",
         partial_query={
-            "policy_context": {"now": "2026-10-04T12:00:00Z"},
             "time": {"start": start, "end": end},
         },
         detail=detail,
+        now="2026-10-04T12:00:00Z",
     )
     assert plan["status"] == "low_confidence", plan.get("why")
     assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
@@ -790,8 +807,9 @@ def test_a_caller_window_that_clears_a_bound_is_held(
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts today",
-        partial_query={"policy_context": {"now": "2026-10-04T12:00:00Z"}, "time": time},
+        partial_query={"time": time},
         detail=detail,
+        now="2026-10-04T12:00:00Z",
     )
     assert plan["status"] == "low_confidence", plan.get("why")
     assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP", plan.get("why")
@@ -814,8 +832,9 @@ def test_an_omitted_caller_bound_keeps_the_drafted_one(
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts today",
-        partial_query={"policy_context": {"now": "2026-10-04T12:00:00Z"}, "time": time},
+        partial_query={"time": time},
         detail=detail,
+        now="2026-10-04T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
@@ -831,9 +850,9 @@ def test_a_whole_day_caller_window_executes(local_subscriptions: Runtime) -> Non
         local_subscriptions,
         intent="new accounts today",
         partial_query={
-            "policy_context": {"now": "2026-10-04T12:00:00Z"},
             "time": {"start": "2026-10-04", "end": "2026-10-05"},
         },
+        now="2026-10-04T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]

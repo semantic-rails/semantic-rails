@@ -242,8 +242,7 @@ def test_in_with_null_value_is_rejected_with_recovery_hint():
 
 def _query_with_where(where_item: dict) -> dict:
     return {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}],
+        "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
         "where": [where_item],
     }
 
@@ -282,7 +281,7 @@ def test_normalize_rejects_null_value_for_in_with_recovery_hint():
 
 def _compiled_sql(config, where_item: dict) -> str:
     query = {
-        "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}],
+        "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
         "group_by": ["dimension.jaffle_store_name"],
         "where": [where_item],
     }
@@ -365,10 +364,7 @@ def test_validate_accepts_every_schema_advertised_where_op(runtime_factory):
         for case in cases:
             report = runtime.validate(
                 {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}
-                    ],
+                    "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
                     "where": [{"field": "dimension.jaffle_store_name", **case}],
                 }
             )
@@ -453,10 +449,9 @@ def test_wrong_type_list_still_gets_scalar_op_shape_hint_on_public_paths(
 ):
     runtime = runtime_factory("jaffle_shop")
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
         "group_by": ["dimension.jaffle_store_name"],
-        "where": [{"field": field, "op": "=", "value": value}],
+        "where": [{"field": field, "op": "is", "value": value}],
     }
     try:
         report = runtime.validate(query)
@@ -482,10 +477,7 @@ def test_numeric_membership_lists_and_scalar_type_diagnostics_stay_intact(runtim
     try:
         for op in ("IN", "NOT IN"):
             query = {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "group_by": ["dimension.jaffle_store_name"],
                 "where": [{"field": field, "op": op, "value": [1, 2]}],
             }
@@ -516,8 +508,7 @@ def test_numeric_membership_lists_and_scalar_type_diagnostics_stay_intact(runtim
 def test_null_test_ignores_list_value_on_public_paths(runtime_factory, op):
     runtime = runtime_factory("jaffle_shop")
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
         "group_by": ["dimension.jaffle_store_name"],
         "where": [{"field": "dimension.jaffle_store_name", "op": op, "value": [1, 2]}],
     }

@@ -1879,7 +1879,7 @@ def test_conjoined_filtered_metric_and_measure_match_reference_sql(named_metrics
             ).fetchall()
         }
     actual = {
-        row["temporal_role.jaffle_order_time__month"][:10]: tuple(
+        row["period"][:10]: tuple(
             float(row[item["as"]]) if row[item["as"]] is not None else None
             for item in query["select"]
         )

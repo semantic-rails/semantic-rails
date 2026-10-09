@@ -396,7 +396,6 @@ def test_a_ratio_and_a_second_measure_entity_each_apply_the_group(package: Path)
         "denominator": {"measure": "measure.scope.customer_count"},
     }
     query = {
-        "version": 1,
         "select": [{"expression": ratio, "as": "credit_per_customer"}, _measure("order_count")],
         "where": SEPARATE_ROWS,
     }
@@ -968,8 +967,7 @@ def test_restricted_grants_cannot_authorize_a_child_scope_with_dimensions(
         dimension_allowlist=dimensions,
     ).to_policy_context()
     query = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.scope.customers"}, "as": "value"}],
+        "select": [{"expression": "metric.scope.customers", "as": "value"}],
         "where": where,
     }
     engine = Runtime.from_path(str(package))

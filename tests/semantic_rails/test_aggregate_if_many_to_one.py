@@ -838,7 +838,7 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
     ]
     try:
         alone = _ask(runtime, _measure("null_currency_amount"))
-        query = {"version": 1, "select": select[::-1] if aggif_first else select}
+        query = {"select": select[::-1] if aggif_first else select}
         [row] = runtime.query(query)["rows"]
     finally:
         runtime.close()
@@ -857,7 +857,7 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
 def test_a_measure_reading_an_entity_two_hops_away_aggregates_after_its_joins(
     runtime, gold, expression
 ):
-    query = {"version": 1, "select": [{"as": "value", "expression": expression}]}
+    query = {"select": [{"as": "value", "expression": expression}]}
     performance = compile_query(runtime.config, None, query)["explain"].performance_plan
 
     assert _ask(runtime, expression) == pytest.approx(gold(ONE_HOP["two_hops"][1]))
@@ -915,7 +915,7 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
     runtime = Runtime.from_config(
         dataclasses.replace(config, semantic_policies=[policy]), source_path=str(package)
     )
-    query = {"version": 1, "select": [{"as": "value", "expression": SUM_EUR}]}
+    query = {"select": [{"as": "value", "expression": SUM_EUR}]}
     try:
         result = runtime.validate(query)
     finally:
@@ -1018,7 +1018,7 @@ def test_a_policy_on_a_dimension_the_condition_reads_refuses_it(
 
 def test_a_column_no_dimension_declares_is_refused_under_an_object_policy(package, monkeypatch):
     # With no dimension on the currency column, no policy can name what the condition reads.
-    query = {"version": 1, "select": [{"as": "value", "expression": SUM_EUR}]}
+    query = {"select": [{"as": "value", "expression": SUM_EUR}]}
     ungoverned = _governed(package, without=CURRENCY)
     governed = _governed(package, _policy("deny", PERIOD), without=CURRENCY)
     try:
@@ -1264,7 +1264,6 @@ def test_the_rendered_sql_per_dialect(package, warehouse):
         base, package=dataclasses.replace(base.package, warehouse=warehouse)
     )
     query = {
-        "version": 1,
         "select": [
             {"as": "eur", "expression": SUM_EUR},
             {"as": "large", "expression": _aggif("count", _cmp(AMOUNT, ">", 10))},

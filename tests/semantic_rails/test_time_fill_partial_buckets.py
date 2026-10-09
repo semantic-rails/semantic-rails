@@ -50,8 +50,7 @@ def _series(runtime, grain: str, start: str, end: str, *, fill: bool, **time) ->
     alias = f"temporal_role.jaffle_order_time__{grain}"
     rows = runtime.query(
         {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": grain,
@@ -141,7 +140,7 @@ def test_fill_bounds_the_window_by_date_day_not_the_calendar_key(runtime_factory
         runtime.close()
 
     assert key[0] not in sql
-    alias = "temporal_role.jaffle_order_time__week"
+    alias = "period"
     assert min(_as_date(row[alias]) for row in rows) == date(2017, 6, 26)
     assert sum(row["orders"] or 0 for row in rows) == 7438
 
@@ -161,8 +160,7 @@ def test_fill_without_a_date_day_column_uses_the_implicit_calendar(runtime_facto
 def _bucket_counts(runtime, grain: str, start: str, end: str, *, fill: bool, group_by=None):
     alias = f"temporal_role.jaffle_order_time__{grain}"
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
         "time": {
             "temporal_role": "temporal_role.jaffle_order_time",
             "grain": grain,
@@ -234,7 +232,7 @@ def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
     finally:
         runtime.close()
 
-    alias = "temporal_role.jaffle_order_time__week"
+    alias = "period"
     assert unfilled
     assert {
         (_as_date(row[alias]), None): row["orders"] for row in rows if row["orders"]

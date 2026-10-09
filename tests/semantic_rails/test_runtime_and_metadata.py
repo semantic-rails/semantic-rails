@@ -324,23 +324,20 @@ def test_validate_compile_and_query_happy_path_on_jaffle_shop(runtime_factory):
         # `verbosity="full"` keeps `physical_plan` on the compile envelope
         # — the new compact default drops it.
         query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.order_count",
                         "aggregation": "count_distinct",
                     },
                     "as": "orders",
                 },
-                {
-                    "expression": {"metric": "metric.sales.aov_usd"},
-                    "as": "aov_usd",
-                },
+                "metric.sales.aov_usd",
             ],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "order_by": [{"field": "orders", "direction": "DESC"}],
+            "order_by": [{"field": "orders", "direction": "desc"}],
             "limit": 5,
             "verbosity": "full",
         }
@@ -376,8 +373,7 @@ def test_validate_uses_compiled_plan_cache(runtime_factory):
         # `verbosity="full"` keeps `compile_stats` at the top level —
         # the new compact default drops it.
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 3,
             "verbosity": "full",
@@ -399,8 +395,7 @@ def test_compile_cache_is_not_mutated_by_returned_compilation(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 3,
         }
@@ -447,8 +442,7 @@ def test_runtime_compile_cache_supports_basic_concurrent_use(runtime_factory):
         # `verbosity="full"` keeps `compile_stats` at the top level —
         # the new compact default drops it.
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 3,
             "verbosity": "full",
@@ -524,10 +518,10 @@ def test_metadata_cards_catalog_and_build_options_do_not_live_query_values(runti
     runtime._get_adapter = _raise_live_query
     try:
         query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.order_count",
                         "aggregation": "count_distinct",
                     },
@@ -581,11 +575,10 @@ def test_valid_values_defaults_to_declared_domains_without_live_query(runtime_fa
     runtime._get_adapter = _raise_live_query
     try:
         query = {
-            "version": 1,
             "where": [
                 {
                     "field": "dimension.jaffle_order_ordered_date",
-                    "op": ">=",
+                    "op": "gte",
                     "value": "2016-09-01",
                 }
             ],
@@ -1342,10 +1335,7 @@ def test_history_backed_queries_emit_null_preserving_caveats(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
-            "select": [
-                {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
-            ],
+            "select": [{"expression": "measure.jaffle.revenue_usd", "as": "Revenue (USD)"}],
             "group_by": ["dimension.jaffle_customer_history_segment"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
         }
@@ -1375,8 +1365,7 @@ def test_query_request_limits_clip_rows_for_duckdb(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "group_by": ["dimension.jaffle_store_name"],
         }
 
@@ -1450,13 +1439,12 @@ def test_legacy_adapter_without_limits_kwarg_still_works(runtime_factory, monkey
 
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                    {"expression": "measure.jaffle.order_count", "as": "orders"},
                 ],
                 "limit": 1,
-                "limits": {"max_rows": 1, "statement_timeout_ms": 5_000},
-            }
+            },
+            limits={"max_rows": 1, "statement_timeout_ms": 5_000},
         )
         assert result["rows"], result
         assert legacy.calls, "legacy adapter should have been queried"
@@ -1515,10 +1503,7 @@ def test_runtime_reload_rebuilds_state_after_package_edit(tmp_path):
         # Force a compile so the cache has at least one entry.
         runtime.validate(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "limit": 5,
             }
         )
@@ -1553,10 +1538,7 @@ def test_runtime_reload_rebuilds_state_after_package_edit(tmp_path):
 
         runtime.validate(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "limit": 5,
             }
         )
@@ -1596,10 +1578,7 @@ def test_reload_waits_for_atomic_governed_request(
         def invoke():
             return runtime.compile(
                 {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                    ],
+                    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                     "limit": 1,
                 }
             )
@@ -1616,10 +1595,7 @@ def test_reload_waits_for_atomic_governed_request(
         def invoke():
             return runtime.query(
                 {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                    ],
+                    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                     "limit": 1,
                 }
             )
@@ -1735,8 +1711,7 @@ def test_slow_query_does_not_block_catalog_health_or_plan(runtime_factory, monke
 
     monkeypatch.setattr(runtime_module, "_adapter_query", slow_adapter_query)
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
         "limit": 1,
     }
 
@@ -1796,9 +1771,8 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
         monkeypatch.setattr(runtime, "_get_adapter", lambda: _BoomAdapter())
 
         base_query = {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
             ],
             "group_by": ["dimension.jaffle_store_name"],
             "limit": 5,

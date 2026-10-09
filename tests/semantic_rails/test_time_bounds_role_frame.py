@@ -146,7 +146,6 @@ def _session_conversion(config, data_type, column_timezone):
         "converted": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
     }
     query = {
-        "version": 1,
         "select": [{"as": "rate", "expression": conversion}],
         "time": {
             "temporal_role": SESSION_ROLE,
@@ -185,7 +184,7 @@ def test_conversion_metric_on_an_unconverted_clock_matches_its_reference(config)
 
 def _query(**time):
     return {
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "n"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "n"}],
         "time": {
             "temporal_role": ROLE,
             "grain": "month",

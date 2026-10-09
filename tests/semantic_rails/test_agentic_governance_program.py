@@ -156,10 +156,9 @@ def test_runtime_and_builder_surfaces_include_agentic_contract_fields(runtime_fa
     try:
         invalid = runtime.validate(
             {
-                "version": 1,
                 "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "dup"},
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "dup"},
+                    {"expression": "measure.jaffle.order_count", "as": "dup"},
+                    {"expression": "measure.jaffle.revenue_usd", "as": "dup"},
                 ],
                 "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             }
@@ -168,20 +167,14 @@ def test_runtime_and_builder_surfaces_include_agentic_contract_fields(runtime_fa
         assert invalid["recovery_hints"]
         compiled = runtime.compile(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "group_by": ["dimension.jaffle_store_name"],
                 "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             }
         )
         queried = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "group_by": ["dimension.jaffle_store_name"],
                 "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             }
@@ -327,8 +320,7 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
         assert exc.value.code == "OBJECT_NOT_FOUND"
         denied = runtime.validate(
             {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.sales.orders"}, "as": "orders"}],
+                "select": ["metric.sales.orders"],
                 "time": {"temporal_role": "temporal_role.demo_order_time", "grain": "day"},
             }
         )
@@ -356,8 +348,7 @@ def test_role_scoped_object_policy_uses_request_roles(tmp_path: Path):
     runtime = Runtime.from_path(str(package_dir))
     try:
         base_query = {
-            "version": 1,
-            "select": [{"expression": {"metric": "metric.sales.orders"}, "as": "orders"}],
+            "select": ["metric.sales.orders"],
             "time": {"temporal_role": "temporal_role.demo_order_time", "grain": "day"},
         }
         denied = runtime.validate({**base_query, "policy_context": {"roles": ["sales"]}})
@@ -376,8 +367,7 @@ def test_metric_constraint_policy_restricts_role_scoped_revenue_cuts(runtime_fac
     runtime = runtime_factory("jaffle_shop")
     try:
         base_query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}],
+            "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
         }
 
@@ -450,9 +440,9 @@ def test_parse_config_emits_authoring_profile_warnings(tmp_path: Path):
 @pytest.mark.parametrize(
     "columns, min_rows, code",
     [
-        (["temporal_role.demo_order_time__day", "orders"], 0, None),
+        (["period", "orders"], 0, None),
         (["wrong", "orders"], 0, "EXAMPLE_SHAPE_MISMATCH"),
-        (["temporal_role.demo_order_time__day", "orders"], 1, "EXAMPLE_ROW_COUNT_MISMATCH"),
+        (["period", "orders"], 1, "EXAMPLE_ROW_COUNT_MISMATCH"),
     ],
 )
 def test_empty_window_example_checks_declared_columns(tmp_path, columns, min_rows, code):
@@ -464,14 +454,11 @@ def test_empty_window_example_checks_declared_columns(tmp_path, columns, min_row
             "examples": {
                 "empty": {
                     "query": {
-                        "version": 1,
-                        "select": [
-                            {"expression": {"metric": "metric.sales.orders"}, "as": "orders"}
-                        ],
+                        "select": ["metric.sales.orders"],
                         "time": {
                             "temporal_role": "temporal_role.demo_order_time",
                             "grain": "day",
-                            "range": {"last": {"unit": "month", "value": 1}},
+                            "last": {"unit": "month", "value": 1},
                         },
                         "policy_context": {"now": "2026-05-04"},
                     },
@@ -492,8 +479,8 @@ def test_empty_window_example_checks_declared_columns(tmp_path, columns, min_row
 @pytest.mark.parametrize(
     "empty_window, columns, code",
     [
-        (False, ["temporal_role.demo_order_time__day", "orders"], None),
-        (True, ["temporal_role.demo_order_time__day", "orders"], None),
+        (False, ["period", "orders"], None),
+        (True, ["period", "orders"], None),
         (False, ["wrong", "orders"], "EXAMPLE_SHAPE_MISMATCH"),
     ],
     ids=["nonempty", "empty-window", "wrong-columns"],
@@ -502,9 +489,8 @@ def test_minimal_verbosity_example_checks_declared_columns(tmp_path, empty_windo
     package_dir = tmp_path / "minimal_example"
     _write_package(package_dir)
     query = {
-        "version": 1,
         "verbosity": "minimal",
-        "select": [{"expression": {"metric": "metric.sales.orders"}, "as": "orders"}],
+        "select": ["metric.sales.orders"],
         "time": {"temporal_role": "temporal_role.demo_order_time", "grain": "day"},
     }
     row_count = 0 if empty_window else 2
@@ -553,14 +539,11 @@ def test_package_tools_and_cli_support_examples_tests_diff_and_promotion(
                 "orders_example": {
                     "question": "Orders by day",
                     "query": {
-                        "version": 1,
-                        "select": [
-                            {"expression": {"measure": "measure.demo.order_count"}, "as": "orders"}
-                        ],
+                        "select": [{"expression": "measure.demo.order_count", "as": "orders"}],
                         "time": {"temporal_role": "temporal_role.demo_order_time", "grain": "day"},
                     },
                     "expected_shape": {
-                        "columns": ["temporal_role.demo_order_time__day", "orders"],
+                        "columns": ["period", "orders"],
                         "min_rows": 1,
                     },
                 }
@@ -574,10 +557,7 @@ def test_package_tools_and_cli_support_examples_tests_diff_and_promotion(
                 "orders_validation": {
                     "kind": "query_row_count_bounds",
                     "query": {
-                        "version": 1,
-                        "select": [
-                            {"expression": {"measure": "measure.demo.order_count"}, "as": "orders"}
-                        ],
+                        "select": [{"expression": "measure.demo.order_count", "as": "orders"}],
                     },
                     "min_rows": 1,
                     "max_rows": 1,
@@ -655,10 +635,7 @@ def test_package_tools_and_cli_support_examples_tests_diff_and_promotion(
                 "bad_error_expectation": {
                     "kind": "validate_fails_with_code",
                     "query": {
-                        "version": 1,
-                        "select": [
-                            {"expression": {"measure": "measure.demo.order_count"}, "as": "orders"}
-                        ],
+                        "select": [{"expression": "measure.demo.order_count", "as": "orders"}],
                     },
                     "code": "NOT_THE_ERROR",
                 }
@@ -726,10 +703,9 @@ def test_object_access_policy_follows_metric_recipes(runtime_factory):
         # widens which objects are matched, not who is denied.
         internal = runtime.validate(
             {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov"}],
-                "policy_context": {"audience": "finance"},
-            }
+                "select": [{"expression": "metric.sales.aov_usd", "as": "aov"}],
+            },
+            context={"audience": "finance"},
         )
         assert internal["ok"] is True
     finally:

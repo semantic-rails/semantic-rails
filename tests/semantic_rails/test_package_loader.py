@@ -425,8 +425,7 @@ def test_an_installed_bundled_package_builds_its_database_in_the_user_cache(
         runtime = runtime_module.Runtime("mini")
         try:
             query = {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.mini.event_count"}}],
+                "select": ["metric.mini.event_count"],
             }
             assert runtime.query(query)["rows"]  # builds the database from the seed files
         finally:

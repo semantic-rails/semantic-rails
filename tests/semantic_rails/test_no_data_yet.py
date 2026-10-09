@@ -21,7 +21,7 @@ ORDERS = "measure.jaffle.order_count"
 def total(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "select": [{"expression": {"measure": REVENUE}, "as": "value"}],
+        "select": [{"expression": REVENUE, "as": "value"}],
         "time": {"temporal_role": ROLE, "start": "2026-09-21", "end": "2026-09-28"},
     }
     return compile_query(config, Registry(config), query), query
@@ -195,7 +195,7 @@ def test_series_compares_only_compatible_sql_bucket_keys(
         ],
     )
     query = {
-        "select": [{"expression": {"measure": REVENUE}, "as": "value"}],
+        "select": [{"expression": REVENUE, "as": "value"}],
         "time": {
             "temporal_role": ROLE,
             "grain": grain,

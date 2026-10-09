@@ -700,10 +700,7 @@ def test_a_suggested_draft_runs_against_the_dbt_warehouse(tmp_path: Path, target
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.shop.customer_count"}, "as": "customers"}
-                ],
+                "select": [{"expression": "measure.shop.customer_count", "as": "customers"}],
                 "limit": 5,
             }
         )["rows"]

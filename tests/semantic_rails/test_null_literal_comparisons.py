@@ -297,7 +297,6 @@ def test_compile_binds_dialect_for_computed_boolean_null(runtime, warehouse):
         "right": expression,
     }
     query = {
-        "version": 1,
         "select": [
             {"expression": COUNT, "as": "n"},
             {"expression": expression, "as": "flag"},
@@ -344,7 +343,6 @@ def test_lower_cased_join_on_null_matches_null_test(op, gold_op, reverse):
 
 def test_post_aggregate_not_null_reads_null(runtime):
     query = {
-        "version": 1,
         "select": [{"expression": COUNT, "as": "n"}, {"expression": NOT_NULL, "as": "flag"}],
     }
     ((n, flag),) = _gold("SELECT COUNT(*), NOT NULL FROM records")
@@ -417,7 +415,6 @@ def test_configured_false_not_equal_not_null_stays_unknown(runtime, reverse):
 @pytest.mark.parametrize("reverse", [False, True])
 def test_post_aggregate_false_not_equal_not_null_stays_unknown(runtime, reverse):
     query = {
-        "version": 1,
         "select": [
             {"expression": COUNT, "as": "n"},
             {"expression": _false_not_equal_not_null(reverse=reverse), "as": "flag"},

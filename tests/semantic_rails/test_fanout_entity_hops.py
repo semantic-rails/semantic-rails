@@ -429,7 +429,7 @@ def test_revenue_of_orders_with_a_beverage_counts_each_order_once(package: Path)
 def test_child_filters_use_exists_without_multiplying_parent_rows(
     package: Path, measure: str, field: str, value: str, reference: str, expected: int
 ) -> None:
-    query = {"select": [_measure(measure)], "where": [{"field": field, "op": "=", "value": value}]}
+    query = {"select": [_measure(measure)], "where": [{"field": field, "op": "is", "value": value}]}
     result = _run(package, query)
     assert (
         _normal(tuple(row.values()) for row in typed_rows(result))
@@ -513,7 +513,7 @@ def test_time_bounded_child_groups_keep_window_observation(
 ) -> None:
     """A child group lowers in the same semi-join leaf as a flat child filter."""
     query = {
-        "select": [{"expression": {"measure": "measure.hop.revenue"}, "as": "revenue"}],
+        "select": ["measure.hop.revenue"],
         "where": [{"child": "entity.hop_item", "match": match, "where": [BEVERAGE, HOT_ITEM]}],
         "time": {
             "temporal_role": ROLE,
@@ -632,7 +632,7 @@ def test_clickhouse_uses_equivalent_parent_deduplication(
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse="clickhouse"))
-    query = {"version": 1, "select": [{"expression": expression, "as": "v"}], "where": [clause]}
+    query = {"select": [{"expression": expression, "as": "v"}], "where": [clause]}
     compiled = compile_query(config, Registry(config), query)
     sql = compiled["prepared_query"].sql.removesuffix("\nSETTINGS join_use_nulls = 1")
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
@@ -682,7 +682,6 @@ def test_a_conditional_aggregate_of_rows_of_unknown_grain(receipts_by_order: Pat
     payments = _if("count_distinct", _compare("amount", ">", 0, receipt), "payment_id", receipt)
     for expression, value in ((PAID_IF, 10), (payments, 2)):
         query = {
-            "version": 1,
             "select": [{"expression": expression, "as": "v"}],
             "where": [BEVERAGE],
         }
@@ -722,7 +721,7 @@ def test_clickhouse_keeps_supported_lookups_beside_a_child_filter(
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse="clickhouse"))
-    query = {"version": 1, "observation_scope": "query", "select": [_measure("order_count")]}
+    query = {"observation_scope": "query", "select": [_measure("order_count")]}
     query.update(lookup)  # a plain-SQL reference: the query scope, as in _run
     if bound_filter:
         expression = {
@@ -860,7 +859,7 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
 ) -> None:
     clause = {"field": "dimension.diamond_district_category", "op": "=", "value": "premium"}
     expression: dict[str, Any] = {"measure": "measure.diamond.amount"}
-    query: dict[str, Any] = {"version": 1, "select": [{"expression": expression, "as": "amount"}]}
+    query: dict[str, Any] = {"select": [{"expression": expression, "as": "amount"}]}
     if bound_filter:
         expression.update(kind="aggregate", aggregation="sum", filter={"all": [clause]})
     else:
@@ -941,9 +940,8 @@ def test_a_conditional_aggregate_takes_the_same_child_route_rule(
         large if form == "conditional" else _ratio(large, {"measure": "measure.diamond.amount"})
     )
     query = {
-        "version": 1,
         "select": [{"expression": expression, "as": "value"}],
-        "where": [{"field": "dimension.diamond_district_category", "op": "=", "value": "premium"}],
+        "where": [{"field": "dimension.diamond_district_category", "op": "is", "value": "premium"}],
         "observation_scope": "query",  # a plain-SQL reference, as in _run
     }
     config = load_package_config(str(diamond_package))
@@ -1607,7 +1605,7 @@ def test_a_refusal_names_the_path_at_fault(package: Path) -> None:
     query = {
         "select": [_measure("revenue")],
         "group_by": [TYPE],
-        "where": [{"field": CATEGORY, "op": "=", "value": "hot"}],
+        "where": [{"field": CATEGORY, "op": "is", "value": "hot"}],
     }
     error = _refusal(package, query)
     assert error["details"]["purpose"] == "group_by"
@@ -1647,10 +1645,9 @@ def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> No
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
-                {"expression": {"measure": "measure.jaffle.item_revenue_usd"}, "as": "revenue"},
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
+                {"expression": "measure.jaffle.item_revenue_usd", "as": "revenue"},
             ],
             "group_by": ["dimension.jaffle_item_product_type"],
         }
@@ -1719,7 +1716,7 @@ def test_rollup_safe_package_refuses_two_groups_across_a_hop(
 
     def ask(group_by: list[str]) -> dict[str, Any]:
         select = [{"expression": {"measure": measure}, "as": "value"}]
-        return runtime.validate({"version": 1, "select": select, "group_by": group_by})
+        return runtime.validate({"select": select, "group_by": group_by})
 
     try:
         report = ask(groups)

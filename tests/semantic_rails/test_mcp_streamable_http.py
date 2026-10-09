@@ -389,10 +389,9 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
                             },
                             "verbosity": "full",
                             "query": {
-                                "version": 1,
                                 "select": [
                                     {
-                                        "expression": {"measure": "measure.jaffle.order_count"},
+                                        "expression": "measure.jaffle.order_count",
                                         "as": "orders",
                                     }
                                 ],

@@ -126,7 +126,7 @@ def test_rejected_relationship_candidates_are_not_bound(config, reverse):
             )
         ],
     )
-    query = {"select": [{"expression": {"measure": MEASURE}}], "group_by": [DIMENSION]}
+    query = {"select": [MEASURE], "group_by": [DIMENSION]}
     bound = compiler.bind_query(config, None, query)
     assert RELATIONSHIP in bound.object_ids
     assert candidate.id not in bound.object_ids
@@ -159,7 +159,7 @@ def test_metric_constraint_filter_values_are_data(config, kind, reference, as_li
     else:
         expression["filter"] = {"all": [row]}
     query = {
-        "select": [{"expression": {"measure": MEASURE}}],
+        "select": [MEASURE],
         "metric_filters": [{"expression": expression, "op": ">", "value": 0}],
     }
     assert compiler.compile_query(config, None, query)["sql"]
@@ -206,7 +206,7 @@ def test_metric_constraint_still_denies_real_references(config, monkeypatch, kin
         }
     )
     query = {
-        "select": [{"expression": {"measure": MEASURE}}],
+        "select": [MEASURE],
         "metric_filters": [
             {
                 "expression": expression,
@@ -356,7 +356,7 @@ CUSTOMER_FILTERS = {
 def _customer_query(expression):
     predicate = expression.get("kind") == "metric_predicate"
     return {
-        "select": [{"expression": {"measure": CUSTOMER_COUNT}, "as": "customers"}],
+        "select": [{"expression": CUSTOMER_COUNT, "as": "customers"}],
         "group_by": ["dimension.jaffle_customer_type"],
         "metric_filters": [
             {
@@ -450,7 +450,7 @@ def test_metric_filters_on_allowed_entities_compile(config, spelling):
 def test_metric_filter_entities_exclude_the_constrained_cut(config, timed):
     """The select, grouping and time axis are governed by their own constraint keys."""
     query = {
-        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
+        "select": [{"expression": MEASURE, "as": "revenue"}],
         "group_by": ["dimension.jaffle_store_name"],
         "metric_filters": [
             {
@@ -484,7 +484,7 @@ def test_metric_filter_entities_exclude_the_constrained_cut(config, timed):
 )
 def test_literal_metric_filters_resolve_without_object_reads(config, monkeypatch, constraint):
     query = {
-        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
+        "select": [{"expression": MEASURE, "as": "revenue"}],
         "metric_filters": [{"expression": {"kind": "literal", "value": 1}, "op": "=", "value": 1}],
     }
     assert compiler.compile_query(config, None, query)["sql"]
@@ -619,7 +619,7 @@ def test_contextual_predicate_records_actual_clock_entity(config, monkeypatch, a
         ],
     )
     query = {
-        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
+        "select": [{"expression": MEASURE, "as": "revenue"}],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
         "metric_filters": [
             {
@@ -676,7 +676,7 @@ def test_contextual_predicate_alignment_needs_exactly_one_clock(config, pinned):
     if pinned:
         predicate_input["temporal_role"] = customer_role
     query = {
-        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
+        "select": [{"expression": MEASURE, "as": "revenue"}],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
         "metric_filters": [
             {
@@ -791,7 +791,7 @@ def test_embedded_cuts_obey_allow_false(config, monkeypatch, allowed, recipe, ki
         expr = {"metric": "cut_recipe"}
     query = {
         "select": [
-            {"expression": {"measure": MEASURE}, "as": "revenue"},
+            {"expression": MEASURE, "as": "revenue"},
             {"expression": expr, "as": "cut"},
         ]
     }
@@ -861,7 +861,7 @@ def test_effective_temporal_roles_follow_governed_leaves(
     query = {"select": [{"expression": expr, "as": "value"}]}
     if placement == "cut":
         query = {
-            "select": [{"expression": {"measure": CUSTOMER_COUNT}, "as": "customers"}],
+            "select": [{"expression": CUSTOMER_COUNT, "as": "customers"}],
             "metric_filters": [{"expression": expr, "op": ">", "value": 1}],
         }
     assert "prepared_at" in compiler.compile_query(config, None, query)["sql"]
@@ -895,8 +895,11 @@ def test_foreign_query_clock_uses_leaf_effective_role(config, monkeypatch, allow
     )
     query = {
         "select": [
-            {"expression": {"measure": measure_id, "temporal_role": prepared}, "as": "value"},
-            {"expression": {"measure": CUSTOMER_COUNT}, "as": "customers"},
+            {
+                "expression": {"kind": "measure", "measure": measure_id, "temporal_role": prepared},
+                "as": "value",
+            },
+            {"expression": CUSTOMER_COUNT, "as": "customers"},
         ],
         "time": {"temporal_role": query_role, "grain": "month"},
     }
@@ -918,7 +921,7 @@ def test_foreign_query_clock_uses_leaf_effective_role(config, monkeypatch, allow
 
 def test_aligned_window_filter_binds_in_real_context(config):
     query = {
-        "select": [{"expression": {"measure": CUSTOMER_COUNT}, "as": "customers"}],
+        "select": [{"expression": CUSTOMER_COUNT, "as": "customers"}],
         "time": {"temporal_role": "temporal_role.jaffle_customer_first_order_at", "grain": "month"},
         "metric_filters": [
             {
@@ -969,7 +972,7 @@ def test_shipped_sales_policy_applies_to_select_cuts(monkeypatch):
                         "all": [
                             {
                                 "field": "dimension.jaffle_customer_type",
-                                "op": "=",
+                                "op": "is",
                                 "value": "returning",
                             }
                         ]
@@ -1087,7 +1090,7 @@ def test_shared_scan_conditional_cut_counts_for_its_own_leaf(config, monkeypatch
     )
     query = {
         "select": [
-            {"expression": {"measure": MEASURE}, "as": "revenue"},
+            {"expression": MEASURE, "as": "revenue"},
             {"expression": FILTER_SPELLINGS["table_column"][0], "as": "orders"},
         ]
     }
@@ -1135,7 +1138,6 @@ def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, co
         ],
     }
     query = {
-        "version": 1,
         "select": [
             {
                 "expression": {"kind": "ratio", "numerator": numerator, "denominator": aggregate},
@@ -1367,7 +1369,7 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
         "denominator": aggregate,
     }
     query = {
-        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
+        "select": [{"expression": MEASURE, "as": "revenue"}],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
         "metric_filters": [
             {
@@ -1428,8 +1430,8 @@ def test_distribution_cut_binds_its_own_entity_grain(config, monkeypatch, allowe
                     "over": {
                         "kind": "entity_value",
                         "entity": CUSTOMER,
-                        "input": {"measure": "measure.jaffle.order_count"},
-                        "where": [{"kind": "value_filter", "op": ">", "value": 0}],
+                        "input": "measure.jaffle.order_count",
+                        "where": [{"kind": "value_filter", "op": "gt", "value": 0}],
                     },
                 },
             }
@@ -1466,8 +1468,8 @@ def test_distribution_cut_excludes_attachment_entities(config):
                     "over": {
                         "kind": "entity_value",
                         "entity": CUSTOMER,
-                        "input": {"measure": "measure.jaffle.item_count"},
-                        "where": [{"kind": "value_filter", "op": ">", "value": 0}],
+                        "input": "measure.jaffle.item_count",
+                        "where": [{"kind": "value_filter", "op": "gt", "value": 0}],
                     },
                 },
             }
@@ -1497,7 +1499,7 @@ def test_unfiltered_distribution_has_no_cut(config):
                     "over": {
                         "kind": "entity_value",
                         "entity": CUSTOMER,
-                        "input": {"measure": "measure.jaffle.order_count"},
+                        "input": "measure.jaffle.order_count",
                     },
                 },
             }
@@ -1523,7 +1525,7 @@ def test_distribution_projection_inherits_parent_cut(config, monkeypatch, allowe
         over["where"] = [{"kind": "value_filter", "op": ">", "value": 0}]
     expression = {"kind": "distribution", "function": "avg", "over": over}
     query = {
-        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
+        "select": [{"expression": MEASURE, "as": "revenue"}],
         "metric_filters": [
             {
                 "expression": {
@@ -1628,7 +1630,7 @@ def test_recipe_roles_include_owned_predicates(
     config, recipe, _ = _recipe_with_predicate(
         recipe_predicate_config, role, nested=nested, aggregate=aggregate
     )
-    query = {"select": [{"expression": {"metric": recipe}, "as": "value"}]}
+    query = {"select": [{"expression": recipe, "as": "value"}]}
     sql = compiler.compile_query(config, None, query)["sql"]
     assert (
         f"arg_max(jaffle_order_lifecycle.order_total_cents / 100.0, jaffle_order_lifecycle.{role.rsplit('_', 2)[-2]}_at)"
@@ -1668,7 +1670,7 @@ def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested
     )
     predicate = deepcopy(predicate)
     predicate["input"]["temporal_role"] = prepared
-    query = {"select": [{"expression": {"metric": recipe}, "as": "value"}]}
+    query = {"select": [{"expression": recipe, "as": "value"}]}
     if placement == "sibling":
         query["select"].append(
             {
@@ -1750,8 +1752,8 @@ def test_optimized_recipe_roles_keep_predicate_ownership(
             {
                 "expression": {
                     "kind": "ratio",
-                    "numerator": {"metric": recipes[0].id},
-                    "denominator": {"metric": recipes[1].id},
+                    "numerator": recipes[0].id,
+                    "denominator": recipes[1].id,
                 },
                 "as": "value",
             }
@@ -1816,7 +1818,7 @@ def test_recipe_roles_follow_recursive_owned_predicates(
         ),
     )
     config = replace(config, metric_recipes=[*config.metric_recipes, outer])
-    query = {"select": [{"expression": {"metric": outer.id}, "as": "value"}]}
+    query = {"select": [{"expression": outer.id, "as": "value"}]}
     assert (
         "jaffle_order_lifecycle.prepared_at" in compiler.compile_query(config, None, query)["sql"]
     )

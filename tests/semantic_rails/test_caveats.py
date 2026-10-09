@@ -32,8 +32,7 @@ def _runtime_with_caveats(tmp_path: Path, rows: list[dict]) -> Runtime:
 
 def _revenue_query(**overrides):
     payload = {
-        "version": 1,
-        "select": [{"expression": {"measure": REVENUE}, "as": "revenue"}],
+        "select": [{"expression": REVENUE, "as": "revenue"}],
         "time": {
             "temporal_role": ORDER_TIME,
             "grain": "month",
@@ -144,9 +143,7 @@ def test_caveats_do_not_change_sql_or_rows(tmp_path: Path) -> None:
 def test_time_bound_caveat_does_not_fire_without_query_time(tmp_path: Path) -> None:
     runtime = _runtime_with_caveats(tmp_path, [_revenue_caveat()])
     try:
-        result = runtime.validate(
-            {"version": 1, "select": [{"expression": {"measure": REVENUE}, "as": "revenue"}]}
-        )
+        result = runtime.validate({"select": [{"expression": REVENUE, "as": "revenue"}]})
 
         assert "SEMANTIC_CAVEAT_APPLIED" not in _caveat_codes(result)
     finally:
@@ -239,9 +236,8 @@ def test_point_caveat_triggers_on_containment_and_comparison_crossing(tmp_path: 
         contained = runtime.validate(_revenue_query())
         crossed = runtime.validate(
             {
-                "version": 1,
                 "select": [
-                    {"expression": {"measure": REVENUE}, "as": "current"},
+                    {"expression": REVENUE, "as": "current"},
                     {
                         "expression": {
                             "kind": "prior_period",
@@ -267,9 +263,8 @@ def test_comparison_windows_bookending_caveat_range_trigger(tmp_path: Path) -> N
     try:
         bookended = runtime.validate(
             {
-                "version": 1,
                 "select": [
-                    {"expression": {"measure": REVENUE}, "as": "current"},
+                    {"expression": REVENUE, "as": "current"},
                     {
                         "expression": {
                             "kind": "prior_period",
@@ -285,9 +280,8 @@ def test_comparison_windows_bookending_caveat_range_trigger(tmp_path: Path) -> N
         )
         same_side = runtime.validate(
             {
-                "version": 1,
                 "select": [
-                    {"expression": {"measure": REVENUE}, "as": "current"},
+                    {"expression": REVENUE, "as": "current"},
                     {
                         "expression": {
                             "kind": "prior_period",

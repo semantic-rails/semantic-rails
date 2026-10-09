@@ -40,7 +40,6 @@ def test_unknown_top_level_key_filters_is_rejected():
     with pytest.raises(SemanticLayerError) as excinfo:
         normalize_query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -71,10 +70,9 @@ def test_unknown_top_level_key_dimensions_points_at_group_by():
     with pytest.raises(SemanticLayerError) as excinfo:
         normalize_query(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"metric": "metric.sales.aov_usd"},
+                        "expression": "metric.sales.aov_usd",
                         "as": "v",
                     }
                 ],
@@ -95,11 +93,10 @@ def test_unknown_top_level_underscore_key_is_accepted():
     have to strip them."""
     normalize_query(
         {
-            "version": 1,
             "_note": "an inline comment in JSON",
             "select": [
                 {
-                    "expression": {"metric": "metric.sales.aov_usd"},
+                    "expression": "metric.sales.aov_usd",
                     "as": "v",
                 }
             ],
@@ -114,10 +111,9 @@ def test_time_range_with_misplaced_start_end_points_at_top_level():
     with pytest.raises(SemanticLayerError) as excinfo:
         normalize_query(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"metric": "metric.sales.aov_usd"},
+                        "expression": "metric.sales.aov_usd",
                         "as": "v",
                     }
                 ],
@@ -166,7 +162,6 @@ def test_empty_result_with_relative_range_echoes_relative_window(runtime_factory
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -180,10 +175,10 @@ def test_empty_result_with_relative_range_echoes_relative_window(runtime_factory
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
                     "grain": "month",
-                    "range": {"last": {"unit": "month", "value": 1}},
+                    "last": {"unit": "month", "value": 1},
                 },
-                "sql_profile": "off",
-            }
+            },
+            sql_profile="off",
         )
         # Should return zero rows (data ends in 2017; relative window
         # is anchored to now()).
@@ -231,10 +226,9 @@ def test_unknown_top_level_key_in_partial_query_is_rejected():
     with pytest.raises(SemanticLayerError) as excinfo:
         normalize_partial_query(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"metric": "metric.sales.aov_usd"},
+                        "expression": "metric.sales.aov_usd",
                         "as": "v",
                     }
                 ],

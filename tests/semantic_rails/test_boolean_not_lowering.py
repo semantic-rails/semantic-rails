@@ -37,7 +37,7 @@ def _comparison_dict(threshold: int = 10) -> dict:
 
 def _not_query(threshold: int = 10) -> dict:
     return {
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
         "group_by": ["dimension.jaffle_store_name"],
         "metric_filters": [
             {

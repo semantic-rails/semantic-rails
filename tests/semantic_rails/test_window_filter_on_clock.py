@@ -245,7 +245,6 @@ def disconnected_runtime(tmp_path: Path) -> Iterator[Runtime]:
 def _query(expression: dict, where: list[dict], *, grouped: bool = False) -> dict[str, Any]:
     role = DAY_ROLE if expression is PRIOR_DAY else EVENT_ROLE
     return {
-        "version": 1,
         "select": [{"expression": expression, "as": "v"}],
         "group_by": [ACCOUNT] if grouped else [],
         "time": {"temporal_role": role, "grain": "day"},

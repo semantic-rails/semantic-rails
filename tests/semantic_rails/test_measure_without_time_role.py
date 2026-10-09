@@ -126,9 +126,7 @@ def _by_bucket(package: Path, unit: str) -> list[tuple[date, Decimal]]:
 def _answer(package: Path, grain: str) -> list[tuple[date, Decimal]]:
     engine = Runtime.from_path(str(package))
     try:
-        result = engine.query(
-            {"version": 1, "select": SELECT, "time": {"temporal_role": ROLE, "grain": grain}}
-        )
+        result = engine.query({"select": SELECT, "time": {"temporal_role": ROLE, "grain": grain}})
     finally:
         engine.close()
     return sorted(
@@ -143,9 +141,7 @@ def test_a_measure_with_no_clock_is_refused_when_asked_by_a_date_at_a_grain(tmp_
     engine = Runtime.from_path(str(package))
     try:
         with pytest.raises(SemanticLayerError) as raised:
-            engine.query(
-                {"version": 1, "select": SELECT, "time": {"temporal_role": ROLE, "grain": grain}}
-            )
+            engine.query({"select": SELECT, "time": {"temporal_role": ROLE, "grain": grain}})
     finally:
         engine.close()
     error = raised.value
@@ -160,7 +156,7 @@ def test_a_measure_with_no_clock_is_refused_when_asked_by_a_date_at_a_grain(tmp_
 def test_the_refusal_carries_a_recovery_hint_on_every_dry_run(tmp_path, operation):
     package = _package(tmp_path, NO_CLOCK)
     engine = Runtime.from_path(str(package))
-    query = {"version": 1, "select": SELECT, "time": {"temporal_role": ROLE, "grain": "month"}}
+    query = {"select": SELECT, "time": {"temporal_role": ROLE, "grain": "month"}}
     try:
         if operation == "compile":
             with pytest.raises(SemanticLayerError) as raised:
@@ -214,7 +210,6 @@ def test_over_http_the_refusal_is_a_client_error_never_internal_error(tmp_path):
                 "POST",
                 normalize_route("/api/v1/query"),
                 {
-                    "version": 1,
                     "select": SELECT,
                     "time": {"temporal_role": ROLE, "grain": "month"},
                 },
@@ -246,7 +241,6 @@ def test_every_expression_over_a_clockless_measure_goes_through_the_same_refusal
     try:
         report = engine.validate(
             {
-                "version": 1,
                 "select": [{"expression": expression, "as": "value"}],
                 "time": {"temporal_role": ROLE, "grain": "month"},
             }
@@ -299,7 +293,7 @@ def test_an_authored_measure_flagged_synthetic_in_meta_gets_the_measure_refusal(
     variant = {"default": "", "times": ", meta: {synthetic: true}"}
     engine = Runtime.from_path(str(_package(tmp_path, variant)))
     try:
-        report = engine.validate({"version": 1, "select": SELECT, "time": MONTHLY})
+        report = engine.validate({"select": SELECT, "time": MONTHLY})
     finally:
         engine.close()
     error = report["errors"][0]
@@ -314,7 +308,6 @@ def test_the_refusal_does_not_say_grouped_by_when_time_has_no_grain(tmp_path):
     try:
         report = engine.validate(
             {
-                "version": 1,
                 "select": SELECT,
                 "time": {"temporal_role": ROLE, "start": "2024-01-01", "end": "2024-06-30"},
             }
@@ -334,7 +327,6 @@ def _mixed_grain_error(package: Path, measures: list[str]) -> dict[str, Any]:
     try:
         report = engine.validate(
             {
-                "version": 1,
                 "select": [
                     {"expression": {"kind": "measure", "measure": measure}, "as": f"v{index}"}
                     for index, measure in enumerate(measures)
@@ -382,9 +374,9 @@ def test_a_clockless_measure_still_answers_without_time_or_by_a_plain_date(tmp_p
     package = _package(tmp_path, NO_CLOCK)
     engine = Runtime.from_path(str(package))
     try:
-        total = engine.query({"version": 1, "select": SELECT})["rows"]
+        total = engine.query({"select": SELECT})["rows"]
         by_date = engine.query(
-            {"version": 1, "select": SELECT, "group_by": ["dimension.ins_claim_opened_on_date"]}
+            {"select": SELECT, "group_by": ["dimension.ins_claim_opened_on_date"]}
         )["rows"]
     finally:
         engine.close()

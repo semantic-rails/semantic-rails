@@ -138,7 +138,8 @@ def test_visibility_is_scoped_to_each_request(runtime_factory, monkeypatch, path
                 runtime,
                 intent=intent,
                 detail="full",
-                partial_query={"policy_context": {"audience": audience}},
+                partial_query={},
+                context={"audience": audience},
             )
             for audience in ("internal", "external", "internal")
         ]

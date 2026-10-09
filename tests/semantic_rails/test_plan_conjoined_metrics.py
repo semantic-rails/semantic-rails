@@ -300,9 +300,7 @@ def test_selecting_one_piece_does_not_settle_another(shared_population_names, qu
         shared_population_names,
         intent=question,
         partial_query={
-            "select": [
-                {"as": "starts", "expression": {"metric": "metric.subscriptions.customer_starts"}}
-            ],
+            "select": [{"as": "starts", "expression": "metric.subscriptions.customer_starts"}],
             "policy_context": NOW,
         },
     )
@@ -433,7 +431,7 @@ FROM jaffle_customer GROUP BY 1 ORDER BY 1
 """).fetchall()
         assert [
             (
-                str(row["temporal_role.jaffle_customer_first_order_at__month"])[:10],
+                str(row["period"])[:10],
                 *[row[item["as"]] for item in query["select"]],
             )
             for row in runtime.query(query)["rows"]
@@ -463,7 +461,7 @@ FROM shop_order GROUP BY 1 ORDER BY 1
 """).fetchall()
         assert [
             (
-                str(row["temporal_role.shop_order_ordered_at__month"])[:10],
+                str(row["period"])[:10],
                 *[float(row[item["as"]]) for item in query["select"]],
             )
             for row in rows

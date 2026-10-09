@@ -175,7 +175,7 @@ TIER = "dimension.hist_tier_tier_name"
 REGION = "dimension.hist_account_region"
 USAGE_ID = "dimension.hist_usage_id"
 MONTHLY = {"temporal_role": "temporal_role.hist_usage_used_at", "grain": "month"}
-MONTH = "temporal_role.hist_usage_used_at__month"
+MONTH = "period"
 
 # The version valid at each usage's time, read with a scalar subquery: NULL where none is.
 SQL_AS_OF = (
@@ -405,8 +405,7 @@ def test_the_history_key_reads_the_version_valid_at_the_usage_time(
 def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
     """Each segment row is one version already, so reading its account is a plain lookup."""
     query = {
-        "version": 1,
-        "select": [{"as": "value", "expression": {"measure": "measure.hist.seats"}}],
+        "select": [{"as": "value", "expression": "measure.hist.seats"}],
         "group_by": [REGION],
     }
 

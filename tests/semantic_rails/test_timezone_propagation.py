@@ -37,6 +37,7 @@ def _query() -> dict[str, object]:
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.order_count",
                     "aggregation": "count_distinct",
                 },
@@ -299,7 +300,7 @@ def test_answers_do_not_follow_the_session_time_zone(
             },
             {"temporal_role": ZONE_ROLE, "grain": "month"},
         ):
-            result = runtime.query({"version": 1, "select": ZONE_REVENUE, "time": time})
+            result = runtime.query({"select": ZONE_REVENUE, "time": time})
             answers.append(
                 {
                     str(row[f"{ZONE_ROLE}__{time['grain']}"])[:10]: row["revenue"]
@@ -328,7 +329,7 @@ def test_the_whole_query_runs_in_its_zone(tmp_path: Path) -> None:
     time = {"temporal_role": ZONE_ROLE, "grain": "month"}
     try:
         # The UTC hours 2, 6, 23 and 4, where Los Angeles would read 18, 22, 15 and 20.
-        assert runtime.query({"version": 1, "select": hours})["rows"] == [{"hours": 35}]
+        assert runtime.query({"select": hours})["rows"] == [{"hours": 35}]
         codes = [
             [item["code"] for item in runtime.query(query).get("warnings", [])]
             for query in (
@@ -383,7 +384,7 @@ def test_an_injected_adapter_receives_the_role_zone(
     runtime.set_adapter(adapter)
     time = {"temporal_role": ZONE_ROLE, "grain": "day", "start": "2023-12-01", "end": "2023-12-02"}
     try:
-        runtime.query({"version": 1, "select": ZONE_REVENUE, "time": time})
+        runtime.query({"select": ZONE_REVENUE, "time": time})
     finally:
         runtime.close()
     assert adapter.limits
@@ -445,7 +446,6 @@ def test_eastern_zone_month_buckets_keep_their_first_day(
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": ZONE_REVENUE,
                 "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
             }
@@ -463,7 +463,6 @@ def test_eastern_zone_month_buckets_keep_their_first_day(
         )
         result = runtime.query(
             {
-                "version": 1,
                 "select": ZONE_REVENUE,
                 "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
             }

@@ -75,8 +75,7 @@ def workspace(tmp_path: Path) -> Path:
                 "gross": {
                     "question": "Gross",
                     "query": {
-                        "version": 1,
-                        "select": [{"expression": {"metric": "metric.shop.gross"}, "as": "gross"}],
+                        "select": ["metric.shop.gross"],
                     },
                 }
             }

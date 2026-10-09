@@ -113,7 +113,6 @@ def test_a_count_beside_a_second_fact_reads_zero_in_its_empty_group(runtime: Run
     window = {"start": "2017-04-01", "end": "2017-04-08"}
     response = runtime.query(
         {
-            "version": 1,
             "select": _select(revenue=REVENUE, items=ITEMS),
             "group_by": [ORDER_ID],
             "time": {"temporal_role": ORDER_TIME, **window},
@@ -136,7 +135,6 @@ def test_a_count_beside_a_second_fact_reads_zero_in_its_empty_group(runtime: Run
 def test_a_limit_and_a_metric_filter_cannot_change_what_the_guard_sees(runtime: Runtime) -> None:
     """The orders with no items are all-zero once filtered, but the measure has items elsewhere."""
     query = {
-        "version": 1,
         "select": _select(orders=ORDERS),
         "group_by": [ORDER_ID],
         "metric_filters": [{"expression": ITEMS, "op": "=", "value": 0}],
@@ -162,7 +160,6 @@ def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) 
     """Under the query scope; the dataset scope reads 0, as the raw count does, and names the
     value that matched nothing (test_observation_scope)."""
     query = {
-        "version": 1,
         "select": _select(revenue=REVENUE, orders=ORDERS),
         "where": NO_SUCH_STORE,
         "observation_scope": "query",
@@ -195,7 +192,6 @@ def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(
     none = {**REVENUE, "kind": "aggregate", "filter": {"all": NO_SUCH_STORE}}
     response = runtime.query(
         {
-            "version": 1,
             "select": _select(revenue=REVENUE, none=none),
             "observation_scope": scope,
             "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
@@ -216,7 +212,6 @@ def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(
     assert warning["details"]["filters"][0]["value"] == NO_SUCH_STORE[0]["value"]
     real = runtime.query(
         {
-            "version": 1,
             "select": _select(
                 revenue=REVENUE,
                 filtered={
@@ -240,14 +235,13 @@ def test_an_average_of_nothing_is_undefined_not_missing_data(runtime: Runtime) -
         "aggregation": "avg",
         "filter": {"all": NO_SUCH_STORE},
     }
-    response = runtime.query({"version": 1, "select": _select(average=average)})
+    response = runtime.query({"select": _select(average=average)})
     assert response["rows"] == [{"average": None}]
     assert not _warnings(response)
 
 
 def test_no_rows_and_no_time_window_says_nothing_matched(runtime: Runtime) -> None:
     query = {
-        "version": 1,
         "select": _select(revenue=REVENUE),
         "group_by": [STORE],
         "where": NO_SUCH_STORE,
@@ -276,7 +270,6 @@ def test_an_output_with_a_reason_of_its_own_to_be_null_never_gets_the_warning(
     prior = {"kind": "prior_period", "input": ORDERS, "offset": {"unit": "year", "value": 1}}
     response = runtime.query(
         {
-            "version": 1,
             "select": _select(orders=ORDERS, prior_year=prior),
             "time": {"temporal_role": ORDER_TIME, "grain": "month", "end": "2017-06-01"},
         }
@@ -289,7 +282,6 @@ def test_an_output_with_a_reason_of_its_own_to_be_null_never_gets_the_warning(
 def test_a_metric_filter_that_removes_every_group_is_not_missing_data(runtime: Runtime) -> None:
     response = runtime.query(
         {
-            "version": 1,
             "select": _select(revenue=REVENUE),
             "group_by": [STORE],
             "metric_filters": [{"expression": ORDERS, "op": ">", "value": 100000}],
@@ -305,7 +297,7 @@ def test_a_metric_filter_that_removes_every_group_is_not_missing_data(runtime: R
 def test_the_query_mcp_carries_the_warning_at_its_default_verbosity(
     runtime: Runtime, scope: str, code: str
 ) -> None:
-    query = {"version": 1, "select": _select(revenue=REVENUE), "where": NO_SUCH_STORE}
+    query = {"select": _select(revenue=REVENUE), "where": NO_SUCH_STORE}
     query["observation_scope"] = scope
     response = SemanticLayerMCPAdapter(runtime).call_tool("execute", {"query": query})
     assert response["ok"], response["errors"]
@@ -575,8 +567,8 @@ def test_a_window_total_observes_conditional_counts_outside_its_bounds(
                 a=a, b=b, net={"kind": "arithmetic", "op": "subtract", "left": a, "right": b}
             ),
             "time": {"temporal_role": SHOP_MONTH["temporal_role"], **time},
-            "policy_context": {"now": "2023-12-04T00:00:00+00:00"},
-        }
+        },
+        now="2023-12-04T00:00:00+00:00",
     )
     gold = _gold(
         shop,
@@ -679,8 +671,8 @@ def test_a_never_matched_count_preserves_the_window_difference(
                 **bounds,
                 **({"grain": grain} if grain else {}),
             },
-            "policy_context": {"now": "2023-12-04T00:00:00+00:00"},
-        }
+        },
+        now="2023-12-04T00:00:00+00:00",
     )
     gold = _gold(
         only_a_shop,
@@ -721,8 +713,8 @@ def test_a_window_total_without_its_loaded_bucket_check_never_settles_from_sourc
                     "start": "2023-11-27",
                     "end": "2023-12-04",
                 },
-                "policy_context": {"now": "2023-12-04T00:00:00+00:00"},
-            }
+            },
+            now="2023-12-04T00:00:00+00:00",
         )
     finally:
         rt.close()
@@ -843,7 +835,7 @@ def test_a_never_matched_count_respects_the_query_observation_scope(
     response = only_a_shop.query(
         {
             "select": _select(b={"measure": "measure.shop.store_b_orders"}),
-            "where": [{"field": SHOP_STORE, "op": "=", "value": "missing"}],
+            "where": [{"field": SHOP_STORE, "op": "is", "value": "missing"}],
             "observation_scope": scope,
         }
     )
@@ -1011,7 +1003,7 @@ def test_a_never_matched_operand_reads_null_beyond_the_loaded_range_under_datase
         response = rt.query(
             {
                 "select": _select(b=b),
-                "where": [{"field": SHOP_STORE, "op": "=", "value": "a"}],
+                "where": [{"field": SHOP_STORE, "op": "is", "value": "a"}],
                 "time": {**SHOP_MONTH, "start": "2098-01-01", "end": "2098-02-01"},
                 "observation_scope": "dataset",
             }
@@ -1075,8 +1067,8 @@ def test_a_window_total_operand_from_another_relation_needs_its_own_rows(
                     "start": "2023-11-27",
                     "end": "2023-12-04",
                 },
-                "policy_context": {"now": "2023-12-04T00:00:00+00:00"},
-            }
+            },
+            now="2023-12-04T00:00:00+00:00",
         )
         window = "o.ordered_at >= TIMESTAMP '2023-11-27' AND o.ordered_at < TIMESTAMP '2023-12-04'"
         gold = _gold(
@@ -1224,7 +1216,6 @@ def test_branch_row_markers_never_shadow_projected_values(
     }
     response = shop.query(
         {
-            "version": 1,
             "select": _select(**{revenue_alias: SHOP_REVENUE, median_alias: distribution}),
             "group_by": [SHOP_STORE] if by_store else [],
             "time": SHOP_MONTH,
@@ -1395,7 +1386,6 @@ def test_an_output_named_like_a_row_count_keeps_its_name_in_order_by(shop: Runti
     alias = "leaf__measure_shop_revenue__sum__rows"
     response = shop.query(
         {
-            "version": 1,
             "select": _select(**{alias: SHOP_REVENUE}),
             "group_by": [SHOP_STORE],
             "order_by": [{"field": alias, "direction": "desc"}],
@@ -1452,7 +1442,7 @@ def test_a_physical_column_named_like_a_row_count_is_read_as_itself(
     rt = _renamed_amount(tmp_path, extra)
     try:
         items = {"revenue": SHOP_REVENUE, **({"other": EVERY_M1_ROWS} if extra == "read" else {})}
-        response = rt.query({"version": 1, "select": _select(**items)})
+        response = rt.query({"select": _select(**items)})
         (row,) = typed_rows(response)
         assert row["revenue"] == 74
         if extra == "read":  # store b's orders 2, 5, 9 and 10
@@ -1504,7 +1494,6 @@ def test_case_sum_preserves_explicit_else_contributions(
     try:
         response = rt.query(
             {
-                "version": 1,
                 "select": _select(revenue=SHOP_REVENUE),
                 "group_by": [SHOP_STORE] if by_store else [],
                 "time": SHOP_MONTH,
@@ -1566,7 +1555,6 @@ def test_a_case_with_two_branches_is_zero_only_where_no_row_meets_either(
     try:
         response = rt.query(
             {
-                "version": 1,
                 "select": _select(revenue=SHOP_REVENUE),
                 "group_by": [SHOP_STORE],
                 "time": SHOP_MONTH,
@@ -1598,7 +1586,7 @@ def test_a_conditional_sum_is_zero_only_where_no_row_meets_its_condition(shop: R
         "condition": IN_STORE_A,
         "value": {"kind": "column", "column": "amount", "entity": "entity.shop_order"},
     }
-    response = shop.query({"version": 1, "select": _select(a=store_a), "group_by": [SHOP_ORDER]})
+    response = shop.query({"select": _select(a=store_a), "group_by": [SHOP_ORDER]})
     got = {row[SHOP_ORDER]: row["a"] for row in typed_rows(response)}
     gold = _gold(
         shop,
@@ -1814,7 +1802,7 @@ def test_a_source_rollup_count_never_shadows_a_physical_join_column(
     rt = Runtime.from_config(config, source_path=str(package))
     try:
         channel = "dimension.shop_customer_channel"
-        query = {"version": 1, "select": _select(goods=SHOP_GOODS), "group_by": [channel]}
+        query = {"select": _select(goods=SHOP_GOODS), "group_by": [channel]}
         response = rt.query(query)
         got = {(row[channel], row["goods"]) for row in typed_rows(response)}
         join = (
@@ -2018,7 +2006,6 @@ def test_a_sum_whose_rows_all_lack_a_value_is_unknown_and_its_count_is_not(
     window = {"start": "2024-05-01", "end": "2024-07-01", "fill": fill}
     response = shop.query(
         {
-            "version": 1,
             "select": _select(revenue=SHOP_REVENUE, orders=SHOP_ORDERS),
             "group_by": [SHOP_STORE],
             "time": {**SHOP_MONTH, **window},
@@ -2050,7 +2037,6 @@ def test_an_unknown_value_meets_no_threshold_not_even_one_zero_passes(shop: Runt
     }
     response = shop.query(
         {
-            "version": 1,
             "select": _select(orders=SHOP_ORDERS),
             "group_by": [SHOP_STORE],
             "metric_filters": [{"expression": below_5, "op": "=", "value": True}],
@@ -2079,10 +2065,9 @@ def test_a_threshold_zero_passes_on_a_sum_of_measures_keeps_entities_without_row
     }
     response = shop.query(
         {
-            "version": 1,
             "select": _select(orders=SHOP_ORDERS),
             "group_by": [SHOP_ORDER],
-            "where": [{"field": SHOP_ORDER, "op": "!=", "value": 7}],
+            "where": [{"field": SHOP_ORDER, "op": "not", "value": 7}],
             "metric_filters": [{"expression": no_refund, "op": "=", "value": True}],
             # A where filter beside a metric predicate is judged inside the filters only.
             "observation_scope": "query",
@@ -2153,7 +2138,7 @@ def test_a_rollup_leaf_without_a_row_count_is_refused(
 @pytest.mark.parametrize("warehouse", ["duckdb", "postgres", "clickhouse", "snowflake"])
 def test_clickhouse_statements_set_join_use_nulls(config: Any, warehouse: str) -> None:
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    query = {"version": 1, "select": _select(revenue=REVENUE, items=ITEMS), "group_by": [STORE]}
+    query = {"select": _select(revenue=REVENUE, items=ITEMS), "group_by": [STORE]}
     sql = compile_query(config, Registry(config), query)["sql"]
     assert sql.endswith("\nSETTINGS join_use_nulls = 1") is (warehouse == "clickhouse")
 

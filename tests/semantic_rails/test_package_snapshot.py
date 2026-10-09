@@ -284,8 +284,7 @@ def test_in_memory_source_identity_and_table_binding_ignore_cache_order(tmp_path
     assert snapshots[0].source_fingerprint != snapshots[1].source_fingerprint
     assert snapshots[0].semantic_fingerprint == snapshots[1].semantic_fingerprint
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": measure.id}, "as": "n"}],
+        "select": [{"expression": measure.id, "as": "n"}],
         "verbosity": "full",
     }
     cache = LruCompiledSqlCache()

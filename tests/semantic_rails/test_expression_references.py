@@ -458,7 +458,7 @@ def _alias_query(expression, placement):
         # The selected measure reads neither orders nor revenue, so only the
         # metric filter's alias slot can bind the protected object.
         return {
-            "select": [{"expression": {"measure": "measure.jaffle.customer_count"}, "as": "n"}],
+            "select": [{"expression": "measure.jaffle.customer_count", "as": "n"}],
             "group_by": [DIMENSION],
             "metric_filters": [{"expression": expression, "op": ">", "value": 0}],
         }
@@ -772,7 +772,7 @@ def test_sibling_paths_and_recipe_closure(base_config, monkeypatch, action):
             lambda: engine.segment_preview(segment.id, policy_context=context),
             lambda: engine.compile(
                 {
-                    "select": [{"expression": {"metric": recipe.id}, "as": "x"}],
+                    "select": [{"expression": recipe.id, "as": "x"}],
                     "policy_context": context,
                 }
             ),
@@ -1013,7 +1013,7 @@ def test_recipe_filter_spec_spellings(base_config, spelling, action):
             )
         ],
     )
-    query = {"select": [{"expression": {"metric": recipe.id}, "as": "x"}]}
+    query = {"select": [{"expression": recipe.id, "as": "x"}]}
     assert protected in runtime._query_object_ids(query, config)
     access = resource_access.ResourceAccess(
         config, RequestContext(audience="restricted", metric_allowlist=(recipe.id,))
@@ -1527,7 +1527,7 @@ def test_literal_reference_strings_do_not_authorize_objects(base_config):
     engine = runtime.Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     query = {
         "select": [
-            {"expression": {"measure": "measure.jaffle.order_count"}, "as": "count"},
+            {"expression": "measure.jaffle.order_count", "as": "count"},
             {
                 "expression": {"kind": "literal", "value": {"kind": "future", "field": MEASURE}},
                 "as": "label",

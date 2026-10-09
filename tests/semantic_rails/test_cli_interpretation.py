@@ -290,7 +290,7 @@ def test_a_change_in_what_runs_changes_the_restatement(
 
 def test_fill_and_calendar_are_spelled_out() -> None:
     query = {
-        "select": [{"expression": {"measure": "measure.revenue"}}],
+        "select": ["measure.revenue"],
         "time": {"grain": "month", "fill": True, "calendar_id": "fiscal"},
     }
     assert interpretation.describe_query(query, LABELS) == (
@@ -404,7 +404,7 @@ def test_every_query_ir_key_is_spelled_out_or_flagged(block: str, key: str) -> N
 
 
 def test_unknown_ids_are_shown_as_ids() -> None:
-    query = {"select": [{"expression": {"measure": "measure.unknown"}}], "group_by": ["d.x"]}
+    query = {"select": ["measure.unknown"], "group_by": ["d.x"]}
 
     assert interpretation.describe_query(query) == "measure.unknown by d.x"
 

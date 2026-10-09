@@ -553,8 +553,7 @@ def _qualified_primary(*, target: str, predicate: str, entity: str, group_by: st
 
 def _fallback_row(*, target: str, group_by: str, metric_filters: list[dict] | None = None):
     query = {
-        "version": 1,
-        "select": [{"as": "fallback", "expression": {"metric": target}}],
+        "select": [{"as": "fallback", "expression": target}],
         "group_by": [group_by],
     }
     if metric_filters:

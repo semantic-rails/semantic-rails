@@ -93,8 +93,7 @@ def _package(
 
 def _weekly(runtime: Runtime, measure: str, role: str | None = ROLE) -> list[dict]:
     query: dict = {
-        "version": 1,
-        "select": [{"expression": {"measure": f"measure.f4stock.{measure}"}, "as": "v"}],
+        "select": [{"expression": f"measure.f4stock.{measure}", "as": "v"}],
     }
     if role:
         query["time"] = {"temporal_role": role, "grain": "week"}
@@ -106,8 +105,7 @@ def _weekly(runtime: Runtime, measure: str, role: str | None = ROLE) -> list[dic
 def _query_warning_codes(runtime: Runtime, measure: str) -> list[str]:
     result = runtime.query(
         {
-            "version": 1,
-            "select": [{"expression": {"measure": measure}, "as": "v"}],
+            "select": [{"expression": measure, "as": "v"}],
             "time": {"temporal_role": ROLE, "grain": "week"},
         }
     )
@@ -177,16 +175,14 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
         adapter.close()
     assert [row["code"] for row in response["warnings"]].count(WARNING) == 1
     # So does a dry-run validation, and a ratio reading both stocks warns for each.
-    validated = runtime.validate(
-        {"version": 1, "select": [{"expression": {"measure": "measure.f4stock.stars"}, "as": "v"}]}
-    )
+    validated = runtime.validate({"select": [{"expression": "measure.f4stock.stars", "as": "v"}]})
     assert [row["code"] for row in validated["warnings"]].count(WARNING) == 1
     ratio = {
         "kind": "ratio",
         "numerator": {"measure": "measure.f4stock.stars"},
         "denominator": {"measure": "measure.f4stock.visitors_14d"},
     }
-    result = runtime.query({"version": 1, "select": [{"expression": ratio, "as": "v"}]})
+    result = runtime.query({"select": [{"expression": ratio, "as": "v"}]})
     assert [row["code"] for row in result["warnings"]].count(WARNING) == 2
     # A key holding the clock warns about nothing.
     keyed = _package(tmp_path / "keyed", key="[repo, snapshot_date]", clock_class=clock_class)
@@ -303,8 +299,7 @@ def test_a_series_holding_an_as_of_clock_refuses(
             assert _weekly(runtime, "stars", role) == answer
             # Examining the model's other clocks doesn't make them query inputs.
             query = {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.f4stock.stars"}, "as": "v"}],
+                "select": [{"expression": "measure.f4stock.stars", "as": "v"}],
                 "time": {"temporal_role": role, "grain": "week"},
             }
             assert COLLECTED not in bind_query(runtime.config, None, query).object_ids
@@ -364,10 +359,7 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
     ]
     result = Runtime.from_path(str(package)).query(
         {
-            "version": 1,
-            "select": [
-                {"expression": {"measure": "measure.jaffle.lifetime_spend_usd"}, "as": "spend"}
-            ],
+            "select": [{"expression": "measure.jaffle.lifetime_spend_usd", "as": "spend"}],
         }
     )
     assert result["ok"] and result["rows"][0]["spend"] > 0
@@ -403,8 +395,7 @@ def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_fac
     ):
         result = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": f"measure.jaffle.{measure}"}, "as": "v"}],
+                "select": [{"expression": f"measure.jaffle.{measure}", "as": "v"}],
                 "time": {"temporal_role": role, "grain": "month"},
             }
         )

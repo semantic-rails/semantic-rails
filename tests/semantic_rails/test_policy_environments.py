@@ -31,7 +31,7 @@ from semantic_rails.visible_view import hidden_object_ids
 from tests.semantic_rails.conftest import copy_package_config
 
 MEASURE = "measure.jaffle.revenue_usd"
-QUERY = {"select": [{"expression": {"measure": MEASURE}, "as": "revenue"}]}
+QUERY = {"select": [{"expression": MEASURE, "as": "revenue"}]}
 POLICIES = {
     "hidden": ("object_visibility", "hidden", {}),
     "visible_only": ("object_visibility", "visible_only", {"roles": ["finance"]}),

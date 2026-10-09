@@ -149,10 +149,9 @@ def test_schema_normalizes_to_package_config_and_answers_its_metric(tmp_path: Pa
     try:
         result = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.demo.revenue"}, "as": "revenue"}],
+                "select": ["metric.demo.revenue"],
                 "group_by": ["dimension.demo_order_store"],
-                "order_by": [{"field": "dimension.demo_order_store", "direction": "ASC"}],
+                "order_by": [{"field": "dimension.demo_order_store", "direction": "asc"}],
             }
         )
     finally:
@@ -173,12 +172,11 @@ def test_compile_response_contains_sql_profile_and_output_column_lineage(tmp_pat
         # output_columns — the new compact default strips it.
         result = runtime.compile(
             {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.demo.revenue"}, "as": "revenue"}],
+                "select": ["metric.demo.revenue"],
                 "group_by": ["dimension.demo_order_store"],
-                "sql_profile": "compact",
-                "verbosity": "full",
-            }
+            },
+            verbosity="full",
+            sql_profile="compact",
         )
     finally:
         runtime.close()
@@ -215,7 +213,6 @@ def test_compile_response_summarizes_qualified_metric_rollup(runtime_factory):
         # default drops it.
         result = runtime.compile(
             {
-                "version": 1,
                 "select": [
                     {
                         "as": "revenue_usd_from_qualified_customers",
@@ -227,8 +224,9 @@ def test_compile_response_summarizes_qualified_metric_rollup(runtime_factory):
                                 {
                                     "measure": "measure.jaffle.order_count",
                                     "entity": "entity.jaffle_customer",
-                                    "op": ">=",
+                                    "op": "gte",
                                     "value": 10,
+                                    "over": "period",
                                 }
                             ],
                         },
@@ -236,8 +234,8 @@ def test_compile_response_summarizes_qualified_metric_rollup(runtime_factory):
                 ],
                 "group_by": ["dimension.jaffle_store_name"],
                 "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-                "verbosity": "full",
-            }
+            },
+            verbosity="full",
         )
     finally:
         runtime.close()
@@ -258,8 +256,7 @@ def test_sql_render_profiles_change_rendered_shape_without_changing_metadata(tmp
     _write_demo_package(package_dir)
     runtime = Runtime.from_path(str(package_dir))
     query = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.demo.revenue"}, "as": "revenue"}],
+        "select": ["metric.demo.revenue"],
         "group_by": ["dimension.demo_order_store"],
     }
     try:
@@ -297,10 +294,7 @@ def test_http_compile_route_is_compile_only(runtime_factory, package_config_fact
         body = json.dumps(
             {
                 "query": {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                    ],
+                    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 }
             }
         ).encode("utf-8")
@@ -328,7 +322,6 @@ def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
     try:
         ratio = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "as": "pct_revenue_from_session_customers",
@@ -342,9 +335,9 @@ def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
                                     {
                                         "measure": "measure.jaffle.session_starts",
                                         "entity": "entity.jaffle_customer",
-                                        "op": ">",
+                                        "op": "gt",
                                         "value": 0,
-                                        "time_alignment": "same_query_period",
+                                        "over": "period",
                                     }
                                 ],
                             },
@@ -366,7 +359,6 @@ def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
         )
         p80 = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "as": "p80_customer_revenue",
@@ -378,10 +370,11 @@ def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
                                 "kind": "entity_value",
                                 "entity": "entity.jaffle_customer",
                                 "input": {
+                                    "kind": "measure",
                                     "measure": "measure.jaffle.revenue_usd",
                                     "aggregation": "sum",
                                 },
-                                "where": [{"kind": "value_filter", "op": ">", "value": 0}],
+                                "where": [{"kind": "value_filter", "op": "gt", "value": 0}],
                             },
                         },
                     }

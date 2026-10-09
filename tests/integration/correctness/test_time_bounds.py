@@ -60,8 +60,8 @@ def test_relative_bounds_use_one_local_date(request, backend_name, clock, calend
                     "fill": shape == "filled",
                     "range": {"last": {"unit": unit, "value": 1}},
                 },
-                "policy_context": {"now": instant},
-            }
+            },
+            now=instant,
         )
         resolved = result["normalized_query"]["time"]
         assert (resolved["start"], resolved["end"]) == (start, end)
@@ -85,10 +85,10 @@ def test_relative_window_refusal_keeps_the_local_bounds(request, backend_name, w
                     "time": {
                         "temporal_role": ROLE,
                         "grain": "month",
-                        "range": {"last": {"unit": "month", "value": 1}},
+                        "last": {"unit": "month", "value": 1},
                     },
-                    "policy_context": {"now": instant},
-                }
+                },
+                now=instant,
             )
         assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
         assert caught.value.details["start"] == "2024-05-01"
@@ -115,8 +115,8 @@ def test_fiscal_relative_periods_refuse_gregorian_floors(request, backend_name, 
                     "fill": shape == "filled",
                     "range": {"last": {"unit": "quarter", "value": 9}},
                 },
-                "policy_context": {"now": "2026-12-31T02:00:00Z"},
-            }
+            },
+            now="2026-12-31T02:00:00Z",
         )
     assert caught.value.code == "INVALID_QUERY"
     assert caught.value.details["path"] == "time.range.last.unit"

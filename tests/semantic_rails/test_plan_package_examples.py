@@ -16,11 +16,10 @@ ROLE = "temporal_role.subscriptions_account_day_day"
 NAME = "dimension.subscriptions_account_name"
 DAY = "dimension.subscriptions_account_day_day"
 QUERY = {
-    "version": 1,
-    "select": [{"expression": {"metric": "metric.subscriptions.mrr"}, "as": "mrr"}],
+    "select": ["metric.subscriptions.mrr"],
     "group_by": [DAY, NAME],
-    "time": {"temporal_role": ROLE, "grain": "day", "range": {"last": {"unit": "day", "value": 1}}},
-    "order_by": [{"field": "mrr", "direction": "DESC"}, {"field": NAME, "direction": "ASC"}],
+    "time": {"temporal_role": ROLE, "grain": "day", "last": {"unit": "day", "value": 1}},
+    "order_by": [{"field": "mrr", "direction": "desc"}, {"field": NAME, "direction": "ASC"}],
     "limit": 2,
 }
 
@@ -313,7 +312,7 @@ def test_caller_fields_survive_and_resolved_ids_come_from_the_query(subscription
         partial_query={
             "policy_context": NOW,
             "limit": 3,
-            "where": [{"field": NAME, "op": "=", "value": "Acme Data Co"}],
+            "where": [{"field": NAME, "op": "is", "value": "Acme Data Co"}],
         },
     )
     assert result["status"] == "ok", result.get("why")
@@ -674,14 +673,13 @@ def test_hidden_id_in_a_mapping_key_fails_the_example_like_an_absent_one(runtime
                 "keyed_override": {
                     "question": "Total revenue",
                     "query": {
-                        "version": 1,
                         "select": [
                             {
                                 "expression": {
+                                    "kind": "measure",
                                     "measure": "measure.jaffle.revenue_usd",
                                     "aggregation": "sum",
                                 },
-                                "as": "revenue_usd",
                             }
                         ],
                         "temporal_role_overrides": {hidden: "temporal_role.jaffle_order_time"},

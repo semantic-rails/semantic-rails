@@ -437,7 +437,6 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
 
 def _rollup_query(measure: str, aggregation: str, grain: str, **time) -> dict:
     return {
-        "version": 1,
         "select": [
             {
                 "expression": {"kind": "aggregate", "measure": measure, "aggregation": aggregation},

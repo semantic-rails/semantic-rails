@@ -227,7 +227,6 @@ def test_shorthand_prior_month_matches_reference_sql(
     named = {} if aggregation is None else {"aggregation": aggregation}
     result = runtime.query(
         {
-            "version": 1,
             "select": [
                 {
                     "expression": {
@@ -264,15 +263,13 @@ def test_shorthand_prior_month_matches_reference_sql(
 
 def _yoy_query(grain: str) -> dict[str, Any]:
     return {
-        "version": 1,
         "select": [
-            {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue_usd"},
+            "measure.jaffle.revenue_usd",
             {
                 "expression": {
                     "kind": "prior_period",
-                    "measure": "measure.jaffle.revenue_usd",
-                    "offset": -1,
-                    "grain": "year",
+                    "input": "measure.jaffle.revenue_usd",
+                    "offset": {"unit": "year", "value": 1},
                 },
                 "as": "revenue_prior_year",
             },
@@ -324,12 +321,10 @@ def test_inline_yoy_month_grain_aligns_to_prior_year_month(
     assert res.get("ok") is True
     rows = res.get("rows", [])
     # Build a {month → revenue_usd} map for cell-by-cell verification
-    revenue_by_month = {
-        row["temporal_role.jaffle_order_time__month"]: row["revenue_usd"] for row in rows
-    }
+    revenue_by_month = {row["period"]: row["revenue_usd"] for row in rows}
     overlap_checked = 0
     for row in rows:
-        month = row["temporal_role.jaffle_order_time__month"]
+        month = row["period"]
         prior = row.get("revenue_prior_year")
         if prior is None:
             continue
@@ -390,18 +385,16 @@ def test_expression_normalized_away_warning_fires_when_kind_dropped() -> None:
                 "measure": "measure.jaffle.revenue_usd",
             }
         }
-        query = {"metric_filters": []}
+        query = {}
 
     fake_compiled = {"logical_plan": _FakePlan()}
     payload = {
-        "version": 1,
         "select": [
             {
                 "expression": {
                     "kind": "prior_period",
-                    "measure": "measure.jaffle.revenue_usd",
-                    "offset": -1,
-                    "grain": "year",
+                    "input": "measure.jaffle.revenue_usd",
+                    "offset": {"unit": "year", "value": 1},
                 },
                 "as": "revenue_prior_year",
             }
@@ -463,7 +456,6 @@ def test_schema_accepts_prior_period_canonical_ir_in_select() -> None:
     schema = json.loads(SCHEMA_PATH.read_text())
     validator = jsonschema.Draft202012Validator(schema)
     payload = {
-        "version": 1,
         "select": [
             {
                 "expression": {
@@ -489,7 +481,6 @@ def test_schema_rejects_prior_period_shorthand_missing_grain() -> None:
     schema = json.loads(SCHEMA_PATH.read_text())
     validator = jsonschema.Draft202012Validator(schema)
     payload = {
-        "version": 1,
         "select": [
             {
                 "expression": {

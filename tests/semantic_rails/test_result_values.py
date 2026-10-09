@@ -26,8 +26,7 @@ from tests.integration.harness import assert_column_types_match, assert_rows_mat
 from tests.semantic_rails.dbt_warehouse import write_orders_package
 
 QUERY = {
-    "version": 1,
-    "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
     "verbosity": "minimal",
 }
 
@@ -149,7 +148,7 @@ def test_mixed_timestamp_awareness_refuses() -> None:
 
 def test_date_bucket_and_timestamp_bucket_have_one_wire_type(runtime_factory, monkeypatch) -> None:
     runtime = runtime_factory("jaffle_shop")
-    column = "temporal_role.jaffle_order_time__day"
+    column = "period"
     row = {column: date(2026, 9, 30), "orders": 1}
     monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: [row])
     query = {**QUERY, "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"}}
@@ -201,7 +200,7 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
     driver_rows = [duckdb_row, postgres_row]
     columns = []
     if include_snowflake:
-        bucket = "temporal_role.jaffle_order_time__day"
+        bucket = "period"
         columns = [{"field": bucket, "semantic_id": "temporal_role.jaffle_order_time"}]
         with duckdb.connect(":memory:") as connection:
             amount, orders, day = connection.execute(
@@ -480,7 +479,6 @@ def test_runtime_encoding_follows_driver_values_over_authored_types(tmp_path, ca
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [{"expression": expression, "as": "v"}],
                 "group_by": ["dimension.shop_order_status"],
             }

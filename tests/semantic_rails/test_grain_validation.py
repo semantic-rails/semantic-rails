@@ -75,9 +75,7 @@ def test_grain_unsupported_by_specific_role_rejected(runtime_factory):
             {
                 "select": [
                     {
-                        "expression": {
-                            "measure": ("measure.jaffle_monthly_metrics.prior_period_revenue_usd")
-                        },
+                        "expression": "measure.jaffle_monthly_metrics.prior_period_revenue_usd",
                         "as": "prior_revenue",
                     }
                 ],

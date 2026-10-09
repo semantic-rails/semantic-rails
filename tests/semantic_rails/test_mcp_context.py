@@ -49,8 +49,7 @@ def test_nested_tool_calls_enforce_their_own_context(runtime_factory, same_adapt
     execute_args = {
         "mode": "validate",
         "query": {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}}],
+            "select": ["measure.jaffle.order_count"],
         },
     }
     standalone = {
@@ -557,12 +556,12 @@ def _table(rows: list[dict[str, Any]], query: dict[str, Any], *, trend: bool = T
 
 def test_answers_keep_each_value_in_its_column() -> None:
     gold = _table(
-        [{"temporal_role.t__quarter": "2016-07-01 00:00:00", "food": 7971.0, "drink": 9061.0}],
+        [{"period": "2016-07-01 00:00:00", "food": 7971.0, "drink": 9061.0}],
         FOOD_AND_DRINK,
     )
     assert gold["columns"] == [f"{DRINK}:sum", f"{FOOD}:sum", "time"]
     swapped = _table(
-        [{"temporal_role.t__quarter": "2016-07-01", "food": 9061.0, "drink": 7971.0}],
+        [{"period": "2016-07-01", "food": 9061.0, "drink": 7971.0}],
         FOOD_AND_DRINK,
     )
     assert not mcp_context.answers_match(gold, swapped, ordered=False)
@@ -575,13 +574,11 @@ def test_answers_keep_each_value_in_its_column() -> None:
         ],
     }
     noisy = _table(
-        [{"d": 9061.000000000186, "temporal_role.t__quarter": "2016-07-01", "f": 7970.9999999999}],
+        [{"d": 9061.000000000186, "period": "2016-07-01", "f": 7970.9999999999}],
         renamed,
     )
     assert mcp_context.answers_match(gold, noisy, ordered=False)
-    changed = _table(
-        [{"d": 9061.5, "temporal_role.t__quarter": "2016-07-01", "f": 7971.0}], renamed
-    )
+    changed = _table([{"d": 9061.5, "period": "2016-07-01", "f": 7971.0}], renamed)
     assert not mcp_context.answers_match(gold, changed, ordered=False)
 
 
@@ -644,8 +641,7 @@ def test_one_value_computed_another_way_still_aligns() -> None:
 
 def test_answer_rows_compare_as_sets_unless_ranked() -> None:
     query = {
-        "version": 1,
-        "select": [{"as": "r", "expression": {"measure": REVENUE}}],
+        "select": [{"as": "r", "expression": REVENUE}],
         "group_by": [STORE],
     }
     rows = [{STORE: "Brooklyn", "r": 1.0}, {STORE: "Philadelphia", "r": 2.0}]
@@ -654,9 +650,7 @@ def test_answer_rows_compare_as_sets_unless_ranked() -> None:
     assert mcp_context.answers_match(gold, reversed_rows, ordered=False)
     assert not mcp_context.answers_match(gold, reversed_rows, ordered=True)
     # Without a trend, time buckets are not part of the answer.
-    bucketed = _table(
-        [{**row, "temporal_role.t__year": "2017-01-01"} for row in rows], query, trend=False
-    )
+    bucketed = _table([{**row, "period": "2017-01-01"} for row in rows], query, trend=False)
     assert mcp_context.answers_match(gold, bucketed, ordered=True)
 
 

@@ -142,8 +142,7 @@ def test_minimal_inspect_preserves_starter_query_literals(
     adapter: SemanticLayerMCPAdapter, value: Any
 ) -> None:
     query = {
-        "version": 1,
-        "where": [{"field": "dimension.jaffle_store_name", "op": "eq", "value": value}],
+        "where": [{"field": "dimension.jaffle_store_name", "op": "is", "value": value}],
     }
     response = adapter.call_tool(
         "inspect",
@@ -157,7 +156,7 @@ def test_minimal_inspect_preserves_starter_query_literals(
 
 
 def test_minimal_inspect_preserves_nested_constraint_and_example_payloads() -> None:
-    query = {"where": [{"field": "dimension.example", "op": "eq", "value": None}]}
+    query = {"where": [{"field": "dimension.example", "op": "missing", "value": True}]}
     card = {
         "id": "measure.example",
         "kind": "measure",

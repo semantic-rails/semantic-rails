@@ -264,7 +264,7 @@ def test_grouping_spans_preserve_the_grouping_terms(intent: str) -> None:
 
 
 def test_unknown_construct_words_need_the_realized_construct(jaffle: Runtime) -> None:
-    query = {"select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}}]}
+    query = {"select": ["measure.jaffle.revenue_usd"]}
     intent = "revenue at week grain"
     assert unconsumed_unknown_words(jaffle, intent, query) == ["grain"]
     assert unconsumed_unknown_words(jaffle, intent, {**query, "time": {"grain": "week"}}) == []
@@ -299,7 +299,7 @@ def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
         ):
             assert plan_payload(runtime, intent=intent)["status"] == "ok"
         query = {
-            "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}}],
+            "select": ["measure.jaffle.revenue_usd"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
         }
         assert unconsumed_catalog_words(runtime, "revenue by order date", query) == []
@@ -309,7 +309,6 @@ def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
 
 def test_a_prior_period_shift_never_consumes_a_grouping(jaffle: Runtime) -> None:
     query = {
-        "version": 1,
         "select": [
             {
                 "as": "prior_revenue",
@@ -388,7 +387,7 @@ def test_a_selected_count_valued_measure_reads_number_of_without_an_override(
     runtime = Runtime.from_config(
         replace(config, measures=[*config.measures, visitor]), source_path=jaffle.source_path
     )
-    query = {"version": 1, "select": [{"expression": {"measure": visitor.id}}]}
+    query = {"select": [visitor.id]}
     try:
         assert unconsumed_catalog_words(runtime, "number of visitors", query) == []
         # Naming the count elsewhere in the catalog doesn't let a non-count sum consume it.
@@ -479,11 +478,11 @@ def test_an_unknown_modifier_is_not_ready(jaffle: Runtime, intent: str, terms: l
 
 def test_an_honored_inclusion_clause_consumes_its_marker(jaffle: Runtime) -> None:
     query = {
-        "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}}],
+        "select": ["measure.jaffle.revenue_usd"],
         "where": [
-            {"field": STORE, "op": "!=", "value": "Brooklyn"},
-            {"field": STORE, "op": "!=", "value": "New Orleans"},
-            {"field": STORE, "op": "=", "value": "Philadelphia"},
+            {"field": STORE, "op": "not", "value": "Brooklyn"},
+            {"field": STORE, "op": "not", "value": "New Orleans"},
+            {"field": STORE, "op": "is", "value": "Philadelphia"},
         ],
     }
     intent = "revenue excluding Brooklyn; without New Orleans, including Philadelphia"

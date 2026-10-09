@@ -124,10 +124,9 @@ def frontends(runtime_factory, monkeypatch):
                         "request_id": "transport-parity",
                         "verbosity": "full",
                         "query": {
-                            "version": 1,
                             "select": [
                                 {
-                                    "expression": {"measure": "measure.jaffle.order_count"},
+                                    "expression": "measure.jaffle.order_count",
                                     "as": "orders",
                                 }
                             ],

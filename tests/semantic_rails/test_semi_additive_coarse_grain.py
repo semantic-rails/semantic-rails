@@ -139,10 +139,7 @@ def test_multi_key_snapshot_sum_across_entities_is_preserved(runtime):
     collapse genuine multi-key snapshot tables to a single row."""
     result = runtime.query(
         {
-            "version": 1,
-            "select": [
-                {"expression": {"metric": "metric.sales.inventory_on_hand_eop"}, "as": "inv"}
-            ],
+            "select": [{"expression": "metric.sales.inventory_on_hand_eop", "as": "inv"}],
             "time": {
                 "temporal_role": "temporal_role.jaffle_inventory_day",
                 "grain": "month",

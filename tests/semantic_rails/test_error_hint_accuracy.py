@@ -39,9 +39,7 @@ def test_unsupported_aggregation_hint_uses_measure_allowlist(package_config_fact
         config.measures[0], allowed_aggregations=["sum", "avg"], default_aggregation="count"
     )
     config = replace(config, measures=[measure])
-    query = normalize_query(
-        {"select": [{"expression": {"kind": "measure", "measure": measure.id}, "as": "value"}]}
-    )
+    query = normalize_query({"select": [{"expression": measure.id, "as": "value"}]})
     with pytest.raises(SemanticLayerError) as raised:
         _bind_measure(MeasureRefExpr(measure=measure.id, aggregation=aggregation), config, query)
 
@@ -77,7 +75,7 @@ def test_unsupported_aggregation_hint_names_the_actual_default(package_config_fa
         config.measures[0], allowed_aggregations=["sum", "avg", "max"], default_aggregation=default
     )
     config = replace(config, measures=[measure])
-    query = normalize_query({"select": [{"expression": {"measure": measure.id}}]})
+    query = normalize_query({"select": [measure.id]})
     with pytest.raises(SemanticLayerError) as raised:
         _bind_measure(MeasureRefExpr(measure=measure.id, aggregation="count"), config, query)
     hint = exception_issue(raised.value, stage="bind")["recovery_hints"][0]
@@ -166,7 +164,7 @@ def test_a_typo_near_a_hidden_object_is_not_answered_with_it(package_config_fact
     runtime = Runtime.from_config(
         replace(config, semantic_policies=[policy]), source_path=str(root)
     )
-    query = {"select": [{"expression": {"measure": "measure.jaffle.order_cont"}, "as": "v"}]}
+    query = {"select": [{"expression": "measure.jaffle.order_cont", "as": "v"}]}
     try:
         error = enrich_object_not_found(
             SemanticLayerError("OBJECT_NOT_FOUND", "Unknown measure 'measure.jaffle.order_cont'"),

@@ -311,8 +311,7 @@ def _ask(
     runtime: Runtime, measure: str, *, group_by: str = "", where=()
 ) -> dict[Any, float | None]:
     query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": "value", "expression": {"measure": f"measure.crew.{measure}"}}],
+        "select": [{"as": "value", "expression": f"measure.crew.{measure}"}],
         "where": list(where),
     }
     if group_by:
@@ -389,10 +388,9 @@ def test_measures_folded_into_one_leaf_keep_the_rows_too(runtime, package, gold)
     it must keep the rows with no match (boardings 7 and 8, under NULL) as a single measure
     does."""
     query = {
-        "version": 1,
         "select": [
-            {"as": "boardings", "expression": {"measure": "measure.crew.boarding_count"}},
-            {"as": "fare", "expression": {"measure": "measure.crew.fare"}},
+            {"as": "boardings", "expression": "measure.crew.boarding_count"},
+            "measure.crew.fare",
         ],
         "group_by": [EMPLOYEE],
     }
@@ -475,8 +473,7 @@ def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
     for name, body in STOCK_FILES.items():
         (root / name).write_text(textwrap.dedent(body))
     query = {
-        "version": 1,
-        "select": [{"as": "value", "expression": {"measure": "measure.stk.level"}}],
+        "select": [{"as": "value", "expression": "measure.stk.level"}],
         "group_by": ["dimension.stk_region_region_name"],
         "time": {"temporal_role": "temporal_role.stk_stock_level_snapshot_date", "grain": "month"},
     }
@@ -656,10 +653,9 @@ def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
         base, package=dataclasses.replace(base.package, warehouse=warehouse)
     )
     query = {
-        "version": 1,
-        "select": [{"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}],
+        "select": [{"as": "value", "expression": "measure.crew.boarding_count"}],
         "group_by": [CITY],
-        "where": [{"field": ROLE, "op": "IS NULL"}],
+        "where": [{"field": ROLE, "op": "missing", "value": True}],
         "observation_scope": "query",  # the leaf's joins alone, without a dataset probe's
     }
 
@@ -669,7 +665,7 @@ def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
     assert re.findall(r"\b(\w+) JOIN\b", sql) == [JOIN_TYPE[warehouse]] * 3
 
 
-BOARDED_MONTH = "temporal_role.crew_boarding_boarded_at__month"
+BOARDED_MONTH = "period"
 BOARDED_MONTHLY = {"temporal_role": "temporal_role.crew_boarding_boarded_at", "grain": "month"}
 DEPARTED_MONTHLY = {"temporal_role": "temporal_role.crew_leg_departure_date", "grain": "month"}
 LOOKUP_TABLES = ("airports", "legs", "people", "crew_roster")
@@ -742,7 +738,7 @@ def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, package
 
     rows = runtime.query(query)["rows"]
 
-    role = "temporal_role.crew_leg_departure_date__month"
+    role = "period"
     assert all(row[role] is not None for row in rows)
     assert sum(row["value"] for row in rows) == 10  # boardings 1-10
     assert {
@@ -786,11 +782,11 @@ def test_a_dimension_only_query_keeps_the_time_role_inner(
     record (11, 12, 13) has no month: it stays out, as the time role does in every leaf, and
     never shows a NULL month. The airport hop, which only the grouping reads, keeps its rows
     (boardings 8-10, whose airport has no record, under NULL)."""
-    query = {"version": 1, "group_by": group_by, "time": DEPARTED_MONTHLY}
+    query = {"group_by": group_by, "time": DEPARTED_MONTHLY}
 
     rows = runtime.query(query)["rows"]
 
-    role = "temporal_role.crew_leg_departure_date__month"
+    role = "period"
     months = {row[BOARDING]: datetime.fromisoformat(row[role]).month for row in rows}
     assert months == gold(
         "SELECT b.boarding_id, (SELECT MONTH(l.departure_date) FROM legs AS l"
@@ -853,8 +849,7 @@ def test_a_contextual_filter_read_through_a_lookup_does_not_pair_with_a_null_gro
     record): it reads NULL there, and must not pair with P8's two boardings with no leg, which
     the filter's set holds under NULL. Only P10's meal on L1 qualifies."""
     query = {
-        "version": 1,
-        "select": [{"as": "value", "expression": {"measure": "measure.crew.meal_count"}}],
+        "select": [{"as": "value", "expression": "measure.crew.meal_count"}],
         "group_by": [LEG],
         "metric_filters": [_contextual_person_filter("boarding_count", 2)],
     }
@@ -876,8 +871,7 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(package):
         dimensions=[CITY],
     )
     query = {
-        "version": 1,
-        "select": [{"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}],
+        "select": [{"as": "value", "expression": "measure.crew.boarding_count"}],
         "group_by": [CITY, EMPLOYEE],
     }
 
@@ -946,8 +940,7 @@ def test_a_metric_filter_leaves_the_query_s_own_lookups_left(
     package, measure, group_by, left_joins
 ):
     query = {
-        "version": 1,
-        "select": [{"as": "value", "expression": {"measure": f"measure.crew.{measure}"}}],
+        "select": [{"as": "value", "expression": f"measure.crew.{measure}"}],
         "group_by": [group_by],
         "metric_filters": [_contextual_person_filter("boarding_count", 2)],
     }

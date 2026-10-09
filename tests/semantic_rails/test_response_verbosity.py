@@ -25,8 +25,7 @@ from __future__ import annotations
 import json
 
 _BASE_QUERY = {
-    "version": 1,
-    "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
     "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
     "limit": 3,
 }
@@ -442,7 +441,7 @@ def test_http_query_payload_hoists_verbosity_and_sql_profile():
     from semantic_rails.http_core import query_payload
 
     body = {
-        "query": {"version": 1, "select": []},
+        "query": {"select": []},
         "verbosity": "minimal",
         "sql_profile": "off",
     }
@@ -458,7 +457,7 @@ def test_http_query_payload_in_query_values_win_over_outer():
     from semantic_rails.http_core import query_payload
 
     body = {
-        "query": {"version": 1, "select": [], "verbosity": "full"},
+        "query": {"select": [], "verbosity": "full"},
         "verbosity": "minimal",
     }
     out = query_payload(body)

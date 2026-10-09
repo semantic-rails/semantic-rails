@@ -303,7 +303,7 @@ def test_segment_preview_and_count_bind_the_filter(runtime):
 
 
 def test_rollups_are_not_routed_under_a_row_filter(runtime):
-    query = {"version": 1, "select": [{"expression": REVENUE, "as": "revenue"}], "time": MONTH}
+    query = {"select": [{"expression": REVENUE, "as": "revenue"}], "time": MONTH}
     internal = runtime.compile(_q(query, audience="internal"))
     filtered = runtime.query(_q(query, customer_id=B))
     assert "FROM order_monthly" in internal["rendered_sql"]
@@ -613,7 +613,6 @@ def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
 def test_observation_and_coverage_never_see_another_customers_rows(runtime, tenant, window_total):
     count = {"measure": "measure.rf.s2_count"}
     query = {
-        "version": 1,
         "select": [{"expression": REVENUE, "as": "revenue"}, {"expression": count, "as": "v"}],
         "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
     }
@@ -654,14 +653,13 @@ def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
     runtime = Runtime.from_path(str(package))
     adapter = runtime._get_adapter()
     query = {
-        "version": 1,
         "select": [
             {"expression": REVENUE, "as": "v"},
-            {"expression": {"measure": "measure.rf.order_count"}, "as": "n"},
+            {"expression": "measure.rf.order_count", "as": "n"},
         ],
         "where": [
-            {"field": "dimension.rf_order_ordered_at", "op": ">=", "value": "2026-01-01"},
-            {"field": "dimension.rf_order_ordered_at", "op": "<", "value": "2026-02-01"},
+            {"field": "dimension.rf_order_ordered_at", "op": "gte", "value": "2026-01-01"},
+            {"field": "dimension.rf_order_ordered_at", "op": "lt", "value": "2026-02-01"},
         ],
     }
     gold = adapter._db.conn.execute(
@@ -677,7 +675,6 @@ def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
 
 def test_every_tagged_probe_gets_both_policy_filters(runtime):
     query = {
-        "version": 1,
         "select": [{"expression": REVENUE, "as": "v"}],
         "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
     }

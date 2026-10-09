@@ -178,7 +178,7 @@ def test_every_warehouse_probes_with_plain_ctes(package: Path, warehouse: str) -
     """The probe is a first-row CTE counted and cross-joined, which every warehouse runs."""
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    query = {"version": 1, "select": _select(qty=QTY), "where": APPLES_AT_S5}
+    query = {"select": _select(qty=QTY), "where": APPLES_AT_S5}
     sql = compile_query(config, Registry(config), query)["sql"]
     assert "observed_1_rows AS" in sql and "LIMIT 1" in sql and "CROSS JOIN observed_1" in sql
     assert "EXISTS" not in sql
@@ -639,7 +639,7 @@ def test_the_package_default_switches_the_scope_and_a_query_overrides_it(
 
 def test_an_unknown_scope_is_an_invalid_query(package: Path) -> None:
     config = load_package_config(str(package))
-    query = {"version": 1, "select": _select(qty=QTY), "observation_scope": "everything"}
+    query = {"select": _select(qty=QTY), "observation_scope": "everything"}
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), query)
     assert raised.value.code == "INVALID_QUERY"
@@ -655,7 +655,7 @@ def test_a_shape_that_cannot_judge_outside_its_filters_refuses(package: Path) ->
         "function": "median",
         "over": {"kind": "entity_value", "entity": "entity.obs_sale", "input": QTY},
     }
-    query = {"version": 1, "select": _select(qty=QTY, median=median), "where": APPLES_AT_S5}
+    query = {"select": _select(qty=QTY, median=median), "where": APPLES_AT_S5}
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), query)
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
@@ -677,7 +677,7 @@ def test_a_nested_case_that_cannot_tell_unknown_from_no_rows_refuses(package: Pa
                 "then": {"kind": "column", "column": "qty"}}]}}  # fmt: skip
     doubled = replace(sales, id="measure.obs.doubled_east", expr=parse_config_expression(expr))
     config = replace(config, measures=[*config.measures, doubled])
-    query = {"version": 1, "select": _select(d={"measure": doubled.id}), "where": APPLES_AT_S5}
+    query = {"select": _select(d={"measure": doubled.id}), "where": APPLES_AT_S5}
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), query)
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"

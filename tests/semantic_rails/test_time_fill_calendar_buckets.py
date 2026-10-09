@@ -87,9 +87,7 @@ def _query_buckets(runtime, *, bounded=True, wide=False, revenue=False, grain="w
             start="2024-04-29" if wide else "2024-05-06", end="2024-06-03" if wide else "2024-05-20"
         )
     select = {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "value"}
-    rows = runtime.query({"version": 1, "select": [select if revenue else ORDERS], "time": time})[
-        "rows"
-    ]
+    rows = runtime.query({"select": [select if revenue else ORDERS], "time": time})["rows"]
     alias = f"{ROLE}__{grain}"
     return [(datetime.fromisoformat(str(row[alias])).date(), row["value"]) for row in rows]
 
@@ -190,7 +188,7 @@ def test_fill_preserves_observed_zero_and_absent_coverage(calendar_runtime, reve
 
 def test_an_authored_default_calendar_never_binds_the_fill():
     config = load_package_config(str(ROOT))
-    query = {"version": 1, "select": [ORDERS], "time": {"temporal_role": ROLE, "grain": "week"}}
+    query = {"select": [ORDERS], "time": {"temporal_role": ROLE, "grain": "week"}}
     plan = compile_query(config, Registry(config), query)["logical_plan"]
     for bounds, day in (({}, None), ({"start": "2024-05-06", "end": "2024-05-20"}, "date_day")):
         filled = replace(plan, time={**plan.time, **bounds, "fill": True})
@@ -251,7 +249,7 @@ def test_a_non_default_calendar_refuses_on_every_leaf_path(bound, time, shape):
 
 def test_a_bound_clock_without_a_grain_does_not_bucket():
     config = _bound_to_fiscal(load_package_config(str(ROOT)))
-    query = {"version": 1, "select": [ORDERS], "time": {"temporal_role": ROLE, **WINDOW}}
+    query = {"select": [ORDERS], "time": {"temporal_role": ROLE, **WINDOW}}
 
     assert compile_query(config, Registry(config), query)["sql"]
 
@@ -260,7 +258,6 @@ def test_a_bound_clock_without_a_grain_does_not_bucket():
 def test_lowering_refuses_a_plan_that_skipped_validation(bypass):
     config = load_package_config(str(ROOT))
     query = {
-        "version": 1,
         "select": [ORDERS],
         "time": {"temporal_role": ROLE, "grain": "quarter", "fill": True},
     }

@@ -18,7 +18,6 @@ def test_ungrained_time_projection_fires_for_scalar_revenue_with_temporal_role(r
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
@@ -54,7 +53,6 @@ def test_ungrained_warning_suppressed_when_grain_is_set(runtime_factory):
     try:
         result = runtime.compile(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -89,7 +87,6 @@ def test_ungrained_warning_suppressed_when_group_by_present(runtime_factory):
     try:
         result = runtime.compile(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -133,14 +130,12 @@ def test_ungrained_warning_suppressed_for_inline_window_expressions(runtime_fact
     # WINDOWED_TIME_FILTER_UNSUPPORTED error before we get to check
     # warnings). Pins the suppression contract precisely.
     payload = {
-        "version": 1,
         "select": [
             {
                 "expression": {
                     "kind": "prior_period",
-                    "measure": "measure.jaffle.revenue_usd",
-                    "offset": -1,
-                    "grain": "month",
+                    "input": "measure.jaffle.revenue_usd",
+                    "offset": {"unit": "month", "value": 1},
                 },
                 "as": "prior_month_revenue",
             }
@@ -184,17 +179,17 @@ def test_ungrained_warning_suppressed_for_nested_inline_window():
     from semantic_rails.runtime import _ungrained_time_projection_warnings
 
     payload = {
-        "version": 1,
         "select": [
             {
                 "expression": {
                     "kind": "ratio",
                     "numerator": {
                         "kind": "rolling",
-                        "input": {"measure": "measure.jaffle.revenue_usd"},
+                        "input": "measure.jaffle.revenue_usd",
                         "window": {"unit": "day", "value": 7},
                     },
                     "denominator": {
+                        "kind": "measure",
                         "aggregation": "sum",
                         "measure": "measure.jaffle.revenue_usd",
                     },

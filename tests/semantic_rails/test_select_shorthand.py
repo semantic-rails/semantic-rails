@@ -298,6 +298,6 @@ def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory):
 
 
 def test_partial_query_still_accepts_an_empty_select_item():
-    state = normalize_partial_query({"select": [{"as": "x"}, {"metric": METRIC}]})
+    state = normalize_partial_query({"select": [{"as": "x"}, METRIC]})
     assert [item.as_ for item in state.select] == ["x", "expr_2"]
     assert state.select[0].expression is None

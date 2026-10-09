@@ -159,7 +159,7 @@ def test_python_policy_keys_are_refused_before_binding(
         environments=["production"] if scoped else [],
     )
     engine = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
-    query = {"select": [{"expression": {"measure": MEASURE}}]}
+    query = {"select": [MEASURE]}
     try:
         if warm_cache:
             assert engine.compile(query)["rendered_sql"]
@@ -216,9 +216,9 @@ def test_bundled_access_policy_refuses_external_and_allows_internal():
         for audience, allowed in [("external_partner", False), ("internal", True)]:
             result = engine.validate(
                 {
-                    "select": [{"expression": {"measure": MEASURE}}],
-                    "policy_context": {"audience": audience},
-                }
+                    "select": [MEASURE],
+                },
+                context={"audience": audience},
             )
             assert result["ok"] is allowed
             if not allowed:
@@ -277,7 +277,7 @@ def test_runtime_refuses_invalid_policy_before_rendering(
     )
     governed = replace(config, semantic_policies=[] if warm_cache else [policy])
     engine = Runtime.from_config(governed, source_path="configs/semantic_rails/jaffle_shop")
-    query = {"select": [{"expression": {"measure": MEASURE}}]}
+    query = {"select": [MEASURE]}
     if warm_cache:
         assert engine.compile(query)["rendered_sql"]
         engine._config.semantic_policies.append(policy)

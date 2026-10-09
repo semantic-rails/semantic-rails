@@ -245,7 +245,7 @@ def test_where_operator_refusal_names_query_operators_and_null_form(runtime_fact
     try:
         adapter = SemanticLayerMCPAdapter(runtime)
         query = {
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}}],
+            "select": ["measure.jaffle.order_count"],
             "where": [{"field": "dimension.jaffle_store_name", "op": op}],
         }
         response = adapter.call_tool("execute", {"query": query, "mode": "validate"})
@@ -285,7 +285,6 @@ def test_inline_prior_period_with_offset_alias_returns_authored_alternative(runt
         # because the IR-shape path recursed on a missing ``input``.
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -328,13 +327,9 @@ def test_path_not_found_envelope_carries_reachable_targets_and_hint(runtime_fact
         # PATH_NOT_FOUND scenario.
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                        },
+                        "expression": "measure.jaffle.revenue_usd",
                         "as": "rev",
                     }
                 ],
@@ -426,7 +421,6 @@ def test_parameter_schema_disclosed_for_percentile_unknown_key(runtime_factory):
         # ``{p: float in [0, 1]}`` for percentile — two round-trips.
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -462,13 +456,9 @@ def test_cross_position_key_suggestion_on_order_by_with_dimension(runtime_factor
         # belongs in ``where``.
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.order_count",
-                        },
+                        "expression": "measure.jaffle.order_count",
                         "as": "orders",
                     }
                 ],
@@ -499,13 +489,9 @@ def test_object_not_found_with_no_close_matches_routes_to_discover(runtime_facto
         # ``zxqv_nonsense`` must return [] + a discover handoff.
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.zxqv_nonsense",
-                        },
+                        "expression": "measure.jaffle.zxqv_nonsense",
                         "as": "x",
                     }
                 ],
@@ -538,7 +524,6 @@ def test_unsupported_aggregation_discloses_parameter_schema(runtime_factory):
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -576,13 +561,9 @@ def test_path_not_found_envelope_lists_compatible_dimensions(runtime_factory):
         # measures hit PATH_NOT_FOUND when grouped by its dimensions.
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                        },
+                        "expression": "measure.jaffle.revenue_usd",
                         "as": "rev",
                     }
                 ],
@@ -616,7 +597,6 @@ def test_dict_in_where_value_is_rejected_with_structured_envelope(runtime_factor
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -828,10 +808,9 @@ def test_windowed_time_filter_unsupported_emits_widen_and_drop_hints(runtime_fac
     try:
         result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"metric": "metric.sales.prior_week_revenue_direct"},
+                        "expression": "metric.sales.prior_week_revenue_direct",
                         "as": "v",
                     }
                 ],
@@ -879,7 +858,6 @@ def test_empty_time_window_reports_diagnostics_warning_and_data_coverage(runtime
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -931,7 +909,6 @@ def test_where_uses_field_key_and_rejects_legacy_dimension_key(runtime_factory):
         # Canonical shape: ``field`` works.
         ok_result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -942,7 +919,9 @@ def test_where_uses_field_key_and_rejects_legacy_dimension_key(runtime_factory):
                         "as": "rev",
                     }
                 ],
-                "where": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}],
+                "where": [
+                    {"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
+                ],
                 "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             }
         )
@@ -953,7 +932,6 @@ def test_where_uses_field_key_and_rejects_legacy_dimension_key(runtime_factory):
         # pointing at the canonical key.
         bad_result = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -989,6 +967,7 @@ def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory, outer_verbosity)
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.order_count",
                     "aggregation": "count_distinct",
                 },
@@ -996,6 +975,7 @@ def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory, outer_verbosity)
             },
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.item_count",
                     "aggregation": "count_distinct",
                 },

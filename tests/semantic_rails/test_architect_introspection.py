@@ -324,8 +324,7 @@ def test_special_relation_names_round_trip_to_an_executable_draft(
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.amount"}, "as": "amount"}],
+                "select": ["measure.shop.amount"],
                 "limit": 5,
             }
         )["rows"]
@@ -584,10 +583,7 @@ def test_a_drafted_model_validates_against_the_warehouse(tmp_path: Path) -> None
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.shop.customer_count"}, "as": "customers"}
-                ],
+                "select": [{"expression": "measure.shop.customer_count", "as": "customers"}],
                 "limit": 5,
             }
         )["rows"]
@@ -626,10 +622,9 @@ def test_special_physical_measure_names_execute_as_literal_columns(
     try:
         rows = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"measure": f"measure.shop.{measure_id}"},
+                        "expression": f"measure.shop.{measure_id}",
                         "as": "actual",
                     }
                 ],
@@ -722,8 +717,7 @@ def test_container_columns_are_diagnosed_and_scalar_draft_executes(tmp_path: Pat
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.amount"}, "as": "amount"}],
+                "select": ["measure.shop.amount"],
                 "limit": 5,
             }
         )["rows"]

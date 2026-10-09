@@ -38,9 +38,7 @@ _MINIMUM_ARGS: dict[str, dict[str, Any]] = {
     "inspect": {"object_id": "measure.jaffle.revenue_usd"},
     "valid-values": {"dimension_id": "dimension.jaffle.store_name"},
     "plan": {"intent": "revenue"},
-    "execute": {
-        "query": {"select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "r"}]}
-    },
+    "execute": {"query": {"select": [{"expression": "measure.jaffle.revenue_usd", "as": "r"}]}},
     "segment": {"segment_id": "segment.jaffle.high_value_customers", "action": "validate"},
 }
 

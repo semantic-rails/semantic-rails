@@ -486,7 +486,6 @@ def test_only_the_measures_own_entity_or_the_caller_settles_a_shared_grouping(
     ambiguous: bool,
 ) -> None:
     query = {
-        "version": 1,
         "select": [{"as": measure, "expression": {"measure": f"measure.jaffle.{measure}"}}],
         "group_by": group_by,
     }

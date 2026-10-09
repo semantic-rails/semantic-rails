@@ -319,7 +319,7 @@ def test_a_claim_level_ratio_reads_the_carried_total(runtime: Runtime) -> None:
         "numerator": {"measure": _measure("reserve")},
         "denominator": {"measure": CARRIED},
     }
-    payload = {"version": 1, "select": [{"expression": ratio, "as": "v"}], "group_by": [CLAIM_KEY]}
+    payload = {"select": [{"expression": ratio, "as": "v"}], "group_by": [CLAIM_KEY]}
     rows = _rows(runtime, payload)
     assert (rows["K1"], rows["K2"], rows["K8"]) == (2.0, 3.0, 0.5)
 

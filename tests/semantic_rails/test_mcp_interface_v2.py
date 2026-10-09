@@ -31,11 +31,10 @@ ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
 SEGMENT = "segment.jaffle.high_value_customers"
 QUERY = {
-    "version": 1,
-    "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+    "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
     "group_by": [STORE],
     "time": {"temporal_role": ORDER_TIME, "grain": "month", "start": "2017-01-01"},
-    "order_by": [{"field": "time", "direction": "ASC"}, {"field": STORE, "direction": "ASC"}],
+    "order_by": [{"field": "period", "direction": "asc"}, {"field": STORE, "direction": "ASC"}],
 }
 # A time role without a grain or window groups by the raw timestamp: thousands of rows.
 UNGRAINED = {

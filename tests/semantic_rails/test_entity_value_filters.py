@@ -18,7 +18,6 @@ FIELD_FILTER = {"field": DIMENSION, "op": ">", "value": 1}
 
 def _query(where):
     return {
-        "version": 1,
         "select": [
             {
                 "as": "average",
@@ -28,7 +27,7 @@ def _query(where):
                     "over": {
                         "kind": "entity_value",
                         "entity": "entity.jaffle_order",
-                        "input": {"measure": "measure.jaffle.revenue_usd"},
+                        "input": "measure.jaffle.revenue_usd",
                         "where": where,
                     },
                 },

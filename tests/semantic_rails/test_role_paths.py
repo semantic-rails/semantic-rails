@@ -346,8 +346,7 @@ def _allow_external_package_paths(monkeypatch):
 
 def _by_city_query() -> dict:
     return {
-        "version": 1,
-        "select": [{"expression": {"measure": SEATS}, "as": "seats"}],
+        "select": [{"expression": SEATS, "as": "seats"}],
         "group_by": [CITY],
     }
 

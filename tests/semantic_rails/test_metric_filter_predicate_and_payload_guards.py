@@ -142,7 +142,7 @@ def test_measure_metric_filter_with_value_keeps_threshold_semantics(package_conf
 @pytest.mark.parametrize("bad_item", ["oops", 7, ["nested"]])
 def test_non_dict_metric_filters_item_is_invalid_query(bad_item):
     with pytest.raises(SemanticLayerError) as exc:
-        normalize_query({"version": 1, "select": _select_revenue(), "metric_filters": [bad_item]})
+        normalize_query({"select": _select_revenue(), "metric_filters": [bad_item]})
     assert exc.value.code == "INVALID_QUERY"
     assert exc.value.details["path"] == "metric_filters[0]"
     assert exc.value.details["received_type"] == type(bad_item).__name__
@@ -150,9 +150,7 @@ def test_non_dict_metric_filters_item_is_invalid_query(bad_item):
 
 def test_non_dict_metric_filters_item_is_invalid_query_in_partial_normalize():
     with pytest.raises(SemanticLayerError) as exc:
-        normalize_partial_query(
-            {"version": 1, "select": _select_revenue(), "metric_filters": ["oops"]}
-        )
+        normalize_partial_query({"select": _select_revenue(), "metric_filters": ["oops"]})
     assert exc.value.code == "INVALID_QUERY"
     assert exc.value.details["path"] == "metric_filters[0]"
 
@@ -180,11 +178,10 @@ def test_sub_day_relative_units_are_rejected_with_structured_error(unit):
     with pytest.raises(SemanticLayerError) as exc:
         normalize_query(
             {
-                "version": 1,
                 "select": _select_revenue(),
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
-                    "range": {"last": {"unit": unit, "value": 3}},
+                    "last": {"unit": unit, "value": 3},
                 },
             }
         )

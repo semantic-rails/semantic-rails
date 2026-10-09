@@ -173,7 +173,7 @@ def test_failed_query_reports_stale_seed_hint_without_replacing_database(
             ORDERS_ONLY_SEED_SQL.replace("order_total", "new_order_total"), encoding="utf-8"
         )
     before = file_digest(db_path)
-    query = {"version": 1, "select": [{"expression": {"measure": "measure.shop.order_total"}}]}
+    query = {"select": ["measure.shop.order_total"]}
     if surface in {"query", "segment_preview"}:
         runtime = Runtime.from_path(str(package_dir))
         try:

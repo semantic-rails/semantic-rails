@@ -36,9 +36,7 @@ MINIMAL_ARGUMENTS: dict[str, dict[str, Any]] = {
     "inspect": {"object_id": "measure.jaffle.revenue_usd"},
     "valid-values": {"dimension_id": "dimension.jaffle_store_name"},
     "plan": {"intent": "revenue by store"},
-    "execute": {
-        "query": {"version": 1, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
-    },
+    "execute": {"query": {"select": ["metric.sales.aov_usd"]}},
     "segment": {
         "segment_id": "segment.jaffle.high_value_customers",
         "action": "preview",
@@ -218,7 +216,7 @@ def test_segment_availability_tracks_runtime_reload(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("mode", ["validate", "sql", "run"])
 def test_execute_adds_no_default_time_or_where(adapter: SemanticLayerMCPAdapter, mode: str) -> None:
-    query = {"select": [{"as": "orders", "expression": {"measure": "measure.jaffle.order_count"}}]}
+    query = {"select": [{"as": "orders", "expression": "measure.jaffle.order_count"}]}
     response = adapter.call_tool("execute", {"query": query, "mode": mode, "verbosity": "full"})
     assert response["ok"], response
     normalized = response["query"]

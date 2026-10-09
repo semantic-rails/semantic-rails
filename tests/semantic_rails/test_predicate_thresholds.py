@@ -349,7 +349,6 @@ def test_a_predicate_and_a_projection_of_the_same_difference_agree(runtime, op, 
     net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": RETURNED_ORDERS}
     by_customer = runtime.query(
         {
-            "version": 1,
             "select": [{"as": "net", "expression": net}],
             "group_by": [CUSTOMER_ID],
             "metric_filters": [{"expression": net, "op": op, "value": value}],
@@ -383,7 +382,6 @@ def test_an_operand_with_no_data_reads_null_for_every_customer_present_or_absent
     assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, net, op, value)]) == 0
     by_customer = runtime.query(
         {
-            "version": 1,
             "select": [{"as": "net", "expression": net}],
             "group_by": [CUSTOMER_ID],
             "metric_filters": [{"expression": net, "op": op, "value": value}],
@@ -470,9 +468,8 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer
     )[0]
     assert kept == 0
     query = {
-        "version": 1,
-        "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
-        "where": [{"field": "dimension.pred_status", "op": "=", "value": "returned"}],
+        "select": [{"as": "n", "expression": "measure.pred.order_count"}],
+        "where": [{"field": "dimension.pred_status", "op": "is", "value": "returned"}],
         "metric_filters": [_predicate(CUSTOMER, large, op, value, scope_mode="contextual")],
     }
     response = runtime.query({**query, "observation_scope": "query"})
@@ -522,8 +519,7 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_member_w
     assert kept == 0
     response = runtime.query(
         {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
+            "select": [{"as": "n", "expression": "measure.pred.activity_count"}],
             "metric_filters": [_predicate(MEMBER, late, op, value)],
         }
     )
@@ -637,7 +633,7 @@ def test_zero_threshold_by_period_keeps_each_period_apart(runtime):
         filters,
         time={"temporal_role": "temporal_role.pred_active_on", "grain": "month"},
     )
-    got = {str(row["temporal_role.pred_active_on__month"])[:7]: int(row["n"]) for row in rows}
+    got = {str(row["period"])[:7]: int(row["n"]) for row in rows}
     assert got == expected == {"2025-01": 1, "2025-02": 3, "2025-03": 1}
 
 
@@ -645,8 +641,7 @@ def test_zero_threshold_sql_is_an_anti_join(runtime):
     filters = [_predicate(CUSTOMER, ORDERS, "=", 0)]
     compiled = runtime.compile(
         {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"measure": "measure.pred.customer_count"}}],
+            "select": [{"as": "n", "expression": "measure.pred.customer_count"}],
             "metric_filters": filters,
         }
     )
@@ -657,8 +652,7 @@ def test_zero_threshold_sql_is_an_anti_join(runtime):
 def test_explain_marks_the_predicate_set_as_an_anti_join(runtime):
     def predicate_sets(op, value):
         query = {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"measure": "measure.pred.customer_count"}}],
+            "select": [{"as": "n", "expression": "measure.pred.customer_count"}],
             "metric_filters": [_predicate(CUSTOMER, ORDERS, op, value)],
         }
         compiled = compile_query(runtime._config, Registry(runtime._config), query)
@@ -789,7 +783,7 @@ def test_a_predicate_on_the_query_clock_needs_no_alignment(runtime):
         filters,
         time={"temporal_role": "temporal_role.pred_active_on", "grain": "month"},
     )
-    got = {str(row["temporal_role.pred_active_on__month"])[:7]: int(row["n"]) for row in rows}
+    got = {str(row["period"])[:7]: int(row["n"]) for row in rows}
     assert got == expected == {"2025-01": 2, "2025-02": 2}
 
 
@@ -803,13 +797,13 @@ def test_calendar_alignment_across_clocks_must_be_asked_for(runtime):
         )
     )
     rows = _by_enrolment_month(runtime, {**CROSS_CLOCK, "time_alignment": "same_query_period"})
-    got = {str(row["temporal_role.pred_enrolled_at__month"])[:7]: int(row["n"]) for row in rows}
+    got = {str(row["period"])[:7]: int(row["n"]) for row in rows}
     assert got == expected == {"2025-01": 2, "2025-02": 1}
 
 
 def test_entity_only_scope_is_the_lifetime_alternative(runtime):
     rows = _by_enrolment_month(runtime, {**CROSS_CLOCK, "scope_mode": "entity_only"})
-    got = {str(row["temporal_role.pred_enrolled_at__month"])[:7]: int(row["n"]) for row in rows}
+    got = {str(row["period"])[:7]: int(row["n"]) for row in rows}
     assert got == {"2025-01": 2, "2025-02": 2}
 
 
@@ -828,19 +822,13 @@ def test_a_same_clock_contextual_anti_join_by_a_grouped_dimension_keeps_only_rea
         )
     }
     query = {
-        "version": 1,
-        "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
+        "select": [{"as": "n", "expression": "measure.pred.order_count"}],
         "metric_filters": [_predicate(CUSTOMER, REVENUE, "<", 60, scope_mode="contextual")],
         "group_by": ["dimension.pred_status"],
         "time": {"temporal_role": "temporal_role.pred_ordered_at", "grain": "month"},
     }
     rows = runtime.query(query)["rows"]
-    got = {
-        (row["dimension.pred_status"], str(row["temporal_role.pred_ordered_at__month"])[:7]): int(
-            row["n"]
-        )
-        for row in rows
-    }
+    got = {(row["dimension.pred_status"], str(row["period"])[:7]): int(row["n"]) for row in rows}
     assert got == expected == {(None, "2025-02"): 1, ("placed", "2025-02"): 1}
     # Entity and period keys must be present; a NULL attribute is a valid context group.
     sql = " ".join(runtime.compile(query)["rendered_sql"].split())
@@ -859,9 +847,8 @@ def test_a_same_clock_contextual_anti_join_by_a_grouped_dimension_keeps_only_rea
 )
 def test_an_ungrouped_empty_population_should_read_null_with_a_warning(runtime):
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.pred.customer_count"}, "as": "n"}],
-        "where": [{"field": CUSTOMER_ID, "op": "=", "value": 999}],
+        "select": [{"expression": "measure.pred.customer_count", "as": "n"}],
+        "where": [{"field": CUSTOMER_ID, "op": "is", "value": 999}],
     }
     result = runtime.query(query)
     assert result["rows"] == [{"n": None}] and _no_data_warnings(result)
@@ -870,10 +857,9 @@ def test_an_ungrouped_empty_population_should_read_null_with_a_warning(runtime):
 def test_a_grouped_empty_population_has_no_groups(runtime):
     result = runtime.query(
         {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.pred.customer_count"}, "as": "n"}],
+            "select": [{"expression": "measure.pred.customer_count", "as": "n"}],
             "group_by": [CUSTOMER_ID],
-            "where": [{"field": CUSTOMER_ID, "op": "=", "value": 999}],
+            "where": [{"field": CUSTOMER_ID, "op": "is", "value": 999}],
         }
     )
     assert result["rows"] == []
@@ -891,12 +877,11 @@ def test_an_empty_population_predicate_equals_zero_as_documented(runtime):
 def test_a_group_missing_a_population_leaf_reads_null(runtime):
     result = runtime.query(
         {
-            "version": 1,
             "group_by": ["dimension.pred_member_id"],
             "select": [
-                {"expression": {"measure": "measure.pred.activity_count"}, "as": "activities"},
+                {"expression": "measure.pred.activity_count", "as": "activities"},
                 {
-                    "expression": {"measure": "measure.pred.ticketing_member_count"},
+                    "expression": "measure.pred.ticketing_member_count",
                     "as": "population",
                 },
             ],

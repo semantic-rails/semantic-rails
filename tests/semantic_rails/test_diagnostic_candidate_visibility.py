@@ -37,7 +37,7 @@ ORDERS = "measure.jaffle.order_count"
 
 def _producer_case(runtime, monkeypatch, producer):
     query = {
-        "select": [{"expression": {"measure": ORDERS}, "as": "orders"}],
+        "select": [{"expression": ORDERS, "as": "orders"}],
         "time": {"temporal_role": ORDER_TIME, "grain": "month"},
         "policy_context": {"audience": "external"},
         "verbosity": "full",
@@ -258,7 +258,7 @@ def test_validation_candidates_respect_visibility(
     elif visibility == "unknown":
         monkeypatch.setattr(visible_view, "hidden_object_ids", _unknown_visibility)
     query = {
-        "select": [{"expression": {"measure": "measure.jaffle.item_revenue_usd"}, "as": "total"}],
+        "select": [{"expression": "measure.jaffle.item_revenue_usd", "as": "total"}],
         "group_by": ["dimension.customer_distric" if failure == "typo" else STORE_DISTRICT],
         "policy_context": {"audience": "external"},
         "verbosity": "full",

@@ -408,7 +408,7 @@ def test_ask_separates_a_planned_limit_from_the_cli_cap(
     rows_line: str,
     hint: str | None,
 ) -> None:
-    query = {"select": [{"expression": {"measure": "measure.orders"}}], "limit": 5}
+    query = {"select": ["measure.orders"], "limit": 5}
     monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: _LimitingRuntime())
     monkeypatch.setattr(
         reports, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
@@ -721,10 +721,7 @@ def test_day_or_coarser_time_buckets_print_as_dates_and_labels_keep_acronyms(
         for grain in ("month", "hour"):
             result = runtime.query(
                 {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                    ],
+                    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                     "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": grain},
                     "limit": 2,
                 }
@@ -746,10 +743,7 @@ def test_day_or_coarser_time_buckets_print_as_dates_and_labels_keep_acronyms(
             )
             result = runtime.query(
                 {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                    ],
+                    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                     "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": grain},
                 }
             )
@@ -777,10 +771,7 @@ def test_decimal_result_strings_are_formatted_and_aligned(
     try:
         result = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}
-                ],
+                "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
             }
         )
         assert all(isinstance(row["revenue"], str) for row in result["rows"])

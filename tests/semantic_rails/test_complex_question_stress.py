@@ -24,7 +24,6 @@ def _wire_oracle(rows):
 
 def _snapshot_parent_metric_query() -> dict:
     return {
-        "version": 1,
         "select": [
             {
                 "as": "active_menu_count_from_high_activity_stores",
@@ -36,18 +35,16 @@ def _snapshot_parent_metric_query() -> dict:
                         {
                             "measure": "measure.jaffle.order_count",
                             "entity": "entity.jaffle_store",
-                            "scope_mode": "contextual",
-                            "op": ">",
+                            "over": "period",
+                            "op": "gt",
                             "value": 1,
-                            "time_alignment": "same_query_period",
                         },
                         {
                             "measure": "measure.jaffle.session_starts",
                             "entity": "entity.jaffle_store",
-                            "scope_mode": "contextual",
-                            "op": ">",
+                            "over": "period",
+                            "op": "gt",
                             "value": 1,
-                            "time_alignment": "same_query_period",
                         },
                     ],
                 },
@@ -56,8 +53,8 @@ def _snapshot_parent_metric_query() -> dict:
         "group_by": ["dimension.jaffle_store_name"],
         "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
         "order_by": [
-            {"field": "time", "direction": "ASC"},
-            {"field": "dimension.jaffle_store_name", "direction": "ASC"},
+            {"field": "period", "direction": "asc"},
+            {"field": "dimension.jaffle_store_name", "direction": "asc"},
         ],
     }
 
@@ -155,7 +152,6 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
 def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     query = {
-        "version": 1,
         "select": [
             {
                 "as": "active_menu_count_from_session_stores",
@@ -165,12 +161,11 @@ def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(run
                     "aggregation": "sum",
                     "predicates": [
                         {
-                            "input": {"measure": "measure.jaffle.session_starts"},
+                            "input": "measure.jaffle.session_starts",
                             "entity": "entity.jaffle_store",
-                            "scope_mode": "contextual",
-                            "op": ">",
+                            "over": "period",
+                            "op": "gt",
                             "value": 0,
-                            "time_alignment": "same_query_period",
                         }
                     ],
                 },
@@ -179,8 +174,8 @@ def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(run
         "group_by": ["dimension.jaffle_store_name"],
         "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
         "order_by": [
-            {"field": "time", "direction": "ASC"},
-            {"field": "dimension.jaffle_store_name", "direction": "ASC"},
+            {"field": "period", "direction": "asc"},
+            {"field": "dimension.jaffle_store_name", "direction": "asc"},
         ],
     }
     try:
@@ -519,13 +514,10 @@ def test_conversion_metric_refuses_a_threshold_that_zero_satisfies(runtime_facto
     try:
         report = runtime.validate(
             {
-                "version": 1,
                 "select": [
                     {
                         "as": "signup_to_send_28d",
-                        "expression": {
-                            "metric": "metric.adoption.signup_to_send_conversion_rate_28d"
-                        },
+                        "expression": "metric.adoption.signup_to_send_conversion_rate_28d",
                     }
                 ],
                 "group_by": ["dimension.jaffle_store_name"],
@@ -533,19 +525,11 @@ def test_conversion_metric_refuses_a_threshold_that_zero_satisfies(runtime_facto
                     "temporal_role": "temporal_role.jaffle_session_started_at",
                     "grain": "month",
                 },
-                "metric_filters": [
+                "where": [
                     {
-                        "expression": {
-                            "kind": "metric_predicate",
-                            "entity": "entity.jaffle_store",
-                            "scope_mode": "contextual",
-                            "input": {"measure": "measure.jaffle.order_count"},
-                            "op": "=",
-                            "value": 0,
-                            "time_alignment": "same_query_period",
-                        },
-                        "op": "=",
-                        "value": True,
+                        "entity": "entity.jaffle_store",
+                        "having": [{"field": "measure.jaffle.order_count", "op": "is", "value": 0}],
+                        "over": "period",
                     }
                 ],
             }
@@ -563,10 +547,7 @@ def test_metric_predicate_filter_envelope_rejects_non_true_outer_filter(runtime_
     try:
         report = runtime.validate(
             {
-                "version": 1,
-                "select": [
-                    {"as": "orders", "expression": {"measure": "measure.jaffle.order_count"}}
-                ],
+                "select": [{"as": "orders", "expression": "measure.jaffle.order_count"}],
                 "metric_filters": [
                     {
                         "expression": {

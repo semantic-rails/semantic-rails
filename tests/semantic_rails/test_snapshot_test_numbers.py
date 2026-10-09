@@ -30,8 +30,7 @@ def test_decimal_results_match_the_numbers_written_in_yaml(tmp_path: Path) -> No
     snapshot = {
         "kind": "query_matches_snapshot",
         "query": {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.shop.order_total"}, "as": "revenue"}],
+            "select": [{"expression": "measure.shop.order_total", "as": "revenue"}],
             "group_by": ["dimension.shop_order_status"],
             "limit": 5,
         },
@@ -88,12 +87,11 @@ def test_snapshots_encode_dates_buckets_and_large_integers_like_results(
     model["model"]["dimensions"]["large_id"] = {"kind": "integer", "column": "large_id"}
     model_path.write_text(yaml.safe_dump(model))
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+        "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
     }
     if kind == "month":
         query["time"] = {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"}
-        expected = [{"temporal_role.shop_order_ordered_at__month": date(2024, 1, 1), "orders": 2}]
+        expected = [{"period": date(2024, 1, 1), "orders": 2}]
     elif kind == "date":
         query["group_by"] = ["dimension.shop_order_order_date"]
         expected = safe_load(
@@ -130,8 +128,7 @@ def test_snapshot_does_not_coerce_numeric_looking_text(runtime_factory, monkeypa
     spec = {
         "kind": "query_matches_snapshot",
         "query": {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "group_by": ["dimension.jaffle_store_name"],
         },
         "expected_rows": [{"dimension.jaffle_store_name": 7, "orders": 1}],

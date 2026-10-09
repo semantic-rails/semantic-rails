@@ -44,7 +44,7 @@ def test_order_by_without_field_returns_structured_envelope_via_normalize_query(
     ``INVALID_EXPRESSION`` envelope with usable recovery hints.
     """
     payload = {
-        "select": [{"expression": {"measure": "measure.x"}, "as": "x"}],
+        "select": ["measure.x"],
         "order_by": [{"expression": {"measure": "measure.x"}, "direction": "DESC"}],
     }
     with pytest.raises(SemanticLayerError) as exc:
