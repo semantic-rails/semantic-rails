@@ -17,6 +17,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.planner import groupings as groupings_module
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner.filter_checks import _filter_value_gaps
 from semantic_rails.planner.patterns import metric_by_dimension_rollup as rollup_module
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -268,6 +269,29 @@ def test_a_list_answers_with_the_rows_of_the_entity_it_lists(
     actual = [(row[ACCOUNT_ID], row[ACCOUNT_NAME], row[metric]) for row in rows]
     reference = _reference(runtime, _EVENTS_LAST_WEEK.format(kind=kind))
     assert actual == reference == expected
+
+
+_UPGRADES = {"metric": "metric.subscriptions.upgrades"}
+_DROPS_UPGRADE = {"field": "dimension.subscriptions_event_kind", "op": "!=", "value": "upgrade"}
+
+
+@pytest.mark.parametrize(
+    ("text", "query", "gap"),
+    [
+        # The chosen metric's name carries the value in either number.
+        ("upgrades last week", {"select": [_UPGRADES]}, False),
+        ("each upgrade last week", {"select": [_UPGRADES]}, False),
+        # A name that doesn't spell the value never carries it.
+        ("upgrades last week", {"select": [{"metric": "metric.subscriptions.closures"}]}, True),
+        # A filter on the value's dimension that drops it still holds.
+        ("upgrades last week", {"select": [_UPGRADES], "where": [_DROPS_UPGRADE]}, True),
+    ],
+)
+def test_a_chosen_name_carries_a_value_in_either_number(
+    subscriptions: Callable[..., Runtime], text: str, query: dict[str, Any], gap: bool
+) -> None:
+    gaps = _filter_value_gaps(subscriptions(), text, query)
+    assert [row.kind for row in gaps] == (["filter_values_unrealized"] if gap else [])
 
 
 _MRR_ON = """
