@@ -395,6 +395,9 @@ _TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, PriorPeriodExpr, ConversionExpr)
 
 
 def _uses_time_axis(expr: Any, config: PackageConfig) -> bool:
+    # An entity's aggregate over all its rows, or over the query window, reads no output time.
+    if isinstance(expr, MetricPredicateExpr) and expr.scope_mode == "entity_only":
+        return False
     if isinstance(expr, _TIME_AXIS_EXPRS):
         return True
     if isinstance(expr, MetricRecipeRefExpr):
@@ -435,16 +438,24 @@ def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool
 def _is_window_total(
     query: NormalizedQuery, config: PackageConfig, bound_measures: Iterable[BoundMeasure]
 ) -> bool:
-    """A time window with no grain, over plain measures: one total, not a row per timestamp."""
+    """A time window with no grain answers one total per group, never a row per timestamp.
+
+    A predicate taken over each entity's own rows (all time, or the query window) reads no
+    output time, so the total takes it. One tested per output row (a package metric's
+    contextual predicate) has no total over the window: the request is refused, asking for a
+    grain, once lowering has raised any refusal of its own.
+    """
     time = query.time
     if time is None or not time.temporal_role or time.grain or time.fill:
         return False
     if time.start is None and time.end is None:
         return False
-    # A predicate (in an aggregate's filter or a metric recipe) is tested per raw timestamp
-    # here, so its threshold would not mean "over the window". Keep today's behaviour.
-    if any(_bound_metric_predicates(bound) for bound in bound_measures):
-        return False
+    if any(
+        predicate.scope_mode != "entity_only"
+        for bound in bound_measures
+        for predicate in _bound_metric_predicates(bound)
+    ):
+        return False  # lowering refuses it (``refuse_per_period_total``)
     expressions = [item.expression for item in query.select] + [
         item.expression for item in query.metric_filters
     ]

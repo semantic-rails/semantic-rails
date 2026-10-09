@@ -5795,6 +5795,7 @@ def lower_to_sql(
             "EMPTY_GROUPS_UNSETTLED", "A coverage-dependent plan must read the base relation."
         )
     select = _lower_query_to_sql(plan, config, guard_empty)
+    _refuse_per_period_total(plan)
     if plan.query.get("order_by") and not all(term.nulls_last for term in select.order_by):
         # Requested terms come only from _requested_order; a lowering that built its own
         # would leave NULL placement to the backend's default.
@@ -5820,6 +5821,32 @@ def lower_to_sql(
             order_by=[SqlOrder(SqlIdentifier(parts=[key]), "ASC") for key in order_keys],
         )
     return select
+
+
+def _refuse_per_period_total(plan: LogicalPlan) -> None:
+    """A request's window with no grain is one total; a predicate tested per output period
+    has none, so the request asks for a grain rather than a row per raw timestamp."""
+    time = plan.time
+    if (
+        not plan_is_root()
+        or not time
+        or time.get("grain")
+        or time.get("window_total")
+        or (time.get("start") is None and time.get("end") is None)
+        or not plan.post_aggregation_exprs
+    ):
+        return
+    predicates = [
+        *(p for row in plan.measure_plans for p in _bound_metric_predicates(row.bound_measure)),
+        *_query_metric_predicates(plan),
+    ]
+    if any(predicate.scope_mode != "entity_only" for predicate in predicates):
+        raise SemanticLayerError(
+            "WINDOW_TOTAL_UNSUPPORTED",
+            "This query's predicate is tested per output period, so it has no total over the "
+            "window. Add time.grain to answer one row per period.",
+            details={"path": "time.grain", "temporal_role": time.get("temporal_role")},
+        )
 
 
 def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: bool) -> SqlSelect:
