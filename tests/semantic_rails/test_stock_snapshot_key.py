@@ -23,6 +23,7 @@ from semantic_rails.compiler_parts.sql_lowering import _snapshot_series_columns
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 
 ROLE = "temporal_role.f4stock_repo_snapshot_snapshot_date"
@@ -165,8 +166,7 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
             "execute",
             {
                 "query": {
-                    "version": 1,
-                    "select": [{"as": "v", "expression": {"measure": "measure.f4stock.stars"}}],
+                    "select": [{"as": "v", "expression": "measure.f4stock.stars"}],
                     "time": {"temporal_role": ROLE, "grain": "week"},
                 }
             },
@@ -179,8 +179,8 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
     assert [row["code"] for row in validated["warnings"]].count(WARNING) == 1
     ratio = {
         "kind": "ratio",
-        "numerator": {"measure": "measure.f4stock.stars"},
-        "denominator": {"measure": "measure.f4stock.visitors_14d"},
+        "numerator": "measure.f4stock.stars",
+        "denominator": "measure.f4stock.visitors_14d",
     }
     result = runtime.query({"select": [{"expression": ratio, "as": "v"}]})
     assert [row["code"] for row in result["warnings"]].count(WARNING) == 2
@@ -202,22 +202,22 @@ def test_a_stock_read_only_by_a_metric_predicate_warns_too(
     # its series and clock, it stays silent.
     package = _package(tmp_path, key=key, clock_class="state_time")
     runtime = Runtime.from_path(str(package))
+    starred = {"field": "measure.f4stock.stars", "op": "gt", "value": 0}
     predicate = {
         "kind": "metric_predicate",
         "entity": "entity.f4stock_repo_snapshot",
-        "input": {"measure": "measure.f4stock.stars"},
-        "op": ">",
-        "value": 0,
+        "input": starred["field"],
+        "op": starred["op"],
+        "value": starred["value"],
+        "over": "all_time",
     }
     visitors = {"kind": "aggregate", "measure": "measure.f4stock.visitors_14d"}
     for query in (
         {
-            "version": 1,
             "select": [{"expression": visitors, "as": "v"}],
-            "metric_filters": [{"expression": predicate, "op": "=", "value": True}],
+            "where": [{"entity": predicate["entity"], "having": [starred], "over": "all_time"}],
         },
         {
-            "version": 1,
             "select": [
                 {
                     "expression": {**visitors, "filter": {"all": [{"expression": predicate}]}},
@@ -302,7 +302,8 @@ def test_a_series_holding_an_as_of_clock_refuses(
                 "select": [{"expression": "measure.f4stock.stars", "as": "v"}],
                 "time": {"temporal_role": role, "grain": "week"},
             }
-            assert COLLECTED not in bind_query(runtime.config, None, query).object_ids
+            bound = bind_query(runtime.config, None, read_call(query, config=runtime.config)[0])
+            assert COLLECTED not in bound.object_ids
             continue
         # Each used to return 2 (true 1). The error names neither the as-of clock at
         # fault nor a key holding it (a policy may hide it); the parse warning does.
