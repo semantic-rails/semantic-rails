@@ -32,7 +32,6 @@ from .ast import (
     normalize_query,
     plain_filters,
     refuse_child_groups,
-    rewrite_select_shorthand,
     route_decisions_from_payload,
     time_output_alias,
 )
@@ -5320,11 +5319,10 @@ def read_routes(plan: LogicalPlan, route_choices: Sequence[RouteChoice]) -> list
 def _bind_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
 ) -> BoundQuery:
-    canonical, _ = rewrite_select_shorthand(payload)
     # policy_context carries caller metadata and is never read as expressions;
     # every other request key, including unrecognized ones, is shape-checked.
     validate_expression_shapes(
-        {key: value for key, value in canonical.items() if key != "policy_context"}, path="query"
+        {key: value for key, value in payload.items() if key != "policy_context"}, path="query"
     )
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)

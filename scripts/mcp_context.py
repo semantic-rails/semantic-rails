@@ -68,7 +68,7 @@ EVAL_SET_PATH = CONTEXT_DIR / "eval_jaffle.jsonl"
 PLAN_BASELINE_PATH = CONTEXT_DIR / "plan_accuracy_baseline.json"
 # Digest of the frozen dev split, EVAL_SET_PATH. Change a case only through a
 # reviewed revision of the eval set, and update this digest in that change.
-DEV_SET_SHA256 = "0f679b6452358b4c59af91f3ad4a4c64d422ef19b0bdc197fb76b614f4b7474d"
+DEV_SET_SHA256 = "add4819581e4426cf30eb672c1e4bcb7deb52470ebde29c3a1d2bc7f8c13ef01"
 # Commitment to the held-out split: 12 more cases kept outside this repository
 # so the planner can't be tuned against them. ``--eval-file`` checks a copy.
 HELDOUT_SET_SHA256 = "ce5ef85b14f8b92a3f6944a55dd4657631ddde104006dcb50178fd0800027730"
@@ -926,7 +926,7 @@ def score_plan_response(
         refused = status in REFUSAL_STATUSES
         outcome, mismatched = (PASS, ()) if refused else (wrong, ("answered",))
     else:
-        query = (response.get("best") or {}).get("query_ir")
+        query = (response.get("best") or {}).get("query")
         if status in REFUSAL_STATUSES or not isinstance(query, Mapping):
             outcome, mismatched = wrong, ("refused",)
         else:

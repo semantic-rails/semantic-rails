@@ -208,7 +208,7 @@ def test_host_attributes_reach_the_runtime_and_never_leave_it(host_app, transpor
     assert claimed["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED"
     plan = _call(app, transport, "plan", {"intent": "revenue by store"})
     assert plan["ok"] is True, plan
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     responses = [claimed, plan]
     for operation, arguments in [
         ("validate", {"query": query}),

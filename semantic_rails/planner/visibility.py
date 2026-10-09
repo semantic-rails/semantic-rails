@@ -34,11 +34,22 @@ def visible_value_domains(config: Any) -> list[Any]:
     return list(config.value_domains)
 
 
-def require_visible_objects(config: Any, query: dict[str, Any], resolved: Any) -> None:
+def require_visible_objects(config: Any, query: Any, resolved: Any) -> None:
     return None
 
 
-def discovery_query(query: dict[str, Any]) -> dict[str, Any]:
-    """Keep caller authority on internal discovery, out of portable Query IR."""
+def discovery_query(runtime: Any, call: Any) -> dict[str, Any]:
+    """A draft as the catalog helpers read it (discover, availability): the engine's form,
+    with the caller's authority. A draft the front door can't read is discovered without."""
+    from ..errors import SemanticLayerError  # noqa: WPS433
+    from .time_reference import time_policy_context  # noqa: WPS433
+
+    try:
+        query = runtime.engine_seed(
+            call.to_call() if call is not None else {},
+            now=(time_policy_context() or {}).get("now"),
+        )
+    except SemanticLayerError:
+        query = {}
     pinned = visible_view.pinned()
     return {**query, "policy_context": pinned.policy_context} if pinned is not None else query

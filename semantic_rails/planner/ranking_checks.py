@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..query_call import TIME_AXIS
 from ._base import _NUMBER_WORDS, _object_text, _singular, _tokens
+from .call import Call, Order, Select
 from .coverage import CoverageGap, _core_text, _plain, _time_block
 from .time_phrases import _TIME_UNITS
 from .visibility import visible_dimensions
@@ -375,7 +377,7 @@ def _noun_phrase(words: list[str], start: int) -> tuple[str, int]:
 
 
 def _ranking_gaps(
-    runtime: Any, text: str, query: dict[str, Any], partial_query: dict[str, Any] | None = None
+    runtime: Any, text: str, query: Call, partial_query: Call | None = None
 ) -> list[CoverageGap]:
     """A ranking request loses its limit, its sort or the thing being ranked.
 
@@ -388,42 +390,34 @@ def _ranking_gaps(
     request = _ranking_request(text, _dimension_nouns(config))
     if request is None:
         return []
-    order_by = [row for row in list(query.get("order_by") or []) if isinstance(row, dict)]
     problems: list[str] = []
-    if request["limit"] is not None and query.get("limit") != request["limit"]:
+    if request["limit"] is not None and query.limit != request["limit"]:
         problems.append("limit")
     # Every ranking needs the requested order, even when no count was stated.
     # A draft's own limit can otherwise silently return the opposite end.
-    first = order_by[0] if order_by else {}
-    direction = str(first.get("direction") or "ASC").upper()
+    first = query.order_by[0] if query.order_by else None
     if (
-        not first
+        first is None
         or not _orders_by_a_value(first, query)
-        or (request["direction"] and direction != request["direction"])
+        or (request["direction"] and first.direction != str(request["direction"]).lower())
     ):
         problems.append("order")
     ranked_ids = _ranking_measure_ids(config, text, request)
-    selected = [row for row in list(query.get("select") or []) if isinstance(row, dict)]
-    ordered = next((row for row in selected if row.get("as") == first.get("field")), {})
-    expression = ordered.get("expression")
-    ordered_id = (
-        expression.get("measure") or expression.get("metric")
-        if isinstance(expression, dict)
-        else None
-    )
-    if first and not ordered and "order" not in problems:
+    ordered = query.select_named(first.field) if first is not None else None
+    ordered_id = _ranked_id(ordered) if ordered is not None else None
+    if first is not None and ordered is None and "order" not in problems:
         problems.append("order")
-    chosen = _caller_value_ids(partial_query or {})
+    chosen = _caller_value_ids(partial_query or Call())
     if len(ranked_ids) == 1 and ordered_id not in ranked_ids:
         problems.append("ranked_measure")
     elif len(ranked_ids) > 1 or (
-        not ranked_ids and (len(selected) > 1 or ordered_id not in chosen)
+        not ranked_ids and (len(query.select) > 1 or ordered_id not in chosen)
     ):
         problems.append("ranked_measure_uncertain")
     noun = _singular(request["noun"])
     time = _time_block(query)
     if noun in _TIME_UNITS:
-        if str(time.get("grain", "") or "") != noun:
+        if time.grain != noun:
             problems.append("ranked_time_grain")
     else:
         ranked = {
@@ -431,8 +425,7 @@ def _ranking_gaps(
             for row in visible_dimensions(config)
             if noun in {_singular(token) for token in _tokens(_object_text(row))}
         }
-        grouped = {str(item) for item in list(query.get("group_by") or [])}
-        if ranked and not ranked & grouped:
+        if ranked and not ranked & set(query.group_by):
             problems.append("ranked_dimension")
     if not problems:
         return []
@@ -451,10 +444,10 @@ def _ranking_gaps(
                 "order_by": "a selected value",
             },
             actual={
-                "limit": query.get("limit"),
-                "order_by": order_by,
-                "group_by": list(query.get("group_by") or []),
-                "grain": time.get("grain"),
+                "limit": query.limit,
+                "order_by": [row.to_call() for row in query.order_by],
+                "group_by": list(query.group_by),
+                "grain": time.grain or None,
             },
             recovery_hint={
                 "kind": "provide_ranking",
@@ -469,29 +462,30 @@ def _ranking_gaps(
     ]
 
 
-def _caller_value_ids(partial_query: dict[str, Any]) -> set[str]:
+def _ranked_id(item: Select) -> str | None:
+    """The measure or metric a select ranks by: its reference, or an aggregate kind's measure."""
+
+    if item.ref:
+        return item.ref
+    expression = item.expression
+    found = expression.get("measure") or expression.get("metric")
+    return found if isinstance(found, str) else None
+
+
+def _caller_value_ids(partial_query: Call) -> set[str]:
     """The measures and metrics the caller's ``partial_query.select`` names by id."""
 
-    choices = partial_query.get("select")
-    return {
-        node[key]
-        for item in (choices if isinstance(choices, list) else [])
-        if isinstance(item, dict)
-        for node in (item, item.get("expression"))
-        if isinstance(node, dict)
-        for key in ("measure", "metric")
-        if isinstance(node.get(key), str)
-    }
+    return {found for item in partial_query.select if (found := _ranked_id(item))}
 
 
-def _orders_by_a_value(order: dict[str, Any], query: dict[str, Any]) -> bool:
+def _orders_by_a_value(order: Order, query: Call) -> bool:
     """Whether an order_by entry sorts by a selected value, not a group or the period."""
 
-    name = order.get("field")
-    if not isinstance(name, str):
-        return True
-    grouped = {str(item) for item in list(query.get("group_by") or [])}
-    return name != "time" and name not in grouped and not name.startswith("dimension.")
+    return (
+        order.field != TIME_AXIS
+        and order.field not in query.group_by
+        and not order.field.startswith("dimension.")
+    )
 
 
 def _ranking_measure_ids(config: Any, text: str, request: dict[str, Any]) -> set[str]:

@@ -170,10 +170,10 @@ def test_plan_query_inherits_minimal_default(runtime_factory) -> None:
     try:
         plan = adapter.call_tool("plan", {"intent": "orders by store", "detail": "best"})
         assert "validate" not in plan["next"]
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert "verbosity" not in query
         forwarded = adapter.call_tool("execute", {"query": query, "mode": "validate"})
         for key in (*_HEAVY_KEYS, "rendered_sql"):
-            assert key not in forwarded, f"forwarding best.query_ir leaked {key}"
+            assert key not in forwarded, f"forwarding best.query leaked {key}"
     finally:
         adapter.close()

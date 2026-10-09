@@ -516,8 +516,8 @@ def parse_intent(
         if not role:
             measure = _preferred_measure(config, target_terms, target_focus_terms)
             role = str(getattr(measure, "default_temporal_role", "") or "") if measure else ""
-        if role:
-            time_spec = _time_spec(role, text)
+        if role and (spec := _time_spec(role, text)) is not None:
+            time_spec = spec.to_call()
     if time_spec is None:
         for subject in subjects:
             if subject.object_type == "metric":
@@ -527,7 +527,8 @@ def parse_intent(
                 row = next((m for m in config.measures if m.id == subject.id), None)
                 role = str(getattr(row, "default_temporal_role", "") or "") if row else ""
             if role:
-                time_spec = _time_spec(role, text)
+                spec = _time_spec(role, text)
+                time_spec = spec.to_call() if spec is not None else None
                 break
 
     qualification_groups = tuple(

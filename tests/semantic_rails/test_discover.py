@@ -193,9 +193,10 @@ def test_discover_ships_starter_query_patch_on_each_candidate(runtime_factory) -
             assert isinstance(patch, dict) and patch.get("select"), (
                 f"measure {row['id']} missing select-shaped starter_query_patch: {patch}"
             )
-            select = list(patch["select"])
-            expr = dict(select[0].get("expression", {}) or {})
-            assert expr.get("measure") == row["id"], (
+            [item] = patch["select"]
+            expr = item if isinstance(item, str) else item.get("expression")
+            ref = expr if isinstance(expr, str) else dict(expr or {}).get("measure")
+            assert ref == row["id"], (
                 f"starter_query_patch on {row['id']} references wrong measure: {expr}"
             )
         for row in metrics:

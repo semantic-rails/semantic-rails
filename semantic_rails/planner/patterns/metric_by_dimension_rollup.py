@@ -20,7 +20,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ...naming import semantic_token as _semantic_token
 from .._base import (
     _NAME_CONNECTORS,
     _TERM_SYNONYMS,
@@ -35,6 +34,7 @@ from .._base import (
     _singular,
     _tokens,
 )
+from ..call import QueryBuilder, Time
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
 from ..groupings import _entity_grouping, _explicit_grain, _maybe_group_by, _time_spec
 from ..intent_ir import _FALLBACK_STOPWORDS
@@ -236,7 +236,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # ``time`` block — the validator handles that for snapshot-style
     # measures.
     is_top, top_n = _top_n_intent(text)
-    time_spec: dict[str, Any] | None = None
+    time_spec: Time | None = None
     temporal_role = str(getattr(target, "default_temporal_role", "") or "") or str(
         getattr(target, "temporal_role", "") or ""
     )
@@ -264,42 +264,36 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
 
     target_id = str(getattr(target, "id", ""))
     is_measure = target_id.startswith("measure.")
-    select_alias = _semantic_token(target_id, fallback="value")
+    builder = QueryBuilder(config)
     if is_measure:
-        expression: dict[str, Any] = {
-            "measure": target_id,
-            "aggregation": _aggregation_from_text(text, terms, target),
-        }
+        builder.measure(target_id, _aggregation_from_text(text, terms, target))
     else:
-        expression = {"metric": target_id}
-
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": select_alias, "expression": expression}],
-    }
-    if time_spec is not None:
-        query["time"] = time_spec
+        builder.select(target_id)
+    builder.time(time_spec)
 
     # A ranking keeps what the ranking parser reads: its count ("top three"), its direction
     # ("bottom", "least") and the entity it ranks ("which 2 accounts had the most MRR").
     request = _ranking_request(question, _dimension_nouns(config))
-    direction = "DESC"
+    direction = "desc"
     if request is not None and request["direction"] and (is_top or request["limit"] is not None):
-        is_top, direction = True, str(request["direction"])
+        is_top, direction = True, str(request["direction"]).lower()
         top_n = request["limit"] if request["limit"] is not None else top_n
         ranked = _entity_grouping(config, str(request["noun"]))
         if ranked is not None and not _named_by_rows(target, str(request["noun"]), question):
             group_by = list(dict.fromkeys([*group_by, *ranked[1]]))
-    if group_by:
-        query["group_by"] = group_by
-    query = _normalize_value_filters(
-        query, _matched_value_rows(runtime, query, text), text=text, config=config
+    builder.groups(group_by)
+    drafted = builder.build()
+    builder = QueryBuilder(
+        config,
+        _normalize_value_filters(
+            drafted, _matched_value_rows(runtime, drafted, text), text=text, config=config
+        ),
     )
     if is_top:
-        query["order_by"] = [{"field": select_alias, "direction": direction}]
-        query["limit"] = top_n
+        builder.order(drafted.select[0].alias, direction).limit(top_n)
     else:
-        _add_order(query)
+        _add_order(builder)
+    query = builder.build()
 
     resolved: list[dict[str, Any]] = [_resolved(target)]
     for dim_id in group_by:

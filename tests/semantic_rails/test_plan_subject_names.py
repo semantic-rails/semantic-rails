@@ -16,6 +16,7 @@ import yaml
 
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import _tied_top
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.faithfulness import intent_subject_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
@@ -93,11 +94,9 @@ def test_the_named_measure_wins_a_tie(
     if unmatched:
         assert plan["why"]["details"] == {"terms": unmatched, "kind": "filter_values_unrealized"}
         assert "ready_for" not in plan["next"]
-    [select] = plan["best"]["query_ir"]["select"]
+    [subject] = Call.from_call(plan["best"]["query"]).subjects
     # A package's measures come with same-named metrics; either answers.
-    assert (select["expression"].get("measure") or select["expression"]["metric"]).endswith(
-        f"shop.{measure}"
-    )
+    assert subject.endswith(f"shop.{measure}")
     assert [
         term for row in plan.get("warnings", []) for term in row["details"]["terms"]
     ] == unmatched
@@ -111,13 +110,13 @@ def test_any_draft_of_a_tied_measure_the_question_does_not_name_is_flagged(
 
     runtime = _runtime(tmp_path, REVENUE_AND_ITEMS)
     question = "What is revenue by month?"
-    select = {"as": "value", "expression": {"measure": f"measure.shop.{measure}"}}
+    select = {"as": "value", "expression": f"measure.shop.{measure}"}
     try:
         why = intent_subject_why(
             runtime,
             question=question,
             intent_ir=parse_intent(runtime, question),
-            query={"version": 1, "select": [select]},
+            query=Call.from_call({"select": [select]}),
         )
     finally:
         runtime.close()
@@ -127,7 +126,7 @@ def test_any_draft_of_a_tied_measure_the_question_does_not_name_is_flagged(
 
 def test_a_tie_the_question_names_no_side_of_is_low_confidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, {"gross_revenue": "Gross Revenue", "net_revenue": "Net Revenue"})
-    pinned = {"select": [{"as": "value", "expression": {"measure": "measure.shop.gross_revenue"}}]}
+    pinned = {"select": [{"as": "value", "expression": "measure.shop.gross_revenue"}]}
     try:
         plan = plan_payload(runtime, intent="What is revenue by month?")
         # A caller that picks one in the query settles it.
@@ -211,7 +210,7 @@ def test_counting_words_name_the_count_measure(
         # Read on the last complete day, the draft still leaves "items" unconsumed.
         assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
         assert plan["why"]["details"]["terms"] == unconsumed
-        assert plan["best"]["query_ir"]["time"]["grain"] == "day"
+        assert plan["best"]["query"]["time"]["grain"] == "day"
     elif measure.endswith("_eop") and question.endswith(("month", "year")):
         assert_plan_held(plan, "PLAN_INTENT_COVERAGE_GAP")
         assert "stock_as_of_unrealized" in {gap["kind"] for gap in plan["why"]["details"]["gaps"]}
@@ -227,11 +226,10 @@ def test_counting_words_name_the_count_measure(
     else:
         assert plan["status"] == "ok", plan.get("why")
         assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     if question.endswith(("month", "year")):
         assert query["time"]["grain"] == question.rsplit(" ", 1)[-1]
-    [select] = query["select"]
-    assert select["expression"]["measure"] == measure
+    assert Call.from_call(query).subjects == [measure]
     assert query.get("group_by") == group_by
 
 
@@ -243,10 +241,8 @@ def test_a_whole_name_beats_one_that_adds_count(tmp_path: Path) -> None:
         runtime.close()
 
     assert plan["status"] == "ok", plan.get("why")
-    [select] = plan["best"]["query_ir"]["select"]
-    assert (select["expression"].get("measure") or select["expression"]["metric"]).endswith(
-        "shop.customers"
-    )
+    [subject] = Call.from_call(plan["best"]["query"]).subjects
+    assert subject.endswith("shop.customers")
 
 
 def _measure(key: str, label: str, description: str = "") -> SimpleNamespace:

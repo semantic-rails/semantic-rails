@@ -1,10 +1,11 @@
-"""Unambiguous select shorthands are accepted and reported; ambiguous ones keep the error."""
+"""A call's select shorthands: a dimension in select is lifted and reported; a bare item is
+refused with the reference to send."""
 
 from __future__ import annotations
 
 import pytest
 
-from semantic_rails.ast import normalize_partial_query, normalize_query, rewrite_select_shorthand
+from semantic_rails.ast import normalize_partial_query, normalize_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import _grouped_ungrained_time_warning
 from semantic_rails.planner import plan_payload
@@ -51,107 +52,6 @@ ACCEPTED = [
         id="bare-measure-no-aggregation",
     ),
 ]
-
-
-@pytest.mark.parametrize(("shorthand", "canonical"), ACCEPTED)
-def test_bare_select_item_normalizes_like_canonical(shorthand, canonical):
-    assert (
-        normalize_query(_query([shorthand])).to_dict()
-        == normalize_query(_query([canonical])).to_dict()
-    )
-
-
-def test_expression_dimension_in_select_moves_to_group_by():
-    shorthand = _query([{"expression": {"dimension": DIM}}, {"metric": METRIC}])
-    canonical = _query([{"expression": {"kind": "metric", "metric": METRIC}}], group_by=[DIM])
-    assert normalize_query(shorthand).to_dict() == normalize_query(canonical).to_dict()
-
-
-def test_expression_dimension_already_in_group_by_is_not_duplicated():
-    shorthand = _query([{"expression": {"dimension": DIM}}, {"metric": METRIC}], group_by=[DIM])
-    assert normalize_query(shorthand).group_by == [DIM]
-
-
-@pytest.mark.parametrize("kind", [None, "unknown"])
-@pytest.mark.parametrize("wrapped", [False, True])
-def test_dimension_shorthand_does_not_drop_an_unsupported_kind(kind, wrapped):
-    item = {"kind": kind, "dimension": DIM}
-    with pytest.raises(SemanticLayerError) as excinfo:
-        normalize_query(_query([{"expression": item} if wrapped else item]))
-    assert excinfo.value.code == "INVALID_EXPRESSION_AST"
-
-
-@pytest.mark.parametrize(
-    "select",
-    [
-        pytest.param([{"metric": METRIC, "measure": MEASURE}], id="metric-and-measure"),
-        pytest.param([{"metric": METRIC, "aggregation": "sum"}], id="metric-with-aggregation"),
-        pytest.param([{"measure": MEASURE, "agregation": "sum"}], id="unknown-key"),
-        pytest.param(
-            [{"measure": MEASURE, "temporal_role": "temporal_role.jaffle_order_time"}],
-            id="undocumented-measure-key",
-        ),
-        pytest.param([{"measure": MEASURE, "parameters": {}}], id="undocumented-parameters"),
-        pytest.param([{"aggregation": "sum"}], id="aggregation-only"),
-        pytest.param([{"as": "x"}], id="alias-only"),
-        pytest.param([{}], id="empty-item"),
-    ],
-)
-def test_ambiguous_bare_select_item_is_refused_with_canonical_form(select):
-    with pytest.raises(SemanticLayerError) as excinfo:
-        normalize_query(_query(select))
-    err = excinfo.value
-    assert err.code == "INVALID_EXPRESSION_AST"
-    assert '"kind": "measure"' in str(err) and '"kind": "metric"' in str(err)
-    assert err.details["path"] == "select[0]"
-    assert {h["code"] for h in err.details["recovery_hints"]} == {"WRAP_SELECT_EXPRESSION"}
-
-
-# A dimension never travels with another key: nothing is dropped, so nothing is rewritten.
-DIMENSION_MIXED = [
-    pytest.param({"dimension": DIM, "metric": METRIC}, id="bare-dimension-and-metric"),
-    pytest.param({"dimension": DIM, "measure": MEASURE}, id="bare-dimension-and-measure"),
-    pytest.param({"dimension": DIM, "foo": 1}, id="bare-dimension-unknown-key"),
-    pytest.param({"dimension": DIM, "as": "store"}, id="bare-dimension-alias"),
-    pytest.param({"expression": {"dimension": DIM}, "metric": METRIC}, id="wrapped-and-metric"),
-    pytest.param({"expression": {"dimension": DIM}, "measure": MEASURE}, id="wrapped-and-measure"),
-    pytest.param({"expression": {"dimension": DIM}, "x": 1}, id="wrapped-unknown-key"),
-    pytest.param({"expression": {"dimension": DIM}, "as": "store"}, id="wrapped-alias"),
-    pytest.param(
-        {"expression": {"kind": "metric", "metric": METRIC}, "dimension": DIM},
-        id="expression-beside-dimension",
-    ),
-    pytest.param(
-        {"expression": {"kind": "metric", "metric": METRIC}, "metric": METRIC},
-        id="expression-beside-metric",
-    ),
-]
-
-
-@pytest.mark.parametrize("item", DIMENSION_MIXED)
-def test_dimension_item_carrying_other_keys_is_refused(item):
-    with pytest.raises(SemanticLayerError) as excinfo:
-        normalize_query(_query([item, {"metric": METRIC}]))
-    err = excinfo.value
-    if "expression" in item and "x" in item:
-        assert err.code == "INVALID_QUERY"
-        assert err.details["unsupported_keys"] == ["x"]
-        return
-    assert err.code == "INVALID_EXPRESSION_AST"
-    assert err.details["path"] == "select[0]"
-    assert 'group_by: ["<dimension id>"]' in str(err)
-
-
-def test_expression_dimension_is_refused_when_group_by_names_other_dimensions():
-    payload = _query(
-        [{"expression": {"dimension": DIM}}, {"metric": METRIC}],
-        group_by=["dimension.jaffle_order_status"],
-    )
-    with pytest.raises(SemanticLayerError) as excinfo:
-        normalize_query(payload)
-    assert excinfo.value.code == "INVALID_EXPRESSION_AST"
-    codes = {h["code"] for h in excinfo.value.details["recovery_hints"]}
-    assert "MOVE_DIMENSION_TO_GROUP_BY" in codes
 
 
 def test_kindless_expression_error_shows_canonical_form():
@@ -212,22 +112,6 @@ def test_runtime_refuses_a_dimension_wrapped_in_an_expression(runtime_factory, k
     assert error["details"]["path"].startswith("select[0].expression")
 
 
-def test_dimension_moved_to_group_by_is_reported_by_the_rewriter():
-    _, notes = rewrite_select_shorthand(
-        _query([{"expression": {"dimension": DIM}}, {"dimension": DIM}, {"metric": METRIC}])
-    )
-    assert [n["path"] for n in notes] == ["select[0]", "select[1]", "select[2]"]
-    assert notes[0]["canonical"] == notes[1]["canonical"] == {"group_by": [DIM]}
-    assert notes[2]["canonical"] == {"expression": {"kind": "metric", "metric": METRIC}}
-
-
-def test_rewriting_the_canonical_form_changes_nothing():
-    payload = _query([{"metric": METRIC}, {"dimension": DIM}])
-    canonical, notes = rewrite_select_shorthand(payload)
-    assert notes
-    assert rewrite_select_shorthand(canonical) == (canonical, [])
-
-
 def test_time_grain_warning_reads_the_group_by():
     """A grouped engine query whose clock has no grain gets the grouped warning."""
     canonical = {
@@ -260,6 +144,8 @@ def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory):
 
 
 def test_partial_query_still_accepts_an_empty_select_item():
-    state = normalize_partial_query({"select": [{"as": "x"}, {"metric": METRIC}]})
+    state = normalize_partial_query(
+        {"select": [{"as": "x"}, {"expression": {"kind": "metric", "metric": METRIC}}]}
+    )
     assert [item.as_ for item in state.select] == ["x", "expr_2"]
     assert state.select[0].expression is None

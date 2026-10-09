@@ -101,6 +101,7 @@ from .metadata_parts.relevance import (
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
 from .policies import policy_effects_for_object, row_filters_for_context
+from .query_call import call_from_query
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
@@ -601,16 +602,15 @@ def _policy_metadata(
 
 
 def _result_shape_preview(query_patch: dict[str, Any]) -> dict[str, Any]:
+    """The columns a patch's call returns: its groupings, ``period`` and its selects."""
     select_aliases = [
-        str(row.get("as", "") or "")
+        str(row).split(".")[-1] if isinstance(row, str) else str(row.get("as", "") or "")
         for row in list(query_patch.get("select", []) or [])
-        if str(row.get("as", "") or "")
     ]
+    select_aliases = [alias for alias in select_aliases if alias]
     group_by = [str(item) for item in list(query_patch.get("group_by", []) or [])]
     time = dict(query_patch.get("time", {}) or {})
-    time_alias = ""
-    if time.get("temporal_role"):
-        time_alias = time_output_alias(time)
+    time_alias = time_output_alias(time) if time.get("grain") else ""
     columns = [*group_by, *([time_alias] if time_alias else []), *select_aliases]
     return {
         "columns": columns,
@@ -2465,14 +2465,13 @@ def discover_payload(
     # seed `select`; dimensions seed `group_by`. Other kinds (segments,
     # entities, dimension_values, blocked) intentionally skip — they
     # don't map to a single canonical clause.
+    seed = _call_of(partial_query)
     for row in [*measures, *metrics]:
         row["starter_query_patch"] = _query_patch_with_selection(
-            runtime,
-            partial_query,
-            {"id": row["id"], "kind": row["kind"], "label": row["label"]},
+            runtime, seed, {"id": row["id"], "kind": row["kind"], "label": row["label"]}
         )
     for row in dimensions:
-        row["starter_query_patch"] = _query_patch_with_group_by(partial_query, row["id"])
+        row["starter_query_patch"] = _query_patch_with_group_by(seed, row["id"])
 
     payload = {
         "terms": terms,
@@ -2914,9 +2913,10 @@ def _build_options_payload(
     config = runtime._config
     require_temporal_support(config, requested=step == "time" or stage == "time")
     maps = _config_maps(config)
-    # Patches build on the caller's Query IR only; the policy context in
+    # Patches build on the caller's call only; the policy context in
     # partial_query decides visibility, never a patch's contents.
     raw_query = _query_ir(partial_query)
+    call = _call_of(partial_query)
 
     def _infer_builder_step() -> str:
         if step:
@@ -3060,7 +3060,7 @@ def _build_options_payload(
                 blocked_reason=str(row.get("blocked_reason", "") or ""),
                 query_patch=_query_patch_with_selection(
                     runtime,
-                    partial_query,
+                    call,
                     {"id": row["id"], "kind": row["kind"], "label": row["label"]},
                 ),
             )
@@ -3075,13 +3075,21 @@ def _build_options_payload(
         guidance = _aggregation_guidance(focus_measure)
         suggested_rank = {agg: idx for idx, agg in enumerate(guidance["suggested_aggregations"])}
         for agg in guidance["allowed_aggregations"]:
-            patch = dict(raw_query or {})
-            patch.setdefault("version", 1)
-            expression: dict[str, Any] = {"measure": focus_measure.id, "aggregation": agg}
-            if agg == "percentile":
+            patch = dict(call)
+            expression: Any = (
+                focus_measure.id
+                if agg == focus_measure.default_aggregation
+                else {"kind": "measure", "measure": focus_measure.id, "aggregation": agg}
+            )
+            if agg == "percentile" and isinstance(expression, dict):
                 # A percentile needs its p; the median is the neutral starting point.
                 expression["parameters"] = {"p": 0.5}
-            patch["select"] = [{"expression": expression, "as": focus_measure.label}]
+            alias = focus_measure.id.split(".")[-1]
+            patch["select"] = [
+                expression
+                if isinstance(expression, str)
+                else {"expression": expression, "as": alias}
+            ]
             rank = 20.0 - (float(suggested_rank[agg]) / 10.0) if agg in suggested_rank else 10.0
             row = {
                 "id": agg,
@@ -3136,12 +3144,10 @@ def _build_options_payload(
                 stage=stage,
             )
             patch = (
-                _query_patch_with_group_by(partial_query, str(row["id"]))
+                _query_patch_with_group_by(call, str(row["id"]))
                 if builder_step == "group_by"
-                else dict(raw_query or {})
+                else dict(call)
             )
-            if builder_step == "filter_dimension":
-                patch.setdefault("version", 1)
             option = _option_row(card, rank=score, rationale=reasons, query_patch=patch)
             if any(
                 marker in reasons
@@ -3199,13 +3205,7 @@ def _build_options_payload(
             )
             dim_card = _object_card(runtime, target_dimension, partial_query)
             for value_row in values["values"]:
-                patch = dict(raw_query or {})
-                patch.setdefault("version", 1)
-                patch.setdefault("where", [])
-                patch["where"] = [
-                    *list(patch.get("where", []) or []),
-                    {"field": target_dimension, "op": "=", "value": value_row["value"]},
-                ]
+                patch = _query_patch_with_where(call, target_dimension, value_row["value"])
                 option = {
                     "id": f"{target_dimension}={value_row['value']}",
                     "object_type": "dimension_value",
@@ -3249,7 +3249,7 @@ def _build_options_payload(
                     else str((supported_grains or ["month"])[0])
                 )
             )
-            patch = _query_patch_with_time(partial_query, str(role["id"]), patch_grain)
+            patch = _query_patch_with_time(call, str(role["id"]), patch_grain)
             is_default = str(role["id"]) == default_role_id or (
                 not default_role_id and role.get("default_query_time_axis")
             )
@@ -3290,8 +3290,7 @@ def _build_options_payload(
                 )
 
     else:
-        base_patch = dict(raw_query or {})
-        base_patch.setdefault("version", 1)
+        base_patch = dict(call)
         query_patches = [base_patch]
         recommended.append(
             {
@@ -3310,7 +3309,7 @@ def _build_options_payload(
             }
         )
 
-    if raw_query.get("route_decisions"):
+    if call.get("routes"):
         # A patch that would leave one of the caller's route rows unused is refused as it
         # stands: offer it blocked with that refusal, never with the row stripped.
         for offered in (recommended, available):
@@ -3379,32 +3378,25 @@ def _build_options_payload(
 
 def _unused_route_decision(runtime: Runtime, patch: dict[str, Any] | None) -> str:
     """The ``route_decision_unused`` refusal ``patch`` would get, naming the row, else ``""``."""
-    if not patch or not patch.get("route_decisions"):
+    if not patch or not patch.get("routes"):
         return ""
     try:
-        bind_query(runtime._config, runtime.registry, patch)
+        bind_query(runtime._config, runtime.registry, runtime.engine_payload(patch, partial=True))
     except SemanticLayerError as exc:
         if exc.details.get("reason") == "route_decision_unused":
             return str(exc)
     return ""
 
 
-def _select_expr_for_choice(runtime: Runtime, chosen: dict[str, Any]) -> dict[str, Any]:
-    if chosen["kind"] == "metric":
-        return {"expression": {"metric": chosen["id"]}, "as": chosen["label"]}
-    measure = _config_maps(runtime._config)["measures"][chosen["id"]]
-    return {
-        "expression": {"measure": chosen["id"], "aggregation": measure.default_aggregation},
-        "as": chosen["label"],
-    }
+def _call_of(partial_query: dict[str, Any] | None) -> dict[str, Any]:
+    """A caller's seed (the engine's form) in the call's spelling, for the patches built on it."""
+    return call_from_query(_query_ir(partial_query))
 
 
 def _query_patch_with_selection(
-    runtime: Runtime, partial_query: dict[str, Any], chosen: dict[str, Any]
+    runtime: Runtime, call: dict[str, Any], chosen: dict[str, Any]
 ) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["select"] = [_select_expr_for_choice(runtime, chosen)]
+    query = {**call, "select": [str(chosen["id"])]}
     if chosen.get("kind") == "metric" and not query.get("time"):
         time = _metric_patch_time(runtime, str(chosen.get("id", "")))
         if time:
@@ -3430,66 +3422,35 @@ def _metric_patch_time(runtime: Runtime, metric_id: str) -> dict[str, Any]:
     return {}
 
 
-def _query_patch_with_group_by(partial_query: dict[str, Any], dimension_id: str) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["group_by"] = list(dict.fromkeys([*list(query.get("group_by", []) or []), dimension_id]))
-    return query
+def _query_patch_with_group_by(call: dict[str, Any], dimension_id: str) -> dict[str, Any]:
+    return {**call, "group_by": list(dict.fromkeys([*(call.get("group_by") or []), dimension_id]))}
 
 
 def _query_patch_with_where(
-    partial_query: dict[str, Any], dimension_id: str, value: Any, op: str = "="
+    call: dict[str, Any], dimension_id: str, value: Any, op: str = "is"
 ) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["where"] = [
-        *list(query.get("where", []) or []),
-        {"field": dimension_id, "op": op, "value": value},
-    ]
-    return query
+    condition = {"field": dimension_id, "op": op, "value": value}
+    return {**call, "where": [*(call.get("where") or []), condition]}
 
 
-def _query_patch_with_order_by_time(partial_query: dict[str, Any]) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["order_by"] = [
-        *list(query.get("order_by", []) or []),
-        {"field": "time", "direction": "DESC"},
-    ]
-    return query
+def _query_patch_with_order_by_time(call: dict[str, Any]) -> dict[str, Any]:
+    order = {"field": "period", "direction": "desc"}
+    return {**call, "order_by": [*(call.get("order_by") or []), order]}
 
 
 def _query_patch_with_metric_filter(
-    partial_query: dict[str, Any], metric_id: str, op: str = ">", value: Any = 0
+    call: dict[str, Any], metric_id: str, op: str = "gt", value: Any = 0
 ) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    # Use the MetricRefExpr shape (`{kind: "metric", metric: "..."}`) +
-    # top-level op/value on the filter. This validates against
-    # `MetricFilterExpression` cleanly without requiring an `entity` or
-    # `input` field — the simpler form is the right scaffold for an
-    # agent who just wants to filter on a governed metric's value.
-    # Agents needing a more complex shape (metric_predicate with entity
-    # scope, contextual time grain, etc.) can read
-    # capabilities.expression_shapes for the full union.
-    query["metric_filters"] = [
-        *list(query.get("metric_filters", []) or []),
-        {
-            "expression": {"kind": "metric", "metric": metric_id},
-            "op": op,
-            "value": value,
-        },
-    ]
-    return query
+    # The rows whose metric value passes: a result filter on the metric, computed for the
+    # filter. The op and value are placeholders.
+    condition = {"field": metric_id, "op": op, "value": value}
+    return {**call, "having": [*(call.get("having") or []), condition]}
 
 
 def _query_patch_with_time(
-    partial_query: dict[str, Any], temporal_role: str, grain: str = ""
+    call: dict[str, Any], temporal_role: str, grain: str = ""
 ) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["time"] = {"temporal_role": temporal_role, "grain": grain or "month"}
-    return query
+    return {**call, "time": {"temporal_role": temporal_role, "grain": grain or "month"}}
 
 
 def _infer_time_grain_from_text(text: str, default: str = "month") -> str:
@@ -3529,8 +3490,7 @@ def _starter_query_patches(
     *,
     card: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    query = dict(partial_query or {})
-    query.setdefault("version", 1)
+    query = _call_of(partial_query)
     card = dict(card or {})
     if not card:
         card = _object_card(runtime, object_id, partial_query)
@@ -3568,9 +3528,9 @@ def _starter_query_patches(
                 _infer_time_grain_from_text(starter_text, default="month"),
             )
             patches.append({"kind": "time", "query_patch": time_query})
-            # `order_by.field = "time"` is a stable shortcut whenever the
-            # query has a time axis — surface it as a starter so blind
-            # agents don't have to guess the shape.
+            # `order_by.field = "period"` names the time axis whenever the
+            # call has a grain — surface it as a starter so blind agents
+            # don't have to guess the shape.
             patches.append(
                 {
                     "kind": "order_by",
@@ -3637,16 +3597,13 @@ def _starter_query_patches(
                     "note": "scaffold — replace value with the filter target before executing",
                 }
             )
-        # For metric cards, scaffold a `metric_filters` clause so agents
-        # see the governed-filter shape regardless of whether the metric
-        # itself is predicate-backed. Predicate-backed metrics get this
-        # scaffold for free; for non-predicate metrics, the scaffold is
-        # how an agent threads "filter on this metric's value" into a
-        # query whose select is different. The op/value are placeholders.
+        # For metric cards, scaffold a `having` clause so agents see how to
+        # keep only the rows whose metric value passes. The op/value are
+        # placeholders.
         if kind == "metric":
             patches.append(
                 {
-                    "kind": "metric_filters",
+                    "kind": "having",
                     "query_patch": _query_patch_with_metric_filter(select_query, object_id),
                     "note": "scaffold — set op/value before executing",
                 }

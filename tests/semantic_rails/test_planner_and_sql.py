@@ -14,6 +14,7 @@ from semantic_rails.expressions import (
     ColumnRefExpr,
     MetricRecipeRefExpr,
 )
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.schema import (
     DimensionConfig,
@@ -25,6 +26,11 @@ from semantic_rails.schema import (
     RelationshipConfig,
 )
 from semantic_rails.sql_ast import SqlSelect
+
+
+def _engine(config: PackageConfig, call: dict) -> dict:
+    """A call in the engine's form, read as the front door reads it."""
+    return read_call(call, config=config)[0]
 
 
 def _jaffle_query() -> dict:
@@ -51,7 +57,7 @@ def test_planner_explain_shape_and_sql_rendering(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = _jaffle_query()
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     plan = compiled["logical_plan"]
     sql_ast = compiled["sql_ast"]
     rendered = compiled["sql"]
@@ -72,28 +78,6 @@ def test_planner_explain_shape_and_sql_rendering(package_config_factory):
     assert compiled["explain"].performance_plan["risk_level"] == "low"
     assert compiled["explain"].performance_plan["date_filter_pushdown"][0]["pushed_to_scan"] is True
     assert "alias_resolution" in compiled["explain"].__dict__
-
-
-@pytest.mark.parametrize("version", [2, 3])
-def test_validate_rejects_unsupported_query_ir_version(runtime_factory, version):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": "measure.jaffle.order_count",
-                        "as": "orders",
-                    }
-                ],
-            }
-        )
-    finally:
-        runtime.close()
-    assert report["ok"] is False
-    assert report["errors"][0]["code"] == "INVALID_QUERY"
-    assert report["errors"][0]["details"]["path"] == "version"
-    assert report["errors"][0]["details"]["supported_versions"] == [1]
 
 
 def test_invalid_temporal_role_is_reported_by_validate(runtime_factory):
@@ -174,7 +158,11 @@ def test_entity_in_terms_of_uses_physical_anchor(
             {
                 "select": [
                     {
-                        "expression": {"measure": measure, "aggregation": "count_distinct"},
+                        "expression": {
+                            "kind": "measure",
+                            "measure": measure,
+                            "aggregation": "count_distinct",
+                        },
                         "as": alias,
                     }
                 ],
@@ -372,10 +360,8 @@ def test_relative_time_range_expansion(runtime_factory):
 
 
 def test_time_range_last_string_shorthand_rejected_with_recovery_hint(runtime_factory):
-    """The schema description used to say `{last: '90 days'}` (string),
-    but the validator only accepts `{last: {unit, value}}`. Now the
-    schema matches the validator AND the INVALID_QUERY error carries a
-    `USE_OBJECT_SHAPE` recovery hint pointing at the corrected shape."""
+    """`{last: '90 days'}` (a string) is refused: the window is `{last: {unit, value}}`,
+    and the INVALID_QUERY error carries a recovery hint pointing at that shape."""
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
@@ -396,17 +382,10 @@ def test_time_range_last_string_shorthand_rejected_with_recovery_hint(runtime_fa
         )
         assert invalid_query is not None, f"expected INVALID_QUERY in errors; got {errors}"
         details = dict(invalid_query.get("details", {}) or {})
-        assert details.get("path") == "time.range.last"
-        # Recovery hint must be present (either at the top of the report
-        # or under details.recovery_hints, depending on the response
-        # shape callers see) and name the corrected shape.
-        all_hints = list(
-            report.get("recovery_hints", []) or details.get("recovery_hints", []) or []
-        )
-        assert all_hints, (
-            f"expected recovery_hints on time.range.last error; got error={invalid_query}, "
-            f"top-level={report.get('recovery_hints', [])}"
-        )
+        assert details.get("path") == "time.last"
+        # The error names the corrected shape in its recovery hints.
+        all_hints = list(invalid_query.get("recovery_hints", []) or [])
+        assert all_hints, f"expected recovery_hints on the time.last error; got {invalid_query}"
         joined = " ".join(str(h.get("message", "")) for h in all_hints)
         assert "unit" in joined and "value" in joined, (
             f"recovery hint should name unit and value; got {joined!r}"
@@ -422,14 +401,14 @@ def test_where_payload_validation(runtime_factory):
             {
                 "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
                 "where": [
-                    {"expression": {"kind": "literal", "value": True}, "op": "=", "value": True}
+                    {"expression": {"kind": "literal", "value": True}, "op": "is", "value": True}
                 ],
             }
         )
         assert report["ok"] is False
         assert report["errors"][0]["code"] == "INVALID_QUERY"
-        assert report["errors"][0]["details"]["path"] == "where[0]"
-        assert report["errors"][0]["details"]["unsupported_keys"] == ["expression"]
+        assert report["errors"][0]["details"]["path"] == "where[0].expression"
+        assert report["errors"][0]["details"]["supported_keys"] == ["field", "op", "value"]
     finally:
         runtime.close()
 
@@ -443,10 +422,7 @@ def test_where_payload_validation(runtime_factory):
         # (YTD/QTD family or other revenue-related sales metrics).
         (
             "metric",
-            {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.sales.reveneu_usd"}, "as": "revenue"}],
-            },
+            {"select": [{"expression": "metric.sales.reveneu_usd", "as": "revenue"}]},
             lambda closest: any(c.startswith("metric.sales.revenue_") for c in closest[:3]),
         ),
         # Typo a dimension id via group_by → validate() returns
@@ -454,10 +430,10 @@ def test_where_payload_validation(runtime_factory):
         (
             "dimension",
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.revenue_usd",
                             "aggregation": "sum",
                         },
@@ -472,10 +448,10 @@ def test_where_payload_validation(runtime_factory):
         (
             "measure",
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.revneue_usd",
                             "aggregation": "sum",
                         },
@@ -805,7 +781,7 @@ def test_same_fact_measures_fold_into_one_leaf_scan(package_config_factory):
         "limit": 10,
     }
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     rendered = compiled["sql"]
 
     assert "FULL OUTER JOIN" not in rendered
@@ -835,7 +811,7 @@ def test_alias_tiering_uses_short_internal_columns_and_preserves_final_names(
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
     }
 
-    rendered = compile_query(config, Registry(config), query)["sql"]
+    rendered = compile_query(config, Registry(config), _engine(config, query))["sql"]
 
     leaf_sql, final_sql = rendered.split(")\nSELECT", 1)
     assert " AS g1" in leaf_sql
@@ -843,9 +819,9 @@ def test_alias_tiering_uses_short_internal_columns_and_preserves_final_names(
     assert " AS m1" in leaf_sql
     assert " AS m2" in leaf_sql
     assert '"dimension.jaffle_store_name"' not in leaf_sql
-    assert '"temporal_role.jaffle_order_time__month"' not in leaf_sql
+    assert " AS period" not in leaf_sql
     assert 'base.g1 AS "dimension.jaffle_store_name"' in final_sql
-    assert 'base.t AS "temporal_role.jaffle_order_time__month"' in final_sql
+    assert "base.t AS period" in final_sql
     assert "base.m1 AS revenue" in final_sql
     assert "base.m2 AS orders" in final_sql
 
@@ -862,7 +838,7 @@ def test_bounded_time_filters_are_pushed_into_source_scan(package_config_factory
         },
     }
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     rendered = compiled["sql"]
     performance_plan = compiled["explain"].performance_plan
     source_start = rendered.index("FROM jaffle_order")
@@ -889,7 +865,7 @@ def test_multi_fact_metrics_align_on_common_metric_time(package_config_factory):
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
     }
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     rendered = compiled["sql"]
 
     assert compiled["logical_plan"].fanout_strategy["status"] == "rewritten"
@@ -1049,7 +1025,7 @@ def test_primitive_only_parent_geo_plan_preaggregates_channel_facts_before_dimen
         "group_by": ["dimension.parent_account_geo"],
     }
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     rendered = compiled["sql"]
     performance_plan = compiled["explain"].performance_plan
 
@@ -1081,7 +1057,7 @@ def test_duckdb_synthetic_parent_geo_total_messages_matches_oracle():
         "group_by": ["dimension.parent_account_geo"],
         "order_by": [{"field": "dimension.parent_account_geo", "direction": "asc"}],
     }
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     db = Database.connect_in_memory()
     try:
         db.execute_script(
@@ -1195,11 +1171,11 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_fac
         "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
     }
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     rendered = compiled["sql"]
 
     assert "predicate_jaffle_store_set_1 AS (" in rendered
-    assert 'AS "temporal_role.jaffle_inventory_day__month"' in rendered
+    assert "base.t AS period" in rendered or "anchor.t AS period" in rendered
     assert "LEFT JOIN predicate_jaffle_store_set_1" in rendered
     assert "FULL OUTER JOIN" not in rendered
     assert rendered.count("FROM jaffle_store_inventory_snapshot") == 1
@@ -1253,7 +1229,7 @@ def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(pack
         },
     }
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     rendered = compiled["sql"]
 
     predicate_section = rendered.split("predicate_jaffle_store_set_1 AS (", 1)[0]
@@ -1304,7 +1280,7 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
         },
     }
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     rendered = compiled["sql"]
 
     assert "QUALIFY" in rendered
@@ -1404,7 +1380,7 @@ def test_semi_additive_snapshots_choose_period_row_before_summing(package_config
         "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
     }
 
-    rendered = compile_query(config, Registry(config), query)["sql"]
+    rendered = compile_query(config, Registry(config), _engine(config, query))["sql"]
 
     assert "snapshot_complete AS (" in rendered
     assert "MAX(leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order" in rendered
@@ -1439,7 +1415,7 @@ def test_advanced_time_sql_supports_calendar_dense_fill_and_period_rewrites(pack
         },
     }
 
-    compiled = compile_query(config, Registry(config), query)
+    compiled = compile_query(config, Registry(config), _engine(config, query))
     rendered = compiled["sql"]
 
     # The authored default calendar takes no part: the implicit one fills the series.
@@ -1544,16 +1520,14 @@ def test_metric_predicate_is_not_selectable_and_repeat_customer_orders_compile(
     compiled = compile_query(
         config,
         Registry(config),
-        {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.repeat_customer_orders"},
-                    "as": "repeat_customer_orders",
-                },
-            ],
-            "group_by": ["dimension.jaffle_store_name"],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-        },
+        _engine(
+            config,
+            {
+                "select": ["metric.sales.repeat_customer_orders"],
+                "group_by": ["dimension.jaffle_store_name"],
+                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+            },
+        ),
     )
 
     assert "qualified_customers_by_lifetime_order_count_1" in compiled["sql"]
@@ -1568,9 +1542,10 @@ def test_metric_predicate_is_not_selectable_and_repeat_customer_orders_compile(
                         "expression": {
                             "kind": "metric_predicate",
                             "entity": "entity.jaffle_customer",
-                            "input": {"measure": "measure.jaffle.lifetime_order_count"},
-                            "op": ">",
+                            "input": "measure.jaffle.lifetime_order_count",
+                            "op": "gt",
                             "value": 1,
+                            "over": "all_time",
                         },
                         "as": "repeat_customers_only",
                     }
@@ -1619,7 +1594,7 @@ def test_contextual_metric_predicates_inherit_time_and_minimal_context_entities(
 
     assert '"dimension.jaffle_customer_id"' in store_sql
     assert '"dimension.jaffle_store_id"' in store_sql
-    assert '"temporal_role.jaffle_order_time__month"' in store_sql
+    assert "base.t AS period" in store_sql
     assert (
         'jaffle_store.store_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id"'
         in store_sql
@@ -1651,72 +1626,52 @@ def test_contextual_metric_predicates_inherit_time_and_minimal_context_entities(
 def test_contextual_metric_predicates_support_coarser_ancestor_grains_and_reject_invalid_mixes(
     runtime_factory,
 ):
+    # A predicate's own grain is the engine's form: a call says only over which rows an
+    # entity's aggregate is taken, and refuses the grain. These read the engine's form.
     runtime = runtime_factory("jaffle_shop")
+    order_time = "temporal_role.jaffle_order_time"
+
+    def engine_validate(grain: str, **parts: object) -> dict:
+        call = {
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+            "time": {"temporal_role": order_time, "grain": grain},
+        }
+        return runtime.validate_internal({**runtime.engine_payload(call), **parts})
+
+    def contextual(time_grain: str) -> list[dict]:
+        predicate = {
+            "kind": "metric_predicate",
+            "entity": "entity.jaffle_customer",
+            "scope_mode": "contextual",
+            "time_grain": time_grain,
+            "input": {"kind": "measure", "measure": "measure.jaffle.order_count"},
+            "op": ">",
+            "value": 1,
+        }
+        return [{"expression": predicate, "op": "=", "value": True}]
+
+    coarse_expression = {
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.order_count",
+        "aggregation": "count_distinct",
+        "predicates": [
+            {
+                "measure": "measure.jaffle.order_count",
+                "entity": "entity.jaffle_customer",
+                "op": ">",
+                "value": 10,
+                "time_grain": "month",
+            }
+        ],
+    }
     try:
-        coarse = runtime.validate(
+        coarse = engine_validate("day", select=[{"expression": coarse_expression, "as": "orders"}])
+        finer = engine_validate("month", metric_filters=contextual("day"))
+        misaligned = engine_validate("week", metric_filters=contextual("month"))
+        refused = runtime.validate(
             {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                            "predicates": [
-                                {
-                                    "measure": "measure.jaffle.order_count",
-                                    "entity": "entity.jaffle_customer",
-                                    "op": ">",
-                                    "value": 10,
-                                    "time_grain": "month",
-                                }
-                            ],
-                        },
-                        "as": "orders",
-                    }
-                ],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
-            }
-        )
-        finer = runtime.validate(
-            {
-                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-                "metric_filters": [
-                    {
-                        "expression": {
-                            "kind": "metric_predicate",
-                            "entity": "entity.jaffle_customer",
-                            "scope_mode": "contextual",
-                            "time_grain": "day",
-                            "input": {"measure": "measure.jaffle.order_count"},
-                            "op": ">",
-                            "value": 1,
-                        },
-                        "op": "=",
-                        "value": True,
-                    }
-                ],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            }
-        )
-        misaligned = runtime.validate(
-            {
-                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-                "metric_filters": [
-                    {
-                        "expression": {
-                            "kind": "metric_predicate",
-                            "entity": "entity.jaffle_customer",
-                            "scope_mode": "contextual",
-                            "time_grain": "month",
-                            "input": {"measure": "measure.jaffle.order_count"},
-                            "op": ">",
-                            "value": 1,
-                        },
-                        "op": "=",
-                        "value": True,
-                    }
-                ],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "week"},
+                "select": [{"expression": coarse_expression, "as": "orders"}],
+                "time": {"temporal_role": order_time, "grain": "day"},
             }
         )
 
@@ -1725,6 +1680,12 @@ def test_contextual_metric_predicates_support_coarser_ancestor_grains_and_reject
         assert finer["errors"][0]["code"] == "PREDICATE_GRAIN_UNSAFE"
         assert misaligned["ok"] is False
         assert misaligned["errors"][0]["code"] == "PREDICATE_GRAIN_UNSAFE"
+        assert refused["ok"] is False
+        assert refused["errors"][0]["code"] == "INVALID_QUERY"
+        assert (
+            refused["errors"][0]["details"]["path"]
+            == "select[0].expression.predicates[0].time_grain"
+        )
     finally:
         runtime.close()
 
@@ -1992,12 +1953,19 @@ def test_session_to_order_conversion_rate_corpus_case_still_compiles(runtime_fac
         runtime.close()
 
 
-def _predicate_filter_query(*, predicate: dict, **extra) -> dict:
-    """Build a runtime.validate payload that exercises a metric_predicate
-    via the metric_filters path on top of a simple order_count select."""
+def _entity_filter_query(*, entity: str, value: int = 0, where: tuple = (), **extra) -> dict:
+    """A call that counts orders of the entities whose order count, over all their rows, is
+    above ``value``: a metric predicate built from an entity filter."""
     payload: dict = {
         "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-        "metric_filters": [{"expression": predicate, "op": "=", "value": True}],
+        "where": [
+            {
+                "entity": entity,
+                "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": value}],
+                "over": "all_time",
+            },
+            *where,
+        ],
     }
     payload.update(extra)
     return payload
@@ -2023,16 +1991,7 @@ def test_metric_predicate_subquery_skips_recursive_top_level_compile(
     compiled = compiler_module.compile_query(
         config,
         Registry(config),
-        _predicate_filter_query(
-            predicate={
-                "kind": "metric_predicate",
-                "entity": "entity.jaffle_customer",
-                "scope_mode": "entity_only",
-                "input": {"measure": "measure.jaffle.order_count"},
-                "op": ">",
-                "value": 1,
-            }
-        ),
+        _engine(config, _entity_filter_query(entity="entity.jaffle_customer", value=1)),
     )
 
     assert compile_calls == 1
@@ -2045,16 +2004,26 @@ def test_metric_predicate_with_literal_input_raises_predicate_not_supported(runt
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
-            _predicate_filter_query(
-                predicate={
-                    "kind": "metric_predicate",
-                    "entity": "entity.jaffle_customer",
-                    "scope_mode": "entity_only",
-                    "input": {"kind": "literal", "value": 1},
-                    "op": ">",
-                    "value": 0,
-                }
-            )
+            {
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "scoped_aggregate",
+                            "measure": "measure.jaffle.order_count",
+                            "predicates": [
+                                {
+                                    "entity": "entity.jaffle_customer",
+                                    "input": {"kind": "literal", "value": 1},
+                                    "op": "gt",
+                                    "value": 0,
+                                    "over": "all_time",
+                                }
+                            ],
+                        },
+                        "as": "orders",
+                    }
+                ]
+            }
         )
         assert report["ok"] is False
         codes = [err["code"] for err in report["errors"]]
@@ -2068,7 +2037,7 @@ def test_metric_predicate_with_literal_input_raises_predicate_not_supported(runt
     [
         # The query's own path to the predicate entity crosses the time-valid hop first.
         pytest.param(None, "FANOUT_UNSAFE", id="no-query-time"),
-        # An entity_only predicate has no time of its own to pick the SCD2 slice by.
+        # An all-time predicate has no time of its own to pick the SCD2 slice by.
         pytest.param(
             {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "PREDICATE_SCOPE_UNSAFE",
@@ -2085,16 +2054,8 @@ def test_metric_predicate_without_time_anchor_through_temporal_path_is_refused(
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
-            _predicate_filter_query(
-                predicate={
-                    "kind": "metric_predicate",
-                    "entity": "entity.jaffle_customer_history",
-                    "scope_mode": "entity_only",
-                    "input": {"measure": "measure.jaffle.order_count"},
-                    "op": ">",
-                    "value": 0,
-                },
-                **({"time": time} if time else {}),
+            _entity_filter_query(
+                entity="entity.jaffle_customer_history", **({"time": time} if time else {})
             )
         )
         assert report["ok"] is False
@@ -2107,28 +2068,21 @@ def test_metric_predicate_without_time_anchor_through_temporal_path_is_refused(
 def test_metric_predicate_filter_through_temporal_path_without_time_is_refused(
     runtime_factory,
 ):
-    # A contextual predicate with a where-filter on a dimension reachable
-    # only through a temporal_validity path, and no time anchor: the query's
-    # own where crosses the hop first, so it is refused as a fan-out.
+    # An entity filter beside a where-filter on a dimension reachable only
+    # through a temporal_validity path, and no time anchor: the query's own
+    # where crosses the hop first, so it is refused as a fan-out.
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
-            _predicate_filter_query(
-                predicate={
-                    "kind": "metric_predicate",
-                    "entity": "entity.jaffle_customer",
-                    "scope_mode": "contextual",
-                    "input": {"measure": "measure.jaffle.order_count"},
-                    "op": ">",
-                    "value": 0,
-                },
-                where=[
+            _entity_filter_query(
+                entity="entity.jaffle_customer",
+                where=(
                     {
                         "field": "dimension.jaffle_customer_history_segment",
-                        "op": "=",
+                        "op": "is",
                         "value": "high_value",
-                    }
-                ],
+                    },
+                ),
             )
         )
         assert report["ok"] is False
@@ -2144,12 +2098,12 @@ def test_out_of_scope_question_with_enforce_scope_raises_out_of_scope(runtime_fa
     # validate must refuse with OUT_OF_SCOPE before compilation.
     runtime = runtime_factory("jaffle_shop")
     try:
-        report = runtime.validate(
-            {
-                "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
-                "enforce_scope": True,
-                "question": "Why did revenue decline last quarter?",
-            }
+        # Scope enforcement rides beside the call in the engine's payload, never in the call.
+        payload = runtime.engine_payload(
+            {"select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}]}
+        )
+        report = runtime.validate_internal(
+            {**payload, "enforce_scope": True, "question": "Why did revenue decline last quarter?"}
         )
         assert report["ok"] is False
         codes = [err["code"] for err in report["errors"]]
