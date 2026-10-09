@@ -1500,8 +1500,6 @@ def _negations(any_not: str, none: str) -> dict[str, str]:
         (_where("=", False, HOT), _negations("i.is_hot = false", "i.is_hot != false")),
         (_where("=", "false", HOT), _negations("i.is_hot = false", "i.is_hot != false")),
         (_where("in", [False], HOT), _negations("i.is_hot IN (false)", "i.is_hot NOT IN (false)")),
-        (_where("<", True, HOT), _negations("i.is_hot < true", "i.is_hot >= true")),
-        (_where("<=", False, HOT), _negations("i.is_hot <= false", "i.is_hot > false")),
         # One item that is both, or a beverage and some jaffle?
         (
             {"select": [_measure("revenue")], "where": [BEVERAGE, {**BEVERAGE, "value": "jaffle"}]},
@@ -1521,8 +1519,6 @@ def _negations(any_not: str, none: str) -> dict[str, str]:
         "boolean_false",
         "boolean_false_text",
         "boolean_in_false",
-        "boolean_less_than_true",
-        "boolean_at_most_false",
         "two_filters_one_child",
     ],
 )
@@ -1538,6 +1534,20 @@ def test_query_filters_that_leave_the_child_scope_unsaid_ask_for_it(
         reference = f"SELECT SUM(o.total) FROM orders o WHERE {readings[option['id']]}"
         resent = {**query, "where": option["where"]}
         assert _rows(package, resent) == _reference(package, reference), option["id"]
+
+
+@pytest.mark.parametrize(("op", "value"), [("<", True), ("<=", False)])
+def test_a_range_on_a_boolean_child_dimension_is_refused_with_the_words(
+    package: Path, op: str, value: bool
+) -> None:
+    """A boolean compares with is or not: once unknowns count, a range has no exact
+    complement, so there is no reading to offer."""
+    error = _refusal(package, _where(op, value, HOT))
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["dimension"] == HOT
+    assert error["recovery_hints"] == [
+        {"code": "USE_FILTER_WORD", "message": "Write is true or is false."}
+    ]
 
 
 @pytest.mark.parametrize(
