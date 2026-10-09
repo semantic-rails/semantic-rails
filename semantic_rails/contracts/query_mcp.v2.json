@@ -587,36 +587,7 @@
             "additionalProperties": false,
             "allOf": [
               {
-                "if": {
-                  "properties": {
-                    "op": {
-                      "const": "missing"
-                    }
-                  }
-                },
-                "then": {
-                  "properties": {
-                    "value": {
-                      "type": "boolean"
-                    }
-                  }
-                }
-              },
-              {
-                "if": {
-                  "properties": {
-                    "op": {
-                      "const": "contains"
-                    }
-                  }
-                },
-                "then": {
-                  "properties": {
-                    "value": {
-                      "type": "string"
-                    }
-                  }
-                }
+                "$ref": "#/$defs/OpValue"
               }
             ],
             "properties": {
@@ -624,56 +595,8 @@
                 "minLength": 1,
                 "type": "string"
               },
-              "op": {
-                "enum": [
-                  "!=",
-                  "<",
-                  "<=",
-                  "<>",
-                  "=",
-                  "==",
-                  ">",
-                  ">=",
-                  "EQ",
-                  "IN",
-                  "NEQ",
-                  "NOT IN",
-                  "contains",
-                  "eq",
-                  "gt",
-                  "gte",
-                  "in",
-                  "is",
-                  "lt",
-                  "lte",
-                  "missing",
-                  "neq",
-                  "not",
-                  "not in"
-                ]
-              },
-              "value": {
-                "anyOf": [
-                  {
-                    "type": [
-                      "string",
-                      "number",
-                      "boolean"
-                    ]
-                  },
-                  {
-                    "items": {
-                      "type": [
-                        "string",
-                        "number",
-                        "boolean"
-                      ]
-                    },
-                    "minItems": 1,
-                    "type": "array"
-                  }
-                ]
-              }
+              "op": {},
+              "value": {}
             },
             "required": [
               "field",
@@ -1080,6 +1003,19 @@
                       },
                       "where": {
                         "items": {
+                          "additionalProperties": false,
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/OpValue"
+                            }
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "value_filter"
+                            },
+                            "op": {},
+                            "value": {}
+                          },
                           "type": "object"
                         },
                         "type": "array"
@@ -1378,6 +1314,94 @@
                 "type": "object"
               }
             ]
+          },
+          "OpValue": {
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "op": {
+                      "const": "missing"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "op": {
+                      "const": "contains"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ],
+            "properties": {
+              "op": {
+                "enum": [
+                  "!=",
+                  "<",
+                  "<=",
+                  "<>",
+                  "=",
+                  "==",
+                  ">",
+                  ">=",
+                  "EQ",
+                  "IN",
+                  "NEQ",
+                  "NOT IN",
+                  "contains",
+                  "eq",
+                  "gt",
+                  "gte",
+                  "in",
+                  "is",
+                  "lt",
+                  "lte",
+                  "missing",
+                  "neq",
+                  "not",
+                  "not in"
+                ]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ]
+                  },
+                  {
+                    "items": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ]
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              }
+            }
           },
           "Ref": {
             "pattern": "^(measure|metric)\\.[^\\s]+$",

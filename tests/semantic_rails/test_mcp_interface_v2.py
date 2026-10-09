@@ -543,10 +543,12 @@ def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
     issue = failed["errors"][0]
     assert failed["error"] == {key: issue[key] for key in ("code", "message")}
     assert issue["code"] == "INVALID_QUERY"
-    assert issue["details"]["path"] == "select[0].measure"
-    assert "expression" in issue["message"]
+    assert issue["details"]["path"] == "select[0]"
     assert "recovery_hints" not in failed
-    assert issue["recovery_hints"]
+    assert issue["recovery_hints"][0]["message"] == (
+        'Write "metric.sales.aov_usd", or {"expression": "metric.sales.aov_usd", "as": ...} '
+        "to name it."
+    )
     empty = [key for key, value in issue.items() if value in (None, "", [], {})]
     assert empty == [] and "why_invalid" not in issue and "unsupported_construct" not in issue
 

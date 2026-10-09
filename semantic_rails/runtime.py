@@ -134,7 +134,7 @@ from .policies import (
     row_filters_for_context,
     withheld_rank_order,
 )
-from .query_call import call_where, read_call, route_options
+from .query_call import call_from_query, call_where, read_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_select_for_profile
@@ -661,6 +661,13 @@ def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
         return sorted(bind_query(config, None, payload).object_ids)
     query = normalize_query(payload)
     return collect_object_references(query.to_dict())
+
+
+def _with_call(result: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """An answer echoes the call it answered in the call's own form, never the engine's."""
+    if "query" in result:
+        result["query"] = call_from_query(payload)
+    return result
 
 
 @contextlib.contextmanager
@@ -3046,7 +3053,7 @@ class Runtime:
         for error in result.get("errors") or []:
             if error.get("code") == "AMBIGUOUS_PATH":
                 route_options(query, error["details"])
-        return result
+        return _with_call(result, payload)
 
     def compile(
         self, query: Any, *, now: Any = None, context: Any = None, **options: Any
@@ -3054,7 +3061,7 @@ class Runtime:
         """The SQL and plan a call compiles to."""
         payload = self.engine_payload(query, now=now, context=context, **options)
         with _routes_offered(query):
-            return self.compile_internal(payload)
+            return _with_call(self.compile_internal(payload), payload)
 
     def query(
         self, query: Any, *, now: Any = None, context: Any = None, **options: Any
@@ -3062,7 +3069,7 @@ class Runtime:
         """Answer a call."""
         payload = self.engine_payload(query, now=now, context=context, **options)
         with _routes_offered(query):
-            return self.query_internal(payload)
+            return _with_call(self.query_internal(payload), payload)
 
     @runtime_request_scope
     def validate_internal(self, payload: dict[str, Any]) -> dict[str, Any]:
