@@ -220,7 +220,7 @@ def test_plan_keeps_the_year(runtime_factory: Any) -> None:
             **YEAR_2017,
         }
         trend = plan_payload(runtime, intent="monthly revenue by store for 2017", detail="query")
-        assert_plan_held(trend, "PLAN_UNMATCHED_TERMS")
+        assert trend["status"] == "ok"
         assert {key: _best(trend)["time"][key] for key in ("grain", "start", "end")} == {
             "grain": "month",
             **YEAR_2017,
