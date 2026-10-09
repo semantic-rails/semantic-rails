@@ -18,6 +18,7 @@ import pytest
 import yaml
 
 from semantic_rails.planner import generators, plan_payload
+from semantic_rails.planner import plan as planner
 from semantic_rails.planner._base import _named_metric
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.result_helpers import disable_planner_patterns
@@ -259,6 +260,8 @@ def test_a_whole_synonym_selects_its_metric_beside_a_measure_named_by_its_own_wo
     "accounts" is a word of the metric's own label."""
 
     engine = engines["zero_filled"]
+    named = _named_metric(engine._config, UPGRADED)
+    assert named is not None and named[0].id == UPGRADES
     plan = _plan(engine, UPGRADED)
     _assert_ok(plan)
     assert _selected(plan) == {"metric": UPGRADES}
@@ -268,12 +271,15 @@ def test_a_whole_synonym_selects_its_metric_beside_a_measure_named_by_its_own_wo
 def test_a_measure_name_outside_the_metric_s_words_still_vetoes(
     engines: dict[str, Runtime],
 ) -> None:
+    """Unchanged: "workspaces" is no word of the metric's names, so the measure it names
+    still vetoes the synonym, and the draft is held as before."""
+
     engine = engines["zero_filled"]
     question = "How many workspaces moved to a bigger plan last week?"
     assert _named_metric(engine._config, question) is None
-    named = _named_metric(engine._config, UPGRADED)
-    assert named is not None and named[0].id == UPGRADES
-    _assert_held(_plan(engine, question))
+    plan = _plan(engine, question)
+    _assert_held(plan)
+    assert _selected(plan) == {"measure": "measure.subscriptions.workspaces_all"}
 
 
 @pytest.mark.parametrize("form", ["zero_filled", "bare"])
@@ -323,6 +329,19 @@ def _assert_measure_held(plan: dict[str, Any], metrics: list[str]) -> None:
     _assert_held(plan)
     assert _selected(plan) == {"measure": CALLS_ALL}
     assert [gap["expected"]["metrics"] for gap in _governed_gaps(plan)] == [metrics]
+
+
+@pytest.mark.parametrize("intent", ["How many calls last week?", "How many calls?"])
+def test_a_draft_that_misses_the_swap_is_still_held(
+    engines: dict[str, Runtime], monkeypatch: pytest.MonkeyPatch, intent: str
+) -> None:
+    """The swap only moves drafts that readiness refuses without it."""
+
+    monkeypatch.setattr(planner, "_governed_target", lambda *_: None)
+    _assert_measure_held(_plan(engines["zero_filled"], intent), [CALLS])
+
+
+# The holds below are unchanged.
 
 
 def test_a_filler_other_than_zero_is_not_a_governed_form(engines: dict[str, Runtime]) -> None:

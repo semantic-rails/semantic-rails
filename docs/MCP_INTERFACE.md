@@ -257,7 +257,9 @@ A draft that validates can still leave out part of the question. `plan` returns
 
 - doesn't use a metric the question names by its label, an alias or its id, when that name
   has two words or more and holds every measure the question names ("completed revenue"
-  holds "revenue") (`named_metric_unrealized`). `plan` drafts that metric itself, and the
+  holds "revenue"), apart from a measure named only with words of the metric's own label,
+  aliases or id ("accounts" beside an alias "moved to a bigger plan" of "Accounts that
+  upgraded") (`named_metric_unrealized`). `plan` drafts that metric itself, and the
   metric's own name isn't read again as a window, a ranking or a value;
 - answers with a measure, or the metric that is its plain aggregate, while a metric that
   reads the same measure through a filter fits the question (`governed_metric_unrealized`,
@@ -270,7 +272,11 @@ A draft that validates can still leave out part of the question. `plan` returns
   `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query.select`
   names it by id; no other part of the request names it. When a metric reads the measure
   through a filter, it is a building block: `plan` answers with the metric when it is the only
-  one that filters the measure or the question names it, and otherwise holds the draft. Without
+  one that filters the measure or the question names it, and otherwise holds the draft. That
+  swap applies to every draft, whichever pattern or fallback drafted it, when the metric is
+  one aggregate of the measure through a filter, bare or inside `COALESCE(<aggregate>, 0)`,
+  and the draft has no time block (the metric is read over all time) or one on the metric's
+  clock; never to a caller's `select`. Without
   `schema_strict`, the flag also suppresses auto-publishing a metric of the measure's own name.
   When the question names no governing metric, a published measure is
   still held while a visible metric narrows its rows: an aggregate in that metric, over this
