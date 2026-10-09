@@ -999,12 +999,12 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
 
 
 def _validate_metric_predicate_filter_envelope(item: dict[str, Any]) -> None:
-    if str(item.get("op", "=")).strip() == "=" and item.get("value") is True:
+    if str(item.get("op", "is")).strip() in {"is", "="} and item.get("value") is True:
         return
     raise SemanticLayerError(
         "INVALID_METRIC_FILTER",
-        "metric_predicate filters must use op '=' and value true; put the threshold inside expression.op/expression.value",
-        details={"op": item.get("op", "="), "value": item.get("value")},
+        "metric_predicate filters must use op 'is' and value true; put the threshold inside expression.op/expression.value",
+        details={"op": item.get("op", "is"), "value": item.get("value")},
     )
 
 
