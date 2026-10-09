@@ -207,10 +207,11 @@ def test_host_attributes_reach_the_runtime_and_never_leave_it(host_app, transpor
         app,
         transport,
         "plan",
-        {"intent": "revenue by store", "policy_context": spoof, "query": {"policy_context": spoof}},
+        {"intent": "revenue by store", "policy_context": spoof},
     )
     assert plan["ok"] is True, plan
-    query = {**plan["best"]["query_ir"], "policy_context": spoof}
+    # Identity never travels in a call; the spoof rides beside it and in the headers.
+    query = plan["best"]["query_ir"]
     responses = [plan]
     for operation, arguments in [
         ("validate", {"query": query}),
@@ -222,7 +223,7 @@ def test_host_attributes_reach_the_runtime_and_never_leave_it(host_app, transpor
         assert response["ok"] is True, response
         assert response["request_context"]["actor"] == "end-user"
         responses.append(response)
-    broken = {"select": [{"expression": {"metric": "metric.missing"}}], "policy_context": spoof}
+    broken = {"select": ["metric.missing"]}
     failed = _call(app, transport, "compile", {"query": broken, "policy_context": spoof})
     assert failed["ok"] is False
     responses.append(failed)

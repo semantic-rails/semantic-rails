@@ -1529,7 +1529,7 @@ def test_start_of_period_stock_sums_each_series_opening_balance(tmp_path: Path) 
         runtime.close()
     assert result["ok"], result.get("errors")
     rows = sorted(
-        (date.fromisoformat(str(row[f"{role}__month"])[:10]), row["v"]) for row in result["rows"]
+        (date.fromisoformat(str(row["period"])[:10]), row["v"]) for row in result["rows"]
     )
     assert rows == reference
 
