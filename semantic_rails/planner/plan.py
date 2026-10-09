@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import replace
 from typing import Any
 
@@ -68,6 +69,7 @@ from .plan_trace import (
     _select_best_plan,
     _slim_best,
 )
+from .question_parts import MAX_PARTS, QUOTED, QuestionSplit, split_question
 from .snapshot import shape_snapshot, snapshot_read
 from .time_reference import with_time_reference
 from .time_windows import _with_fiscal_calendar
@@ -83,7 +85,6 @@ _VERSION = 1
 
 
 # ---------------------------------------------------------------------------
-_QUOTED = r"\"[^\"]*\"|“[^”]*”|(?<!\w)['‘].*?['’](?!\w)"
 _CONTRACTION = r"\b(?P<word>[^\W_]+?)(?P<suffix>n['’]t|['’](?:s|re|ve|ll|d))\b"
 _IS = frozenset({"what", "who", "where", "when", "how", "it", "that", "there", "here"})
 _EXPANDED = {"'s": " is", "'re": " are", "'ve": " have", "'ll": " will", "'d": " would"}
@@ -107,7 +108,7 @@ def _normalize_question(text: str, declared: Iterable[str] = ()) -> str:
             return {"ca": "can", "wo": "will", "sha": "shall"}.get(word.lower(), word) + " not"
         return word + _EXPANDED[suffix]
 
-    pattern = rf"(?P<kept>{_QUOTED}|(?<!\w)(?:{kept})(?!\w))|{_CONTRACTION}"
+    pattern = rf"(?P<kept>{QUOTED}|(?<!\w)(?:{kept})(?!\w))|{_CONTRACTION}"
     return re.sub(pattern, expand, text, flags=re.IGNORECASE)
 
 
@@ -136,7 +137,11 @@ def plan_payload(
           "best":        {...} | None,
           "why":         {...} | None,              # set when status != ok
           "next":        {"valid_values":[...], "ready_for":["execute"]},
+          "parts":       [{text, spans, status, best, why}, ...],  # several questions
         }
+
+    A question that asks several things one plan can't answer comes back as ``parts``, each
+    planned on its own words (``_parts_payload``).
     """
 
     # Local imports keep the planner package from circular-importing
@@ -144,18 +149,7 @@ def plan_payload(
     # metadata.py / metadata_parts/relevance.py because they belong to
     # the discover/plan/validate surface, not the planner composition
     # pipeline itself.
-    from ..metadata_parts.relevance import (  # noqa: WPS433
-        _apostrophe_names,
-        _catalog_token_index,
-        _intent_passes_grounding_floor,
-        _intent_passes_relevance_floor,
-        _low_relevance_block,
-        _visible_catalog,
-        _weak_grounding_block,
-        _weak_grounding_tokens,
-    )
-    from ..metadata_parts.scope_gate import scope_block_payload  # noqa: WPS433
-    from ..scope import classify_question  # noqa: WPS433
+    from ..metadata_parts.relevance import _apostrophe_names, _visible_catalog  # noqa: WPS433
 
     if not isinstance(intent, str) or not intent.strip():
         raise SemanticLayerError(
@@ -175,11 +169,50 @@ def plan_payload(
 
     partial_query = _checked_partial_query(partial_query)
     catalog_config = _visible_catalog(runtime._config, caller_hidden_ids(runtime._config))
-    intent = intent_str = _normalize_question(intent.strip(), _apostrophe_names(catalog_config))
+    intent = _normalize_question(intent.strip(), _apostrophe_names(catalog_config))
     detail_level = str(detail or "best").lower()
     if detail_level not in {"query", "best", "full", "debug"}:
         detail_level = "best"
 
+    def plan_question(text: str) -> dict[str, Any]:
+        return _question_payload(runtime, text, partial_query, detail_level, limit, catalog_config)
+
+    payload = plan_question(intent)
+    # A question asking several things that one plan can't answer is planned part by part.
+    split = (
+        split_question(intent, catalog_config)
+        if payload["status"] not in {"ok", "out_of_scope"} and _caller_sets_no_query(partial_query)
+        else None
+    )
+    # When the engine refuses a part on its own, the whole question's hold stays.
+    with suppress(SemanticLayerError):
+        payload = _parts_payload(payload, split, plan_question, detail_level) if split else payload
+    return _query_detail_payload(payload) if detail_level == "query" else payload
+
+
+def _question_payload(
+    runtime: Any,
+    intent: str,
+    partial_query: dict[str, Any] | None,
+    detail_level: str,
+    limit: int,
+    catalog_config: Any,
+) -> dict[str, Any]:
+    """One question's plan payload, before the ``detail="query"`` projection."""
+
+    from ..metadata_parts.relevance import (  # noqa: WPS433
+        _apostrophe_names,
+        _catalog_token_index,
+        _intent_passes_grounding_floor,
+        _intent_passes_relevance_floor,
+        _low_relevance_block,
+        _weak_grounding_block,
+        _weak_grounding_tokens,
+    )
+    from ..metadata_parts.scope_gate import scope_block_payload  # noqa: WPS433
+    from ..scope import classify_question  # noqa: WPS433
+
+    intent_str = intent
     example, invalid_examples = example_plan(
         runtime,
         intent_str,
@@ -199,10 +232,10 @@ def plan_payload(
                 },
             )
             payload["why"].setdefault("details", {})["invalid_examples"] = invalid_examples
-        return _query_detail_payload(payload) if detail_level == "query" else payload
+        return payload
 
     if example is not None:
-        return _query_detail_payload(example) if detail_level == "query" else example
+        return example
 
     if intent_str:
         classification = classify_question(intent_str)
@@ -823,7 +856,7 @@ def _codes(validation: dict[str, Any]) -> set[str]:
     }
 
 
-def _query_key(query: dict[str, Any]) -> str:
+def _query_key(query: Any) -> str:
     import json
 
     return json.dumps(query, sort_keys=True, default=str)
@@ -878,6 +911,140 @@ def _out_of_scope_envelope(
     elif low_relevance is not None:
         envelope["why"] = low_relevance
     return envelope
+
+
+# A caller's partial query merges into every draft, so a question is split only when the caller
+# sends nothing but request context: one select or window can't belong to every part.
+_REQUEST_KEYS = frozenset({"policy_context", "version", "verbosity"})
+# From ready to furthest from it: a split question has its weakest part's status.
+_STATUS_ORDER = ("ok", "needs_clarification", "low_confidence", "unrealizable", "out_of_scope")
+_PART_HOLDS = {
+    "too_many_parts": "The question asks more than {max} things; plan answers at most {max} at once.",
+    "dependent_part": (
+        "Part {parts} refers to what another part asks for, but each part is planned on its "
+        "own words."
+    ),
+    "part_without_subject": "Part {parts} names nothing to measure.",
+    "part_without_window": (
+        "Part {parts} states no time window while another part states one, so plan can't tell "
+        "which window it asks for."
+    ),
+    "part_without_grouping": (
+        "Part {parts} asks for no breakdown or a different one than another part, so plan can't "
+        "tell which breakdown is meant for every part."
+    ),
+    "part_filters_differ": (
+        "Parts {parts} filter their rows differently, so plan can't tell whether a filter one "
+        "part states is meant for every part."
+    ),
+}
+
+
+def _caller_sets_no_query(partial_query: dict[str, Any] | None) -> bool:
+    return not any(
+        value not in (None, "", [], {})
+        for key, value in (partial_query or {}).items()
+        if key not in _REQUEST_KEYS
+    )
+
+
+def _parts_payload(
+    whole: dict[str, Any],
+    split: QuestionSplit,
+    plan_question: Any,
+    detail_level: str,
+) -> dict[str, Any]:
+    """The plan of a question that asks several things: one plan per part.
+
+    Invariant: the payload is ``ok`` only when every part, planned alone on its own words and
+    the shared leading phrase, is ``ok``. Otherwise its status is the weakest part's, and
+    ``why`` names the parts that aren't ready. Every part's warnings are the payload's too.
+    ``best`` and ``intent_ir`` are the first part's, for a client that reads only ``best``.
+    A split whose parts can't be planned alone (``split.hold``) keeps the whole question's
+    draft, ``low_confidence``, with the parts listed and the draft's gaps where a single
+    question's are (``why.details.gaps``, such as the metric that governs a part's measure).
+    """
+
+    listed = [
+        {"text": part.text, "spans": [list(span) for span in part.spans]} for part in split.parts
+    ]
+
+    def held(reason: str, numbers: tuple[int, ...]) -> dict[str, Any]:
+        named = ", ".join(str(number) for number in numbers)
+        details = (whole.get("why") or {}).get("details") or {}
+        return {
+            **whole,
+            "status": "low_confidence",
+            "why": {
+                "code": "PLAN_PARTS_HELD",
+                "message": _PART_HOLDS[reason].format(max=MAX_PARTS, parts=named)
+                + " Ask each part on its own, naming what it measures, its filters and window.",
+                "details": {
+                    "reason": reason,
+                    "parts": [{"part": number, **listed[number - 1]} for number in numbers],
+                    **({"question_why": whole["why"]} if whole.get("why") else {}),
+                    **{key: details[key] for key in ("gap_count", "gaps") if key in details},
+                },
+            },
+            "next": {key: value for key, value in whole.get("next", {}).items() if key != "action"},
+            "parts": listed,
+        }
+
+    if split.hold:
+        return held(split.hold, split.held)
+    planned = [plan_question(part.text) for part in split.parts]
+    status = max((row["status"] for row in planned), key=_STATUS_ORDER.index)
+    if (
+        status == "ok"
+        and len({_query_key(row["best"]["query_ir"].get("where")) for row in planned}) > 1
+    ):
+        # A filter one part states ("for Acme") may be meant for every part.
+        return held("part_filters_differ", tuple(range(1, len(planned) + 1)))
+    parts = []
+    for entry, row in zip(listed, planned, strict=True):
+        shown = _query_detail_payload(row) if detail_level == "query" else row
+        omitted = ("plan_version", "intent", "intent_ir")
+        parts.append(
+            {**entry, **{key: value for key, value in shown.items() if key not in omitted}}
+        )
+    payload: dict[str, Any] = {
+        "plan_version": _VERSION,
+        "intent": whole["intent"],
+        "intent_ir": planned[0].get("intent_ir", whole.get("intent_ir")),
+        "status": status,
+        "best": planned[0]["best"],
+        "parts": parts,
+        "next": {"ready_for": ["execute"]}
+        if status == "ok"
+        else {"action": "clarify"}
+        if status == "needs_clarification"
+        else {},
+    }
+    waiting = [
+        {
+            "part": number,
+            "text": part["text"],
+            "status": part["status"],
+            **({"code": part["why"]["code"]} if part.get("why") else {}),
+        }
+        for number, part in enumerate(parts, start=1)
+        if part["status"] != "ok"
+    ]
+    if waiting:
+        named = ", ".join(str(row["part"]) for row in waiting)
+        payload["why"] = {
+            "code": "PLAN_PARTS_NOT_READY",
+            "message": (
+                f"The question asks {len(parts)} things, planned as parts; part {named} is not "
+                "ready. Each part's why says what it misses."
+            ),
+            "details": {"parts": waiting},
+        }
+    for part in parts:
+        for warning in part.get("warnings", []):
+            if warning not in payload.setdefault("warnings", []):
+                payload["warnings"].append(warning)
+    return payload
 
 
 __all__ = [

@@ -16,8 +16,7 @@ import pytest
 import yaml
 
 from semantic_rails.architect_service import ArchitectProject
-from semantic_rails.config import load_package_config
-from semantic_rails.config_parts.package_loader import normalize_package
+from semantic_rails.config import _load_package_source, load_package_config
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.conftest import copy_package_config
@@ -71,6 +70,7 @@ def _write_synthetic_package(
             "widget": {
                 "label": "Widget",
                 "key": ["widget_id"],
+                "model": "widgets",
             },
         }
     graph_payload = {"graph": {"entities": graph_entities}}
@@ -84,8 +84,7 @@ def _write_synthetic_package(
                 "id": "widgets",
                 "entity": "widget",
                 "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
+                "entities": {"widget": {}},
                 "times": {
                     "created_at": {
                         "label": "Created at",
@@ -103,7 +102,6 @@ def _write_synthetic_package(
                         "entity_key": ["widget_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["widgets"],
                     },
                 },
             },
@@ -139,6 +137,7 @@ def test_as_escape_hatch_overrides_auto_derived_id(tmp_path: Path) -> None:
                 "as": "entity.synth.legacy_widget_id",
                 "label": "Widget",
                 "key": ["widget_id"],
+                "model": "widgets",
             },
         },
     )
@@ -156,6 +155,7 @@ def test_as_with_wrong_namespace_overrides_auto_derived(tmp_path: Path) -> None:
                 "as": "entity.othernamespace.widget",
                 "label": "Widget",
                 "key": ["widget_id"],
+                "model": "widgets",
             },
         },
     )
@@ -206,19 +206,17 @@ def test_graph_entity_never_borrows_another_entity_key(
 
 
 @pytest.mark.parametrize("own_first", [False, True])
-@pytest.mark.parametrize("key_source", ["graph", "grain", "primary"])
+@pytest.mark.parametrize("key_source", ["graph", "expr"])
 def test_graph_binding_selects_primary_independently_of_entity_order(
     tmp_path: Path, own_first: bool, key_source: str
 ) -> None:
-    block = {"reading": {}, "device": {}} if own_first else {"device": {}, "reading": {}}
+    # The reading key comes from the graph entity, or from the model's own column for it.
+    own = {"expr": "reading_id"} if key_source == "expr" else {}
+    block = {"reading": own, "device": {}} if own_first else {"device": {}, "reading": own}
     model: dict[str, Any] = {"id": "readings", "relation": "readings", "entities": block}
     reading = {"model": "readings"}
     if key_source == "graph":
         reading["key"] = "reading_id"
-    elif key_source == "grain":
-        model["grain"] = ["reading_id"]
-    else:
-        model["keys"] = {"primary": ["reading_id"]}
     pkg = _write_synthetic_package(
         tmp_path / "readings",
         graph_entities={
@@ -231,9 +229,6 @@ def test_graph_binding_selects_primary_independently_of_entity_order(
         },
         graph_relationships={"reading_device": {"entities": ["reading", "device"]}},
     )
-    if key_source == "grain":
-        errors = validate_runtime_package(pkg)
-        assert not any("grain" in error for error in errors), errors
     config = load_package_config(str(pkg))
     entity = next(e for e in config.entities if e.id == "entity.synth_reading")
     assert entity.key == ["reading_id"]
@@ -243,29 +238,11 @@ def test_graph_binding_selects_primary_independently_of_entity_order(
     ]
 
 
-def test_structured_primary_key_resolves_implicit_binding(tmp_path: Path) -> None:
-    pkg = _write_synthetic_package(
-        tmp_path / "structured_primary",
-        graph_entities={"reading": {"key": ["reading_id"]}},
-        models={
-            "readings": {
-                "relation": "readings",
-                "entities": {"reading": {}},
-                "keys": {"primary": {"columns": ["reading_id"], "role": "unique"}},
-            }
-        },
-    )
-    config = load_package_config(str(pkg))
-    assert [(entity.id, entity.key, entity.table) for entity in config.entities] == [
-        ("entity.synth_reading", ["reading_id"], "readings")
-    ]
-
-
-def test_empty_entities_block_preserves_name_binding_and_own_grain(tmp_path: Path) -> None:
+def test_empty_entities_block_preserves_name_binding(tmp_path: Path) -> None:
     pkg = _write_synthetic_package(
         tmp_path / "empty_entities",
-        graph_entities={"reading": {}},
-        models={"reading": {"relation": "readings", "entities": {}, "grain": ["reading_id"]}},
+        graph_entities={"reading": {"key": ["reading_id"]}},
+        models={"reading": {"relation": "readings", "entities": {}}},
     )
     config = load_package_config(str(pkg))
     assert [(entity.id, entity.key, entity.table) for entity in config.entities] == [
@@ -273,15 +250,10 @@ def test_empty_entities_block_preserves_name_binding_and_own_grain(tmp_path: Pat
     ]
 
 
-@pytest.mark.parametrize("primary_source", ["entity", "grain"])
-def test_name_binding_refuses_another_entitys_primary_key(
-    tmp_path: Path, primary_source: str
-) -> None:
-    model: dict[str, Any] = {"relation": "readings", "entities": {"device": {}}}
-    model[primary_source] = "device" if primary_source == "entity" else ["device_id"]
+def test_name_binding_refuses_another_entitys_primary_key(tmp_path: Path) -> None:
+    model: dict[str, Any] = {"relation": "readings", "entity": "device", "entities": {"device": {}}}
     pkg = _write_synthetic_package(
         tmp_path / "name_binding_conflict",
-        package_extra={"schema_strict": True},
         graph_entities={"reading": {}, "device": {"model": "devices", "key": "device_id"}},
         models={"reading": model, "devices": {"relation": "devices"}},
     )
@@ -292,17 +264,12 @@ def test_name_binding_refuses_another_entitys_primary_key(
     assert "model 'reading'" in str(exc.value)
 
 
-@pytest.mark.parametrize("with_entities", [False, True])
 @pytest.mark.parametrize("reverse_models", [False, True])
-def test_two_models_cannot_claim_an_unbound_entity(
-    tmp_path: Path, with_entities: bool, reverse_models: bool
-) -> None:
+def test_two_models_cannot_claim_an_unbound_entity(tmp_path: Path, reverse_models: bool) -> None:
     models = {
-        name: {"entity": "reading", "relation": name} for name in ("readings", "other_readings")
+        name: {"entity": "reading", "relation": name, "entities": {"reading": {}}}
+        for name in ("readings", "other_readings")
     }
-    if with_entities:
-        for model in models.values():
-            model["entities"] = {"reading": {}}
     if reverse_models:
         models = dict(reversed(list(models.items())))
     pkg = _write_synthetic_package(
@@ -327,7 +294,7 @@ def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path
             "readings": {
                 "entity": "reading",
                 "relation": "readings",
-                "keys": {"foreign": {"device": ["device_id"]}},
+                "entities": {"reading": {}, "device": {}},
             },
             "devices": {"relation": "devices"},
         },
@@ -340,15 +307,15 @@ def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path
 
 
 @pytest.mark.parametrize("second_model", ["device", "sensors"])
-@pytest.mark.parametrize("with_entities", [False, True])
+@pytest.mark.parametrize("both_entities", [False, True])
 def test_implicit_bindings_preserve_authored_entity_relations(
-    tmp_path: Path, second_model: str, with_entities: bool
+    tmp_path: Path, second_model: str, both_entities: bool
 ) -> None:
     models = {
-        "reading": {"entity": "device", "relation": "devices", "keys": {"primary": ["id"]}},
-        second_model: {"entity": "reading", "relation": "readings", "keys": {"primary": ["id"]}},
+        "reading": {"entity": "device", "relation": "devices", "entities": {"device": {}}},
+        second_model: {"entity": "reading", "relation": "readings", "entities": {"reading": {}}},
     }
-    if with_entities:
+    if both_entities:
         for model in models.values():
             model["entities"] = {"reading": {}, "device": {}}
     pkg = _write_synthetic_package(
@@ -363,23 +330,13 @@ def test_implicit_bindings_preserve_authored_entity_relations(
     }
 
 
-@pytest.mark.parametrize("primary_source", ["grain", "name"])
-def test_implicit_binding_resolves_grain_before_model_name(
-    tmp_path: Path, primary_source: str
-) -> None:
-    reading_model: dict[str, Any] = {
-        "relation": "devices" if primary_source == "grain" else "readings",
-        "entities": {"device": {}, "reading": {}},
-    }
-    if primary_source == "grain":
-        reading_model["grain"] = ["device_id"]
-    second_entity = "reading" if primary_source == "grain" else "device"
+def test_implicit_binding_resolves_model_name(tmp_path: Path) -> None:
     pkg = _write_synthetic_package(
         tmp_path / "implicit_resolution",
         graph_entities={"reading": {"key": "reading_id"}, "device": {"key": "device_id"}},
         models={
-            "reading": reading_model,
-            "other": {"entity": second_entity, "relation": f"{second_entity}s"},
+            "reading": {"relation": "readings", "entities": {"device": {}, "reading": {}}},
+            "other": {"entity": "device", "relation": "devices", "entities": {"device": {}}},
         },
     )
     config = load_package_config(str(pkg))
@@ -398,7 +355,7 @@ def test_explicit_binding_does_not_prevent_other_identity_backfill(tmp_path: Pat
         },
         models={
             "readings": {"relation": "readings", "entities": {"reading": {}}},
-            "sensors": {"entity": "device", "relation": "devices"},
+            "sensors": {"entity": "device", "relation": "devices", "entities": {"device": {}}},
         },
     )
     config = load_package_config(str(pkg))
@@ -418,7 +375,9 @@ def test_final_bindings_refuse_two_entities_on_one_model(
     pkg = _write_synthetic_package(
         tmp_path / "final_binding_collision",
         graph_entities={"reading": reading, "readings": {"key": "other_id"}},
-        models={"readings": {"entity": "reading", "relation": "readings"}},
+        models={
+            "readings": {"entity": "reading", "relation": "readings", "entities": {"reading": {}}}
+        },
     )
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
@@ -442,13 +401,11 @@ def test_name_fallback_cannot_select_an_explicitly_bound_entity(tmp_path: Path) 
     assert "model 'reading' must identify its primary entity" in str(exc.value)
 
 
-@pytest.mark.parametrize("entities_block", [None, {}, {"device": {}}])
+@pytest.mark.parametrize("entities_block", [{}, {"device": {}}])
 def test_explicit_binding_refuses_conflicting_identity_without_primary_resolution(
-    tmp_path: Path, entities_block: dict | None
+    tmp_path: Path, entities_block: dict
 ) -> None:
-    model: dict[str, Any] = {"entity": "device", "relation": "readings"}
-    if entities_block is not None:
-        model["entities"] = entities_block
+    model: dict[str, Any] = {"entity": "device", "relation": "readings", "entities": entities_block}
     pkg = _write_synthetic_package(
         tmp_path / "conflicting_identity",
         graph_entities={"reading": {"model": "readings", "key": "reading_id"}},
@@ -499,7 +456,7 @@ def test_graph_model_cannot_be_primary_for_two_entities(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("customer_first", [False, True])
-@pytest.mark.parametrize("identity", [None, "binding", "entity", "single_match"])
+@pytest.mark.parametrize("identity", [None, "binding", "entity"])
 def test_shared_entity_keys_require_explicit_primary_identity(
     tmp_path: Path, customer_first: bool, identity: str | None
 ) -> None:
@@ -509,7 +466,6 @@ def test_shared_entity_keys_require_explicit_primary_identity(
     model: dict[str, Any] = {
         "id": "parties",
         "relation": "parties",
-        "grain": ["id"],
         "entities": {name: {} for name in names},
         "dimensions": {"label": {"column": "label", "kind": "categorical"}},
         "measures": {"party_count": {"kind": "entity_count", "entity_key": ["id"]}},
@@ -518,8 +474,6 @@ def test_shared_entity_keys_require_explicit_primary_identity(
         graph_entities["customer"]["model"] = "parties"
     elif identity == "entity":
         model["entity"] = "customer"
-    elif identity == "single_match":
-        graph_entities["supplier"]["key"] = ["supplier_id"]
     pkg = _write_synthetic_package(
         tmp_path / "shared_keys",
         graph_entities=graph_entities,
@@ -529,14 +483,14 @@ def test_shared_entity_keys_require_explicit_primary_identity(
                 "id": "supplier",
                 "entity": "supplier",
                 "relation": "suppliers",
-                "grain": ["id"],
+                "entities": {"supplier": {}},
             },
         },
     )
     if identity is None:
         message = (
-            "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
-            "bind the model in the graph or set entity:"
+            "model 'parties' must identify its primary entity with a graph model binding "
+            "(graph.entities.<entity>.model), or list an unbound entity with the model's name"
         )
         with pytest.raises(SemanticLayerError) as exc:
             load_package_config(str(pkg))
@@ -552,18 +506,24 @@ def test_shared_entity_keys_require_explicit_primary_identity(
         assert customer.key == ["id"]
 
 
-def test_architect_mutation_rolls_back_when_grain_remains_ambiguous(tmp_path: Path) -> None:
+def test_architect_mutation_rolls_back_when_primary_remains_unidentified(tmp_path: Path) -> None:
     pkg = _write_synthetic_package(
         tmp_path / "ambiguous_edit",
-        graph_entities={"customer": {"key": ["id"]}, "supplier": {"key": ["id"]}},
+        graph_entities={
+            "customer": {"key": ["id"]},
+            "supplier": {"key": ["id"], "model": "supplier"},
+        },
         models={
             "parties": {
                 "id": "parties",
                 "relation": "parties",
-                "grain": ["id"],
                 "entities": {"customer": {}, "supplier": {}},
             },
-            "supplier": {"entity": "supplier", "relation": "suppliers", "grain": ["id"]},
+            "supplier": {
+                "entity": "supplier",
+                "relation": "suppliers",
+                "entities": {"supplier": {}},
+            },
         },
     )
     original = (pkg / "models" / "supplier.yml").read_bytes()
@@ -578,45 +538,13 @@ def test_architect_mutation_rolls_back_when_grain_remains_ambiguous(tmp_path: Pa
     assert any(
         error["code"] == "INVALID_CONFIG"
         and (
-            "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
-            "bind the model in the graph or set entity:"
+            "model 'parties' must identify its primary entity with a graph model binding "
+            "(graph.entities.<entity>.model), or list an unbound entity with the model's name"
         )
         in error["message"]
         for error in report["parse"]["errors"]
     )
     assert (pkg / "models" / "supplier.yml").read_bytes() == original
-
-
-@pytest.mark.parametrize("customer_first", [False, True])
-@pytest.mark.parametrize("key_source", ["graph", "expr", "primary"])
-def test_ambiguous_grain_cannot_fall_back_to_model_name(
-    customer_first: bool, key_source: str
-) -> None:
-    names = ["customer", "supplier"] if customer_first else ["supplier", "customer"]
-    model: dict[str, Any] = {
-        "entities": {name: {} for name in names},
-        "grain": ["id"],
-    }
-    if key_source == "expr":
-        model["entities"] = {name: {"expr": "id"} for name in names}
-    elif key_source == "primary":
-        model.pop("grain")
-        model["keys"] = {"primary": {"columns": ["id"]}}
-    raw = {
-        "graph": {
-            "entities": {
-                name: {"key": [f"{name}_id" if key_source == "expr" else "id"]} for name in names
-            }
-        },
-        "models": {"customer": model},
-    }
-    with pytest.raises(SemanticLayerError) as exc:
-        normalize_package(raw)
-    assert exc.value.code == "INVALID_CONFIG"
-    assert str(exc.value) == (
-        "model 'customer' grain ['id'] matches multiple entity keys: customer, supplier; "
-        "bind the model in the graph or set entity:"
-    )
 
 
 @pytest.mark.parametrize(
@@ -634,6 +562,7 @@ def test_bundled_packages_resolve_primary_entities(package_path: str) -> None:
 def test_model_primary_is_not_chosen_by_declaration_order(tmp_path: Path) -> None:
     pkg = _write_synthetic_package(
         tmp_path / "unresolved_primary",
+        graph_entities={"widget": {"label": "Widget", "key": ["widget_id"]}},
         models={"widgets": {"relation": "widgets", "entities": {"widget": {}}}},
     )
     with pytest.raises(SemanticLayerError) as exc:
@@ -664,7 +593,11 @@ def test_unattachable_graph_relationship_is_refused(tmp_path: Path, relationship
     # An unbound model must not make an unknown graph entity attachable.
     _write_yaml(
         pkg / "models" / "orphan.yml",
-        {"models": {"orphan": {"entity": "orphan", "relation": "orphan"}}},
+        {
+            "models": {
+                "orphan": {"entity": "orphan", "relation": "orphan", "entities": {"orphan": {}}}
+            }
+        },
     )
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
@@ -690,16 +623,15 @@ def test_model_entities_block_translates_to_legacy_shape(tmp_path: Path) -> None
     _write_synthetic_package(
         pkg_dir,
         graph_entities={
-            "order": {"label": "Order", "key": ["order_id"]},
-            "customer": {"label": "Customer", "key": ["customer_id"]},
+            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
+            "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
         },
         models={
             "customers": {
                 "id": "customers",
                 "entity": "customer",
                 "relation": "customer",
-                "grain": ["customer_id"],
-                "keys": {"primary": ["customer_id"]},
+                "entities": {"customer": {}},
                 "measures": {
                     "customer_count": {
                         "label": "Customer count",
@@ -708,14 +640,12 @@ def test_model_entities_block_translates_to_legacy_shape(tmp_path: Path) -> None
                         "entity_key": ["customer_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["customers"],
                     },
                 },
             },
             "orders": {
                 "id": "orders",
                 "relation": "orders",
-                "grain": ["order_id"],
                 "entities": {
                     "order": {},
                     "customer": {},
@@ -728,7 +658,6 @@ def test_model_entities_block_translates_to_legacy_shape(tmp_path: Path) -> None
                         "entity_key": ["order_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["orders"],
                     },
                 },
             },
@@ -747,16 +676,15 @@ def test_model_entities_block_with_expr_renames_column(tmp_path: Path) -> None:
     _write_synthetic_package(
         pkg_dir,
         graph_entities={
-            "order": {"label": "Order", "key": ["order_id"]},
-            "customer": {"label": "Customer", "key": ["customer_id"]},
+            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
+            "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
         },
         models={
             "customers": {
                 "id": "customers",
                 "entity": "customer",
                 "relation": "customer",
-                "grain": ["customer_id"],
-                "keys": {"primary": ["customer_id"]},
+                "entities": {"customer": {}},
                 "measures": {
                     "customer_count": {
                         "label": "Customer count",
@@ -765,14 +693,12 @@ def test_model_entities_block_with_expr_renames_column(tmp_path: Path) -> None:
                         "entity_key": ["customer_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["c"],
                     },
                 },
             },
             "orders": {
                 "id": "orders",
                 "relation": "orders",
-                "grain": ["order_id"],
                 "entities": {
                     "order": {},
                     "customer": {"expr": "cust_id"},
@@ -785,7 +711,6 @@ def test_model_entities_block_with_expr_renames_column(tmp_path: Path) -> None:
                         "entity_key": ["order_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["o"],
                     },
                 },
             },
@@ -802,17 +727,20 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
     _write_synthetic_package(
         pkg_dir,
         graph_entities={
-            "user": {"label": "User", "key": ["user_id"]},
-            "account": {"label": "Account", "key": ["account_id"]},
-            "user_account_link": {"label": "User account link", "key": ["link_id"]},
+            "user": {"label": "User", "key": ["user_id"], "model": "users"},
+            "account": {"label": "Account", "key": ["account_id"], "model": "accounts"},
+            "user_account_link": {
+                "label": "User account link",
+                "key": ["link_id"],
+                "model": "links",
+            },
         },
         models={
             "users": {
                 "id": "users",
                 "entity": "user",
                 "relation": "user",
-                "grain": ["user_id"],
-                "keys": {"primary": ["user_id"]},
+                "entities": {"user": {}},
                 "measures": {
                     "user_count": {
                         "label": "User count",
@@ -821,7 +749,6 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
                         "entity_key": ["user_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["u"],
                     },
                 },
             },
@@ -829,8 +756,7 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
                 "id": "accounts",
                 "entity": "account",
                 "relation": "account",
-                "grain": ["account_id"],
-                "keys": {"primary": ["account_id"]},
+                "entities": {"account": {}},
                 "measures": {
                     "account_count": {
                         "label": "Account count",
@@ -839,14 +765,12 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
                         "entity_key": ["account_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["a"],
                     },
                 },
             },
             "links": {
                 "id": "links",
                 "relation": "user_account_link",
-                "grain": ["link_id"],
                 "entities": {
                     "bridge": False,
                     "user_account_link": {},
@@ -861,7 +785,6 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
                         "entity_key": ["link_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["l"],
                     },
                 },
             },
@@ -887,8 +810,8 @@ def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict
     _write_synthetic_package(
         pkg_dir,
         graph_entities={
-            "order": {"label": "Order", "key": ["order_id"]},
-            "customer": {"label": "Customer", "key": ["customer_id"]},
+            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
+            "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
         },
         graph_relationships={
             "customer_order": {
@@ -903,8 +826,7 @@ def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict
                 "id": "customers",
                 "entity": "customer",
                 "relation": "customer",
-                "grain": ["customer_id"],
-                "keys": {"primary": ["customer_id"]},
+                "entities": {"customer": {}},
                 "measures": {
                     "customer_count": {
                         "label": "Count",
@@ -913,7 +835,6 @@ def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict
                         "entity_key": ["customer_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["c"],
                     },
                 },
             },
@@ -921,8 +842,7 @@ def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict
                 "id": "orders",
                 "entity": "order",
                 "relation": "orders",
-                "grain": ["order_id"],
-                "keys": {"primary": ["order_id"], "foreign": {"customer": ["customer_id"]}},
+                "entities": {"order": {}, "customer": {}},
                 "measures": {
                     "order_count": {
                         "label": "Count",
@@ -931,7 +851,6 @@ def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict
                         "entity_key": ["order_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["o"],
                     },
                 },
             },
@@ -967,8 +886,7 @@ def test_times_default_flag_replaces_default_time(tmp_path: Path) -> None:
                 "id": "widgets",
                 "entity": "widget",
                 "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
+                "entities": {"widget": {}},
                 "times": {
                     "created_at": {
                         "label": "Created at",
@@ -987,7 +905,6 @@ def test_times_default_flag_replaces_default_time(tmp_path: Path) -> None:
                         "entity_key": ["widget_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["w"],
                     },
                 },
             },
@@ -1014,8 +931,7 @@ def test_measure_unnested_expr_and_default_agg(tmp_path: Path) -> None:
                 "id": "widgets",
                 "entity": "widget",
                 "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
+                "entities": {"widget": {}},
                 "times": {
                     "created_at": {
                         "label": "Created at",
@@ -1035,7 +951,6 @@ def test_measure_unnested_expr_and_default_agg(tmp_path: Path) -> None:
                         "default_agg": "sum",
                         "accumulation": {"kind": "flow"},
                         "value_type": "currency",
-                        "topics": ["r"],
                     },
                 },
             },
@@ -1062,7 +977,6 @@ def test_metric_kind_aggregate_direct_measure_field(tmp_path: Path) -> None:
                 "kind": "aggregate",
                 "measure": "widget_count",
                 "value_type": "count",
-                "topics": ["w"],
             },
         },
     )
@@ -1080,8 +994,7 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
                 "id": "widgets",
                 "entity": "widget",
                 "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
+                "entities": {"widget": {}},
                 "times": {
                     "created_at": {
                         "label": "Created at",
@@ -1099,7 +1012,6 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
                         "entity_key": ["widget_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["w"],
                     },
                     "premium_count": {
                         "label": "Premium count",
@@ -1108,7 +1020,6 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
                         "entity_key": ["widget_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["p"],
                     },
                 },
             },
@@ -1121,7 +1032,6 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
                 "numerator": "premium_count",
                 "denominator": "widget_count",
                 "value_type": "percent",
-                "topics": ["p"],
             },
         },
     )
@@ -1136,27 +1046,227 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Section 7: Strict-mode validators reject legacy authoring forms
+# Section 7: Legacy authoring forms are refused at load
 # ---------------------------------------------------------------------------
 
+_MODEL = ("models", "widgets")
+_MEASURE = (*_MODEL, "measures", "widget_count")
+_DELETE = object()
 
-def _write_strict_package(
-    pkg_dir: Path,
-    *,
-    measure_extra: dict[str, Any] | None = None,
-    model_extra: dict[str, Any] | None = None,
+
+@pytest.mark.parametrize(
+    ("file", "path", "value", "expected"),
+    [
+        pytest.param(
+            "package.yml",
+            ("package", "schema_strict"),
+            True,
+            ("package block has unknown key 'schema_strict'", "strict is the only profile"),
+            id="schema-strict-true",
+        ),
+        pytest.param(
+            "package.yml",
+            ("package", "schema_strict"),
+            False,
+            ("package block has unknown key 'schema_strict'", "strict is the only profile"),
+            id="schema-strict-false",
+        ),
+        pytest.param(
+            "graph.yml",
+            ("graph", "entities", "widget", "id"),
+            "entity.synth_widget",
+            ("graph entity 'widget' has unknown key 'id'", "write `as:`"),
+            id="graph-entity-id",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "dimensions"),
+            {
+                "color": {
+                    "id": "dimension.synth_widget_color",
+                    "column": "color",
+                    "kind": "categorical",
+                }
+            },
+            ("model 'widgets' dimension 'color' has unknown key 'id'", "write `as:`"),
+            id="dimension-id",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "id"),
+            "measure.synth.widget_count",
+            ("model 'widgets' measure 'widget_count' has unknown key 'id'", "write `as:`"),
+            id="measure-id",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "grain"),
+            ["widget_id"],
+            ("model 'widgets' has unknown key 'grain'", "the entity's key keys the model's rows"),
+            id="model-grain",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "joins"),
+            {"other": {"to": "other", "cardinality": "N:1"}},
+            ("model 'widgets' has unknown key 'joins'", "`graph.relationships` row"),
+            id="model-joins",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "keys"),
+            {"primary": ["widget_id"]},
+            ("model 'widgets' authors 'keys.primary:' beside 'entities:'",),
+            id="keys-primary-beside-entities",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "keys"),
+            {"foreign": {"gadget": ["gadget_id"]}},
+            ("model 'widgets' authors 'keys.foreign:'",),
+            id="keys-foreign",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "entities"),
+            _DELETE,
+            ("model 'widgets' authors a singular 'entity:'",),
+            id="singular-entity",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "dimensions"),
+            {"color": {"column": "color", "kind": "categorical", "topics": ["widgets"]}},
+            ("model 'widgets' dimension 'color' has unknown key 'topics'",),
+            id="dimension-topics",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "topics"),
+            ["widgets"],
+            ("measure 'widget_count' has unknown key 'topics'",),
+            id="measure-topics",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "preferred_companion_metrics"),
+            ["widgets"],
+            ("measure 'widget_count' has unknown key 'preferred_companion_metrics'",),
+            id="measure-companion-metrics",
+        ),
+        pytest.param(
+            "metrics.yml",
+            ("metrics", "widgets", "topics"),
+            ["widgets"],
+            ("metric 'widgets' has unknown key 'topics'",),
+            id="metric-topics",
+        ),
+        pytest.param(
+            "segments.yml",
+            ("segments",),
+            {"big_widgets": {"entity": "widget", "topics": ["widgets"]}},
+            ("segment 'big_widgets' has unknown key 'topics'",),
+            id="segment-topics",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "kind"),
+            _DELETE,
+            ("measure 'widget_count' has no 'kind:'",),
+            id="measure-without-kind",
+        ),
+        pytest.param(
+            "metrics.yml",
+            ("metrics", "widgets", "value_type"),
+            _DELETE,
+            ("metric 'widgets': missing 'value_type:'",),
+            id="metric-without-value-type",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "publish"),
+            {"id": "metric.synth.widgets", "label": "Widgets"},
+            ("measure 'widget_count' publish must be true or false",),
+            id="measure-publish-mapping",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "accumulation"),
+            "rolling_population",
+            ("measure 'widget_count' has unknown accumulation kind 'rolling_population'",),
+            id="freeform-accumulation",
+        ),
+        pytest.param(
+            "package.yml",
+            ("defaults", "measure"),
+            {"accumulation": {"kind": "stok"}},
+            ("defaults.measure has unknown accumulation kind 'stok'",),
+            id="defaults-accumulation-kind",
+        ),
+        pytest.param(
+            "package.yml",
+            ("defaults", "measure"),
+            {"accumulation": "stok"},
+            ("defaults.measure has unknown accumulation kind 'stok'",),
+            id="defaults-accumulation-scalar",
+        ),
+    ],
+)
+@pytest.mark.parametrize("layout", ["directory", "single_file"])
+def test_legacy_authoring_form_is_refused_at_load(
+    tmp_path: Path,
+    file: str,
+    path: tuple[str, ...],
+    value: Any,
+    expected: tuple[str, ...],
+    layout: str,
 ) -> None:
-    """Write the shared strict widget package with the authored field under test."""
-    _write_synthetic_package(
-        pkg_dir,
-        package_extra={"schema_strict": True},
+    """Every package is read with one set of authoring rules: a legacy form is refused at
+    load with an error that names it, and no package flag opts in or out."""
+    pkg = _write_synthetic_package(
+        tmp_path / "legacy_form",
+        metrics={
+            "widgets": {
+                "label": "Widgets",
+                "description": "Count of widgets.",
+                "kind": "aggregate",
+                "measure": "widget_count",
+                "value_type": "count",
+            },
+        },
+    )
+    load_package_config(str(pkg))
+    document = pkg / file
+    raw = yaml.safe_load(document.read_text(encoding="utf-8")) if document.exists() else {}
+    *parents, key = path
+    block = raw
+    for part in parents:
+        block = block[part]
+    if value is _DELETE:
+        del block[key]
+    else:
+        block[key] = value
+    _write_yaml(document, raw)
+    if layout == "single_file":
+        merged = _load_package_source(str(pkg))
+        pkg = pkg / "package.yml"
+        _write_yaml(pkg, merged)
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    errors = exc.value.details["errors"]
+    assert any(all(part in error for part in expected) for error in errors), errors
+    assert any(all(part in error for part in expected) for error in validate_runtime_package(pkg))
+
+
+def test_measure_inherits_defaults_accumulation_kind(tmp_path: Path) -> None:
+    """A measure with no `accumulation:` of its own takes `defaults.measure.accumulation`."""
+    pkg = _write_synthetic_package(
+        tmp_path / "defaults_stock",
         models={
             "widgets": {
-                "id": "widgets",
-                "entity": "widget",
                 "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
+                "entities": {"widget": {}},
                 "times": {
                     "created_at": {
                         "label": "Created at",
@@ -1166,71 +1276,26 @@ def _write_strict_package(
                         "default": True,
                     },
                 },
-                **(model_extra or {}),
                 "measures": {
-                    "widget_count": {
-                        "label": "Widget count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["widget_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                        "topics": ["w"],
-                        **(measure_extra or {}),
+                    "balance_usd": {
+                        "label": "Balance (USD)",
+                        "description": "Balance.",
+                        "kind": "aggregate",
+                        "expr": "balance_usd",
+                        "value_type": "currency",
                     },
                 },
             },
         },
     )
-
-
-def test_strict_mode_rejects_authored_id_on_measure(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_strict_id"
-    _write_strict_package(pkg_dir, measure_extra={"id": "measure.synth.widget_count"})
-    errors = validate_runtime_package(pkg_dir)
-    assert any("'id:'" in e and "widget_count" in e for e in errors), (
-        f"expected strict rejection of authored id on measure, got {errors}"
-    )
-
-
-def test_strict_mode_rejects_freeform_accumulation(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_strict_acc"
-    # Freeform value not in {flow, stock, event, population}.
-    _write_strict_package(pkg_dir, measure_extra={"accumulation": "rolling_population"})
-    errors = validate_runtime_package(pkg_dir)
-    assert any("accumulation" in e for e in errors), (
-        f"expected strict rejection of freeform accumulation, got {errors}"
-    )
-
-
-def test_strict_mode_rejects_legacy_joins_block(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_strict_joins"
-    _write_strict_package(
-        pkg_dir, model_extra={"joins": {"other": {"to": "other", "cardinality": "N:1"}}}
-    )
-    errors = validate_runtime_package(pkg_dir)
-    assert any("joins" in e for e in errors), (
-        f"expected strict rejection of legacy joins block, got {errors}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Section 8: schema_strict flag round-trip
-# ---------------------------------------------------------------------------
-
-
-def test_schema_strict_flag_threads_through(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_strict_flag"
-    _write_synthetic_package(pkg_dir, package_extra={"schema_strict": True})
-    config = load_package_config(str(pkg_dir))
-    assert config.package.schema_strict is True
-
-
-def test_schema_strict_default_is_false(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_strict_default"
-    _write_synthetic_package(pkg_dir)
-    config = load_package_config(str(pkg_dir))
-    assert config.package.schema_strict is False
+    document = pkg / "package.yml"
+    raw = yaml.safe_load(document.read_text(encoding="utf-8"))
+    raw["defaults"]["measure"] = {"accumulation": {"kind": "stock"}}
+    _write_yaml(document, raw)
+    config = load_package_config(str(pkg))
+    balance = next(m for m in config.measures if "balance_usd" in m.id)
+    assert balance.measure_class == "semi_additive"
+    assert balance.default_aggregation == "last_value"
 
 
 # ---------------------------------------------------------------------------
@@ -1293,8 +1358,7 @@ def _widget_model_with_two_count_measures() -> dict[str, Any]:
             "id": "widgets",
             "entity": "widget",
             "relation": "widget",
-            "grain": ["widget_id"],
-            "keys": {"primary": ["widget_id"]},
+            "entities": {"widget": {}},
             "times": {
                 "created_at": {
                     "label": "Created at",
@@ -1312,7 +1376,6 @@ def _widget_model_with_two_count_measures() -> dict[str, Any]:
                     "entity_key": ["widget_id"],
                     "accumulation": {"kind": "event"},
                     "value_type": "count",
-                    "topics": ["w"],
                 },
                 "premium_count": {
                     "label": "Premium count",
@@ -1321,7 +1384,6 @@ def _widget_model_with_two_count_measures() -> dict[str, Any]:
                     "entity_key": ["widget_id"],
                     "accumulation": {"kind": "event"},
                     "value_type": "count",
-                    "topics": ["p"],
                 },
             },
         },
@@ -1345,7 +1407,6 @@ def test_metric_ratio_numerator_resolves_top_level_metric(tmp_path: Path) -> Non
                 "kind": "aggregate",
                 "measure": "premium_count",
                 "value_type": "count",
-                "topics": ["p"],
             },
             # Ratio whose numerator references the top-level metric above
             # (not the measure!) and whose denominator is a measure.
@@ -1356,7 +1417,6 @@ def test_metric_ratio_numerator_resolves_top_level_metric(tmp_path: Path) -> Non
                 "numerator": "premium_metric",  # → top-level metric
                 "denominator": "widget_count",  # → measure
                 "value_type": "percent",
-                "topics": ["p"],
             },
         },
     )
@@ -1403,7 +1463,6 @@ def test_metric_derived_ast_resolves_top_level_metric_ref(tmp_path: Path) -> Non
                 "kind": "aggregate",
                 "measure": "premium_count",
                 "value_type": "count",
-                "topics": ["p"],
             },
             "premium_metric_double": {
                 "label": "Premium metric (doubled)",
@@ -1416,7 +1475,6 @@ def test_metric_derived_ast_resolves_top_level_metric_ref(tmp_path: Path) -> Non
                     "right": {"kind": "metric", "metric": "premium_metric"},
                 },
                 "value_type": "count",
-                "topics": ["p"],
             },
         },
     )
@@ -1445,8 +1503,7 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
                 "id": "widgets",
                 "entity": "widget",
                 "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
+                "entities": {"widget": {}},
                 "times": {
                     "created_at": {
                         "label": "Created at",
@@ -1464,7 +1521,6 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
                         "entity_key": ["widget_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["s"],
                     },
                     "denom": {
                         "label": "Denom",
@@ -1473,7 +1529,6 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
                         "entity_key": ["widget_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["d"],
                     },
                 },
             },
@@ -1490,7 +1545,6 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
                 "kind": "aggregate",
                 "measure": "denom",
                 "value_type": "count",
-                "topics": ["s"],
                 # Override id so the metric and the measure auto-published
                 # metric do not collide on `metric.synth.shared_key`.
                 "as": "metric.synth.shared_key_top",
@@ -1502,7 +1556,6 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
                 "numerator": "shared_key",
                 "denominator": "denom",
                 "value_type": "percent",
-                "topics": ["a"],
             },
         },
     )
@@ -1529,8 +1582,7 @@ def _two_entity_model_skeleton() -> dict[str, Any]:
             "id": "customers",
             "entity": "customer",
             "relation": "customer",
-            "grain": ["customer_id"],
-            "keys": {"primary": ["customer_id"]},
+            "entities": {"customer": {}},
             "measures": {
                 "customer_count": {
                     "label": "Customer count",
@@ -1539,14 +1591,12 @@ def _two_entity_model_skeleton() -> dict[str, Any]:
                     "entity_key": ["customer_id"],
                     "accumulation": {"kind": "event"},
                     "value_type": "count",
-                    "topics": ["c"],
                 },
             },
         },
         "orders": {
             "id": "orders",
             "relation": "orders",
-            "grain": ["order_id"],
             "entities": {
                 "order": {},
                 "customer": {},
@@ -1559,7 +1609,6 @@ def _two_entity_model_skeleton() -> dict[str, Any]:
                     "entity_key": ["order_id"],
                     "accumulation": {"kind": "event"},
                     "value_type": "count",
-                    "topics": ["o"],
                 },
             },
         },
@@ -1572,8 +1621,8 @@ def test_graph_relationships_rollup_safe_reverse(tmp_path: Path) -> None:
     _write_synthetic_package(
         pkg_dir,
         graph_entities={
-            "order": {"label": "Order", "key": ["order_id"]},
-            "customer": {"label": "Customer", "key": ["customer_id"]},
+            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
+            "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
         },
         graph_relationships={
             "customer_order": {
@@ -1611,15 +1660,14 @@ def test_times_block_consolidates_temporal_role_and_dimension(tmp_path: Path) ->
     _write_synthetic_package(
         pkg_dir,
         graph_entities={
-            "order": {"label": "Order", "key": ["order_id"]},
+            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
         },
         models={
             "orders": {
                 "id": "orders",
                 "entity": "order",
                 "relation": "orders",
-                "grain": ["order_id"],
-                "keys": {"primary": ["order_id"]},
+                "entities": {"order": {}},
                 "times": {
                     "ordered_at": {
                         "label": "Order time",
@@ -1638,7 +1686,6 @@ def test_times_block_consolidates_temporal_role_and_dimension(tmp_path: Path) ->
                         "entity_key": ["order_id"],
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
-                        "topics": ["o"],
                     },
                 },
             },
@@ -1676,7 +1723,6 @@ def test_metric_kind_ratio_compiles_to_arithmetic_divide(tmp_path: Path) -> None
                 "numerator": "premium_count",
                 "denominator": "widget_count",
                 "value_type": "percent",
-                "topics": ["p"],
             },
         },
     )
@@ -1715,8 +1761,7 @@ def test_metric_kind_cumulative_direct_measure_field_resolves_package_relative(
                 "id": "widgets",
                 "entity": "widget",
                 "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
+                "entities": {"widget": {}},
                 "times": {
                     "created_at": {
                         "label": "Created at",
@@ -1735,7 +1780,6 @@ def test_metric_kind_cumulative_direct_measure_field_resolves_package_relative(
                         "default_agg": "sum",
                         "accumulation": {"kind": "flow"},
                         "value_type": "currency",
-                        "topics": ["r"],
                     },
                 },
             },
@@ -1747,7 +1791,6 @@ def test_metric_kind_cumulative_direct_measure_field_resolves_package_relative(
                 "kind": "cumulative",
                 "measure": "revenue_usd",  # bare key, no metric. prefix
                 "value_type": "currency",
-                "topics": ["c"],
             },
         },
     )
@@ -1783,7 +1826,6 @@ def test_metric_kind_ratio_value_type_overrides_input_types(tmp_path: Path) -> N
                 "numerator": "premium_count",  # count
                 "denominator": "widget_count",  # count
                 "value_type": "percent",  # explicit override
-                "topics": ["p"],
             },
         },
     )

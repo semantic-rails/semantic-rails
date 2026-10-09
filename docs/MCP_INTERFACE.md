@@ -264,6 +264,50 @@ query detail keeps them self-contained because it omits the trace.
 Other exact repeats use `{"$ref": "best.resolved.0"}` or a `best.query_ir` field path;
 follow the dot-separated path from the response root (numbers index arrays).
 
+#### Questions that ask several things
+
+When one draft can't answer a question that asks several things ("Last week, how many accounts
+signed up, and what was the MRR?" needs two clocks), `plan` splits it at a top-level clause
+boundary: ", and", "," or "and" immediately before a wh-word or "how many" / "how much". A
+leading phrase that asks nothing ("Last week, …") belongs to every part; nothing else is shared.
+A grouping list ("by plan and region") and quoted text are never split, and a question one
+draft answers, such as subjects the conjoined pattern selects in one query ("New accounts and
+closures last week"), keeps its one draft. `plan` splits only when the caller's `query` carries
+nothing but request context.
+
+The payload then carries `parts: [{text, spans, status, best, why, assumptions, warnings}]`:
+each part is planned on its own words exactly like a question of its own, and `spans` are the
+offsets in `intent` of the shared phrase and the part's clause. The top-level `status` is `ok`
+only when every part is `ok`. Otherwise it is the weakest part's status (`needs_clarification`,
+then `low_confidence`, `unrealizable`, `out_of_scope`), and `why.code="PLAN_PARTS_NOT_READY"`
+lists the parts not ready in `why.details.parts`. Every part's warnings are top-level warnings
+too. `best` and `intent_ir` are the first part's, for clients that read only `best`;
+`detail="query"` returns every part's `best.query_ir`. Execute each part's query and report
+each answer.
+
+`plan` doesn't plan the parts when it can't read each one alone. It keeps the whole question's
+draft, `low_confidence`, with `why.code="PLAN_PARTS_HELD"`, the parts listed as `{text, spans}`,
+the whole question's own hold (such as `multiple_questions_unrealized`) in
+`why.details.question_why`, that draft's gaps in `why.details.gaps` as for a single question
+(such as `governed_metric_unrealized` naming the metric for a part's measure), and the parts
+concerned in `why.details.parts`. `why.details.reason`
+is one of:
+
+- `too_many_parts`: more than four parts;
+- `dependent_part`: a part points back at another ("…, and what share of those closed?", "…,
+  and how much of that came from new accounts?");
+- `part_without_subject`: a part names nothing to measure ("…, and how many?");
+- `part_without_window`: some parts state a time window and others don't, so a trailing "last
+  week" may be meant for every part;
+- `part_without_grouping`: the parts don't all state the same grouping ("by plan", "per plan",
+  "for each plan", "monthly", "over time"): some state one and others don't, or they state
+  different ones, so a trailing "per plan" may be meant for every part. A leading "Monthly, …"
+  doesn't settle which grouping a part meant;
+- `part_filters_differ`: the planned parts filter their rows differently, so a filter one part
+  states may be meant for every part.
+
+Ask such parts one at a time, each naming what it measures, its filters and its window.
+
 A draft that validates can still leave out part of the question. `plan` returns
 `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
 
@@ -279,8 +323,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   relative clauses such as "stores that were active last week". It fits when the question
   holds every word of its label (with or without a parenthetical), an alias or its id, in any order and
   with plurals as singulars, or when the measure is a [building
-  block](PACKAGE_AUTHORING.md#building-block-measures). Under `schema_strict`, a measure
-  authored `publish: false` that no metric aggregates whole is not offered to agents:
+  block](PACKAGE_AUTHORING.md#building-block-measures). A measure authored
+  `publish: false` that no metric aggregates whole is not offered to agents:
   `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query.select`
   names it by id; no other part of the request names it. When a metric reads the measure
   through a filter, it is a building block: `plan` answers with the metric when it is the only
@@ -291,8 +335,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   time) or one on the metric's clock; never to a caller's `select`. A part of a compound
   question and a semi-additive measure swap only to the bare form (for a semi-additive
   measure, a plain aggregate with a `filter`, not a `scoped_aggregate`), and a compound part
-  only on the metric's clock. Without
-  `schema_strict`, the flag also suppresses auto-publishing a metric of the measure's own name.
+  only on the metric's clock.
   When the question names no governing metric, a published measure is
   still held while a visible metric narrows its rows: an aggregate in that metric, over this
   measure or another one, filters on a dimension of the measure's entity ("New teams" counts
@@ -338,7 +381,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   accounts right now") stays `TIME_WINDOW_UNRESOLVED`;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
-  including count-free requests such as "top stores by revenue";
+  including count-free requests such as "top stores by revenue". The ranked value must be
+  named: by one measure's or metric's whole name, label or alias in the question, or by the
+  caller's `partial_query.select`. A value the draft picked any other way ("which store had
+  the most customers", where no measure is named "customers") is `ranked_measure_uncertain`;
 - excludes a value requested positively, or cannot prove that its filter keeps or drops
   each named value with the requested polarity (`filter_values_unrealized`). Scalar `=`/`!=`
   and scalar or list `IN`/`NOT IN` can prove it; list-valued `=`/`!=`, empty membership
@@ -366,7 +412,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
   "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
-  Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first;
+  Gross Revenue and Net Revenue it names neither. The words of a grouping the question asks
+  for name its rows, not the subject: in "how many customers did each store have", "store"
+  doesn't pick a count of storefront sessions from the customer counts. `plan` reports every
+  other reason first;
 - returns a result without the part the question's shape asks for. "who", "whom", "whose",
   "which" or "list" opening a clause asks for the rows of the entity the clause names: its
   first word outside a time window and a "by" grouping that names an entity or, for "which"
@@ -738,30 +787,32 @@ counts it as asked; any other required field, or one hidden from the caller, kee
 ago"), or asks for by week, month, quarter or year where the clock or a constraint reads it per
 day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of_unrealized`
 gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
-weeks are allowed), a stock on an event clock, a ratio, or a balance beside a flow keep the
-holds above, and a window in `query.time` is used as passed: a day-grain balance window is read
+weeks are allowed), a stock on an event clock, a ratio, a balance beside a flow, or a metric
+that wraps a balance (`COALESCE(<filtered balance>, 0)`, arithmetic over one, a scoped
+aggregate) keep the holds above, and a window in `query.time` is used as passed: a day-grain
+balance window is read
 only when both bounds are whole days and it ends on or before the last complete day;
 otherwise `stock_as_of_unrealized`.
-**How plan answers which, who, top N and each.** A term that names an entity by its label or a
-synonym (plurals allowed, never its description), after "by", "each", "every", "for each", a
-ranking ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the most MRR") or a
-"which" or "who" opening a clause, groups by the entity's key dimension and the dimension that
-names a row: its [`display:`](PACKAGE_AUTHORING.md#display--the-name-of-one-row), else its one
-dimension whose own words name it, else the key alone with an assumption line saying so (none
-when the question names the key itself, "by store id"). A ranking keeps the count the question
-states (digits or "one" to "ten") and its direction ("bottom", "least", "lowest" sort
+**How plan answers which, who, by, each and top N.** A term that names an entity by its label or
+a synonym (plurals allowed, never its description), after "by", "each", "every" or "for each",
+the noun a ranking ranks ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the
+most MRR"), or a "which" or "who" opening a clause, groups by the entity's key dimension and the
+dimension that names a row: its [`display:`](PACKAGE_AUTHORING.md#display--the-name-of-one-row),
+else its one dimension whose own words name it, else the key alone with an assumption line saying
+so (none when the question names the key itself, "by store id"). A ranking keeps the count the
+question states (digits or "one" to "ten") and its direction ("bottom", "least", "lowest" sort
 ascending); ties at the cut follow `execute`'s ordering. A ranking whose subject only the ranked
 noun names ("top 5 customers", "the 3 stores that sold the most") has no value to rank by: it
-groups by nothing and stays held. A list
-("Which accounts closed last week?", "Who upgraded last week?") also keeps only rows whose value
-isn't 0 (`metric_filters: [{"expression": <the select>, "op": "!=", "value": 0}]`) and orders
-them by name. "who" naming no entity lists the one entity with a `display` that the subject
-reaches; when several do, `plan` returns `needs_clarification` with an option per entity in
-`why.details.clarification.options`, and when none does it is held. A superlative no ranking
-reads ("who had the most MRR"), "per" (it may be a ratio) and a "which" naming a dimension
-rather than an entity draft no list. A term after "each" or "every" ends at the first word that
-names nothing more ("each plan make" groups by plan). The readiness checks read the same
-stand-ins, so a draft grouped by another entity's column stays held.
+groups by nothing and stays held. Any other ranking is ready only when its value is named (see
+`ranking_unrealized` above). A list ("Which accounts closed last week?", "Who upgraded last
+week?") also keeps only rows whose value isn't 0 (`metric_filters: [{"expression": <the select>,
+"op": "!=", "value": 0}]`) and orders them by name. "who" naming no entity lists the one entity
+with a `display` that the subject reaches; when several do, `plan` returns `needs_clarification`
+with an option per entity in `why.details.clarification.options`, and when none does it is held.
+A superlative no ranking reads ("who had the most MRR"), "per" (it may be a ratio) and a "which"
+naming a dimension rather than an entity draft no list. A term after "each" or "every" ends at
+the first word that names nothing more ("each plan make" groups by plan). The readiness checks
+read the same stand-ins, so a draft grouped by another entity's column stays held.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.

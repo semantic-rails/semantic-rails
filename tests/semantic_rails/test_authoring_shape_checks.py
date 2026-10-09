@@ -91,9 +91,11 @@ def test_parent_rollup_measure_keys_are_unknown(
     ],
 )
 @pytest.mark.parametrize("layout", ["single_file", "directory"])
-def test_removed_join_key_is_rejected_before_graph_override(
+def test_model_joins_block_is_rejected_before_graph_override(
     tmp_path: Path, key: str, value: object, layout: str
 ) -> None:
+    """A model `joins:` block is refused whatever its join holds, even where a graph
+    relationship covers the same join."""
     package = copy_package_config(tmp_path, "jaffle_shop")
     orders_path = package / "models" / "core" / "orders.yml"
     raw = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
@@ -108,8 +110,8 @@ def test_removed_join_key_is_rejected_before_graph_override(
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(package))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "model 'orders' join 'customer'" in str(exc.value)
-    assert key in str(exc.value)
+    assert "model 'orders' has unknown key 'joins'" in str(exc.value)
+    assert "write each join as a `graph.relationships` row" in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -154,7 +156,6 @@ def test_unconsumed_relationship_default_rollup_is_rejected(
         pytest.param("graph", "sum", id="scalar"),
         pytest.param("graph", {"reverse": [], "typo": []}, id="unknown-key"),
         pytest.param("defaults", ["sum", "count"], id="relationship-defaults"),
-        pytest.param("join", ["sum", "count"], id="model-join"),
     ],
 )
 @pytest.mark.parametrize("layout", ["single_file", "directory"])
@@ -166,12 +167,10 @@ def test_removed_relationship_rollup_forms_fail_loading(
         raw["graph"]["relationships"] = {
             "orders_customer": {"entities": ["order", "customer"], "rollup_safe": value}
         }
-    elif location == "defaults":
+    else:
         raw.setdefault("defaults", {}).setdefault("relationship", {})[
             "rollup_safe_aggregations"
         ] = value
-    else:
-        raw["models"]["orders"]["joins"] = {"customer": {"rollup_safe_aggregations": value}}
     if layout == "directory":
         (starter_package.parent / "graph.yml").write_text(
             yaml.safe_dump({"graph": raw.pop("graph")}, sort_keys=False), encoding="utf-8"
@@ -186,11 +185,7 @@ def test_removed_relationship_rollup_forms_fail_loading(
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
-    relationship = {
-        "graph": "orders_customer",
-        "defaults": "defaults.relationship",
-        "join": "model 'orders' join 'customer'",
-    }[location]
+    relationship = {"graph": "orders_customer", "defaults": "defaults.relationship"}[location]
     assert relationship in str(exc.value)
     assert "rollup_safe" in str(exc.value)
 
@@ -217,31 +212,30 @@ def test_invalid_time_class_is_rejected_in_single_file_form(starter_package: Pat
     assert any("unknown class 'event'" in e and "event_time" in e for e in errors), errors
 
 
-def test_grain_that_matches_no_entity_key_is_rejected(starter_package: Path) -> None:
-    """A typo'd grain column silently fell back to first-entity primary
-    detection."""
-    path = _mutated(starter_package, "grain: [customer_id]", "grain: [customerid]")
-    errors = _errors(path)
-    assert any("grain" in e and "customerid" in e and "customer_id" in e for e in errors), errors
-
-
-@pytest.mark.parametrize("key_source", ["graph", "expr", "primary", "empty_block"])
+@pytest.mark.parametrize(
+    ("grain", "expr"),
+    [
+        (["customer_id"], None),
+        (["renamed_customer_id"], "renamed_customer_id"),
+        (["customerid"], None),
+        (["order_id"], None),
+        (["authored_row_id"], None),
+    ],
+    ids=["entity-key", "expr-override", "typo", "other-entity-key", "finer-rows"],
+)
 @pytest.mark.parametrize("surface", ["validate", "load"])
-def test_grain_does_not_select_primary_when_identity_is_authored(
-    starter_package: Path, key_source: str, surface: str
+def test_model_grain_is_refused(
+    starter_package: Path, grain: list[str], expr: str | None, surface: str
 ) -> None:
+    """A typo'd grain column silently fell back to first-entity primary
+    detection. The entity's key now keys the model's rows, so a `grain:` is
+    refused whatever it names, and the error says what replaces it."""
     raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
-    raw["models"]["customers"]["grain"] = ["authored_row_id"]
-    raw["models"]["customers"]["entity"] = "customer"
-    if key_source == "expr":
-        raw["models"]["customers"]["entities"]["customer"] = {"expr": "renamed_customer_id"}
-    elif key_source == "primary":
-        raw["graph"]["entities"]["customer"].pop("key")
-        raw["models"]["customers"]["keys"] = {"primary": ["customer_id"]}
-    elif key_source == "empty_block":
-        raw["models"]["customers"]["entities"] = {}
+    model = raw["models"]["customers"]
+    model["grain"] = grain
+    if expr is not None:
+        model["entities"]["customer"] = {"expr": expr}
     starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-    expected_key = "renamed_customer_id" if key_source == "expr" else "customer_id"
     if surface == "validate":
         errors = _errors(starter_package)
     else:
@@ -250,20 +244,17 @@ def test_grain_does_not_select_primary_when_identity_is_authored(
         assert exc.value.code == "INVALID_CONFIG"
         errors = exc.value.details["errors"]
     assert any(
-        "model 'customers' grain" in error and "authored_row_id" in error and expected_key in error
+        "model 'customers' has unknown key 'grain'" in error
+        and "the entity's key keys the model's rows" in error
         for error in errors
-    )
+    ), errors
 
 
-@pytest.mark.parametrize("key_source", ["graph", "expr", "primary", "empty_block"])
-@pytest.mark.parametrize("grain", [["authored_row_id"], ["order_id"]])
-def test_explicit_graph_binding_preserves_identity_and_separate_row_grain(
-    starter_package: Path, key_source: str, grain: list[str]
-) -> None:
+@pytest.mark.parametrize("key_source", ["graph", "expr", "empty_block"])
+def test_explicit_graph_binding_preserves_identity(starter_package: Path, key_source: str) -> None:
     raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
     raw["graph"]["entities"]["customer"]["model"] = " customers "
     model = raw["models"]["customers"]
-    model["grain"] = grain
     model["entities"]["order"] = {}
     model["measures"] = {
         "customer_rows": {
@@ -278,16 +269,12 @@ def test_explicit_graph_binding_preserves_identity_and_separate_row_grain(
     if key_source == "expr":
         model["entities"]["customer"] = {"expr": "renamed_customer_id"}
         expected_key = "renamed_customer_id"
-    elif key_source == "primary":
-        raw["graph"]["entities"]["customer"].pop("key")
-        model["keys"] = {"primary": ["customer_id"]}
-        raw["models"]["orders"]["entities"]["customer"] = {"expr": "customer_id"}
     elif key_source == "empty_block":
         model["entities"] = {}
     starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     assert not _errors(starter_package)
-    # Direct loading also bypasses raw-shape validation. Neither path may borrow
-    # order's key or use the row grain to replace the graph's explicit identity.
+    # Normalizing directly skips the authoring check. Neither path may borrow
+    # order's key to replace the graph's explicit identity.
     config = load_package_config(str(starter_package))
     normalized = normalize_package(raw)["models"]["customers"]
     assert normalized["entity"] == "customer"
@@ -297,33 +284,7 @@ def test_explicit_graph_binding_preserves_identity_and_separate_row_grain(
     assert customer.table == "shop_customer"
     measures = [measure for measure in config.measures if measure.entity == customer.id]
     assert measures
-    assert all(measure.row_grain == grain for measure in measures)
-
-
-def test_grain_matching_foreign_key_does_not_override_authored_primary(
-    starter_package: Path,
-) -> None:
-    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
-    model = raw["models"]["customers"]
-    model["entity"] = "customer"
-    model["entities"]["order"] = {}
-    model["grain"] = ["order_id"]
-    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-    assert any("grain" in error and "customer_id" in error for error in _errors(starter_package))
-    with pytest.raises(SemanticLayerError, match="the primary entity key") as exc:
-        load_package_config(str(starter_package))
-    assert exc.value.code == "INVALID_CONFIG"
-
-
-def test_grain_matching_primary_expr_override_is_accepted(starter_package: Path) -> None:
-    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
-    model = raw["models"]["customers"]
-    model["entity"] = "customer"
-    model["entities"]["customer"] = {"expr": "renamed_customer_id"}
-    model["grain"] = ["renamed_customer_id"]
-    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-    assert not any("grain" in error for error in _errors(starter_package))
-    load_package_config(str(starter_package))
+    assert all(measure.row_grain == [expected_key] for measure in measures)
 
 
 @pytest.mark.parametrize(
@@ -386,12 +347,14 @@ def test_metric_without_expression_names_kind_requirements(starter_package: Path
     )
 
 
-def test_measure_without_kind_or_expr_names_both_options(starter_package: Path) -> None:
+def test_measure_without_kind_names_the_kinds(starter_package: Path) -> None:
     """Dropping `kind:` from an entity_count measure said 'missing expr'
     — the wrong diagnosis."""
     path = _mutated(starter_package, "        kind: entity_count\n", "")
     errors = _errors(path)
-    assert any("declares neither kind nor expr" in e for e in errors), errors
+    assert any(
+        "measure 'order_count' has no 'kind:'" in e and "entity_count" in e for e in errors
+    ), errors
 
 
 def test_clean_starter_still_validates(starter_package: Path) -> None:

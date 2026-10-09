@@ -127,6 +127,16 @@ HELD = [
 ]
 
 
+# Questions whose clauses plan can't plan alone: a part points back ("them"), names nothing, or
+# lacks the window another part states. The parts hold keeps the whole question's hold
+# (test_plan_question_parts.py).
+PARTS_HELD = {
+    "How many orders last week and who placed them?",
+    "How many orders and how much revenue last week?",
+    "Last week, how many orders, how many , and what was the revenue?",
+}
+
+
 @pytest.mark.parametrize(("question", "kind", "clause"), HELD)
 def test_one_value_never_answers_a_question_asking_for_more(
     jaffle: Runtime, question: str, kind: str, clause: str
@@ -135,8 +145,14 @@ def test_one_value_never_answers_a_question_asking_for_more(
 
     assert payload["status"] == "low_confidence"
     assert "ready_for" not in payload["next"]
-    assert payload["why"]["code"] == GAP
-    [gap] = _gaps(payload)
+    why = payload["why"]
+    if question in PARTS_HELD:
+        assert why["code"] == "PLAN_PARTS_HELD"
+        # The kept draft's gaps stay where a single question's are.
+        assert why["details"]["gaps"] == why["details"]["question_why"]["details"]["gaps"]
+        why = why["details"]["question_why"]
+    assert why["code"] == GAP
+    [gap] = why["details"]["gaps"]
     assert (gap["kind"], gap["clause"]) == (kind, clause)
     assert clause in gap["message"]
     # The draft stays for inspection, unchanged: one value.
@@ -199,7 +215,7 @@ NARROWER = [
     ("Who ordered last week?", {"group_by": [CUSTOMER_NAME]}, "list_unrealized", '"who"'),
     ("Who ordered last week?", {"group_by": [ORDER_NUMBER]}, "list_unrealized", '"who"'),
     (
-        "Which 3 stores had the most revenue last month?",
+        "Which 3 stores had the most revenue in July 2017?",
         {"group_by": [STORE_NAME]},
         "list_unrealized",
         '"which"',
@@ -309,7 +325,7 @@ def test_only_the_shape_check_holds_those(
         # The name may sit beside the key, but never stands for it.
         ("List customers", {"group_by": [CUSTOMER_NAME]}, [CUSTOMER_NAME], [CUSTOMER_ID]),
         (
-            "Which 3 stores had the most revenue last month?",
+            "Which 3 stores had the most revenue in July 2017?",
             {"group_by": [STORE_NAME]},
             [STORE_NAME],
             [STORE_ID],
@@ -487,7 +503,7 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
         ),
         # The stores' key lists the stores a ranking asks for.
         (
-            "Which 3 stores had the most revenue last month?",
+            "Which 3 stores had the most revenue in July 2017?",
             {"group_by": [STORE_ID, STORE_NAME]},
             "SELECT s.store_id, s.store_name, sum(o.order_total_cents) / 100.0 "
             "FROM jaffle_order o JOIN jaffle_store s USING (store_id) WHERE o.ordered_at >= "
@@ -507,7 +523,7 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
             for question in ("Revenue by store last month", "Revenue for each store last month")
         ),
         (
-            "Which 3 stores had the most revenue last month?",
+            "Which 3 stores had the most revenue in July 2017?",
             {},
             f"{STORE_REVENUE_LAST_MONTH} ORDER BY 3 DESC LIMIT 3",
         ),

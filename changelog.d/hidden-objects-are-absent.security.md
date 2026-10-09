@@ -12,5 +12,4 @@
   authored text names a hidden object; validity windows, discontinuities and MNPI flags keep
   their semantic structure. `meta.mnpi` must be `true` or `false` (`INVALID_CONFIG`
   otherwise). Unexpected errors reach callers as fixed engine text over MCP and HTTP.
-  `default_metric_id` names a metric only when that metric exists in the caller's view; otherwise it is empty.
   See [What a caller sees of a hidden object](docs/PACKAGE_AUTHORING.md#what-a-caller-sees-of-a-hidden-object).

@@ -7,8 +7,8 @@ and the CLI's ``init``, ``project new`` and setup wizard) builds it from a
 The scaffold is warehouse-aware. A DuckDB package either gets a two-row starter
 CSV seed, so it runs immediately, or reads a database another tool builds
 (``seed.kind: external``, e.g. dbt). Other warehouses get a ``connection``
-block whose secrets are named by environment variable only. Every package is
-strict (``schema_strict: true``) and ships a ``.gitignore`` for build outputs.
+block whose secrets are named by environment variable only. Every package ships a
+``.gitignore`` for build outputs.
 """
 
 from __future__ import annotations
@@ -350,7 +350,6 @@ def _package_document(plan: _Plan) -> dict[str, Any]:
         if plan.warehouse.connection_options:
             connection["options"] = dict(plan.warehouse.connection_options)
         package["connection"] = connection
-    package["schema_strict"] = True
     package["environments"] = list(plan.environments)
     return {
         "schema_version": 1,

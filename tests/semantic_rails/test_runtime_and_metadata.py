@@ -54,7 +54,6 @@ def _write_operational_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "operational_demo",
                 "name": "operational_demo",
                 "description": "Operational metadata demo",
@@ -126,10 +125,6 @@ def _write_operational_package(package_dir: Path) -> None:
                         "kind": "entity_count",
                         "time": "ordered_at",
                         "operational": {"tags": ["core"]},
-                        "publish": {
-                            "id": "metric.sales.orders",
-                            "operational": {"verified": True},
-                        },
                     }
                 },
             }
@@ -168,7 +163,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "generic_planning_demo",
                 "name": "generic_planning_demo",
                 "description": "Generic planning scoring demo",
@@ -251,7 +245,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "kind": "entity_count",
                         "entity_key": "event_id",
                         "time": "event_at",
-                        "publish": {"id": "metric.engagement.sends"},
                     },
                     "capacity": {
                         "kind": "aggregate",
@@ -260,7 +253,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "label": "Capacity",
                         "expr": "capacity",
                         "time": "event_at",
-                        "publish": {"id": "metric.engagement.capacity"},
                     },
                     "account_count": {
                         "as": "measure.demo.account_count",
@@ -269,7 +261,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "kind": "entity_count",
                         "entity_key": "account_id",
                         "time": "event_at",
-                        "publish": {"id": "metric.engagement.accounts"},
                     },
                 },
             }

@@ -310,18 +310,6 @@ def _selection_context(config: PackageConfig, partial_query: dict[str, Any]) -> 
     }
 
 
-def _measure_default_metric_id(config: PackageConfig, measure: Any) -> str:
-    default_metric_name = measure.name or measure.id.split("measure.", 1)[-1]
-    metric_id = f"metric.{default_metric_name}"
-    return metric_id if any(recipe.id == metric_id for recipe in config.metric_recipes) else ""
-
-
-def _is_auto_metric(config: PackageConfig, metric_id: str) -> bool:
-    return any(
-        _measure_default_metric_id(config, measure) == metric_id for measure in config.measures
-    )
-
-
 def _expr_summary(config: PackageConfig, expr: SemanticExpr) -> str:
     maps = _config_maps(config)
     if isinstance(expr, AggregateExpr):
@@ -542,7 +530,6 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
             "valid_grouping_entities": valid_grouping_entities,
             "disabled_grouping_entities": disabled_grouping_entities,
             "provenance": provenance,
-            "curated_status": "auto_published" if _is_auto_metric(config, recipe.id) else "curated",
             "expression_summary": _expr_summary(config, recipe.expression),
             "executable": executable,
             "unsupported_reason": unsupported_reason,
@@ -572,7 +559,6 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
             "disabled_grouping_entities": disabled_grouping_entities,
             "provenance": {},
             **_aggregation_guidance(measure),
-            "default_metric_id": _measure_default_metric_id(config, measure),
             "executable": True,
             "unsupported_reason": "",
             "coverage_notes": _metric_history_coverage_notes(config, measure.entity),
@@ -673,7 +659,7 @@ def _metric_executable(
 
 
 def _related_metric_ids_for_measure(config: PackageConfig, measure: Any) -> list[str]:
-    out = [metric_id] if (metric_id := _measure_default_metric_id(config, measure)) else []
+    out: list[str] = []
     for recipe in config.metric_recipes:
         summary = _expr_summary(config, recipe.expression).lower()
         # An empty label or name is in every summary: it matches nothing.
@@ -911,9 +897,7 @@ def _object_card(
                     metric_id
                     for metric_id in _related_metric_ids_for_measure(config, measure)
                     if metric_id in maps["metric_recipes"]
-                    and not _is_auto_metric(config, metric_id)
                 ],
-                "default_metric_id": _measure_default_metric_id(config, measure),
                 "coverage_notes": list(payload.get("coverage_notes", []) or []),
                 **_operational_metadata(measure),
                 **_review_metadata(measure),
@@ -933,17 +917,13 @@ def _object_card(
                 "default_temporal_role": payload.get("default_temporal_role", ""),
                 "compatible_temporal_roles": payload.get("compatible_temporal_roles", []),
                 "expression_summary": payload.get("expression_summary", ""),
-                "aggregation_mode": "user_selectable"
-                if _is_auto_metric(config, recipe.id)
-                else "fixed",
                 "usage_summary": usage_summary,
                 **usage_summary,
                 "related_measures": preference_meta["related_measures"]
                 or [
                     measure.id
                     for measure in config.measures
-                    if _measure_default_metric_id(config, measure) == recipe.id
-                    or bool(measure.label)
+                    if measure.label
                     and measure.label.lower() in payload.get("expression_summary", "").lower()
                 ],
                 "executable": payload.get("executable", True),
@@ -1092,7 +1072,6 @@ def _summary_row(
         row["payload"] = payload
         row["operational"] = dict(card.get("operational", {}) or {})
     if obj["kind"] == "metric":
-        row["curated_status"] = payload.get("curated_status", "")
         row["executable"] = payload.get("executable", True)
         row["unsupported_reason"] = payload.get("unsupported_reason", "")
         if verbosity == "full":
@@ -2147,9 +2126,6 @@ def discover_payload(
         if predicate_backed and not any(token in lowered_terms for token in predicate_terms):
             score -= 18.0
             reasons.append("predicate semantics not explicitly requested")
-        if _is_auto_metric(config, recipe.id):
-            score -= 4.0
-            reasons.append("auto-published duplicate")
         row.update(
             {"score": score, "match_reasons": list(dict.fromkeys(reasons)), "object_type": "metric"}
         )

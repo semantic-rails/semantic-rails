@@ -341,19 +341,15 @@ def test_cards_of_visible_objects_name_revenue_only_for_finance(engine, roles, e
 @pytest.mark.parametrize(("roles", "eligible"), [(["support"], False), (["finance"], True)])
 def test_full_catalog_payload_filters_restricted_companions(tmp_path, roles, eligible):
     root = copy_package_config(tmp_path, "jaffle_shop")
-    path = root / "package.yml"
-    data = yaml.safe_load(path.read_text())
-    data["package"]["schema_strict"] = False
-    _write(path, data)
-    # Keep only regular models in this non-strict catalog fixture.
+    # Keep only regular models in this catalog fixture.
     (root / "models" / "core" / "daily_metrics.yml").unlink()
     (root / "models" / "core" / "monthly_metrics.yml").unlink()
     (root / "metrics" / "core" / "time_series_metrics.yml").unlink()
-    path = root / "models" / "core" / "orders.yml"
+    path = root / "metrics" / "core" / "core_metrics.yml"
     data = yaml.safe_load(path.read_text())
     keys = ("preferred_companion_metrics",)
     for key in keys:
-        data["model"]["measures"]["order_cost_usd"][key] = [REVENUE_METRIC, CUSTOMERS]
+        data["metrics"]["sales.aov_usd"][key] = [REVENUE_METRIC, CUSTOMERS]
     _write(path, data)
     _write(root / "metrics" / "core" / "revenue.yml", EXTRA_METRIC)
     _write(root / "policies.yml", {"semantic_policies": [FINANCE_ONLY]})
@@ -363,16 +359,13 @@ def test_full_catalog_payload_filters_restricted_companions(tmp_path, roles, eli
             runtime, view="full", verbosity="full", policy_context={"roles": roles}
         )
         assert (REVENUE_METRIC in _mentions(catalog)) is eligible
-        measure = next(
-            (row for row in catalog["measures"] if row["id"] == "measure.jaffle.order_cost_usd"),
-            None,
-        )
-        # A measure naming the restricted metric (as a peer) is restricted with it.
-        assert (measure is not None) is eligible
-        if measure is None:
+        metric = next((row for row in catalog["metrics"] if row["id"] == AOV), None)
+        # A metric naming the restricted metric (as a peer) is restricted with it.
+        assert (metric is not None) is eligible
+        if metric is None:
             return
         for key in keys:
-            assert measure["payload"][key] == (
+            assert metric["payload"][key] == (
                 [REVENUE_METRIC, CUSTOMERS] if eligible else [CUSTOMERS]
             )
     finally:

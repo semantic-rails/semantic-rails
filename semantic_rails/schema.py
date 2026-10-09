@@ -65,7 +65,6 @@ class PackageMeta:
     seed: SeedSpec = field(default_factory=SeedSpec)
     connection: ConnectionSpec = field(default_factory=ConnectionSpec)
     environments: list[str] = field(default_factory=list)
-    schema_strict: bool = False
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     observation_scope: str = OBSERVATION_SCOPES[0]  # defaults.observation_scope
 

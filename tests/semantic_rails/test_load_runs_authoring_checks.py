@@ -5,6 +5,7 @@ the value, so the package behaved differently from what it says.
 """
 
 import asyncio
+import os
 from pathlib import Path
 
 import duckdb
@@ -118,7 +119,7 @@ REFUSED = {
     # A rollup binding is checked whatever its name resolves to; the loader reads it either way.
     "measure-id-binding-key": (
         _all(
-            _set("models", "orders", "measures", "revenue_usd", id="rev_total"),
+            _set("models", "orders", "measures", "revenue_usd", **{"as": "rev_total"}),
             _rollup(rev_total={"column": "rev", "agregation": "max"}),
         ),
         "variant 'monthly' column 'rev_total' has unknown key 'agregation'",
@@ -133,7 +134,7 @@ REFUSED = {
     ),
     "dimension-id-binding-key": (
         _all(
-            _set("models", "orders", "dimensions", "channel", id="order_channel"),
+            _set("models", "orders", "dimensions", "channel", **{"as": "order_channel"}),
             _rollup(order_channel={"column": "channel", "pth": [_ORDER_CUSTOMER]}),
         ),
         "variant 'monthly' column 'order_channel' has unknown key 'pth'",
@@ -149,31 +150,17 @@ REFUSED = {
         "model — it is ignored by the loader, so this would silently change behavior; did you "
         "mean 'revenue_usd'?",
     ),
-    # `as:` replaces the `id:`, so the loader reads a binding by the `as:` value only.
+    # The loader reads a binding by the `as:` value only.
     "measure-id-binding-overridden-by-as": (
         _all(
-            _set(
-                "models",
-                "orders",
-                "measures",
-                "revenue_usd",
-                id="measure.shop.rev_a",
-                **{"as": "measure.shop.rev_b"},
-            ),
+            _set("models", "orders", "measures", "revenue_usd", **{"as": "measure.shop.rev_b"}),
             _rollup(**{"measure.shop.rev_a": {"column": "rev", "aggregation": "max"}}),
         ),
         "variant 'monthly' column 'measure.shop.rev_a' names no measure, dimension or key column",
     ),
     "dimension-id-binding-overridden-by-as": (
         _all(
-            _set(
-                "models",
-                "orders",
-                "dimensions",
-                "channel",
-                id="order_channel_a",
-                **{"as": "order_channel_b"},
-            ),
+            _set("models", "orders", "dimensions", "channel", **{"as": "order_channel_b"}),
             _rollup(order_channel_a={"column": "channel"}),
         ),
         "variant 'monthly' column 'order_channel_a' names no measure, dimension or key column",
@@ -207,8 +194,14 @@ CONSOLIDATED = {
         "defaults.time has unknown key 'timezon'",
     ),
     "model-join-key": (
-        _set("models", "orders", "joins", "customer", to="customer", path_preference=1),
-        "model 'orders' join 'customer' has unknown key 'path_preference'",
+        _set(
+            "graph",
+            "relationships",
+            "orders_customer",
+            entities=["order", "customer"],
+            path_preference=1,
+        ),
+        "graph relationship 'orders_customer' has unknown key 'path_preference'",
     ),
     "path-policy-key": (
         _add("path_policy", {"max_hop": 3}),
@@ -521,6 +514,8 @@ _LINKED_POLICY = {"day.yml": {"semantic_policies": [_POLICY]}}
         pytest.param("models", {}, id="models-directory"),
         pytest.param("models/core", {}, id="model-subdirectory"),
         pytest.param("examples", {"orders.yml": {"examples": {}}}, id="examples-directory"),
+        pytest.param("data", {"raw/notes.yaml": {"note": "kept"}}, id="data-holding-yaml"),
+        pytest.param("data", {"Orders.YML": {"note": "kept"}}, id="data-holding-upper-yaml"),
     ],
 )
 def test_directory_symlink_is_refused_not_followed(tmp_path, link, files):
@@ -539,6 +534,60 @@ def test_directory_symlink_is_refused_not_followed(tmp_path, link, files):
     with pytest.raises(SemanticLayerError) as refused:
         Runtime.from_path(str(package))
     assert refused.value.details["errors"] == [expected]
+
+
+@pytest.mark.parametrize(
+    "nested",
+    [
+        "directory-link",
+        pytest.param(
+            "unreadable",
+            marks=pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory"),
+        ),
+    ],
+)
+def test_data_symlink_whose_contents_are_unknown_is_refused(tmp_path, nested):
+    package = _linked_directory(tmp_path, "data", {})
+    target = tmp_path / "outside" / "data"
+    target.mkdir(parents=True)
+    if nested == "directory-link":
+        (tmp_path / "shared").mkdir()
+        (target / "shared").symlink_to(tmp_path / "shared", target_is_directory=True)
+    else:
+        (target / "locked").mkdir(mode=0)
+    try:
+        with pytest.raises(SemanticLayerError) as refused:
+            Runtime.from_path(str(package))
+    finally:
+        if nested == "unreadable":
+            (target / "locked").chmod(0o700)
+    assert refused.value.details["errors"] == [
+        f"{package / 'data'} is a directory symlink — the loader does not follow it, so this "
+        "would silently change behavior; copy or link the files instead"
+    ]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        pytest.param({}, id="empty"),
+        pytest.param({"orders.csv": "id\n1\n"}, id="data-files"),
+        pytest.param({"raw/2026/orders.parquet": "", "README.md": "Seeds.\n"}, id="nested-data"),
+    ],
+)
+def test_directory_symlink_to_data_files_loads(tmp_path, files):
+    """A link to a folder of data files hides no package input, so loading allows it."""
+    package = _linked_directory(tmp_path, "data", {})
+    (tmp_path / "outside" / "data").mkdir(parents=True)
+    for name, text in files.items():
+        path = tmp_path / "outside" / "data" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _merge_package_dir(str(package))
+    captured = capture_package_source(package)
+    assert captured.directory_links == ()
+    _merge_package_dir(str(package), captured=captured)
+    Runtime.from_path(str(package)).close()
 
 
 def test_directory_symlink_starting_with_underscore_stays_ignored(tmp_path):
@@ -637,7 +686,7 @@ def test_rollup_binding_answers_the_reference_once_its_name_resolves(tmp_path):
 
 
 def test_rollup_binding_by_an_id_that_as_replaces_is_refused(tmp_path):
-    ids = {"id": "measure.rollups.rev_a", "as": "measure.rollups.rev_b"}
+    ids = {"as": "measure.rollups.rev_b"}
     by_id = _rollup_package(tmp_path / "by_id", ids, **{"measure.rollups.rev_a": _MAX_REV})
     with pytest.raises(SemanticLayerError) as refused:
         Runtime.from_path(str(by_id))

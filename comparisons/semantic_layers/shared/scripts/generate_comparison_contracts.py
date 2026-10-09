@@ -1309,14 +1309,31 @@ def semantic_rails_frozen_version_note() -> str:
     release = load_json(RESULTS_ROOT / "semantic_rails" / "latest_release_frozen_model.json")
     if release["dataset_fingerprint"] != summary["dataset_fingerprint"]:
         raise SystemExit("Semantic Rails release capture uses a different dataset")
-    answered = sum(q["status"] == "executed" for q in release["questions"])
     engine = summary["semantic_rails_commit"]
     qualifier = "unreleased engine commit" if summary["engine_release"] is None else "engine commit"
+    if "load_error" in release:
+        # The release never reached a question, so it has no count to report.
+        error = release["load_error"]
+        detail = error["message"].split("; ", 1)[0]
+        location, found, rest = detail.partition(": ")
+        if found and "/" in location and " " not in location:
+            detail = rest
+        outcome = (
+            "refuses to load this package version "
+            f"({error['code']}: {detail}), so it has no frozen-model count"
+        )
+    else:
+        answered = sum(q["status"] == "executed" for q in release["questions"])
+        refused = [
+            short_id(q["question_id"]) for q in release["questions"] if q["status"] != "executed"
+        ]
+        outcome = f"answers {answered} of {len(release['questions'])} on the same frozen model" + (
+            f" (it refuses {join_names(refused)})" if refused else ""
+        )
     return (
         f"Semantic Rails' current count uses {qualifier} {engine}; "
-        f"the latest release checked, {release['engine_release']}, answers {answered} of "
-        f"{len(release['questions'])} on the same frozen model (q19 and q20 are refused because "
-        "it requires a declared calendar). The competitor captures were not re-run on newer versions."
+        f"the latest release checked, {release['engine_release']}, {outcome}. "
+        "The competitor captures were not re-run on newer versions."
     )
 
 

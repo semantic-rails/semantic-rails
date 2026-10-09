@@ -141,7 +141,6 @@ def _write(
                 "warehouse": "duckdb",
                 "default_db": f"data/{NS}.duckdb",
                 "seed": {"kind": "external"},
-                "schema_strict": True,
                 "environments": ["development"],
             },
         },

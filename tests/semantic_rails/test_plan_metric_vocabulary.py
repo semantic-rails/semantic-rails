@@ -98,7 +98,6 @@ def _package(
                 "warehouse": "duckdb",
                 "default_db": "shop.duckdb",
                 "seed": {"kind": "external"},
-                "schema_strict": True,
             },
         },
         "graph.yml": {"graph": {"entities": {"event": {"key": ["event_id"], "model": "events"}}}},

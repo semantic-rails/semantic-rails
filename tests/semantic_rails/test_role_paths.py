@@ -215,7 +215,6 @@ def _write_package(
               seed:
                 kind: sql_script
                 source: data/seed.sql
-              schema_strict: true
             defaults:
               dimension:
                 groupable: true

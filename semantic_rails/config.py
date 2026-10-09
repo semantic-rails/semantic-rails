@@ -48,7 +48,13 @@ from .operational import (
     normalize_operational_payload,
     validate_operational_payload,
 )
-from .package_snapshot import CapturedSource, LoadedPackageSnapshot, load_package_snapshot
+from .package_snapshot import (
+    PACKAGE_SOURCE_DIRS,
+    CapturedSource,
+    LoadedPackageSnapshot,
+    links_package_input,
+    load_package_snapshot,
+)
 from .policy_rules import policy_action
 from .row_filters import validate_row_filters
 from .schema import (
@@ -508,15 +514,16 @@ _BLOCK_FILES = (
 # loader's files and object directories, and the examples and tests the package tools run.
 _PACKAGE_ROOT_FILES = frozenset({"package.yml", *(name for name, _ in _BLOCK_FILES)})
 _OBJECT_DIRS = ("models", "relations", "metrics", "segments")
-_PACKAGE_ROOT_DIRS = frozenset({*_OBJECT_DIRS, "examples", "tests"})
+_PACKAGE_ROOT_DIRS = PACKAGE_SOURCE_DIRS
 
 
 def _unread_root_errors(
     path: str, contents: dict[str, bytes] | None, links: tuple[str, ...] = ()
 ) -> list[str]:
     """One error per root YAML file, and per root directory holding YAML, that nothing reads,
-    and per directory symlink, which nothing follows. Root names starting with ``_`` or ``.``
-    are left alone. ``links`` are the captured directory symlinks, relative to ``path``."""
+    and per directory symlink that could hide package input, which nothing follows. Root names
+    starting with ``_`` or ``.`` are left alone. ``links`` are the captured directory symlinks,
+    relative to ``path``."""
     if contents is not None:
         sources = [os.path.relpath(name, path) for name in contents]
     else:
@@ -529,6 +536,7 @@ def _unread_root_errors(
                 os.path.relpath(os.path.join(root, name), path)
                 for name in dirnames
                 if os.path.islink(os.path.join(root, name))
+                and links_package_input(path, os.path.relpath(os.path.join(root, name), path))
             )
             sources.extend(os.path.relpath(os.path.join(root, name), path) for name in filenames)
         links = tuple(found)
@@ -611,6 +619,11 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
             drops(filename, doc, (wrapper,), f"the loader reads only {wrapper!r} from this file")
 
     raw = load(package_path)
+    if raw.get("relations") not in (None, {}, []):
+        errors.append(
+            f"{package_path} declares relations:, which a directory package keeps in "
+            "relations.yml or relations/; move it there"
+        )
     merged: dict[str, Any] = dict(raw)
     merged.setdefault("defaults", {})
     merged.setdefault("graph", {})
@@ -695,6 +708,11 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                 }
             for model_key, model_raw in model_docs.items():
                 model = dict(model_raw or {})
+                if "models" in doc and str(model.get("id", model_key)).strip() != str(model_key):
+                    errors.append(
+                        f"{file_path}: model '{model_key}' authors id {model['id']!r}; the "
+                        "model's key is its id, so delete id:"
+                    )
                 model_id = str(
                     model.get("id") or model_key or os.path.splitext(os.path.basename(file_path))[0]
                 )
@@ -1340,7 +1358,6 @@ def _parse_package_meta(
         seed=seed,
         connection=connection,
         environments=_ensure_list(package.get("environments")),
-        schema_strict=bool(package.get("schema_strict", False)),
         planner=planner_cfg,
         observation_scope=observation_scope,
     )
@@ -1570,73 +1587,6 @@ def _default_topics(name: str, fallback: str = "analytics") -> list[str]:
         if part
     ]
     return parts[:2] or [fallback]
-
-
-def _metric_from_measure(
-    measure: MeasureConfig,
-    spec: dict[str, Any],
-    *,
-    operational_contract: dict[str, Any],
-    path: str,
-) -> MetricConfig | None:
-    publish = spec.get("publish", True)
-    if publish is False:
-        return None
-    publish_spec = dict(publish or {}) if isinstance(publish, dict) else {}
-    default_metric_name = measure.name or measure.id.split("measure.", 1)[-1]
-    metric_id = str(publish_spec.get("id", f"metric.{default_metric_name}"))
-    metric_name = str(publish_spec.get("name", default_metric_name))
-    metric_label = str(
-        publish_spec.get("label", measure.label or _titleize(metric_name.split(".")[-1]))
-    )
-    kind = "semi_additive" if measure.measure_class == "semi_additive" else "aggregate"
-    expr_kind = "semi_additive" if kind == "semi_additive" else "aggregate"
-    temporal_role = (
-        measure.compatible_temporal_roles[0] if measure.compatible_temporal_roles else ""
-    )
-    publish_operational = normalize_operational_payload(
-        publish_spec.get("operational"),
-        contract=operational_contract,
-        target="metric",
-        path=f"{path} publish.operational",
-    )
-    metric_operational = validate_operational_payload(
-        merge_operational_payloads(measure.operational, publish_operational),
-        contract=operational_contract,
-        target="metric",
-        path=f"{path} auto-published metric operational",
-    )
-    _, metric_example_entries = _normalize_examples(publish_spec.get("examples"))
-    return MetricConfig(
-        id=metric_id,
-        kind=kind,
-        expression=parse_semantic_expression(
-            {"kind": expr_kind, "measure": measure.id, "aggregation": measure.default_aggregation},
-            context="config",
-        ),
-        temporal_role=temporal_role,
-        compatible_temporal_roles=list(measure.compatible_temporal_roles),
-        name=metric_name,
-        label=metric_label,
-        description=str(publish_spec.get("description", measure.description or metric_label)),
-        topics=_ensure_list(publish_spec.get("topics"))
-        or list(measure.topics)
-        or _default_topics(metric_name),
-        comparison_family=str(
-            publish_spec.get("comparison_family", spec.get("comparison_family", ""))
-        ),
-        comparison_mode=str(publish_spec.get("comparison_mode", spec.get("comparison_mode", ""))),
-        preferred_companion_metrics=_ensure_list(
-            publish_spec.get("preferred_companion_metrics", spec.get("preferred_companion_metrics"))
-        ),
-        operational=metric_operational,
-        meta={
-            **dict(measure.meta),
-            **_normalize_meta(publish_spec.get("meta"), f"{path}: {metric_id}"),
-        },
-        example_entries=metric_example_entries or list(measure.example_entries),
-        value_type=str(publish_spec.get("value_type") or measure.value_type or "number"),
-    )
 
 
 def _ensure_unique_object_ids(config: PackageConfig, *, path: str) -> None:
@@ -1903,7 +1853,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         model = model_rows[model_id]
         model_keys = dict(model.get("keys", {}) or {})
         key, primary_role = _key_columns_and_role(
-            entity_spec.get("key") or model_keys.get("primary") or model.get("grain"),
+            entity_spec.get("key") or model_keys.get("primary"),
             default_role="primary",
         )
         if not key:
@@ -2181,9 +2131,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             temporal_lookup[(model_id, time_key)] = temporal_id
 
         default_time = model_default_times[model_id]
-        row_grain = _ensure_list(
-            model.get("grain") or dict(model.get("keys", {}) or {}).get("primary")
-        )
+        row_grain = _ensure_list(dict(model.get("keys", {}) or {}).get("primary"))
         # Fact models infer grain from the declared time_column (the row's
         # time-key on the fact table).
         if is_fact and not row_grain:
@@ -2196,14 +2144,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             measure_spec = lookup_measure_spec(
                 raw_measure_spec, measure_spec, f"{path}: measure '{measure_key}'"
             )
-            publish_spec = measure_spec.get("publish")
-            if isinstance(publish_spec, dict):
-                for advisory_key in ("clock_variants", "comparison_peers", "preferred_filter_ops"):
-                    if advisory_key in publish_spec:
-                        raise SemanticLayerError(
-                            "INVALID_CONFIG",
-                            f"{path}: measure '{measure_key}' publish.{advisory_key} is not supported",
-                        )
             measure_id = str(
                 measure_spec.get("id", f"measure.{_slug(entity_cfg.name)}_{_slug(measure_key)}")
             )
@@ -2472,29 +2412,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 f"{path}: duplicate metric id '{metric.id}' in {existing.name or existing.id} and {source}; metric ids must be unique",
             )
         metric_recipes_by_id[metric.id] = metric
-
-    # Auto-publish path: measures auto-create metric records for legacy
-    # packages. Disabled under schema_strict: true, where every metric must
-    # be authored explicitly.
-    schema_strict = bool(package_raw.get("schema_strict", False))
-    if not schema_strict:
-        for model_id, model in model_rows.items():
-            for measure_key, measure_spec_raw in dict(model.get("measures", {}) or {}).items():
-                measure_id = str(
-                    dict(measure_spec_raw or {}).get(
-                        "id",
-                        f"measure.{_slug(next(row.name for row in entities if row.id == model_to_entity[model_id]))}_{_slug(measure_key)}",
-                    )
-                )
-                measure = next(row for row in measures if row.id == measure_id)
-                metric = _metric_from_measure(
-                    measure,
-                    dict(measure_spec_raw or {}),
-                    operational_contract=operational_contract,
-                    path=f"{path}: measure '{measure_id}'",
-                )
-                if metric is not None:
-                    _add_metric_recipe(metric, source=f"measure '{measure_id}' publish")
 
     # Build a measure key/name → measure_id index so metric authoring can
     # use package-relative keys (`revenue_usd`) instead of fully qualified

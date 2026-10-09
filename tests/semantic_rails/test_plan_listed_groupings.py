@@ -85,7 +85,6 @@ def _upkeep(path: Path, noun: str, measure: str, *, revisions: bool = False) -> 
                 "warehouse": "duckdb",
                 "default_db": "data/upkeep.duckdb",
                 "seed": {"kind": "csv_dir_duckdb", "source": "data/csv"},
-                "schema_strict": True,
             },
         },
         "graph.yml": {
@@ -869,9 +868,10 @@ _BEFORE = [
     _Before("order count by customer type, order for Brooklyn store", OK, held=True),
     _Before("revenue by store, customer type and product type", UNMATCHED),
     _Before("What was revenue by month, beside the revenue of the month before?", UNMATCHED),
+    # Its second clause points back at the first ("of it"), so the parts plan holds it.
     _Before(
         "What was revenue by month, and how much of it came from orders of 50 USD or more?",
-        UNMATCHED,
+        "PLAN_PARTS_HELD",
     ),
     _Before("order count by customer type, order", OK, held=True),
     _Before("order count by customer history, month", OK, held=True),

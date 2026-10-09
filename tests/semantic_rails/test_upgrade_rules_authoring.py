@@ -139,11 +139,6 @@ def _write_defaults(source, doc, defaults, layout):
         models = source.parent / "models"
         models.mkdir(exist_ok=True)
         for name, row in doc.pop("models").items():
-            grain = row.pop("grain")
-            primary = next(
-                entity for entity in row["entities"] if [graph["entities"][entity]["key"]] == grain
-            )
-            graph["entities"][primary]["model"] = name
             row["id"] = name
             (models / f"{name}.yml").write_text(yaml.safe_dump({"model": row}))
         for entity in graph["entities"].values():

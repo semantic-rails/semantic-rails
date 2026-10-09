@@ -304,7 +304,8 @@ def test_legacy_text_becomes_current_text(tmp_path, case):
     assert {name: data.decode() for name, data in result.files.items() if data} == current
     assert all(finding.edits and finding.line > 1 for finding in result.findings)
     upgraded = PackageFiles(files.source, contents={**files.contents, **result.files})
-    assert plan(upgraded, RULES, {}).findings == ()
+    # These cases keep model joins: blocks, a legacy form the model-joins rule rewrites next.
+    assert plan(upgraded, [row for row in RULES if row.id != "model-joins"], {}).findings == ()
 
 
 @pytest.mark.parametrize("package", PACKAGES)

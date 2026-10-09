@@ -12,7 +12,6 @@ package:
   warehouse: duckdb
   default_db: comparisons/semantic_layers/shared/data/jaffle_comparison.duckdb
   environments: [development, staging, production]
-  schema_strict: true
   seed:
     kind: csv_dir_duckdb
     source: data/jaffle_csv

@@ -121,6 +121,7 @@ def _files(
             "dimensions": {"plan": {"kind": "categorical", "domain": ["basic", "pro"]}},
             "measures": {
                 "mrr_all": {
+                    "kind": "aggregate",
                     "expr": "mrr",
                     "accumulation": {"kind": "stock", "snapshot": "end_of_period"},
                     "publish": False,
@@ -157,6 +158,7 @@ def _files(
     metrics["mrr"] = {
         "label": "MRR (USD)",
         "kind": "semi_additive",
+        "value_type": "number",
         "temporal_role": DAY_CLOCK,
         "expression": {
             "kind": "semi_additive",

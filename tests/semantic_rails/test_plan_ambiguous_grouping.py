@@ -93,7 +93,6 @@ def shop(tmp_path, request):
                     "kind": "aggregate",
                     "expr": "revenue",
                     "default_agg": "sum",
-                    "publish": False,
                 }
             }
         files[f"models/{entity}.yml"] = {"model": model}
