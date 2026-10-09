@@ -317,6 +317,15 @@ CASES = [
             "revenue for each store name",
         ]
     ),
+    # A list: the customers with an order in the window, one row each.
+    _Case(
+        "Which customers ordered last week?",
+        (ORDERS,),
+        dims=(CUSTOMER,),
+        grain="week",
+        window=("2017-08-14", "2017-08-21"),
+        now=AUGUST,
+    ),
     # Other entities: an order, a product.
     _Case("revenue by order", dims=(ORDER,)),
     _Case("item revenue by orders", (ITEM_REVENUE,), dims=(ORDER,), source=ITEMS_FROM),

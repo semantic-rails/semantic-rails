@@ -26,7 +26,7 @@ from .grouping_checks import (
     _reads_grouping,
     _time_of,
 )
-from .groupings import _listed_grouping_terms
+from .groupings import _display_entities, _listed_grouping_terms
 from .plan_query import _select_key
 from .time_windows import _time_window
 from .unasked_groupings import _grain_splits
@@ -77,18 +77,10 @@ def _answer_shape_why(
     framing = _INTENT_STOPWORDS | _FRAMING_WORDS
     tokens = list(re.finditer(r"[^\W_]+", lowered))
     breaks = [match.start() for match in _CLAUSE_BREAK_RE.finditer(lowered)]
+    clauses = {clause[0]: clause for _word, clause in _list_clauses(config, question)}
 
     def outside(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
         return not any(low <= span[0] and span[1] <= high for low, high in spans)
-
-    def opens_clause(index: int) -> bool:
-        clause = max((at for at in breaks if at < tokens[index].start()), default=-1)
-        return all(
-            (token.group() in framing and outside(token.span(), names))
-            or not outside(token.span(), windows)
-            for token in tokens[:index]
-            if token.start() > clause
-        )
 
     def clause_end(at: int) -> int:
         return min((end for end in breaks if end >= at), default=len(lowered))
@@ -96,11 +88,11 @@ def _answer_shape_why(
     asked: dict[str, list[str]] = {"person": [], "list": [], "each": [], "comparison": []}
     unlisted: list[str] = []
     keys: set[str] = set()
-    for index, token in enumerate(tokens):
+    for token in tokens:
         word = token.group()
         kind = (
             ("person" if word in _PERSON_WORDS else "list")
-            if word in _LIST_WORDS and opens_clause(index)
+            if token.end() in clauses
             else "each"
             if word in _EACH_WORDS
             else "comparison"
@@ -116,7 +108,7 @@ def _answer_shape_why(
                 config,
                 lowered,
                 windows,
-                (token.end(), clause_end(token.end())),
+                clauses[token.end()],
                 kind == "person",
                 query,
                 partial_query or {},
@@ -226,6 +218,75 @@ def _answer_shape_why(
     return _coverage_why(gaps)
 
 
+def _list_clauses(config: Any, question: str) -> list[tuple[str, tuple[int, int]]]:
+    """Each list or person word that opens a clause ("which", "list", "who", "whom", "whose"),
+    with the span from after it to its clause's end, read as ``_answer_shape_why`` describes."""
+
+    from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
+
+    lowered = str(question or "").lower()
+    names = list(_declared_name_spans(config, lowered))
+    windows = list(_time_window(question).spans)
+    framing = _INTENT_STOPWORDS | _FRAMING_WORDS
+    tokens = list(re.finditer(r"[^\W_]+", lowered))
+    breaks = [match.start() for match in _CLAUSE_BREAK_RE.finditer(lowered)]
+
+    def inside(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+        return any(low <= span[0] and span[1] <= high for low, high in spans)
+
+    out: list[tuple[str, tuple[int, int]]] = []
+    for index, token in enumerate(tokens):
+        if token.group() not in _LIST_WORDS or inside(token.span(), names):
+            continue
+        start = max((at for at in breaks if at < token.start()), default=-1)
+        if all(
+            (word.group() in framing and not inside(word.span(), names))
+            or inside(word.span(), windows)
+            for word in tokens[:index]
+            if word.start() > start
+        ):
+            end = min((at for at in breaks if at >= token.end()), default=len(lowered))
+            out.append((token.group(), (token.end(), end)))
+    return out
+
+
+def _clause_entity(
+    config: Any, lowered: str, windows: list[tuple[int, int]], clause: tuple[int, int]
+) -> str | None:
+    """The first word of a clause, outside a window and a grouping the question lists ("by
+    store"), that names an entity: what a list or person word opening the clause lists."""
+
+    groupings = _requested_grouping_spans(lowered)
+    return next(
+        (
+            match.group()
+            for match in re.finditer(r"[^\W_]+", lowered[: clause[1]])
+            if match.start() >= clause[0]
+            and not any(low <= match.start() < high for low, high in [*windows, *groupings])
+            and _entity_grouping_dimensions(config, match.group()) is not None
+        ),
+        None,
+    )
+
+
+def _listed_entity_terms(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """What each clause opening with a list or person word lists: the entity its clause names
+    (``_clause_entity``), or, for a person word naming none, the one entity with a display the
+    draft's subject reaches (``_display_entities``), by its label."""
+
+    lowered = str(question or "").lower()
+    windows = list(_time_window(question).spans)
+    out: list[str] = []
+    for word, clause in _list_clauses(config, question):
+        term = _clause_entity(config, lowered, windows, clause)
+        entities = (
+            _display_entities(config, query) if term is None and word in _PERSON_WORDS else []
+        )
+        if term is not None or len(entities) == 1:
+            out.append(term if term is not None else str(entities[0].label))
+    return out
+
+
 def _lists_entity_rows(
     config: Any,
     lowered: str,
@@ -244,12 +305,13 @@ def _lists_entity_rows(
     entity's declared one-column key lists them: the key among its stand-ins
     (``_entity_grouping_dimensions``). A display name may sit beside the key, but lists nothing
     on its own, because a name can repeat ("Customer name"); nor does any other dimension of the
-    entity, whatever it declares. When "who" names no entity ("Who ordered last week?"), plan
-    can't tell whose rows it asks for, so only the caller's group_by says: one of its dimensions
-    that reads no grouping the question lists ("Who ordered by store?" asks for more than
-    stores) and is the key of its own entity. A time grain, a category, a name or an entity the
-    clause doesn't name never lists them, and when "list" or "which" names no entity, nothing
-    does.
+    entity, whatever it declares. When "who" names no entity ("Who ordered last week?"), it lists
+    the one entity with a display that the draft's subject reaches (``_display_entities``), when
+    exactly one does; else plan can't tell whose rows it asks for, so only the caller's group_by
+    says: one of its dimensions that reads no grouping the question lists ("Who ordered by
+    store?" asks for more than stores) and is the key of its own entity. A time grain, a
+    category, a name or an entity the clause doesn't name never lists them, and when "list" or
+    "which" names no entity, nothing does.
     """
 
     chosen = set(caller.get("group_by") or [])
@@ -294,6 +356,9 @@ def _lists_entity_rows(
         return any(row.id in keys for row in grouped), keys
     if not person:
         return False, set()
+    entities = _display_entities(config, query)
+    if len(entities) == 1 and any(row.id in keys_of(entities[0].label) for row in grouped):
+        return True, keys_of(entities[0].label)
     terms = _listed_grouping_terms(lowered, config)
     for row in grouped:
         entity = _object_by_id(config.entities, row.entity)
