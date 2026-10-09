@@ -144,3 +144,27 @@ def test_contains_is_a_case_insensitive_literal_match(request, backend_name, tex
     )
     assert len(result["rows"]) == len(rows) == expected
     assert {row[CHANNEL]: row["signups"] for row in result["rows"]} == dict(rows)
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_an_upper_bound_on_the_clock_date_keeps_a_running_total(request, backend_name):
+    """`lt` on the clock's date is an upper bound, which a running total can take; `gte` cuts
+    the history it sums and is refused."""
+    runtime = _runtime(request, backend_name)
+    call = {
+        "select": [{"expression": {"kind": "cumulative", "input": REVENUE}, "as": "history"}],
+        "time": {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"},
+    }
+    bound = {"field": "dimension.shop_order_ordered_at", "value": "2024-01-01"}
+    result = runtime.query({**call, "where": [{**bound, "op": "lt"}]})
+    expected = _reference(
+        request,
+        backend_name,
+        "SELECT CAST(SUM(SUM(amount)) OVER (ORDER BY date_trunc('month', ordered_at)) AS INTEGER) "
+        "FROM orders WHERE ordered_at < TIMESTAMP '2024-01-01' "
+        "GROUP BY date_trunc('month', ordered_at) ORDER BY date_trunc('month', ordered_at)",
+    )
+    assert [int(row["history"]) for row in result["rows"]] == [row[0] for row in expected]
+    assert [row[0] for row in expected] == [15, 22]
+    report = runtime.validate({**call, "where": [{**bound, "op": "gte"}]})
+    assert report["errors"][0]["details"]["start"] == "2024-01-01"
