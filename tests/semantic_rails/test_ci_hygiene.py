@@ -392,17 +392,19 @@ def test_guard_skips_a_repetition_that_cannot_fit_and_passes_inconclusive(
     assert "intermittent" not in output
 
 
+def write_guard_project(monkeypatch, tmp_path, timeout_method):
+    """A project loading this repository's own flake guard plugin, as the guarded tests do."""
+    write_file(tmp_path, "pytest.ini", f"[pytest]\ntimeout_method = {timeout_method}\n")
+    write_file(tmp_path, "conftest.py", 'pytest_plugins = ["scripts.test_quarantine"]\n')
+    monkeypatch.setenv("PYTHONPATH", str(flake_guard.ROOT))
+
+
 @pytest.mark.parametrize("timeout_method", ["thread", "signal"])
 def test_guard_fails_a_test_over_its_own_limit_before_the_budget_ends(
     monkeypatch, tmp_path, capsys, timeout_method
 ):
     # Real pytest: the hung test would pass after 20 s, well inside the 60 s budget, unless its own limit stops it.
-    write_file(tmp_path, "pytest.ini", f"[pytest]\ntimeout_method = {timeout_method}\n")
-    write_file(
-        tmp_path,
-        "conftest.py",
-        "def pytest_addoption(parser):\n    parser.addoption('--flake-seed', type=int)\n",
-    )
+    write_guard_project(monkeypatch, tmp_path, timeout_method)
     write_file(
         tmp_path,
         "test_sample.py",
@@ -416,6 +418,40 @@ def test_guard_fails_a_test_over_its_own_limit_before_the_budget_ends(
     output = capsys.readouterr().out
     assert "intermittent: investigate; repetition 1; test_sample::test_hangs" in output
     assert "test_quick" not in output.split("intermittent")[-1]
+
+
+@pytest.mark.parametrize("timeout_method", ["thread", "signal"])
+@pytest.mark.parametrize(
+    "failing_test, limit",
+    [
+        ("def test_fails():\n    assert False\n", flake_guard.TEST_TIMEOUT_SECONDS),
+        ("def test_fails():\n    time.sleep(20)\n", 1),
+    ],
+    ids=["fails-at-once", "over-its-limit"],
+)
+def test_guard_fails_a_repetition_whose_failure_comes_before_the_budget_ends(
+    monkeypatch, tmp_path, capsys, timeout_method, failing_test, limit
+):
+    # Real pytest: a slow test still running when the budget ends must not hide an earlier failure.
+    write_guard_project(monkeypatch, tmp_path, timeout_method)
+    write_file(
+        tmp_path,
+        "test_sample.py",
+        "import time\nfrom pathlib import Path\n\nimport pytest\n\n\n"
+        + failing_test
+        + "\n\n@pytest.mark.timeout(60)\ndef test_slow():\n"
+        "    time.sleep(30)\n    Path('slow-finished').touch()\n",
+    )
+    monkeypatch.setattr(flake_guard, "TEST_TIMEOUT_SECONDS", limit)
+    monkeypatch.setattr(flake_guard.os, "cpu_count", lambda: 2)
+    started = time.monotonic()
+    assert flake_guard.run_repetitions(["test_sample.py"], tmp_path, started + 15) == 1
+    assert time.monotonic() - started < 30
+    assert not (tmp_path / "slow-finished").exists()
+    output = capsys.readouterr().out
+    failure = output.split("intermittent: investigate; repetition 1; ")[1].splitlines()[0]
+    assert failure == "test_sample.py::test_fails"
+    assert "inconclusive" not in output
 
 
 def test_guard_expired_budget_and_empty_selection(monkeypatch, tmp_path):

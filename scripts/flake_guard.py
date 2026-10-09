@@ -27,7 +27,8 @@ MAX_FILES = 20
 BUDGET_SECONDS = 290
 # Leave headroom above measured test durations when sizing or starting a repetition.
 FIT_MARGIN = 1.2
-# A repeated test running longer than this is hung; unit tests take about a second at most.
+# A repeated test running longer than this, or than its own longer @pytest.mark.timeout, is hung; unit tests
+# take about a second at most.
 TEST_TIMEOUT_SECONDS = 60
 
 
@@ -159,6 +160,7 @@ def run_repetitions(
         for repetition in range(1, 4):
             seed = seed_base + repetition
             report = Path(scratch) / f"repetition-{repetition}.xml"
+            failures = Path(scratch) / f"repetition-{repetition}.failures"
             command = [
                 sys.executable,
                 "-m",
@@ -168,8 +170,11 @@ def run_repetitions(
                 str(workers),
                 f"--flake-seed={seed}",
                 f"--junitxml={report}",
-                # A hung test fails on its own limit and ends the run, well inside the budget.
+                f"--flake-failures={failures}",
+                # A hung test fails on its own limit, and the first failure or over-limit test ends the
+                # repetition once the tests already running finish.
                 f"--timeout={TEST_TIMEOUT_SECONDS}",
+                "--maxfail=1",
                 "--max-worker-restart=0",
                 "-p",
                 "no:cacheprovider",
@@ -202,8 +207,16 @@ def run_repetitions(
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
-                # Each test runs under its own limit, so a repetition the budget stops was slow, not hung: like one
-                # that cannot fit, it proves nothing either way.
+                # A test that failed before the budget ended, while slower tests were still running, still fails.
+                if failures.exists():
+                    names = dict.fromkeys(failures.read_text(encoding="utf-8").splitlines())
+                    print(
+                        f"intermittent: investigate; repetition {repetition}; " + ", ".join(names),
+                        flush=True,
+                    )
+                    return 1
+                # Each test runs under its own limit, so a repetition the budget stops with no failure was slow, not
+                # hung: like one that cannot fit, it proves nothing either way.
                 print(
                     f"::notice::Flake guard inconclusive: {repetition - 1} of 3 repetitions passed; "
                     f"repetition {repetition} ran out of the time budget: {files}",
