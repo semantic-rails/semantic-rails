@@ -26,6 +26,7 @@ import pytest
 import yaml
 
 from semantic_rails.config_parts import measure_governance
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import discover_payload
@@ -128,9 +129,22 @@ def _plan(runtime: Runtime, intent: str, **partial: Any) -> dict[str, Any]:
 
 
 def _value(runtime: Runtime, query: dict[str, Any]) -> int:
-    rows = runtime.query({**query, "policy_context": NOW})["rows"]
+    rows = runtime.query(query, now=NOW["now"])["rows"]
     assert len(rows) == 1, rows
-    return int(rows[0][query["select"][0]["as"]])
+    return int(rows[0][_alias(query["select"][0])])
+
+
+def _alias(item: Any) -> str:
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
+def _subject(query: dict[str, Any]) -> Any:
+    """What the draft's first select reads: an id, or a kind object without its default."""
+    item = query["select"][0]
+    expression = item if isinstance(item, str) else item["expression"]
+    if isinstance(expression, dict) and set(expression) <= {"kind", "measure", "aggregation"}:
+        return expression["measure"]
+    return expression
 
 
 def _gaps(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -150,7 +164,7 @@ def test_a_question_naming_the_metric_gets_the_metric(runtime: Runtime, intent: 
     plan = _plan(runtime, intent)
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
-    assert query["select"] == [{"as": "active_stores", "expression": {"metric": METRIC}}]
+    assert query["select"] == [METRIC]
     assert _value(runtime, query) == _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
 
 
@@ -164,7 +178,7 @@ def test_a_word_only_the_metric_names_is_read_by_the_metric(tmp_path: Path) -> N
         plan = _plan(engine, "How many retail stores were active last week?")
         assert plan["status"] == "ok", plan.get("why")
         query = plan["best"]["query_ir"]
-        assert query["select"][0]["expression"] == {"metric": METRIC}
+        assert _subject(query) == METRIC
         assert _value(engine, query) == _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
     finally:
         engine.close()
@@ -202,12 +216,12 @@ def test_a_filter_on_the_metric_field_reads_the_rows_it_asks_for(runtime: Runtim
 
     plan = _plan(runtime, "How many demo stores were active last week?")
     query = plan["best"]["query_ir"]
-    assert query["select"][0]["expression"]["measure"] == MEASURE
+    assert _subject(query) == MEASURE
     assert _value(runtime, query) == _gold(f"{LAST_WEEK} AND channel = 'demo'") == 1
 
 
 def test_a_caller_selecting_the_measure_by_id_is_not_held(runtime: Runtime) -> None:
-    select = [{"as": "all_kinds", "expression": {"measure": MEASURE}}]
+    select = [{"as": "all_kinds", "expression": MEASURE}]
     plan = _plan(runtime, "active stores all kinds last week", select=select)
     assert _gaps(plan) == []
 
@@ -230,12 +244,7 @@ def test_plan_answers_a_building_block_with_its_only_metric(runtime: Runtime) ->
 
     plan = _plan(runtime, "stores last week")
     building_block = not next(row for row in runtime._config.measures if row.id == MEASURE).publish
-    expected = {"metric": METRIC} if building_block else {"measure": MEASURE}
-    assert {
-        key: value
-        for key, value in plan["best"]["query_ir"]["select"][0]["expression"].items()
-        if key != "aggregation"
-    } == expected
+    assert _subject(plan["best"]["query_ir"]) == (METRIC if building_block else MEASURE)
     if building_block:
         assert plan["status"] == "ok", plan.get("why")
         assert _value(runtime, plan["best"]["query_ir"]) == 3
@@ -248,7 +257,7 @@ def test_plan_answers_a_building_block_with_its_only_metric(runtime: Runtime) ->
 
 
 def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
-    arguments = {"intent": QUESTION, "query": {"policy_context": NOW}, "detail": "query"}
+    arguments = {"intent": QUESTION, "now": NOW["now"], "detail": "query"}
     mcp = SemanticLayerMCPAdapter(runtime).call_tool("plan", arguments)
     http, status = SemanticHTTPService(runtime).handle(
         "POST", normalize_route("/api/v1/plan"), arguments
@@ -258,7 +267,7 @@ def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
     for response in (mcp, http):
         assert response["status"] == direct["status"] == "ok"
         assert response["best"]["query_ir"] == direct["best"]["query_ir"]
-        assert response["best"]["query_ir"]["select"][0]["expression"] == {"metric": METRIC}
+        assert _subject(response["best"]["query_ir"]) == METRIC
 
 
 @pytest.mark.parametrize(
@@ -303,9 +312,9 @@ def test_the_whole_question_is_checked_against_reference_sql(
             assert "execute" not in plan["next"].get("ready_for", [])
             assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[METRIC]]
             if plain_draft:
-                assert query["select"][0]["expression"]["metric"] != METRIC
+                assert _subject(query) != METRIC
             else:
-                assert query["select"][0]["expression"]["measure"] == MEASURE
+                assert _subject(query) == MEASURE
     finally:
         engine.close()
 
@@ -335,7 +344,8 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
     )
     arguments = {
         "intent": intent,
-        "query": {"policy_context": {**NOW, "audience": "external"}},
+        "now": NOW["now"],
+        "policy_context": {"audience": "external"},
         "detail": detail,
     }
     mcp = SemanticLayerMCPAdapter(runtime).call_tool("plan", arguments)
@@ -348,8 +358,7 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
         serialized = json.dumps(response)
         assert hidden_id not in serialized
         assert hidden_label not in serialized
-        expression = response["best"]["query_ir"]["select"][0]["expression"]
-        assert expression["measure"] == MEASURE
+        assert _subject(response["best"]["query_ir"]) == MEASURE
         if building_block:
             assert response["status"] == "low_confidence", response.get("why")
             assert "execute" not in response.get("next", {}).get("ready_for", [])
@@ -360,7 +369,7 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
     # A building block stays one when its governor is hidden: discover still leaves it out.
     discovered = SemanticLayerMCPAdapter(runtime).call_tool(
         "discover",
-        {"terms": "active stores", "policy_context": arguments["query"]["policy_context"]},
+        {"terms": "active stores", "policy_context": arguments["policy_context"]},
     )
     assert [row["id"] for row in discovered["measures"]] == ([] if building_block else [MEASURE])
     # The same policy leaves the metric visible to a different caller, on the next call.
@@ -399,7 +408,7 @@ def test_a_governed_swap_cannot_change_the_metrics_clock(
         assert plan["status"] == "low_confidence", plan.get("why")
         assert "execute" not in plan["next"].get("ready_for", [])
         query = plan["best"]["query_ir"]
-        assert query["select"][0]["expression"]["measure"] == MEASURE
+        assert _subject(query) == MEASURE
         assert query["time"]["temporal_role"] == "temporal_role.shop_visit_day"
         assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[METRIC]]
         assert _value(engine, query) == _gold(LAST_WEEK) == 5
@@ -585,11 +594,9 @@ def _assert_unoffered_hold(plan: dict[str, Any]) -> None:
     "metadata",
     [
         {"policy_context": {**NOW, "measure": TEAMS}},
-        {"request_context": {"field": TEAMS}},
-        {"request_id": {"metric": TEAMS}},
         {"_annotation": {"nested": [{"measure": TEAMS}]}},
     ],
-    ids=["policy_context", "request_context", "request_id", "unknown"],
+    ids=["policy_context", "unknown"],
 )
 def test_request_metadata_cannot_name_an_unpublished_measure(
     unpublished_teams: Runtime, metadata: dict[str, Any]
@@ -603,10 +610,24 @@ def test_request_metadata_cannot_name_an_unpublished_measure(
     _assert_unoffered_hold(plan)
 
 
+@pytest.mark.parametrize("key", ["request_context", "request_id"])
+def test_request_metadata_in_the_query_is_refused(unpublished_teams: Runtime, key: str) -> None:
+    with pytest.raises(SemanticLayerError) as caught:
+        plan_payload(
+            unpublished_teams,
+            intent="teams last week",
+            partial_query={key: {"measure": TEAMS}},
+            now=NOW["now"],
+        )
+    assert (caught.value.code, caught.value.details["path"]) == ("INVALID_QUERY", key)
+
+
 def _transport_plan(engine: Runtime, transport: str, query: dict[str, Any]) -> dict[str, Any]:
-    arguments = {"intent": "teams last week", "query": query, "detail": "best"}
+    arguments = {"intent": "teams last week", "query": query, "now": NOW["now"], "detail": "best"}
     if transport == "direct":
-        return plan_payload(engine, intent="teams last week", partial_query=query, detail="best")
+        return plan_payload(
+            engine, intent="teams last week", partial_query=query, now=NOW["now"], detail="best"
+        )
     if transport == "mcp":
         return SemanticLayerMCPAdapter(engine).call_tool("plan", arguments)
     plan, status = SemanticHTTPService(engine).handle(
@@ -624,8 +645,20 @@ def _unreadable_offer(*_: Any) -> Any:
 def test_transport_plan_holds_a_measure_named_only_in_policy_metadata(
     unpublished_teams: Runtime, transport: str
 ) -> None:
-    query = {"policy_context": {**NOW, "measure": TEAMS}}
-    _assert_unoffered_hold(_transport_plan(unpublished_teams, transport, query))
+    arguments = {
+        "intent": "teams last week",
+        "now": NOW["now"],
+        "policy_context": {"measure": TEAMS},
+        "detail": "best",
+    }
+    if transport == "mcp":
+        plan = SemanticLayerMCPAdapter(unpublished_teams).call_tool("plan", arguments)
+    else:
+        plan, status = SemanticHTTPService(unpublished_teams).handle(
+            "POST", normalize_route("/api/v1/plan"), arguments
+        )
+        assert status == 200
+    _assert_unoffered_hold(plan)
 
 
 @pytest.mark.parametrize("offer", ["readable", "unreadable"])
@@ -638,21 +671,24 @@ def test_a_response_option_cannot_name_an_unpublished_measure(
     transport: str,
     offer: str,
 ) -> None:
-    """Only ``partial_query.select`` makes a choice; an option's nested value never does."""
+    """A tool option inside the query is refused; it never makes a choice."""
 
     if offer == "unreadable":
         monkeypatch.setattr(faithfulness, "unoffered_measures", _unreadable_offer)
-    query = {"policy_context": NOW, option: {"measure": TEAMS}}
-    _assert_unoffered_hold(_transport_plan(unpublished_teams, transport, query))
+    query = {option: {"measure": TEAMS}}
+    if transport in {"direct", "http"}:
+        with pytest.raises(SemanticLayerError) as caught:
+            _transport_plan(unpublished_teams, transport, query)
+        error = {"code": caught.value.code, "details": caught.value.details}
+    else:
+        response = _transport_plan(unpublished_teams, transport, query)
+        assert response["ok"] is False, response
+        error = response["errors"][0]
+    assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", option)
 
 
 @pytest.mark.parametrize(
-    "request_fields",
-    [
-        {"policy_context": {**NOW, "measure": MEASURE}},
-        {"policy_context": NOW, "debug": {"measure": MEASURE}},
-    ],
-    ids=["policy_context", "debug"],
+    "request_fields", [{"policy_context": {**NOW, "measure": MEASURE}}], ids=["policy_context"]
 )
 def test_request_fields_outside_select_do_not_exempt_a_draft_over_a_governed_measure(
     runtime: Runtime, request_fields: dict[str, Any]
@@ -678,16 +714,9 @@ def test_request_fields_outside_select_do_not_exempt_a_draft_over_a_governed_mea
     ("outside", "code"),
     [
         ({"order_by": [{"field": TEAMS, "direction": "desc"}]}, "VALIDATION_FAILED"),
-        (
-            {"where": [{"field": TEAM_CLASS, "op": "=", "value": {"measure": TEAMS}}]},
-            "VALIDATION_FAILED",
-        ),
-        (
-            {"metric_filters": [{"expression": {"measure": TEAMS}, "op": ">", "value": 0}]},
-            "PLAN_INTENT_COVERAGE_GAP",
-        ),
+        ({"having": [{"field": TEAMS, "op": "gt", "value": 0}]}, "PLAN_INTENT_COVERAGE_GAP"),
     ],
-    ids=["order_by", "where_value", "metric_filters"],
+    ids=["order_by", "having"],
 )
 def test_a_measure_named_only_outside_select_is_never_executable(
     unpublished_teams: Runtime, outside: dict[str, Any], code: str
@@ -705,7 +734,7 @@ def test_mcp_plan_holds_a_strict_unpublished_measure(
 ) -> None:
     plan = SemanticLayerMCPAdapter(unpublished_teams).call_tool(
         "plan",
-        {"intent": "How many teams were created last week?", "query": {"policy_context": NOW}},
+        {"intent": "How many teams were created last week?", "now": NOW["now"]},
     )
     _assert_unoffered_hold(plan)
 
@@ -720,7 +749,7 @@ def test_unpublished_measures_are_removed_from_discover(unpublished_teams: Runti
 def test_explicit_unpublished_measure_and_named_event_metric_keep_their_reference_numbers(
     unpublished_teams: Runtime, explicit: bool
 ) -> None:
-    partial = {"select": [{"as": "teams", "expression": {"measure": TEAMS}}]} if explicit else {}
+    partial = {"select": [{"as": "teams", "expression": TEAMS}]} if explicit else {}
     plan = _plan(
         unpublished_teams,
         "teams last week" if explicit else "new teams last week",
@@ -729,8 +758,7 @@ def test_explicit_unpublished_measure_and_named_event_metric_keep_their_referenc
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
     query = plan["best"]["query_ir"]
-    expression = query["select"][0]["expression"]
-    assert expression.get("measure" if explicit else "metric") == (TEAMS if explicit else NEW_TEAMS)
+    assert _subject(query) == (TEAMS if explicit else NEW_TEAMS)
     with duckdb.connect(":memory:") as connection:
         connection.execute(TEAMS_SEED)
         sql = (
@@ -800,10 +828,10 @@ def test_a_draft_counting_teams_new_teams_leaves_out_is_held(
 @pytest.mark.parametrize(
     ("intent", "synonyms", "expression"),
     [
-        ("new teams last week", False, {"metric": NEW_TEAMS}),
-        ("teams created last week", True, {"metric": NEW_TEAMS}),
+        ("new teams last week", False, NEW_TEAMS),
+        ("teams created last week", True, NEW_TEAMS),
         # The draft filters by the class the metric narrows on.
-        ("How many customer teams were created last week?", False, {"measure": TEAMS}),
+        ("How many customer teams were created last week?", False, TEAMS),
     ],
 )
 def test_a_draft_counting_customer_teams_stays_ready(
@@ -811,15 +839,14 @@ def test_a_draft_counting_customer_teams_stays_ready(
     shape: str,
     intent: str,
     synonyms: bool,
-    expression: dict[str, str],
+    expression: str,
 ) -> None:
     engine = teams[shape, synonyms]
     plan = _plan(engine, intent)
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
     query = plan["best"]["query_ir"]
-    selected = query["select"][0]["expression"]
-    assert {key: value for key, value in selected.items() if key != "aggregation"} == expression
+    assert _subject(query) == expression
     assert _value(engine, query) == _teams_gold(f"{WEEK} AND class = 'customer'") == 3
 
 
@@ -828,7 +855,7 @@ def test_a_caller_selecting_the_team_count_counts_every_team(
     teams: dict[tuple[str, bool], Runtime], shape: str
 ) -> None:
     engine = teams[shape, False]
-    select = [{"as": "teams", "expression": {"measure": TEAMS}}]
+    select = [{"as": "teams", "expression": TEAMS}]
     plan = _plan(engine, "teams created last week", select=select)
     assert plan["status"] == "ok", plan.get("why")
     assert _gaps(plan) == []
@@ -839,7 +866,7 @@ def test_mcp_plan_holds_the_count_of_every_team(teams: dict[tuple[str, bool], Ru
     mcp = SemanticLayerMCPAdapter(teams["event", False])
     plan = mcp.call_tool(
         "plan",
-        {"intent": "How many teams were created last week?", "query": {"policy_context": NOW}},
+        {"intent": "How many teams were created last week?", "now": NOW["now"]},
     )
     assert plan["status"] == "low_confidence", plan.get("why")
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
@@ -1107,7 +1134,7 @@ def test_a_class_on_a_joined_entity_holds_a_draft_over_the_measure_its_metric_na
 
 def test_mcp_plan_holds_a_measure_a_joined_class_narrows(calls: dict[str, Runtime]) -> None:
     plan = SemanticLayerMCPAdapter(calls["all"]).call_tool(
-        "plan", {"intent": "team calls last week", "query": {"policy_context": NOW}}
+        "plan", {"intent": "team calls last week", "now": NOW["now"]}
     )
     assert plan["status"] == "low_confidence", plan.get("why")
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
@@ -1118,22 +1145,21 @@ def test_mcp_plan_holds_a_measure_a_joined_class_narrows(calls: dict[str, Runtim
     ("intent", "expression", "where"),
     [
         # The question names the metric.
-        ("active paying teams last week", {"metric": ACTIVE_PAYING}, "AND class = 'customer'"),
+        ("active paying teams last week", ACTIVE_PAYING, "AND class = 'customer'"),
         # The draft filters by the class the metric narrows on.
-        ("team calls from test teams last week", {"measure": CALLS}, "AND class = 'test'"),
+        ("team calls from test teams last week", CALLS, "AND class = 'test'"),
     ],
 )
 def test_a_draft_that_settles_the_joined_class_stays_ready(
-    calls: dict[str, Runtime], intent: str, expression: dict[str, str], where: str
+    calls: dict[str, Runtime], intent: str, expression: str, where: str
 ) -> None:
     engine = calls["all"]
     plan = _plan(engine, intent)
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
     query = plan["best"]["query_ir"]
-    selected = query["select"][0]["expression"]
-    assert {key: value for key, value in selected.items() if key != "aggregation"} == expression
-    select = "SUM(calls)" if expression.get("measure") == CALLS else "COUNT(DISTINCT team_id)"
+    assert _subject(query) == expression
+    select = "SUM(calls)" if expression == CALLS else "COUNT(DISTINCT team_id)"
     assert _value(engine, query) == _calls_gold(select, where) == (140 if "test" in where else 2)
 
 
@@ -1143,8 +1169,8 @@ def test_a_draft_grouped_by_the_joined_class_stays_ready(calls: dict[str, Runtim
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
     assert query["group_by"] == [TEAM_CLASS]
-    rows = engine.query({**query, "policy_context": NOW})["rows"]
-    alias = query["select"][0]["as"]
+    rows = engine.query(query, now=NOW["now"])["rows"]
+    alias = _alias(query["select"][0])
     with duckdb.connect(":memory:") as connection:
         connection.execute(CALLS_SEED)
         reference = connection.execute(
@@ -1157,7 +1183,7 @@ def test_a_draft_grouped_by_the_joined_class_stays_ready(calls: dict[str, Runtim
 
 def test_a_caller_selecting_the_joined_measure_counts_every_team(calls: dict[str, Runtime]) -> None:
     engine = calls["all"]
-    select = [{"as": "team_calls", "expression": {"measure": CALLS}}]
+    select = [{"as": "team_calls", "expression": CALLS}]
     plan = _plan(engine, "team calls last week", select=select)
     assert plan["status"] == "ok", plan.get("why")
     assert _gaps(plan) == []

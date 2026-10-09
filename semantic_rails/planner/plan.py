@@ -189,7 +189,7 @@ def plan_payload(
     # When the engine refuses a part on its own, the whole question's hold stays.
     with suppress(SemanticLayerError):
         payload = _parts_payload(payload, split, plan_question, detail_level) if split else payload
-    payload = _calls_of_drafts(payload)
+    payload = _calls_of_drafts(payload, runtime._config)
     return _query_detail_payload(payload) if detail_level == "query" else payload
 
 
@@ -230,18 +230,36 @@ def _engine_partial_query(
     }
 
 
-def _calls_of_drafts(payload: Any) -> Any:
+def _calls_of_drafts(payload: Any, config: Any) -> Any:
     """Every draft the plan returns, written as a call."""
     if isinstance(payload, dict):
         return {
-            key: call_from_query(value)
+            key: _plain_measures(call_from_query(value), config)
             if key == "query_ir" and isinstance(value, dict)
-            else _calls_of_drafts(value)
+            else _calls_of_drafts(value, config)
             for key, value in payload.items()
         }
     if isinstance(payload, list):
-        return [_calls_of_drafts(item) for item in payload]
+        return [_calls_of_drafts(item, config) for item in payload]
     return payload
+
+
+def _plain_measures(call: dict[str, Any], config: Any) -> dict[str, Any]:
+    """A measure selected at its own aggregation is its id: the default is never restated."""
+    defaults = {row.id: row.default_aggregation for row in config.measures}
+    select = []
+    for item in call.get("select") or []:
+        expression = item.get("expression") if isinstance(item, dict) else None
+        if (
+            isinstance(expression, dict)
+            and set(expression) == {"kind", "measure", "aggregation"}
+            and expression["kind"] == "measure"
+            and defaults.get(expression["measure"]) == expression["aggregation"]
+        ):
+            ref = expression["measure"]
+            item = ref if item.get("as") == ref.split(".")[-1] else {**item, "expression": ref}
+        select.append(item)
+    return {**call, "select": select} if select else call
 
 
 def _question_payload(

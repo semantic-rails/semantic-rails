@@ -46,6 +46,11 @@ WHERE a.segment = 'internal' OR d <> DATE '2026-09-15';
 """
 
 
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
 def _package(root: Path) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -131,8 +136,8 @@ def _plan(engine: Runtime, intent: str, **partial: Any) -> dict[str, Any]:
 
 
 def _rows(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, float]]:
-    alias = query["select"][0]["as"]
-    rows = engine.query({**query, "policy_context": NOW})["rows"]
+    alias = _alias(query["select"][0])
+    rows = engine.query(query, now=NOW["now"])["rows"]
     return [(str(row[f"{CLOCK}__day"])[:10], row[alias]) for row in rows]
 
 

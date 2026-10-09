@@ -32,9 +32,14 @@ REVENUE = "measure.jaffle.revenue_usd"
 STORE_ID = "dimension.retail_store_id"
 STORE_NAME = "dimension.retail_store_name"
 STORE_LABEL = "dimension.retail_store_label"
-ID_FILTER = {"field": STORE_ID, "op": "IN", "value": ["a", "b", "c"]}
-NAME_FILTER = {"field": STORE_NAME, "op": "IN", "value": ["Central", "Harbor"]}
-JAFFLE_FILTER = {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}
+ID_FILTER = {"field": STORE_ID, "op": "is", "value": ["a", "b", "c"]}
+NAME_FILTER = {"field": STORE_NAME, "op": "is", "value": ["Central", "Harbor"]}
+JAFFLE_FILTER = {"field": STORE, "op": "is", "value": ["Brooklyn", "Philadelphia"]}
+
+
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
 @pytest.fixture()
@@ -321,7 +326,7 @@ def test_declared_name_variants_only_add_holds_against_immediate_base(
 ) -> None:
     _force_fallback(jaffle, monkeypatch, question, path)
     partial = {
-        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "is", "value": ["new", "repeat"]}],
         **({"group_by": group_by} if group_by is not None else {}),
     }
     before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
@@ -375,7 +380,7 @@ def test_boundary_underscore_names_only_add_holds(
     question = f"revenue at {term} and store name level"
     _force_fallback(jaffle, monkeypatch, question, path)
     partial = {
-        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "is", "value": ["new", "repeat"]}],
         **({"group_by": group_by} if group_by is not None else {}),
     }
     before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
@@ -457,7 +462,7 @@ def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
     question = phrasing.format(alias=alias)
     _force_fallback(jaffle, monkeypatch, question, path)
     partial = {
-        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "is", "value": ["new", "repeat"]}],
         **({"group_by": group_by} if group_by is not None else {}),
     }
     after = plan_payload(jaffle, intent=question, partial_query=partial)
@@ -467,7 +472,7 @@ def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
         before = plan_payload(jaffle, intent=question, partial_query=partial)
     assert after["best"] == before["best"]
     query = after["best"]["query_ir"]
-    assert {"field": CUSTOMER_TYPE, "op": "=", "value": "new"} in query["where"]
+    assert {"field": CUSTOMER_TYPE, "op": "is", "value": "new"} in query["where"]
     held = (phrasing, path, group_by and len(group_by)) in _HELD_WITHOUT_IT
     assert before["status"] == ("low_confidence" if held else "ok")
     assert before["status"] == "ok" or after["status"] == before["status"]
@@ -509,17 +514,17 @@ def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
         # A value stated outside every grouping name is the question's own filter.
         (
             "revenue by customer type and store name for new customers",
-            [{"field": CUSTOMER_TYPE, "op": "=", "value": "new"}],
+            [{"field": CUSTOMER_TYPE, "op": "is", "value": "new"}],
         ),
         # A filter that doesn't carry the value, or keeps it out, brings nothing in.
         ("revenue by _new_type and store name", [JAFFLE_FILTER]),
         (
             "revenue by _new_type and store name",
-            [{"field": CUSTOMER_TYPE, "op": "IN", "value": ["repeat"]}],
+            [{"field": CUSTOMER_TYPE, "op": "is", "value": ["repeat"]}],
         ),
         (
             "revenue by _new_type and store name",
-            [{"field": CUSTOMER_TYPE, "op": "!=", "value": "new"}],
+            [{"field": CUSTOMER_TYPE, "op": "not", "value": "new"}],
         ),
     ],
 )
@@ -562,7 +567,7 @@ def test_a_fully_grouped_alias_without_a_value_collision_matches_reference_sql(
     _force_fallback(jaffle, monkeypatch, question, path)
     partial = {
         "group_by": [STORE, CUSTOMER_TYPE],
-        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "is", "value": ["new", "repeat"]}],
     }
     before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
     assert grouping_checks._named_groupings_unmet(
@@ -641,8 +646,8 @@ def test_a_metric_filter_cannot_pin_another_selections_named_grouping(
     _force_fallback(jaffle, monkeypatch, question, path)
     partial = {
         "select": [
-            {"as": "revenue_usd", "expression": {"measure": REVENUE}},
-            {"as": "cohort_revenue", "expression": {"metric": cohort.id}},
+            REVENUE,
+            cohort.id,
         ],
         "group_by": [STORE, CUSTOMER_TYPE] if grouped else [STORE],
         "where": [JAFFLE_FILTER],
@@ -729,7 +734,7 @@ def test_a_named_grouping_without_a_filter_keeps_its_obligation(
         (
             {
                 "group_by": [STORE],
-                "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "=", "value": "repeat"}],
+                "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "is", "value": "repeat"}],
             },
             "SELECT s.store_name, SUM(o.order_total_cents / 100.0) "
             "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
@@ -773,7 +778,7 @@ def test_a_filter_never_stands_in_for_a_dropped_grouping(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, path: str, phrasing: str
 ) -> None:
     question = "revenue " + phrasing.format(noun="customer type")
-    filters = [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}]
+    filters = [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "is", "value": ["new", "repeat"]}]
 
     def force(grouped: bool) -> None:
         draft = RuntimeCompositionDraft(
@@ -865,7 +870,7 @@ def test_a_second_named_term_cannot_be_discharged_by_a_filter(
     query = complete["best"]["query_ir"]
     assert grouping_checks._dropped_grouping_why(retail, question, query) is None
     actual = typed_rows(retail.query(query))
-    alias = query["select"][0]["as"]
+    alias = _alias(query["select"][0])
     assert sorted((row[STORE_ID], row[STORE_NAME], row[alias]) for row in actual) == [
         ("a", "Central", 10),
         ("b", "Central", 25),
@@ -901,7 +906,7 @@ _STORE_CASES = [
     ("revenue by store name", [NAME_FILTER]),
     (
         "revenue by store label",
-        [{"field": STORE_LABEL, "op": "IN", "value": ["East", "West", "South"]}],
+        [{"field": STORE_LABEL, "op": "is", "value": ["East", "West", "South"]}],
     ),
     ("revenue by store", []),
     ("revenue by stores", [ID_FILTER]),
@@ -988,7 +993,7 @@ def test_complete_suffix_list_matches_reference_sql(
 ) -> None:
     partial = {
         "group_by": [STORE, CUSTOMER_TYPE],
-        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "is", "value": ["new", "repeat"]}],
     }
     before, complete = _compare_base(jaffle, monkeypatch, question, partial)
     if "grain" in question:
@@ -1019,7 +1024,7 @@ def test_complete_suffix_list_matches_reference_sql(
 def test_suffix_list_holds_when_either_grouping_is_dropped(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str, missing: str
 ) -> None:
-    filters = [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}]
+    filters = [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "is", "value": ["new", "repeat"]}]
     _, native = _compare_base(jaffle, monkeypatch, question, {"where": filters})
     assert "execute" not in native["next"].get("ready_for", [])
     draft = RuntimeCompositionDraft(
@@ -1080,10 +1085,7 @@ def test_level_in_a_measure_name_asks_for_no_level(
         runtime.close()
 
 
-_BOTH_MEASURES = [
-    {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}},
-    {"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}},
-]
+_BOTH_MEASURES = ["measure.jaffle.revenue_usd", "measure.jaffle.order_count"]
 
 
 @pytest.mark.parametrize(
@@ -1119,9 +1121,9 @@ def test_measure_words_before_a_level_add_no_grouping(
 @pytest.mark.parametrize(
     ("pin", "ready"),
     [
-        ({"op": "=", "value": "new"}, True),
-        ({"op": "IN", "value": ["new"]}, True),
-        ({"op": "IN", "value": ["new", "repeat"]}, False),
+        ({"op": "is", "value": "new"}, True),
+        ({"op": "is", "value": ["new"]}, True),
+        ({"op": "is", "value": ["new", "repeat"]}, False),
     ],
 )
 def test_only_a_one_value_filter_stands_in_for_a_named_grouping(
@@ -1217,7 +1219,8 @@ def _in_memory_rows(
     runtime: Runtime, query: dict[str, Any], dimensions: list[str]
 ) -> list[tuple[Any, ...]]:
     columns, rows = _in_memory(runtime, runtime.compile(query)["rendered_sql"])
-    alias = query["select"][0]["as"]
+    first = query["select"][0]
+    alias = first.split(".")[-1] if isinstance(first, str) else first["as"]
     return [tuple(row[columns.index(item)] for item in [*dimensions, alias]) for row in rows]
 
 

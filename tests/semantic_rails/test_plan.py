@@ -123,9 +123,9 @@ def test_plan_prefers_governed_subject_over_generic_order_count(
     best = payload["best"]
     query = best["query_ir"]
     projected_ids = {
-        expression.get("metric") or expression.get("measure")
+        expression if isinstance(expression, str) else expression["measure"]
         for item in query.get("select", [])
-        for expression in [item.get("expression", {})]
+        for expression in [item if isinstance(item, str) else item["expression"]]
     }
     assert expected_id in projected_ids
     assert expected_id in {row["id"] for row in best["resolved"]}
@@ -185,15 +185,8 @@ def test_plan_rejects_missing_or_non_string_intent(runtime_factory, intent) -> N
 def test_plan_preserves_partial_query_state(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     partial = {
-        "version": 1,
         "group_by": ["dimension.jaffle_store_name"],
-        "where": [
-            {
-                "field": "dimension.jaffle_order_has_food_item",
-                "op": "=",
-                "value": True,
-            }
-        ],
+        "where": [{"field": "dimension.jaffle_order_has_food_item", "op": "is", "value": True}],
     }
     try:
         payload = plan_payload(runtime, intent="revenue", partial_query=partial)
@@ -208,10 +201,12 @@ def test_plan_preserves_partial_query_state(runtime_factory) -> None:
 @pytest.mark.parametrize(
     ("partial", "path"),
     [
-        ({"group_by": [["dimension.jaffle_store_name"]]}, "query.group_by[0]"),
-        ({"group_by": [{"label": "store"}]}, "query.group_by[0]"),
-        ({"group_by": "dimension.jaffle_store_name"}, "query.group_by"),
-        ({"select": {"measure": "measure.jaffle.revenue_usd"}}, "query.select"),
+        ({"group_by": [["dimension.jaffle_store_name"]]}, "group_by[0]"),
+        ({"group_by": [{"label": "store"}]}, "group_by[0]"),
+        # A group_by item is the dimension id itself, never an object naming it.
+        ({"group_by": [{"dimension": "dimension.jaffle_store_name"}]}, "group_by[0]"),
+        ({"group_by": "dimension.jaffle_store_name"}, "group_by"),
+        ({"select": {"measure": "measure.jaffle.revenue_usd"}}, "select"),
     ],
 )
 def test_plan_rejects_a_partial_query_it_cannot_read(runtime_factory, partial, path) -> None:
@@ -226,12 +221,12 @@ def test_plan_rejects_a_partial_query_it_cannot_read(runtime_factory, partial, p
     assert response["ok"] is False
     error = response["errors"][0]
     assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
-    assert error["recovery_hints"][0]["kind"] == "fix_query_shape"
+    assert error["recovery_hints"][0]["code"] == "FIX_QUERY_CALL"
 
 
-def test_plan_reads_a_dimension_object_in_the_partial_group_by(runtime_factory) -> None:
+def test_plan_keeps_the_callers_store_name_grouping(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
-    partial = {"group_by": [{"dimension": "dimension.jaffle_store_name"}]}
+    partial = {"group_by": ["dimension.jaffle_store_name"]}
     try:
         payload = plan_payload(runtime, intent="revenue by store", partial_query=partial)
     finally:
@@ -241,19 +236,21 @@ def test_plan_reads_a_dimension_object_in_the_partial_group_by(runtime_factory) 
     assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_store_name"]
 
 
-REVENUE_SUM = {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
+REVENUE = "measure.jaffle.revenue_usd"
+REVENUE_SUM = {"kind": "measure", "measure": REVENUE, "aggregation": "sum"}
 
 
 @pytest.mark.parametrize(
-    ("caller", "alias"),
+    ("caller", "alias", "shown"),
     [
-        ({"as": "rev", "expression": {"measure": "measure.jaffle.revenue_usd"}}, "rev"),
-        ({"as": "rev", "expression": REVENUE_SUM}, "rev"),
+        ({"as": "rev", "expression": REVENUE}, "rev", None),
+        # The default aggregation restated is the measure itself.
+        ({"as": "rev", "expression": REVENUE_SUM}, "rev", {"as": "rev", "expression": REVENUE}),
         # Without an alias of its own, the caller's item takes the draft's.
-        ({"expression": {"measure": "measure.jaffle.revenue_usd"}}, "revenue_usd"),
+        ({"expression": REVENUE}, "revenue_usd", REVENUE),
     ],
 )
-def test_plan_keeps_a_caller_select_item_once(runtime_factory, caller, alias) -> None:
+def test_plan_keeps_a_caller_select_item_once(runtime_factory, caller, alias, shown) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
@@ -265,8 +262,8 @@ def test_plan_keeps_a_caller_select_item_once(runtime_factory, caller, alias) ->
         runtime.close()
 
     assert payload["status"] == "ok"
-    assert query["select"] == [{**caller, "as": alias}]
-    assert query["order_by"] == [{"field": alias, "direction": "DESC"}]
+    assert query["select"] == [shown or {**caller, "as": alias}]
+    assert query["order_by"] == [{"field": alias, "direction": "desc"}]
     assert sorted(rows[0]) == ["dimension.jaffle_store_id", "dimension.jaffle_store_name", alias]
 
 
@@ -279,16 +276,17 @@ def test_plan_keeps_a_different_computation_beside_the_caller_one(runtime_factor
         )
     finally:
         runtime.close()
-    expressions = [row["expression"] for row in payload["best"]["query_ir"]["select"]]
-    assert expressions == [average["expression"], REVENUE_SUM]
+    select = payload["best"]["query_ir"]["select"]
+    expressions = [row if isinstance(row, str) else row["expression"] for row in select]
+    assert expressions == [average["expression"], REVENUE]
 
 
 def test_plan_demotes_to_low_confidence_on_validation_failure(runtime_factory, monkeypatch) -> None:
     runtime = runtime_factory("jaffle_shop")
     real_validate = runtime.validate
 
-    def _failing_validate(payload):
-        report = dict(real_validate(payload))
+    def _failing_validate(payload, **kwargs):
+        report = dict(real_validate(payload, **kwargs))
         report["ok"] = False
         report["errors"] = [
             {"code": "FABRICATED_FOR_TEST", "message": "synthetic validation failure"}
@@ -313,8 +311,8 @@ def test_plan_caps_why_errors_with_truncation_marker(runtime_factory, monkeypatc
     runtime = runtime_factory("jaffle_shop")
     real_validate = runtime.validate
 
-    def _flood_errors(payload):
-        report = dict(real_validate(payload))
+    def _flood_errors(payload, **kwargs):
+        report = dict(real_validate(payload, **kwargs))
         report["ok"] = False
         report["errors"] = [
             {"code": f"E_{i:02d}", "message": f"synthetic error {i}"} for i in range(10)
@@ -553,7 +551,7 @@ def _qualified_primary(*, target: str, predicate: str, entity: str, group_by: st
 
 def _fallback_row(*, target: str, group_by: str, metric_filters: list[dict] | None = None):
     query = {
-        "select": [{"as": "fallback", "expression": target}],
+        "select": [{"as": "fallback", "expression": {"metric": target}}],
         "group_by": [group_by],
     }
     if metric_filters:
@@ -655,7 +653,8 @@ def test_plan_preserves_period_shift_intent_instead_of_validating_generic_fallba
     query = payload["best"]["query_ir"]
     assert "start" not in query["time"]
     assert any(
-        (item.get("expression") or {}).get("kind") == "prior_period" for item in query["select"]
+        isinstance(item, dict) and item["expression"].get("kind") == "prior_period"
+        for item in query["select"]
     )
 
 
@@ -827,8 +826,8 @@ def test_plan_query_detail_preserves_low_confidence_validation_failure(
     runtime = runtime_factory("jaffle_shop")
     real_validate = runtime.validate
 
-    def _failing_validate(payload):
-        report = dict(real_validate(payload))
+    def _failing_validate(payload, **kwargs):
+        report = dict(real_validate(payload, **kwargs))
         report["ok"] = False
         report["errors"] = [
             {"code": "FABRICATED_FOR_TEST", "message": "synthetic validation failure"}
@@ -886,15 +885,10 @@ def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) ->
 
     assert payload["status"] == "ok"
     query = payload["best"]["query_ir"]
-    assert query["select"] == [
-        {
-            "as": "revenue_usd",
-            "expression": {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"},
-        }
-    ]
+    assert query["select"] == [REVENUE]
     assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
     assert query["where"] == [
-        {"field": "dimension.jaffle_customer_type", "op": "=", "value": "repeat"}
+        {"field": "dimension.jaffle_customer_type", "op": "is", "value": "repeat"}
     ]
     assert payload["best"]["trace"]["intent_slots"]["target"]
 
@@ -912,7 +906,7 @@ def test_plan_structural_precheck_short_circuits(payload, code) -> None:
     from semantic_rails.planner.plan_query import _validate_query
 
     class _NoCallRuntime:
-        def validate(self, payload):  # noqa: ARG002
+        def validate(self, payload, **kwargs):  # noqa: ARG002
             raise AssertionError("structural precheck should have short-circuited")
 
     result = _validate_query(_NoCallRuntime(), payload, None)
@@ -970,8 +964,7 @@ def test_plan_per_dimension_keeps_plain_measure(runtime_factory) -> None:
         runtime.close()
     assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     query = payload["best"]["query_ir"]
-    expressions = [row["expression"] for row in query["select"]]
-    assert expressions == [{"metric": "metric.sales.month_over_month_revenue_growth"}]
+    assert query["select"] == ["metric.sales.month_over_month_revenue_growth"]
     assert not query.get("group_by")
 
 
@@ -991,7 +984,7 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
     assert_plan_held(bucketed, "PLAN_RANKING_PERIOD_AMBIGUOUS")
     assert "time" not in ranked_query
     assert ranked_query["limit"] == 5
-    assert ranked_query["order_by"][0]["direction"] == "DESC"
+    assert ranked_query["order_by"][0]["direction"] == "desc"
     # An explicit grain cue keeps the time bucket.
     assert bucketed["best"]["query_ir"]["time"]["grain"] == "month"
 

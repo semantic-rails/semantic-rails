@@ -7,7 +7,9 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from .. import operators
 from ._base import _object_by_id, _singular
+from .coverage import _filter_word
 from .grouping_checks import _entity_grouping_dimensions, _query_clocks, _reads_grouping, _time_of
 from .groupings import _listed_grouping_terms, _named_run
 from .plan_query import _where_filters
@@ -168,8 +170,7 @@ def _unasked_grouping_why(
     pinned = {
         str(row["field"])
         for row in _where_filters(query)
-        if (row.get("op") == "=" and not isinstance(row.get("value"), (list, tuple, dict)))
-        or (str(row.get("op")).lower() == "in" and isinstance(row.get("value"), list))
+        if operators.keeps_values(_filter_word(row)[0])
     }
     chosen = set(caller.get("group_by") or [])
     clock = _object_by_id(config.temporal_roles, str(time.get("temporal_role") or ""))

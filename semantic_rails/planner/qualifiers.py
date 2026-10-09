@@ -34,7 +34,7 @@ def _product_filter(config: Any, value: str) -> dict[str, Any] | None:
     dim = _dimension_for_value(config, value, terms=["product"])
     if dim is None:
         return None
-    return {"dimension": dim.id, "op": "=", "value": value}
+    return {"field": dim.id, "op": "is", "value": value}
 
 
 def _add_order(query: dict[str, Any]) -> None:

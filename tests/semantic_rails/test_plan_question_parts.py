@@ -166,7 +166,7 @@ def _reference(sql: str) -> float:
 
 def _value(runtime: Runtime, query: dict[str, Any]) -> float:
     [item] = query["select"]
-    [row] = runtime.query({**query, "policy_context": NOW})["rows"]
+    [row] = runtime.query(query, now=NOW["now"])["rows"]
     return row[item["as"]]
 
 

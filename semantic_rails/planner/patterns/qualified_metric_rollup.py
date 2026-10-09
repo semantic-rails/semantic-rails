@@ -285,7 +285,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         }
         if explicit_predicate_grain:
             metric_filter_expr["time_grain"] = explicit_predicate_grain
-        metric_filters.append({"expression": metric_filter_expr, "op": "=", "value": True})
+        metric_filters.append({"expression": metric_filter_expr, "op": "is", "value": True})
 
     expression: dict[str, Any] = {
         "kind": "scoped_aggregate",

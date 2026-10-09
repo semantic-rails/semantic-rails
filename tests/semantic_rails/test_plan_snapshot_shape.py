@@ -60,6 +60,11 @@ DAY_POLICY = {
 }
 
 
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
 def _package(root: Path, *, policies: list[dict[str, Any]], days_only: bool) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -175,8 +180,8 @@ def _balance(column: str, day: str, by: str = "") -> str:
 
 def _answer(runtime: Runtime, plan: dict[str, Any], by: str = "") -> dict[Any, float]:
     query = plan["best"]["query_ir"]
-    alias = query["select"][0]["as"]
-    rows = runtime.query({**query, "policy_context": NOW})["rows"]
+    alias = _alias(query["select"][0])
+    rows = runtime.query(query, now=NOW["now"])["rows"]
     return {(row[by] if by else ()): row[alias] for row in rows}
 
 
@@ -448,7 +453,7 @@ def test_an_unloaded_last_complete_day_returns_no_rows(runtime: Runtime) -> None
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
     assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-05", "2026-10-06")
-    result = runtime.query({**query, "policy_context": later})
+    result = runtime.query(query, now=later["now"])
     assert result["rows"] == []
     assert "EMPTY_RESULT_WINDOW" in {warning["code"] for warning in result["warnings"]}
 

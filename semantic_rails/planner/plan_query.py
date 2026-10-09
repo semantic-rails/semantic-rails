@@ -172,6 +172,8 @@ def _select_key(config: Any, item: Any) -> str:
     expression = item
     if isinstance(item, dict):
         expression = item.get("expression", {k: v for k, v in item.items() if k != "as"})
+    if isinstance(expression, dict) and expression.get("kind", "measure") == "measure":
+        expression = {key: value for key, value in expression.items() if key != "kind"}
     if isinstance(expression, dict) and set(expression) <= {"measure", "aggregation"}:
         measure = next(
             (row for row in config.measures if row.id == expression.get("measure")), None
@@ -256,8 +258,7 @@ def _validate_query(
     now = context.pop("now", None)
     try:
         # The draft validates as the call the plan hands back, read by the same front door.
-        payload = runtime.engine_payload(call_from_query(query), now=now, context=context or None)
-        report = runtime.validate_internal(payload)
+        report = runtime.validate(call_from_query(query), now=now, context=context or None)
     except SemanticLayerError as exc:
         return {
             "ok": False,

@@ -72,7 +72,7 @@ def test_conjoined_store_quarter_answers_with_the_keyed_store(runtime_factory) -
         assert payload["status"] == "ok", payload.get("why")
         query = payload["best"]["query_ir"]
         assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
-        rows = runtime.query({**query, "policy_context": now})["rows"]
+        rows = runtime.query(query, now=now["now"])["rows"]
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
             reference = connection.execute(
                 "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0), "

@@ -46,6 +46,11 @@ ANSWERED_PRIMARY = {
 }
 
 
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
 @pytest.fixture()
 def retail(tmp_path: Path) -> Iterator[Runtime]:
     (tmp_path / "models").mkdir()
@@ -184,7 +189,7 @@ def test_store_attribute_matches_reference_sql_or_withholds_execution(
         dimensions = query.get("group_by", [])
         assert len(dimensions) == 1 and dimensions[0] in STORE_COLUMNS, payload
     assert query.get("group_by") == dimensions, payload
-    alias = query["select"][0]["as"]
+    alias = _alias(query["select"][0])
     columns = [STORE_COLUMNS[dimension] for dimension in dimensions]
     result_columns = list(dimensions)
     if "per month" in intent:
@@ -245,7 +250,7 @@ def test_filtered_store_name_matches_reference_sql_or_withholds_execution(
         query = payload["best"]["query_ir"]
         assert "execute" in payload["next"].get("ready_for", []), payload
         assert query.get("group_by") == [dimension], payload
-        alias = query["select"][0]["as"]
+        alias = _alias(query["select"][0])
         rows = typed_rows(runtime.query(query))
         actual = {row[dimension]: row[alias] for row in rows}
         assert len(actual) == len(rows)
@@ -306,7 +311,7 @@ def test_store_ranking_with_shared_name_matches_reference_sql_or_withholds_execu
             return
         assert "execute" in payload["next"].get("ready_for", []), payload
         query = payload["best"]["query_ir"]
-        alias = query["select"][0]["as"]
+        alias = _alias(query["select"][0])
         actual = [row[alias] for row in typed_rows(runtime.query(query))]
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
@@ -337,7 +342,7 @@ def test_store_answers_by_its_key_and_name_on_both_paths(
         assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
         assert payload["status"] == "ok", payload.get("why")
         assert "execute" in payload["next"]["ready_for"]
-        alias = query["select"][0]["as"]
+        alias = _alias(query["select"][0])
         actual = sorted(
             (row["dimension.jaffle_store_id"], row["dimension.jaffle_store_name"], row[alias])
             for row in typed_rows(runtime.query(query))
@@ -468,8 +473,8 @@ def test_number_of_open_stores_reads_the_last_complete_day(
         assert payload["status"] == "ok", payload.get("why")
         query = payload["best"]["query_ir"]
         assert (query["time"]["start"], query["time"]["end"]) == ("2018-05-01", "2018-05-02")
-        rows = runtime.query({**query, "policy_context": now})["rows"]
-        answer = [row[query["select"][0]["as"]] for row in rows]
+        rows = runtime.query(query, now=now["now"])["rows"]
+        answer = [row[_alias(query["select"][0])] for row in rows]
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
             [(gold,)] = connection.execute(
@@ -506,7 +511,7 @@ def test_named_store_revenue_is_one_combined_monthly_series(
         query = payload["best"]["query_ir"]
         assert not query.get("group_by")
         actual = typed_rows(runtime.query(query))
-        alias = query["select"][0]["as"]
+        alias = _alias(query["select"][0])
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = dict(

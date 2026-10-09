@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator
 from copy import deepcopy
 from typing import Any
 
+from ..errors import SemanticLayerError
 from ..expressions import collect_object_references
 from ..visible_view import pinned_view
 from ._base import RuntimeCompositionDraft
@@ -47,6 +48,16 @@ def _match(question: str, authored: str, query: dict[str, Any]) -> dict[str, Any
     return deepcopy(query)
 
 
+def _engine_example(
+    runtime: Any, query: dict[str, Any], partial: dict[str, Any] | None
+) -> dict[str, Any]:
+    """An authored example call in the engine's form, on the request's clock."""
+    from .plan import _engine_partial_query  # noqa: WPS433
+
+    now = ((partial or {}).get("policy_context") or {}).get("now")
+    return _engine_partial_query(runtime, query, now) or {}
+
+
 def example_plan(
     runtime: Any,
     question: str,
@@ -64,6 +75,15 @@ def example_plan(
     for example_id, entry in runtime._get_package_examples():
         authored, query = entry.get("question"), entry.get("query")
         if not isinstance(authored, str) or not isinstance(query, dict):
+            continue
+        if " ".join(question.casefold().split()) != " ".join(
+            normalize(authored).casefold().split()
+        ):
+            continue
+        try:
+            query = _engine_example(runtime, query, partial)
+        except SemanticLayerError:
+            invalid.append(example_id)
             continue
         values = _references(query)
         if values is None:

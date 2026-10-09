@@ -440,7 +440,9 @@ def _unconsumed_words(
                 for domain, row in labels.get(_plain(item), []):
                     if str(node["field"]) in domain.dimensions:
                         used.update(_plain(" ".join(_value_names(row))).split())
-        for grain in (node.get("grain"), node.get("time_grain")):
+        offset = node.get("offset")
+        shift = offset.get("unit") if isinstance(offset, dict) else None
+        for grain in (node.get("grain"), node.get("time_grain"), shift):
             if grain not in _TIME_UNITS:
                 continue
             # A prior period's grain shifts the clock; it never reads a grouping outside

@@ -6,8 +6,10 @@ import re
 from dataclasses import replace
 from typing import Any
 
+from .. import operators
 from ..errors import SemanticLayerError
 from ._base import _NAME_CONNECTORS, _last_token, _object_by_id, _strip_leading_rank_count
+from .coverage import _filter_word
 from .generators import _grouping_term_matches
 from .groupings import (
     _entity_stand_ins,
@@ -254,11 +256,7 @@ def _pinned_fields(query: dict[str, Any]) -> set[str]:
 
     pinned: set[str] = set()
     for row in _where_filters(query):
-        op, value = str(row.get("op")).lower(), row.get("value")
-        if "field" in row and (
-            (op == "=" and not isinstance(value, (list, tuple, dict, type(None))))
-            or (op == "in" and isinstance(value, list) and len(value) == 1)
-        ):
+        if "field" in row and operators.pinned_value(*_filter_word(row))[0]:
             pinned.add(str(row["field"]))
     return pinned
 
@@ -338,14 +336,8 @@ def _grouping_filter_value_spans(
                 str(row["field"])
                 for row in filters
                 if row.get("field") in domain.dimensions
-                and (
-                    (row.get("op") == "=" and row.get("value") == value.value)
-                    or (
-                        str(row.get("op")).lower() == "in"
-                        and isinstance(row.get("value"), list)
-                        and value.value in row["value"]
-                    )
-                )
+                and operators.keeps_values((word := _filter_word(row))[0])
+                and value.value in operators.values_of(*word)
             ]
             for name in [value.value, value.label, *(value.aliases or [])]:
                 phrase = str(name or "").strip().lower()

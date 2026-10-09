@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import operators
+from ..errors import SemanticLayerError
 from .visibility import visible_dimensions, visible_value_domains
 
 
@@ -103,6 +106,17 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
         },
         "recovery_hints": _unique_hints(gaps),
     }
+
+
+def _filter_word(row: Mapping[str, Any]) -> tuple[str, Any]:
+    """A filter's operator word and canonical value; ``("", value)`` for an unreadable op."""
+
+    try:
+        return operators.normalize_condition(
+            row.get("op", "is"), row.get("value"), path="where", internal=True
+        )
+    except SemanticLayerError:
+        return "", row.get("value")
 
 
 def _time_block(query: dict[str, Any]) -> dict[str, Any]:

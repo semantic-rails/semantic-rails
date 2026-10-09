@@ -30,6 +30,11 @@ INSERT INTO account_day VALUES ('a', '2026-10-04', 99), ('b', '2026-10-04', 500)
 """
 
 
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
 @pytest.fixture()
 def subscriptions(tmp_path: Path):
     files = {
@@ -119,20 +124,8 @@ metrics:
 
 
 def _set_wall_clock(monkeypatch: pytest.MonkeyPatch, moment: datetime) -> None:
-    class MachineDate(date):
-        @classmethod
-        def today(cls) -> date:
-            return cls(moment.year, moment.month, moment.day)
-
-    monkeypatch.setattr("semantic_rails.planner.time_windows.date", MachineDate)
-
-    class MachineDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None) -> datetime:
-            return cls.combine(moment.date(), moment.timetz())
-
-    monkeypatch.setattr("semantic_rails.planner.time_windows.datetime", MachineDatetime)
-    monkeypatch.setattr("semantic_rails.ast.datetime", MachineDatetime)
+    # The server clock is read in one place.
+    monkeypatch.setattr("semantic_rails.clock.current_time", lambda: moment)
 
 
 @pytest.fixture()
@@ -220,7 +213,7 @@ def test_today_executes_where_both_zones_read_the_same_day(local_subscriptions: 
     rows = local_subscriptions.query(query)["rows"]
     gold = _signups(local_subscriptions, "2026-10-05", "2026-10-06")
     assert gold == 1
-    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+    assert sum(row[_alias(query["select"][0])] for row in rows) == gold
 
 
 @pytest.mark.parametrize(
@@ -484,7 +477,7 @@ def _shop_value(runtime: Runtime, plan: dict[str, Any]) -> Any:
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
     [row] = runtime.query(query)["rows"]
-    return row[query["select"][0]["as"]]
+    return row[_alias(query["select"][0])]
 
 
 def _shop_reference(runtime: Runtime, sql: str) -> Any:
@@ -714,7 +707,7 @@ def test_a_returned_relative_window_keeps_the_supplied_clock(
             "AND occurred_at >= DATE '2026-10-04' AND occurred_at < DATE '2026-10-05'"
         ).fetchone()[0]
     assert gold == 2
-    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+    assert sum(row[_alias(query["select"][0])] for row in rows) == gold
     assert not any(
         "range" in (row.get("query_ir") or {}).get("time", {})
         for row in plan.get("alternatives", []) + plan.get("blocked", [])
@@ -842,7 +835,7 @@ def test_an_omitted_caller_bound_keeps_the_drafted_one(
     rows = local_subscriptions.query(query)["rows"]
     gold = _signups(local_subscriptions, "2026-10-04", "2026-10-05")
     assert gold == 2
-    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+    assert sum(row[_alias(query["select"][0])] for row in rows) == gold
 
 
 def test_a_whole_day_caller_window_executes(local_subscriptions: Runtime) -> None:
@@ -859,7 +852,7 @@ def test_a_whole_day_caller_window_executes(local_subscriptions: Runtime) -> Non
     rows = local_subscriptions.query(query)["rows"]
     gold = _signups(local_subscriptions, "2026-10-04", "2026-10-05")
     assert gold == 2
-    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+    assert sum(row[_alias(query["select"][0])] for row in rows) == gold
 
 
 @pytest.mark.parametrize(
@@ -929,7 +922,7 @@ def test_current_windows_use_the_query_clock(
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
     assert (query["time"]["start"], query["time"]["end"]) == (start, end)
-    rows = subscriptions.query({**query, "policy_context": NOW})["rows"]
+    rows = subscriptions.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(":memory:") as connection:
         connection.execute(SEED)
         gold = connection.execute(
@@ -937,7 +930,7 @@ def test_current_windows_use_the_query_clock(
             "WHERE kind = 'signup' AND occurred_at >= ? AND occurred_at < ?",
             [start, end],
         ).fetchone()[0]
-    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+    assert sum(row[_alias(query["select"][0])] for row in rows) == gold
 
 
 # Each as-of cue, with the day it reads a balance on.
@@ -978,14 +971,14 @@ def test_as_of_cues_read_a_balance_on_their_day(
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
     assert (query["time"]["grain"], query["time"]["start"]) == ("day", day)
-    rows = subscriptions.query({**query, "policy_context": NOW})["rows"]
+    rows = subscriptions.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(":memory:") as connection:
         connection.execute(SEED)
         [(gold,)] = connection.execute(
             "SELECT SUM(mrr) FROM account_day WHERE day = ?", [day]
         ).fetchall()
     # The seed has rows for 2026-10-04 only: a day without rows returns none, never another.
-    assert [row[query["select"][0]["as"]] for row in rows] == ([] if gold is None else [gold])
+    assert [row[_alias(query["select"][0])] for row in rows] == ([] if gold is None else [gold])
 
 
 def test_current_before_a_metric_is_an_as_of_cue(subscriptions: Runtime) -> None:

@@ -60,6 +60,11 @@ LAST_WEEK = "{} >= DATE '2026-09-28' AND {} < DATE '2026-10-05'"
 UPGRADED = "How many accounts moved to a bigger plan last week?"
 
 
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
 def _package(
     root: Path,
     *,
@@ -249,9 +254,9 @@ def _plan(engine: Runtime, intent: str, **partial: Any) -> dict[str, Any]:
 
 
 def _value(engine: Runtime, query: dict[str, Any]) -> int:
-    rows = engine.query({**query, "policy_context": NOW})["rows"]
+    rows = engine.query(query, now=NOW["now"])["rows"]
     assert len(rows) == 1, rows
-    return int(rows[0][query["select"][0]["as"]])
+    return int(rows[0][_alias(query["select"][0])])
 
 
 def _selected(plan: dict[str, Any]) -> dict[str, Any]:

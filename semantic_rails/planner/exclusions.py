@@ -27,9 +27,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import operators
 from ..ast import is_child_group
 from ._base import _requested_grouping_spans
-from .coverage import CoverageGap, _is_number
+from .coverage import CoverageGap, _filter_word, _is_number
 from .visibility import visible_value_domains
 
 _MARKER_RE = re.compile(
@@ -506,18 +507,15 @@ def _contains_literal(literals: list[Any] | tuple[Any, ...], canonical: Any) -> 
     return any(type(item) is type(canonical) and item == canonical for item in literals)
 
 
-_KEEPING = frozenset({"=", "==", "IN"})
-
-
 def _keeps(row: Any, field_id: str, canonical: Any) -> bool:
-    """A top-level ``=`` or ``IN`` filter on ``field_id`` that keeps ``canonical``."""
+    """A top-level ``is`` filter on ``field_id`` that keeps ``canonical``."""
 
     if not isinstance(row, dict) or is_child_group(row) or row.get("field") != field_id:
         return False
-    op = " ".join(str(row.get("op") or "=").upper().split())
-    raw = row.get("value")
-    literals = raw if op == "IN" and isinstance(raw, list) else [raw]
-    return op in _KEEPING and _contains_literal(literals, canonical)
+    word, value = _filter_word(row)
+    return operators.keeps_values(word) and _contains_literal(
+        operators.values_of(word, value), canonical
+    )
 
 
 def exclusion_gaps(config: Any, text: str, query: dict[str, Any], window: Any) -> list[CoverageGap]:

@@ -43,6 +43,11 @@ ROLE = "temporal_role.billing_account_day_day"
 STOCK = "stock_as_of_unrealized"
 
 
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
 def _package(root: Path, *, metric: bool, qualifying: bool = False) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +161,7 @@ def _value(runtime: Runtime, plan: dict[str, Any]) -> int:
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
     [row] = runtime.query(query)["rows"]
-    return int(row[query["select"][0]["as"]])
+    return int(row[_alias(query["select"][0])])
 
 
 def _assert_held(plan: dict[str, Any], grain: str | None) -> None:

@@ -334,7 +334,7 @@ def test_a_window_inside_the_list_never_hides_a_later_grouping(
     query = payload["best"]["query_ir"]
     assert query["group_by"] == [INCIDENT_NAME]
     # Run anyway, it would add both incidents into one row.
-    rows = typed_rows(incident.query({**query, "policy_context": {"now": "2026-02-15"}}))
+    rows = typed_rows(incident.query(query, now="2026-02-15"))
     assert [(row[INCIDENT_NAME], row["repair_cost"]) for row in rows] == [("Leak", 30)]
 
 
@@ -345,19 +345,19 @@ def test_a_grouping_after_a_window_keeps_the_window(incident: Runtime, jaffle: R
     query = payload["best"]["query_ir"]
     assert query["group_by"] == [INCIDENT_NAME, INCIDENT_ID]
     assert query["time"]["range"] == {"last": {"unit": "month", "value": 1}}
-    rows = typed_rows(incident.query({**query, "policy_context": {"now": "2026-02-15"}}))
+    rows = typed_rows(incident.query(query, now="2026-02-15"))
     assert [(row[INCIDENT_ID], row[INCIDENT_NAME], row["repair_cost"]) for row in rows] == [
         (1, "Leak", 10),
         (2, "Leak", 20),
     ]
     # The window filters: neither incident was reported in February.
-    assert typed_rows(incident.query({**query, "policy_context": {"now": "2026-03-15"}})) == []
+    assert typed_rows(incident.query(query, now="2026-03-15")) == []
 
     payload = plan_payload(jaffle, intent="revenue by store last month and customer type")
     assert payload["status"] == "ok", payload.get("why")
     query = payload["best"]["query_ir"]
     assert query["group_by"] == [STORE_ID, STORE, CUSTOMER_TYPE]
-    rows = typed_rows(jaffle.query({**query, "policy_context": {"now": "2017-04-15"}}))
+    rows = typed_rows(jaffle.query(query, now="2017-04-15"))
     assert sorted(
         (row[STORE], row[CUSTOMER_TYPE], round(float(row["revenue_usd"]), 2)) for row in rows
     ) == sorted(

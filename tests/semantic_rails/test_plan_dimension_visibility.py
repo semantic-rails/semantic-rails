@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import Any
 
 import duckdb
 import pytest
@@ -22,6 +23,11 @@ from tests.semantic_rails.test_plan_value_lists import (
 from tests.semantic_rails.test_plan_value_lists import (
     _with_districts as _with_metadata_districts,
 )
+
+
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
 def _with_districts(runtime, monkeypatch) -> None:
@@ -94,7 +100,7 @@ def test_hidden_dimension_is_not_selected_or_disclosed(
                 {"id": STORE_DISTRICT, "object_type": "dimension", "label": "Store district"}
             ]
         actual_rows = runtime.query({**query, **(partial or {})})["rows"]
-        alias = query["select"][0]["as"]
+        alias = _alias(query["select"][0])
         actual = {row[STORE_DISTRICT]: row[alias] for row in actual_rows}
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:

@@ -564,7 +564,7 @@ def test_a_ready_answer_equals_its_reference(
             if not isinstance(value, datetime)
         )
 
-    rows = typed_rows(jaffle.query({**payload["best"]["query_ir"], "policy_context": NOW}))
+    rows = typed_rows(jaffle.query(payload["best"]["query_ir"], now=NOW["now"]))
     values = sorted(plain(row.values()) for row in rows)
     assert values == sorted(plain(row) for row in _reference(jaffle, sql))
     assert values
@@ -579,7 +579,7 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
     )
     assert payload["status"] == "ok", payload.get("why")
 
-    rows = typed_rows(jaffle.query({**payload["best"]["query_ir"], "policy_context": NOW}))
+    rows = typed_rows(jaffle.query(payload["best"]["query_ir"], now=NOW["now"]))
     listed = sorted((row[CUSTOMER_ID], row[CUSTOMER_NAME]) for row in rows)
     assert listed == sorted(
         _reference(jaffle, "SELECT customer_id, customer_name FROM jaffle_customer")

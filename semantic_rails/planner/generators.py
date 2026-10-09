@@ -213,7 +213,7 @@ def _normalize_value_filters(
         if excluded:
             normalized = {
                 "field": row["dimension_id"].strip(),
-                "op": "IS DISTINCT FROM",
+                "op": "not",
                 "value": row["value"],
             }
             if normalized not in where:
@@ -246,7 +246,7 @@ def _normalize_value_filters(
                 for before, after in zip(ordered, ordered[1:], strict=False)
             )
         for value in [values] if fold else values:
-            normalized = {"field": field, "op": "in" if fold else "=", "value": value}
+            normalized = {"field": field, "op": "is", "value": value}
             if normalized not in where:
                 where.append(normalized)
     result = dict(query)

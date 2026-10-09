@@ -645,7 +645,7 @@ def test_a_comma_before_a_trailing_clause_keeps_the_original_plan(
         "grain": "month",
         "range": {"last": {"unit": window, "value": 1}},
     }
-    rows = typed_rows(jaffle.query({**query, "policy_context": {"now": "2017-04-15"}}))
+    rows = typed_rows(jaffle.query(query, now="2017-04-15"))
     fields = [*groups, f"{ORDER_TIME}__month"]
     group_sql = "s.store_id, s.store_name, " if groups else ""
     start, end = ("2017-03-01", "2017-04-01") if window == "month" else ("2016-01-01", "2017-01-01")

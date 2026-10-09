@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import operators
 from ..ast import is_child_group
 from ._base import _singular, _tokens
 from .coverage import (
@@ -14,6 +15,7 @@ from .coverage import (
     _catalog_rows,
     _core_text,
     _dict_nodes,
+    _filter_word,
     _plain,
     _referenced_ids,
     _value_phrases,
@@ -22,9 +24,6 @@ from .exclusions import exclusion_regions
 from .time_windows import _time_window
 from .visibility import visible_dimensions
 
-# Filter ops that keep the values they name, and ops that drop them.
-_KEEPING_OPS = frozenset({"=", "==", "IN"})
-_EXCLUDING_OPS = frozenset({"!=", "<>", "NOT IN", "IS DISTINCT FROM"})
 # Everyday words that are also values in some catalogs ("new", "all", "other",
 # "us", "open"). One names its value only next to a word of the value's
 # dimension ("new customers"); otherwise the PLAN_UNMATCHED_TERMS warning,
@@ -328,13 +327,13 @@ def _field_predicates(query: dict[str, Any]) -> dict[str, _FieldConstraints]:
             continue
         name = node["field"]
         entry = out.setdefault(name, _FieldConstraints())
-        op = " ".join(str(node.get("op") or "=").upper().split())
-        literals = _membership_literals(op, node.get("value"))
+        word, value = _filter_word(node)
+        literals = _membership_literals(word, value)
         if literals is None:
             entry.uncertain = True
-        elif op in _KEEPING_OPS:
+        elif operators.keeps_values(word):
             entry.keeping.append(literals)
-        elif op in _EXCLUDING_OPS:
+        elif operators.excludes_values(word):
             entry.dropping.append(literals)
     # A selected expression can have its own where/predicate scope. Its rows
     # are not interchangeable with query-level where rows, so do not union or
@@ -347,14 +346,11 @@ def _field_predicates(query: dict[str, Any]) -> dict[str, _FieldConstraints]:
     return out
 
 
-def _membership_literals(op: str, raw: Any) -> list[Any] | None:
-    """Only exact scalar comparisons and membership ops prove named-value polarity."""
+def _membership_literals(word: str, raw: Any) -> list[Any] | None:
+    """Only ``is`` and ``not`` (one value or a list) prove named-value polarity."""
 
-    if op in {"IN", "NOT IN"}:
-        literals = raw if isinstance(raw, list) else [raw]
-    elif op in (_KEEPING_OPS | _EXCLUDING_OPS) and not isinstance(raw, (list, tuple, dict)):
-        literals = [raw]
-    else:
+    literals = operators.values_of(word, raw)
+    if not literals:
         return None
     if not literals or any(
         item is None or isinstance(item, (list, tuple, dict)) for item in literals
@@ -440,10 +436,10 @@ def _positive_filter_evidence(
                 for row in list(query.get("where") or []):
                     if not isinstance(row, dict) or row.get("field") != dimension:
                         continue
-                    op = " ".join(str(row.get("op") or "=").upper().split())
-                    literals = _membership_literals(op, row.get("value"))
+                    word, raw = _filter_word(row)
+                    literals = _membership_literals(word, raw)
                     if (
-                        op in _KEEPING_OPS
+                        operators.keeps_values(word)
                         and literals
                         and _contains_literal(literals, value.value)
                         and row not in out

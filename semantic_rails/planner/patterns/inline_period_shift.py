@@ -98,10 +98,8 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
                 "as": prior_alias,
                 "expression": {
                     "kind": "prior_period",
-                    "measure": measure.id,
-                    "offset": -1,
-                    "grain": shift_grain,
-                    "aggregation": base_aggregation,
+                    "input": {"measure": measure.id, "aggregation": base_aggregation},
+                    "offset": {"unit": shift_grain, "value": 1},
                 },
             },
         ],
@@ -116,7 +114,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         query=query,
         resolved=[_resolved(measure)],
         rationale=[
-            f"composed inline {shift_grain}-over-{shift_grain} comparison via the prior_period shorthand",
+            f"composed inline {shift_grain}-over-{shift_grain} comparison via a prior_period select",
         ],
         interpreted_intent={
             "pattern": "inline_period_shift",

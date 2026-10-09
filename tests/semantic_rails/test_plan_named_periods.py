@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 from shutil import copytree
+from typing import Any
 
 import duckdb
 import pytest
@@ -23,6 +24,11 @@ INSERT INTO events VALUES (1, 'signup', 'customer', '2026-09-02'),
 CREATE TABLE account_day (account_id VARCHAR, day DATE, mrr DOUBLE);
 INSERT INTO account_day VALUES ('a', '2026-10-04', 99), ('b', '2026-10-04', 500);
 """
+
+
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
 @pytest.fixture(scope="module")
@@ -169,7 +175,7 @@ def test_named_reading_matches_reference_sql(subscriptions, phrase, start, end, 
         gold = connection.execute(reference).fetchone()[0]
     assert gold == expected
     rows = subscriptions.query(query)["rows"]
-    assert sum(row[query["select"][0]["as"]] or 0 for row in rows) == gold
+    assert sum(row[_alias(query["select"][0])] or 0 for row in rows) == gold
     if start is None:
         assert "all time: no start date" in plan["assumptions"]
     elif "2026" not in phrase:
@@ -506,7 +512,7 @@ def test_bounded_reading_matches_shop_reference_sql(
     assert gold == expected
     rows = shop.query(query)["rows"]
     # One bounded window is one row: an empty result can't pass as a zero.
-    assert [row[query["select"][0]["as"]] for row in rows] == [gold]
+    assert [row[_alias(query["select"][0])] for row in rows] == [gold]
     for word in ("ever", "in total", "in  total"):
         if word in intent:
             assert any(intent[start:end] == word for start, end in read.spans)

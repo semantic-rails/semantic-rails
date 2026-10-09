@@ -38,6 +38,11 @@ CREATE OR REPLACE VIEW event_records AS
 """
 
 
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
 def _package(
     root: Path, *, synonyms: bool = False, collision: bool = False, clients: bool = False
 ) -> Path:
@@ -166,8 +171,8 @@ def test_authored_names_answer_reference_sql(tmp_path: Path, question: str, metr
         assert plan["status"] == "ok", plan.get("why")
         query = plan["best"]["query_ir"]
         assert query["select"][0]["expression"] == {"metric": f"metric.shop.{metric}"}
-        rows = runtime.query({**query, "policy_context": NOW})["rows"]
-        values = sorted((row[query["select"][0]["as"]] for row in rows), reverse=True)
+        rows = runtime.query(query, now=NOW["now"])["rows"]
+        values = sorted((row[_alias(query["select"][0])] for row in rows), reverse=True)
         with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
             if metric == "net_new_accounts":
                 sql = """SELECT date_trunc('month', occurred_at),
@@ -296,7 +301,7 @@ def test_apostrophe_value_is_never_answered_as_another_value(tmp_path: Path, que
         assert [(row["field"], row["value"]) for row in query["where"]] == [
             ("dimension.shop_event_client", "Globex's")
         ]
-        rows = runtime.query({**query, "policy_context": NOW})["rows"]
+        rows = runtime.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
         reference = connection.execute(
             """SELECT COUNT(DISTINCT event_id) FROM event_records
@@ -316,7 +321,7 @@ def test_declared_value_with_a_possessive_still_matches(tmp_path: Path):
         assert query["where"] == [
             {"field": "dimension.shop_event_client", "op": "=", "value": "Trader Joe's"}
         ]
-        rows = runtime.query({**query, "policy_context": NOW})["rows"]
+        rows = runtime.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
         reference = connection.execute(
             """SELECT COUNT(DISTINCT event_id) FROM event_records

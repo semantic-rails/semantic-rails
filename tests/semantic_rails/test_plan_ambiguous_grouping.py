@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from dataclasses import replace
+from typing import Any
 
 import duckdb
 import pytest
@@ -26,6 +27,11 @@ JAFFLE_CUSTOMER = "dimension.jaffle_customer_name"
 PRODUCT_TYPE = "dimension.jaffle_product_type"
 ITEM_PRODUCT_TYPE = "dimension.jaffle_item_product_type"
 ITEM_PRODUCT_NAME = "dimension.jaffle_item_product_name"
+
+
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
 @pytest.fixture()
@@ -108,7 +114,7 @@ def shop(tmp_path, request):
 def _rows_match_reference(runtime, query, dimension, reference, expected):
     assert runtime.validate(query)["ok"]
     rows = runtime.query(query)["rows"]
-    alias = query["select"][0]["as"]
+    alias = _alias(query["select"][0])
     actual = {row[dimension]: row[alias] for row in rows}
     runtime.close()
     with duckdb.connect(runtime.db_path, read_only=True) as connection:
@@ -263,7 +269,7 @@ def test_multiple_ambiguous_grouping_options_compose(runtime_factory, tmp_path, 
         assert queries[0]["order_by"] == [kept_sort]
         query = queries[0]
         rows = runtime.query(query)["rows"]
-        alias = query["select"][0]["as"]
+        alias = _alias(query["select"][0])
         actual = sorted((row[chosen_ids[0]], row[chosen_ids[1]], row[alias]) for row in rows)
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
@@ -349,7 +355,7 @@ def test_fallback_draft_without_overlap_keeps_composable_options(runtime_factory
     assert queries[0]["group_by"] == [ITEM_PRODUCT_NAME, JAFFLE_STORE]
     assert runtime.validate(queries[0])["ok"]
     rows = runtime.query(queries[0])["rows"]
-    alias = queries[0]["select"][0]["as"]
+    alias = _alias(queries[0]["select"][0])
     actual = sorted((row[JAFFLE_STORE], row[ITEM_PRODUCT_NAME], row[alias]) for row in rows)
     runtime.close()
     with duckdb.connect(runtime.db_path, read_only=True) as connection:

@@ -1,7 +1,7 @@
 """Every item an exclusion names is read, and every question that excludes values holds.
 
 The planner doesn't answer exclusions yet, whatever the draft carries. An exclusion keeps rows
-with no recorded value, so a hand-written ``IS DISTINCT FROM`` filter is its executable form:
+with no recorded value, as ``not`` does, so a ``not`` filter is its executable form:
 "signups excluding web" counts the store signups and the one with no channel. That form is
 compared with independent DuckDB SQL.
 """
@@ -29,7 +29,7 @@ from tests.semantic_rails.test_plan_accuracy_guard import _draft_plan
 CHANNEL = "dimension.shop_customer_channel"
 CUSTOMER = "dimension.shop_customer_id"
 NOW = {"now": "2024-07-05T06:00:00Z"}
-KEEPS = "IS DISTINCT FROM"
+KEEPS = "not"
 SHOP = Path(__file__).resolve().parents[1] / "integration" / "correctness" / "shop"
 # Seed signups: web 101, 103, 106 (June 25, 2024); store 102, 104, 107 (June 10, 2024);
 # 105 has no channel.
@@ -81,8 +81,13 @@ def _drops(*values: str, op: str = KEEPS) -> list[dict[str, Any]]:
 
 
 def _signups(where: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"select": ["measure.shop.signup_count"], "where": where}
+
+
+def _signups_draft(where: list[dict[str, Any]]) -> dict[str, Any]:
+    """The planner's own draft of ``_signups``."""
     select = [{"as": "signup_count", "expression": {"measure": "measure.shop.signup_count"}}]
-    return {"version": 1, "select": select, "where": where, "policy_context": NOW}
+    return {"select": select, "where": where}
 
 
 def _plan(runtime: Runtime, question: str, where: list[dict[str, Any]] | None = None):
@@ -95,9 +100,10 @@ def _plan(runtime: Runtime, question: str, where: list[dict[str, Any]] | None = 
 def _selected(runtime: Runtime, query: dict[str, Any]) -> tuple[set[int], int]:
     """The customers ``query`` selects, and its total."""
 
-    total = sum(row["signup_count"] for row in runtime.query(query)["rows"])
+    total = sum(row["signup_count"] for row in runtime.query(query, now=NOW["now"])["rows"])
     by_customer = {**query, "group_by": [*query.get("group_by", []), CUSTOMER]}
-    return {row[CUSTOMER] for row in runtime.query(by_customer)["rows"]}, total
+    rows = runtime.query(by_customer, now=NOW["now"])["rows"]
+    return {row[CUSTOMER] for row in rows}, total
 
 
 def _assert_held(payload: dict[str, Any], kind: str = "negation_unrealized") -> None:
@@ -242,7 +248,7 @@ def test_short_and_symbol_names_are_items(tmp_path, monkeypatch, label, question
         payload = _plan(runtime, question, _drops("web"))
         assert payload["best"]["query_ir"]["where"] == _drops("web", "store")
         _assert_held(payload)
-        _draft_plan(monkeypatch, _signups(_drops("web")))
+        _draft_plan(monkeypatch, _signups_draft(_drops("web")))
         _assert_held(_plan(runtime, question))
     finally:
         runtime.close()
@@ -305,7 +311,7 @@ def test_an_unread_list_character_holds(tmp_path, monkeypatch, label, question):
         assert _reference(runtime, BOTH) == {105}
         _assert_held(_plan(runtime, question))
         for where in (_drops("web"), _drops("web", op="!="), _drops("web", "store")):
-            _draft_plan(monkeypatch, _signups(where))
+            _draft_plan(monkeypatch, _signups_draft(where))
             _assert_held(_plan(runtime, question))
     finally:
         runtime.close()
@@ -314,7 +320,7 @@ def test_an_unread_list_character_holds(tmp_path, monkeypatch, label, question):
 @pytest.mark.parametrize("question", ["signups excluding web.", "signups excluding web?"])
 def test_a_question_ending_in_a_mark_holds(shop, monkeypatch, question):
     _assert_held(_plan(shop, question))
-    _draft_plan(monkeypatch, _signups(_drops("web")))
+    _draft_plan(monkeypatch, _signups_draft(_drops("web")))
     _assert_held(_plan(shop, question))
 
 
@@ -330,11 +336,11 @@ def test_a_marker_inside_a_name_holds(tmp_path, monkeypatch, label, quote):
         assert _items(runtime, question) == [("unknown", question)]
         _assert_held(_plan(runtime, question))
         for where in (
-            [*_drops("web"), {"field": CHANNEL, "op": "=", "value": "store"}],
+            [*_drops("web"), {"field": CHANNEL, "op": "is", "value": "store"}],
             _drops("web"),
             _drops("web", "store"),
         ):
-            _draft_plan(monkeypatch, _signups(where))
+            _draft_plan(monkeypatch, _signups_draft(where))
             _assert_held(_plan(runtime, question))
     finally:
         runtime.close()
@@ -349,7 +355,7 @@ def test_a_name_spans_a_separator_only_when_it_contains_it(tmp_path, monkeypatch
         ]
         assert _items(runtime, "signups excluding web mall") == [("value", "web mall")]
         _assert_held(_plan(runtime, "signups excluding web, mall", _drops("web", "store")))
-        _draft_plan(monkeypatch, _signups(_drops("wm")))
+        _draft_plan(monkeypatch, _signups_draft(_drops("wm")))
         _assert_held(_plan(runtime, "signups excluding web, mall"))
     finally:
         runtime.close()
@@ -367,8 +373,8 @@ DRAFTS = {
     "other value": _drops("partner"),
     "other dimension": [{"field": CUSTOMER, "op": KEEPS, "value": "web"}, *_drops("store")],
     "case": _drops("Web", "store"),
-    "reversed": [{"field": CHANNEL, "op": "=", "value": "web"}, *_drops("store")],
-    "kept": [{"field": CHANNEL, "op": "IN", "value": ["partner"]}, *_drops("web", "store")],
+    "reversed": [{"field": CHANNEL, "op": "is", "value": "web"}, *_drops("store")],
+    "kept": [{"field": CHANNEL, "op": "is", "value": ["partner"]}, *_drops("web", "store")],
     "none": [],
     "child scope": [
         *_drops("web"),
@@ -457,7 +463,7 @@ def test_a_partly_dropped_list_holds(tmp_path, monkeypatch, question, second):
         _assert_held(payload)
         _assert_held(_plan(runtime, question, _drops("web", op="!=")))
         # A draft that drops only the first item holds, though it validates.
-        _draft_plan(monkeypatch, _signups(_drops("web")))
+        _draft_plan(monkeypatch, _signups_draft(_drops("web")))
         _assert_held(_plan(runtime, question))
     finally:
         runtime.close()
@@ -515,12 +521,12 @@ def test_an_exclusion_keeps_rows_with_no_recorded_value(tmp_path):
     )
     runtime = _open(tmp_path, _values(), seed)
     try:
-        # A hand-written Query IR with IS DISTINCT FROM runs and keeps the 2 with no channel;
-        # '!=' drops them.
+        # A call with ``not`` runs and keeps the 2 with no channel; '!=' is the same word.
         expected = _reference(runtime, "channel IS DISTINCT FROM 'web'")
         assert len(expected) == 5
         assert _selected(runtime, _signups(_drops("web"))) == (expected, 5)
-        assert runtime.query(_signups(_drops("web", op="!=")))["rows"] == [{"signup_count": 3}]
+        rows = runtime.query(_signups(_drops("web", op="!=")), now=NOW["now"])["rows"]
+        assert rows == [{"signup_count": 5}]
         for op in (KEEPS, "!="):
             _assert_held(_plan(runtime, "signups excluding web", _drops("web", op=op)))
     finally:
@@ -563,10 +569,11 @@ def test_a_value_named_outside_the_exclusion_holds(shop, monkeypatch):
     # Mixed questions aren't read yet: "store" keeps a value beside the exclusion.
     question = "store signups excluding web"
     _assert_held(_plan(shop, question))
-    _draft_plan(monkeypatch, _signups([{"field": CHANNEL, "op": "=", "value": "store"}]))
+    _draft_plan(monkeypatch, _signups_draft([{"field": CHANNEL, "op": "is", "value": "store"}]))
     assert _plan(shop, question)["status"] != "ok"
     _draft_plan(
-        monkeypatch, _signups([*_drops("web"), {"field": CHANNEL, "op": "=", "value": "store"}])
+        monkeypatch,
+        _signups_draft([*_drops("web"), {"field": CHANNEL, "op": "is", "value": "store"}]),
     )
     _assert_held(_plan(shop, question))
 
@@ -642,7 +649,8 @@ def test_held_store_exclusion_drafts_match_reference_sql(runtime_factory, questi
         _assert_held(payload)
         query = payload["best"]["query_ir"]
         assert query["where"] == [{"field": STORE, "op": KEEPS, "value": excluded}]
-        alias = query["select"][0]["as"]
+        first = query["select"][0]
+        alias = first.split(".")[-1] if isinstance(first, str) else first["as"]
         total = sum(row[alias] for row in runtime.query(query)["rows"])
         overall = {key: value for key, value in query.items() if key not in {"time", "order_by"}}
         by_store = {
