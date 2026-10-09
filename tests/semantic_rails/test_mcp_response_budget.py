@@ -14,6 +14,7 @@ from semantic_rails.mcp import (
     MCP_MIN_RESULT_CHARS,
     SemanticLayerMCPAdapter,
     json_text,
+    list_tool_definitions,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.mcp_session import MCPQuerySession
@@ -369,3 +370,27 @@ def test_unsupported_expression_reports_received_kind_and_request_path(
     assert f"unknown kind '{kind}'" in issue["message"] and path in issue["message"]
     assert len(issue["recovery_hints"]) == 1
     assert "docs/" not in json_text(result) and "schemas/" not in json_text(result)
+
+
+# tools/list was 12,728 bytes with the prose summary of the old query shapes; execute now
+# embeds the call's generated schema once. The budget is that size plus 5% and may only shrink.
+TOOLS_LIST_MAX_BYTES = 24_909  # 23,723 * 1.05
+
+
+def test_tools_list_fits_its_byte_budget() -> None:
+    assert len(json_text({"tools": list_tool_definitions()})) <= TOOLS_LIST_MAX_BYTES
+
+
+# discover is most of an agent's tokens. Its default responses on the jaffle package, without
+# the per-call request_id and timing; a budget may only shrink.
+DISCOVER_MAX_BYTES = {"revenue by store": 5_114, "": 9_353}
+
+
+@pytest.mark.parametrize("terms", sorted(DISCOVER_MAX_BYTES))
+def test_default_discover_fits_its_byte_budget(
+    jaffle_adapter: SemanticLayerMCPAdapter, terms: str
+) -> None:
+    response = jaffle_adapter.call_tool("discover", {"terms": terms})
+    assert response["ok"], response
+    measured = {k: v for k, v in response.items() if k not in {"request_id", "timing_ms"}}
+    assert len(json_text(measured)) <= DISCOVER_MAX_BYTES[terms]
