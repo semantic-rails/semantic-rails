@@ -187,7 +187,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         text="message owner",
         texts="entity_values references",
         identity="id",
-        typed="time config",
+        typed="time",
     ),
     AggregateRelationConfig: _classes(
         "id relation source_entity measures dimensions temporal_role grain entity_grain "
