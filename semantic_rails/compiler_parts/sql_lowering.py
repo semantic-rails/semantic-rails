@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .. import operators
 from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
 from ..acceleration.selection import recombine_aggregation
 from ..ast import (
@@ -171,6 +172,7 @@ from .paths import (
     _resolve_dimension_expr,
     inner_lookups,
     rollup_held_lookups,
+    unknown_as_null,
 )
 from .post_aggregation import _compile_post_expr, _expr_requires_dense_series, _namespace_sql_select
 from .predicate import (
@@ -999,7 +1001,7 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
 
 
 def _validate_metric_predicate_filter_envelope(item: dict[str, Any]) -> None:
-    if str(item.get("op", "is")).strip() in {"is", "="} and item.get("value") is True:
+    if operators.word_of(item.get("op", "is")) == "is" and item.get("value") is True:
         return
     raise SemanticLayerError(
         "INVALID_METRIC_FILTER",
@@ -1470,7 +1472,8 @@ def _distribution_select(
             raise SemanticLayerError(
                 "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
                 "A distribution's per-entity grouping cannot inherit this contextual predicate. "
-                "Use over: all_time or a where filter.",
+                "Use over: all_time or window (scope_mode: entity_only in a package metric), "
+                "or a where filter.",
             )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
@@ -2884,7 +2887,7 @@ def _source_rollup_leaf_select(
             source_relation_override=measure_source_override,
         )
         if dim.entity == measure.entity:
-            preagg_fields[dim_id] = _column_ref(source_table, dim.column)
+            preagg_fields[dim_id] = unknown_as_null(_column_ref(source_table, dim.column), dim)
             local_group_aliases.append(dim_id)
         elif direct is not None:
             preagg_fields[dim_id] = direct[0]

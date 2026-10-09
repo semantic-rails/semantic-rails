@@ -1588,7 +1588,7 @@ def test_sql_spellings_with_no_filter_word_are_refused_before_hop_analysis(
     error = _refusal(package, _where(op, "beverage"))
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"] == "where[0].op"
-    assert error["details"]["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
+    assert error["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
 
 
 def test_positive_null_and_boolean_tests_mean_exists(package: Path) -> None:

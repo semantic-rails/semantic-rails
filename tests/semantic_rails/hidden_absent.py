@@ -333,18 +333,30 @@ def leaks(
     )
 
 
+def _caller(request: dict[str, Any], context: Mapping[str, Any] | None = None) -> Any:
+    """The request without the caller's identity, and that identity as a transport resolves it.
+
+    Tests name the caller with a ``policy_context`` key for brevity; it travels as credentials
+    (``request_context`` / ``context``), never in the request, which would be refused.
+    """
+    request = dict(request)
+    identity = context if context is not None else request.pop("policy_context", None)
+    return request, context_from_policy_context(identity) if identity is not None else None
+
+
 def mcp_call(runtime: Runtime, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    return SemanticLayerMCPAdapter(runtime).call_tool(tool, arguments)
+    arguments, caller = _caller(arguments)
+    return SemanticLayerMCPAdapter(runtime).call_tool(tool, arguments, request_context=caller)
 
 
 def http_call(
     runtime: Runtime, route: str, body: dict[str, Any], context: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
+    body, caller = _caller(body, context)
     service = SemanticHTTPService(runtime)
     try:
-        response, status = service.handle("POST", route, body)
+        response, status = service.handle("POST", route, body, context=caller)
     except SemanticLayerError as exc:
-        caller = context_from_policy_context(context or body.get("policy_context") or {})
         response, status = service.exception_payload(exc, stage="http", context=caller)
     return {**response, "http_status": status}
 

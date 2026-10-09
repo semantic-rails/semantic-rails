@@ -44,6 +44,8 @@ OPERATORS: dict[str, Operator] = {
 }
 WORDS: tuple[str, ...] = tuple(OPERATORS)
 RANGE_WORDS = frozenset({"gt", "gte", "lt", "lte"})
+# A comparison of two known values (an aggregate against a computed threshold), in SQL.
+COMPARISON_SQL = {"is": "=", "not": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
 
 # SQL spellings a caller may send; each takes its word's meaning (``!=`` keeps unknowns).
 ALIASES: dict[str, str] = {
@@ -120,6 +122,12 @@ def operator_word(raw: Any, *, path: str = "where.op") -> str:
     if spelling in ALIASES:
         return ALIASES[spelling]
     raise invalid_op(raw, path)
+
+
+def word_of(raw: Any) -> str:
+    """The word for an op the parser already read (a word or an alias); other text as it is."""
+    spelling = _compact(raw)
+    return ALIASES.get(spelling, spelling)
 
 
 def _invalid_value(path: str, message: str, hint: str) -> SemanticLayerError:
@@ -241,12 +249,45 @@ def exact_complement(word: str, value: Any) -> tuple[str, Any] | None:
 
 def pinned_value(op: str, value: Any) -> tuple[bool, Any]:
     """``(True, v)`` when the condition pins the field to the single value ``v``."""
-    word = ALIASES.get(_compact(op), _compact(op))
+    word = word_of(op)
     if word == "is" and not isinstance(value, (list, tuple)):
         return True, value
     if word == "is" and isinstance(value, (list, tuple)) and len(value) == 1:
         return True, value[0]
     return False, None
+
+
+# The word a known value fails ``word`` by: ``x op v`` is false exactly where this is true.
+_NEGATION = {"is": "not", "not": "is", "gt": "lte", "gte": "lt", "lt": "gte", "lte": "gt"}
+
+
+def negation(word: str) -> str:
+    """The comparison a known value meets when it fails ``word`` (a threshold's other side)."""
+    return _NEGATION[word]
+
+
+def holds(word: str, value: Any, known: Any) -> bool:
+    """Whether the known number ``known`` meets the comparison; numbers compare only with
+    numbers, and an engine-built membership over no values is false (``is``) or true (``not``)."""
+
+    def number(item: Any) -> bool:
+        return isinstance(item, (int, float)) and not isinstance(item, bool)
+
+    if word in {"is", "not"}:
+        values = values_of(word, value)
+        if not values:
+            return word == "not"
+        if not all(number(item) for item in values):
+            return False
+        return (known in values) == (word == "is")
+    if word in RANGE_WORDS and number(value):
+        return {
+            "gt": known > value,
+            "gte": known >= value,
+            "lt": known < value,
+            "lte": known <= value,
+        }[word]
+    return False
 
 
 def keeps_values(word: str) -> bool:

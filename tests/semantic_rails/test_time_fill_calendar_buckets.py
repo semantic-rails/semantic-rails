@@ -17,13 +17,14 @@ from semantic_rails.compiler_parts.sql_lowering import _calendar_fill_binding
 from semantic_rails.config import load_package_config
 from semantic_rails.db import Database, DuckDBAdapter
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SeedSpec
 
 ROOT = Path(__file__).resolve().parents[2] / "configs/semantic_rails/jaffle_shop"
 ROLE = "temporal_role.jaffle_order_time"
-ORDERS = {"expression": {"measure": "measure.jaffle.order_count"}, "as": "value"}
+ORDERS = {"expression": "measure.jaffle.order_count", "as": "value"}
 CALENDAR = "entity.jaffle_time"
 
 
@@ -78,18 +79,24 @@ def calendar_runtime(request):
         runtime.close()
 
 
+def _compile(config, query):
+    return compile_query(config, Registry(config), read_call(query, config=config)[0])
+
+
 def _query_buckets(runtime, *, bounded=True, wide=False, revenue=False, grain="week", window=None):
-    time = {"temporal_role": ROLE, "grain": grain, "fill": True}
+    # A named window answers every bucket in it; an open one is filled.
+    time = {"temporal_role": ROLE, "grain": grain}
     if window:
         time.update(start=window[0], end=window[1])
     elif bounded:
         time.update(
             start="2024-04-29" if wide else "2024-05-06", end="2024-06-03" if wide else "2024-05-20"
         )
-    select = {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "value"}
+    else:
+        time["fill"] = True
+    select = {"expression": "measure.jaffle.revenue_usd", "as": "value"}
     rows = runtime.query({"select": [select if revenue else ORDERS], "time": time})["rows"]
-    alias = f"{ROLE}__{grain}"
-    return [(datetime.fromisoformat(str(row[alias])).date(), row["value"]) for row in rows]
+    return [(datetime.fromisoformat(str(row["period"])).date(), row["value"]) for row in rows]
 
 
 def _reference(adapter, *, first="2024-05-06", last="2024-05-13", revenue=False):
@@ -189,7 +196,7 @@ def test_fill_preserves_observed_zero_and_absent_coverage(calendar_runtime, reve
 def test_an_authored_default_calendar_never_binds_the_fill():
     config = load_package_config(str(ROOT))
     query = {"select": [ORDERS], "time": {"temporal_role": ROLE, "grain": "week"}}
-    plan = compile_query(config, Registry(config), query)["logical_plan"]
+    plan = _compile(config, query)["logical_plan"]
     for bounds, day in (({}, None), ({"start": "2024-05-06", "end": "2024-05-20"}, "date_day")):
         filled = replace(plan, time={**plan.time, **bounds, "fill": True})
         assert _calendar_fill_binding(filled, config) == ("implicit_calendar", "bucket", day)
@@ -210,36 +217,21 @@ WINDOW = {"start": "2017-02-01", "end": "2017-08-01"}
 
 
 @pytest.mark.parametrize(
-    ("bound", "time", "shape"),
+    ("time", "shape"),
     [
-        (False, {"grain": "quarter", "calendar_id": "fiscal", "fill": True}, {}),
-        (False, {"grain": "quarter", "calendar_id": "fiscal", "fill": False}, {}),
-        (False, {"grain": "week", "calendar_id": "Fiscal", "fill": True, **WINDOW}, {}),
-        (False, {"calendar_id": "fiscal", **WINDOW}, {}),
-        (False, {"grain": "quarter", "calendar_id": "fiscal", "fill": True}, ENTITY_IN_TERMS_OF),
-        (False, {"grain": "quarter", "calendar_id": "fiscal"}, ENTITY_IN_TERMS_OF),
-        (True, {"grain": "quarter", "fill": False}, {}),
-        (True, {"grain": "week", "fill": True, **WINDOW}, {}),
-        (True, {"grain": "quarter", "calendar_id": "default"}, ENTITY_IN_TERMS_OF),
+        ({"grain": "quarter", "fill": True}, {}),
+        ({"grain": "quarter", "fill": False}, {}),
+        ({"grain": "week", **WINDOW}, {}),
+        ({"grain": "quarter", "fill": True}, ENTITY_IN_TERMS_OF),
+        ({"grain": "quarter"}, ENTITY_IN_TERMS_OF),
     ],
-    ids=[
-        "fiscal-filled",
-        "fiscal-unfilled",
-        "fiscal-mixed-case",
-        "fiscal-no-grain",
-        "fiscal-entity-in-terms-of-filled",
-        "fiscal-entity-in-terms-of",
-        "bound-unfilled",
-        "bound-filled",
-        "bound-entity-in-terms-of",
-    ],
+    ids=["filled", "unfilled", "window", "entity-in-terms-of-filled", "entity-in-terms-of"],
 )
-def test_a_non_default_calendar_refuses_on_every_leaf_path(bound, time, shape):
-    config = load_package_config(str(ROOT))
-    config = _bound_to_fiscal(config) if bound else config
-    query = {"version": 1, "select": [ORDERS], "time": {"temporal_role": ROLE, **time}, **shape}
+def test_a_non_default_calendar_refuses_on_every_leaf_path(time, shape):
+    config = _bound_to_fiscal(load_package_config(str(ROOT)))
+    query = {"select": [ORDERS], "time": {"temporal_role": ROLE, **time}, **shape}
     with pytest.raises(SemanticLayerError) as refused:
-        compile_query(config, Registry(config), query)  # compiles no SQL, so none runs
+        _compile(config, query)  # compiles no SQL, so none runs
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     assert refused.value.details["reason"] == "calendar_not_supported_yet"
@@ -247,28 +239,34 @@ def test_a_non_default_calendar_refuses_on_every_leaf_path(bound, time, shape):
     assert "fiscal calendars return in a later release" in str(refused.value)
 
 
+def test_a_calendar_named_in_the_call_is_refused():
+    """The clock's own calendar applies; a call cannot name another one."""
+    config = load_package_config(str(ROOT))
+    query = {"select": [ORDERS], "time": {"temporal_role": ROLE, "grain": "quarter"}}
+    query["time"]["calendar_id"] = "fiscal"
+    with pytest.raises(SemanticLayerError) as refused:
+        _compile(config, query)
+    assert refused.value.code == "INVALID_QUERY"
+    assert refused.value.details["path"] == "time.calendar_id"
+
+
 def test_a_bound_clock_without_a_grain_does_not_bucket():
     config = _bound_to_fiscal(load_package_config(str(ROOT)))
     query = {"select": [ORDERS], "time": {"temporal_role": ROLE, **WINDOW}}
 
-    assert compile_query(config, Registry(config), query)["sql"]
+    assert _compile(config, query)["sql"]
 
 
-@pytest.mark.parametrize("bypass", ["calendar_id", "bound_clock"])
-def test_lowering_refuses_a_plan_that_skipped_validation(bypass):
+def test_lowering_refuses_a_plan_that_skipped_validation():
     config = load_package_config(str(ROOT))
     query = {
         "select": [ORDERS],
         "time": {"temporal_role": ROLE, "grain": "quarter", "fill": True},
     }
-    plan = compile_query(config, Registry(config), query)["logical_plan"]
+    plan = _compile(config, query)["logical_plan"]
     assert lower_to_sql(plan, config)  # the default plan lowers
-    if bypass == "calendar_id":
-        plan = replace(plan, time={**plan.time, "calendar_id": "fiscal"})
-    else:
-        config = _bound_to_fiscal(config)
     with pytest.raises(SemanticLayerError) as refused:
-        lower_to_sql(plan, config)
+        lower_to_sql(plan, _bound_to_fiscal(config))
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     assert refused.value.details["reason"] == "calendar_not_supported_yet"

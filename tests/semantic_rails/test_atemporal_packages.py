@@ -248,7 +248,7 @@ def test_every_time_request_refuses_with_the_same_error(runtime, operation, quer
 def test_time_outside_the_call_is_refused_with_its_path(runtime, query, path) -> None:
     error = runtime.validate(query)["errors"][0]
     assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
-    assert error["details"]["recovery_hints"][0]["message"]
+    assert error["recovery_hints"][0]["message"]
 
 
 def test_nested_authored_time_expression_cannot_bypass_guard(runtime) -> None:

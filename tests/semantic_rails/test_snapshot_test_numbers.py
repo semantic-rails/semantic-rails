@@ -146,7 +146,7 @@ def test_metric_equivalence_uses_each_response_column_types(
     runtime = runtime_factory("jaffle_shop")
     decimal = Decimal("0.1") if expected in (0.1, "0.1") else Decimal("1")
     responses = iter([result_rows([{"v": decimal}]), result_rows([{"v": expected}])])
-    monkeypatch.setattr(runtime, "query", lambda query: next(responses))
+    monkeypatch.setattr(runtime, "query", lambda query, **_arguments: next(responses))
     try:
         report = _run_test(runtime, "equivalent", {"kind": "metric_equals_query"})
         assert report["ok"] is (not isinstance(expected, str))

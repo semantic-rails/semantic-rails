@@ -346,7 +346,9 @@ def _expr_summary(config: PackageConfig, expr: SemanticExpr) -> str:
     if isinstance(expr, PeriodToDateExpr):
         return f"{expr.period} to date {_expr_summary(config, expr.input)}"
     if isinstance(expr, MetricPredicateExpr):
-        scope = "contextual" if expr.scope_mode == "contextual" else "entity-only"
+        scope = {"contextual": "contextual", "entity_period": "per period"}.get(
+            expr.scope_mode, "entity-only"
+        )
         if expr.time_grain:
             return f"{_expr_summary(config, expr.input)} {expr.op} {expr.value} ({scope}, {expr.time_grain})"
         return f"{_expr_summary(config, expr.input)} {expr.op} {expr.value} ({scope})"
@@ -807,7 +809,7 @@ def _predicate_metadata(
     partial_query = dict(partial_query or {})
     context_entities: list[str] = []
     effective_grain = predicate.time_grain or (
-        "inherit" if predicate.scope_mode == "contextual" else ""
+        "inherit" if predicate.scope_mode in {"contextual", "entity_period"} else ""
     )
     if predicate.scope_mode == "contextual" and partial_query:
         try:
