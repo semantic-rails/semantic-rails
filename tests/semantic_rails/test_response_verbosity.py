@@ -41,10 +41,11 @@ _COMPACT_DROPPED_KEYS = (
 )
 
 
-_MINIMAL_NONEXECUTE_KEYS = frozenset({"ok", "errors", "warnings"})
-_MINIMAL_COMPILE_KEYS = frozenset({"ok", "errors", "warnings", "rendered_sql"})
+# An assumption (here, that a governed metric filters order_count) survives every verbosity.
+_MINIMAL_NONEXECUTE_KEYS = frozenset({"ok", "errors", "warnings", "assumptions"})
+_MINIMAL_COMPILE_KEYS = frozenset({"ok", "errors", "warnings", "rendered_sql", "assumptions"})
 _MINIMAL_EXECUTE_KEYS = frozenset(
-    {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
+    {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings", "assumptions"}
 )
 
 

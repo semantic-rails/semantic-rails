@@ -14,6 +14,9 @@ absent package might find another one. The test computes those pairs from the pa
 route resolution. A query whose unrestricted binding reads a hidden entity or relationship must
 refuse; an inspect of an object on such a pair, and a plan while any exists, may differ from the
 absent package (still naming nothing hidden).
+
+A measure that a hidden metric governs is never answered as a raw number: a query reading it
+raw must refuse, and a plan while any such measure exists may differ (still naming nothing).
 """
 
 from __future__ import annotations
@@ -25,7 +28,9 @@ from dataclasses import replace
 from typing import Any
 
 from semantic_rails.compiler import bind_metadata_objects, bind_query
+from semantic_rails.compiler_parts.bind import select_measure_reads
 from semantic_rails.config import load_package_config
+from semantic_rails.config_parts.measure_governance import governing_metrics
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr
 from semantic_rails.fanout import package_route
@@ -249,6 +254,20 @@ def _reads_hidden_graph(base: PackageConfig, request: Any, hidden: set[str]) -> 
         return False
 
 
+def _governed_by_hidden(base: PackageConfig, request: Any, hidden: set[str]) -> bool:
+    """Whether a query reads raw a measure that a hidden metric governs."""
+    if not isinstance(request, dict) or "select" not in request:
+        return False
+    try:
+        select = read_call(request, config=base)[0]["select"]
+    except SemanticLayerError:
+        return False
+    return any(
+        {row.id for row in governing_metrics(base, str(node["measure"]))} & hidden
+        for node in select_measure_reads(select)
+    )
+
+
 def _with_default_metric(config: PackageConfig) -> PackageConfig:
     metric = MetricConfig(
         id="metric.jaffle.order_count",
@@ -292,9 +311,20 @@ def assert_hidden_responses(package, target):
     exceptions = {
         label for label, _, named in requests if _reads_hidden_graph(config, named, hidden)
     }
+    exceptions |= {
+        label for label, _, named in requests if _governed_by_hidden(config, named, hidden)
+    }
     routed = _hidden_routed(config, hidden)
+    withheld = any(
+        {row.id for row in governing_metrics(config, measure.id)} & hidden
+        for measure in config.measures
+        if measure.id not in hidden
+    )
     rerouted = {
-        label for label, _, named in requests if _route_dependent(config, label, named, routed)
+        label
+        for label, _, named in requests
+        if _route_dependent(config, label, named, routed)
+        or (withheld and label.startswith("mcp plan"))
     }
     failures: list[str] = []
     for action in ACTIONS:

@@ -43,7 +43,9 @@ def test_default_order_is_time_then_authored_groups(
             compile_query(config, None, _query(fill=fill, groups=groups, limit=3))
         return
     compiled = compile_query(config, None, _query(fill=fill, groups=groups, limit=3))
-    expected = [TIME, *groups, "orders"]
+    # The default order already holds every group_by column and the period: a limit adds no
+    # tie-breaker, and never a measure.
+    expected = [TIME, *groups]
     assert [(o.expression.parts, o.direction) for o in compiled["sql_ast"].order_by] == [
         ([alias], "ASC") for alias in expected
     ]
@@ -54,9 +56,7 @@ def test_default_order_is_time_then_authored_groups(
     quote = "`" if warehouse in {"bigquery", "databricks"} else '"'
     order_sql = compiled["sql"].rsplit("\nORDER BY\n", 1)[1].split("\nLIMIT ", 1)[0]
     assert order_sql == ",\n".join(
-        [f"  {TIME} ASC"]
-        + [f"  {quote}{aliases.get(alias, alias)}{quote} ASC" for alias in groups]
-        + ["  orders ASC NULLS LAST"]
+        [f"  {TIME} ASC"] + [f"  {quote}{aliases.get(alias, alias)}{quote} ASC" for alias in groups]
     )
 
 
@@ -212,7 +212,8 @@ def test_nested_query_preserves_only_explicit_order(package_config_factory, expl
         query["order_by"] = [{"field": "time", "direction": "DESC"}]
     select = _compile_query_sql_ast(config, query)
     assert select.limit == 3
-    assert [o.direction for o in select.order_by] == (["DESC", "ASC"] if explicit else [])
+    # The period is the only group key and is ordered already: no tie-breaker follows.
+    assert [o.direction for o in select.order_by] == (["DESC"] if explicit else [])
     if explicit:
         assert select.order_by[-1].nulls_last
 
