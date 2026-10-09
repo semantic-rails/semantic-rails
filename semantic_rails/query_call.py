@@ -12,6 +12,7 @@ options (``max_rows``, ``verbosity``, ...) are arguments beside the call.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -238,7 +239,9 @@ def read_call(
     )
     _check_top_level(payload)
     group_by = _group_by(payload.get("group_by"))
-    select = _select(payload.get("select"), group_by, context)
+    raw_time = payload.get("time")
+    timed = isinstance(raw_time, Mapping) and bool(raw_time.get("grain"))
+    select = _select(payload.get("select"), group_by, context, timed=timed)
     internal: dict[str, Any] = {"select": select, "group_by": group_by}
     where, entity_having = _where(payload.get("where"), context, payload)
     internal["where"] = where
@@ -329,12 +332,15 @@ def _reference(raw: str, path: str) -> dict[str, Any]:
     )
 
 
-def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[str, Any]]:
+def _select(
+    raw: Any, group_by: list[str], context: CallContext, *, timed: bool = False
+) -> list[dict[str, Any]]:
     if raw is None:
         return []
     if not isinstance(raw, list):
         raise refusal("select", "is a list", fix='Write ["metric.<id>", ...].')
     out: list[dict[str, Any]] = []
+    sources: list[tuple[str, Any]] = []
     for index, item in enumerate(raw):
         path = f"select[{index}]"
         if isinstance(item, str) and item.strip().startswith("dimension."):
@@ -354,6 +360,7 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
         if isinstance(item, str):
             expression = _reference(item, path)
             out.append({"expression": expression, "as": item.strip().split(".")[-1]})
+            sources.append((path, item))
             continue
         if not isinstance(item, Mapping):
             raise refusal(path, "is an id string or {expression, as}", fix='Write "metric.<id>".')
@@ -364,23 +371,50 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
         alias = item.get("as")
         if alias is not None and (not isinstance(alias, str) or not alias.strip()):
             raise refusal(f"{path}.as", "is a non-empty string", fix="Name the output column.")
-        if alias is None:
-            alias = (
-                str(item["expression"]).strip().split(".")[-1]
-                if isinstance(item["expression"], str)
-                else (
-                    str(expression["measure"]).split(".")[-1]
-                    if expression.get("kind") == "measure"
-                    else ""
-                )
-            )
+        if alias is None and isinstance(item["expression"], str):
+            alias = str(item["expression"]).strip().split(".")[-1]
+        # A kind expression without ``as`` gets the engine's generated name.
         row: dict[str, Any] = {"expression": expression}
         if alias:
             row["as"] = alias.strip()
         out.append(row)
+        sources.append((path, item))
     for index, row in enumerate(out):
         row.setdefault("as", f"expr_{index + 1}")
+    _refuse_duplicate_columns(out, sources, group_by, timed)
     return out
+
+
+def _refuse_duplicate_columns(
+    select: list[dict[str, Any]], sources: list[tuple[str, Any]], group_by: list[str], timed: bool
+) -> None:
+    """Every answer column is named once: a select item that repeats a name gets its own ``as``."""
+    taken = {TIME_AXIS: "time", f"{TIME_AXIS}_partial": "time"} if timed else {}
+    for index, dimension in enumerate(group_by):
+        if dimension in taken:
+            raise refusal(
+                f"group_by[{index}]",
+                f"repeats '{dimension}'",
+                fix=f"Remove group_by[{index}].",
+                code="DUPLICATE_OUTPUT_ALIAS",
+                alias=dimension,
+            )
+        taken[dimension] = f"group_by[{index}]"
+    for row, (path, item) in zip(select, sources, strict=True):
+        alias = row["as"]
+        if alias in taken:
+            expression = item if isinstance(item, str) else item.get("expression")
+            unique = next(
+                f"{alias}_{n}" for n in range(2, len(taken) + 3) if f"{alias}_{n}" not in taken
+            )
+            raise refusal(
+                path,
+                f"its column '{alias}' is already named by {taken[alias]}",
+                fix=f'Name it with "as": {json.dumps({"expression": expression, "as": unique})}.',
+                code="DUPLICATE_OUTPUT_ALIAS",
+                alias=alias,
+            )
+        taken[alias] = path
 
 
 _KINDLESS_FIX = 'A reference is the id string itself, e.g. "metric.<id>" or "measure.<id>".'

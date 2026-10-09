@@ -489,7 +489,7 @@ def recovery_hints_for_error(
         return [
             {
                 "kind": "rename_output",
-                "message": "Rename projected outputs so each result column is unique.",
+                "message": f'Give the repeated select item its own name with "as" ({alias!r} is taken).',
                 "alias": alias,
             }
         ]
