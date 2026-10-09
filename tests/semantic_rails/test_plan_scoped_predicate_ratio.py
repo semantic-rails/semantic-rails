@@ -73,7 +73,6 @@ def runtime(tmp_path: Path):
               warehouse: duckdb
               default_db: data/plan.duckdb
               seed: {kind: sql_script, source: data/seed.sql}
-              schema_strict: true
             """
         )
     )

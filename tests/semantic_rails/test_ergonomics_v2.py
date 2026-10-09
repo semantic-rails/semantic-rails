@@ -26,7 +26,6 @@ def _write_demo_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": package_dir.name,
                 "namespace": "demo",
                 "name": "Demo",

@@ -67,7 +67,6 @@ def _write_package(
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": package_dir.name,
                 "name": package_dir.name,
                 "description": f"{package_dir.name} demo package",

@@ -31,7 +31,6 @@ def _write_minimal_package(
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "operational_demo",
                 "name": "operational_demo",
                 "description": "Operational metadata demo",
@@ -130,7 +129,6 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "recursive_demo",
                 "name": "recursive_demo",
                 "description": "Recursive loader demo",
@@ -453,7 +451,6 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "snowflake_loader_demo",
                 "name": "snowflake_loader_demo",
                 "description": "Snowflake loader demo",

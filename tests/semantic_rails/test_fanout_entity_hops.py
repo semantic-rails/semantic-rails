@@ -78,7 +78,7 @@ CREATE TABLE order_payments AS SELECT * FROM (VALUES (1, 1, 'card'), (2, 2, 'cas
 PACKAGE = """
 schema_version: 1
 package: {id: hop, namespace: hop, warehouse: duckdb, default_db: data/warehouse.duckdb,
-  seed: {kind: sql_script, source: data/seed.sql}, schema_strict: true}
+  seed: {kind: sql_script, source: data/seed.sql}}
 """
 MODELS = {
     "orders": """

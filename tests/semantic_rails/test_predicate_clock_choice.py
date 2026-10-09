@@ -99,7 +99,6 @@ def warehouse(tmp_path):
                 "warehouse": "duckdb",
                 "default_db": "clocks.duckdb",
                 "seed": {"kind": "external"},
-                "schema_strict": True,
             },
         },
         "graph.yml": {

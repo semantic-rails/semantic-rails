@@ -728,7 +728,6 @@ def _small_package(tmp_path, entities, relationships, seed):
                     "warehouse": "duckdb",
                     "default_db": "data/test.duckdb",
                     "seed": {"kind": "sql_script", "source": "data/seed.sql"},
-                    "schema_strict": True,
                 },
                 "defaults": {"dimension": {"groupable": True, "filterable": True}},
             }

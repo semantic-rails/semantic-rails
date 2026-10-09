@@ -54,7 +54,6 @@ def _write_operational_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "operational_demo",
                 "name": "operational_demo",
                 "description": "Operational metadata demo",
@@ -168,7 +167,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "generic_planning_demo",
                 "name": "generic_planning_demo",
                 "description": "Generic planning scoring demo",

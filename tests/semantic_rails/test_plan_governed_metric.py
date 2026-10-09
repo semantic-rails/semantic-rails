@@ -1002,8 +1002,7 @@ def _calls_package(
     put("package.yml", {
         "schema_version": 1,
         "package": {"id": "org", "namespace": "org", "name": "org", "description": "Team calls",
-                    "warehouse": "duckdb", "default_db": "org.duckdb", "seed": {"kind": "external"},
-                    "schema_strict": True},
+                    "warehouse": "duckdb", "default_db": "org.duckdb", "seed": {"kind": "external"}},
         "defaults": {"time": {"timezone": "UTC"}},
     })  # fmt: skip
     put("graph.yml", {"graph": {"entities": {

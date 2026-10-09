@@ -28,7 +28,6 @@ def _write_variant_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "variant_demo",
                 "name": "variant_demo",
                 "description": "Physical variant routing demo",
@@ -313,7 +312,6 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
                 "warehouse": "duckdb",
                 "default_db": "x.duckdb",
                 "seed": {"kind": "external"},
-                "schema_strict": True,
             },
             "defaults": {"time": {"timezone": "UTC"}},
         },

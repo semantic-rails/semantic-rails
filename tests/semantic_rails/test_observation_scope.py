@@ -61,8 +61,7 @@ def _package(root: Path, defaults: dict[str, Any]) -> Path:
     put("package.yml", {
         "schema_version": 1,
         "package": {"id": "obs", "namespace": "obs", "name": "obs", "description": "Observation",
-                    "warehouse": "duckdb", "default_db": "obs.duckdb", "seed": {"kind": "external"},
-                    "schema_strict": True},
+                    "warehouse": "duckdb", "default_db": "obs.duckdb", "seed": {"kind": "external"}},
         "defaults": {"time": {"timezone": "UTC"}, **defaults},
     })  # fmt: skip
     put("graph.yml", {"graph": {"entities": {

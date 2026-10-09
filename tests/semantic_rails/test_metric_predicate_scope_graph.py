@@ -155,7 +155,6 @@ def _write_package_header(
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": package_id,
                 "name": package_id,
                 "description": f"{package_id} predicate scope demo",

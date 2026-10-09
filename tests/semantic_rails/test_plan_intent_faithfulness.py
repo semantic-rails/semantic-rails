@@ -195,7 +195,7 @@ def trailing_window_runtime(tmp_path_factory):
     (package / "package.yml").write_text(
         "schema_version: 1\npackage: {id: f4win, namespace: f4win, name: f4win, "
         "warehouse: duckdb, default_db: data/f4win.duckdb, seed: {kind: external}, "
-        "schema_strict: true, environments: [development]}\n"
+        "environments: [development]}\n"
     )
     (package / "graph.yml").write_text(
         "graph:\n  entities:\n    repo_snapshot: {key: [repo, snapshot_date], "
