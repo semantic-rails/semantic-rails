@@ -206,9 +206,14 @@ write tests and examples as files under `tests/` and `examples/`, not in a root
 `tests.yml` or `examples.yml`. A name that starts with `_` or `.` stays ignored.
 
 The loader doesn't follow directory symlinks, so loading refuses one anywhere in the
-package (a `policies -> ../shared/policies` link, a symlinked `models/` or
-`models/core/`) unless its root name starts with `_` or `.`. Copy the directory or link
-its files instead: a file symlink is read like any other file.
+package that could hide package input (a `policies -> ../shared/policies` link, a symlinked
+`models/` or `models/core/`) unless its root name starts with `_` or `.`. A link could hide
+input when it is or sits under `models/`, `relations/`, `metrics/`, `segments/`,
+`examples/` or `tests/`, or when its target holds a `.yml` or `.yaml` file, a directory
+symlink or a directory it can't read. Copy the directory or link its files instead: a file
+symlink is read like any other file. A link to a folder of data files only, such as
+`data -> ../shared/data` holding the warehouse file or seeds, loads, and Architect writes
+and `semantic-rails project upgrade` leave it in place.
 
 Each block and each object is read from one place. Loading refuses a block declared
 both in `package.yml` and in its own file (a `defaults:` block beside `defaults.yml`),
@@ -686,11 +691,11 @@ and `action`, even when empty. Each kind also accepts only:
 
 Unknown keys, nested `config:`, and `visibility`, `rule`, or `description` aliases
 are refused with `INVALID_CONFIG`, including policies built in Python. Use
-`semantic-rails project upgrade` to preview the `policy-flat` alias rewrite and
-`policy-redact-deny` action rewrite. These refused legacy forms currently report
-`unverified`, so `--write` refuses them. Nested scope or identity fields, disagreeing
-alias values, and action rewrites that would change release labels are stops with
-no choices. Nested row filters remain refused and need a flat row authored by hand. Action text is trimmed and lowercased;
+`semantic-rails project upgrade` to rewrite them: the `policy-flat` alias rewrite and
+the `policy-redact-deny` action rewrite are `certified` rules for forms this engine
+refuses, so `--write` applies them with the package's other legacy forms. Nested scope or
+identity fields, disagreeing alias values, and action rewrites that would change release
+labels are stops with no choices. Nested row filters remain refused and need a flat row authored by hand. Action text is trimmed and lowercased;
 kind names must match exactly.
 
 - **`package_release`** — labels the package's release status. `label`
@@ -1480,7 +1485,10 @@ check below but still sums). Give the snapshot time `class: as_of_time`.
 
 `plan` reads such a balance on one day of that clock: the last complete day when a question
 names none ("What's our MRR?"), or the closing day of the period it names ("at the end of last
-month"); see "How plan reads a balance" in [MCP_INTERFACE.md](MCP_INTERFACE.md#plan). To have
+month"); see "How plan reads a balance" in [MCP_INTERFACE.md](MCP_INTERFACE.md#plan). A metric
+that wraps a stock (`COALESCE(<filtered last_value>, 0)`, arithmetic over it, a scoped
+aggregate) is answered only for complete days: `plan` holds a draft of it that reads today, or
+an open window, with `stock_as_of_unrealized`. To have
 every query read a balance per day, declare a `metric_constraint` on the stock with
 `required_group_by: [<the clock's date dimension>]` (and `supported_grains: [day]` on the
 clock if weeks or months are never meaningful). `plan` then adds that grouping to its drafts,
@@ -2882,7 +2890,10 @@ Every rewrite is proven or certified, and the report gives each rule's tier:
   baseline. A write refuses
   any `unverified` rule with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"` and `details.rule`; nothing
-  is written.
+  is written. When no baseline loads, the refusal and `next_actions` give the load error in
+  `details.difference.load_error`, and `details.rule` names the first other rule whose rewrite
+  would make the package load (it rewrites a refused form it can't certify; report it), or is
+  `null` when no rule covers the error.
 - The upgrade never picks a join route. Pairs left ambiguous appear in `next_actions`, to record as
   `graph.path_preferences` rows; examples that don't compile appear there with their codes.
 

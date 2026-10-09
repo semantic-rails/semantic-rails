@@ -48,7 +48,13 @@ from .operational import (
     normalize_operational_payload,
     validate_operational_payload,
 )
-from .package_snapshot import CapturedSource, LoadedPackageSnapshot, load_package_snapshot
+from .package_snapshot import (
+    PACKAGE_SOURCE_DIRS,
+    CapturedSource,
+    LoadedPackageSnapshot,
+    links_package_input,
+    load_package_snapshot,
+)
 from .policy_rules import policy_action
 from .row_filters import validate_row_filters
 from .schema import (
@@ -508,15 +514,16 @@ _BLOCK_FILES = (
 # loader's files and object directories, and the examples and tests the package tools run.
 _PACKAGE_ROOT_FILES = frozenset({"package.yml", *(name for name, _ in _BLOCK_FILES)})
 _OBJECT_DIRS = ("models", "relations", "metrics", "segments")
-_PACKAGE_ROOT_DIRS = frozenset({*_OBJECT_DIRS, "examples", "tests"})
+_PACKAGE_ROOT_DIRS = PACKAGE_SOURCE_DIRS
 
 
 def _unread_root_errors(
     path: str, contents: dict[str, bytes] | None, links: tuple[str, ...] = ()
 ) -> list[str]:
     """One error per root YAML file, and per root directory holding YAML, that nothing reads,
-    and per directory symlink, which nothing follows. Root names starting with ``_`` or ``.``
-    are left alone. ``links`` are the captured directory symlinks, relative to ``path``."""
+    and per directory symlink that could hide package input, which nothing follows. Root names
+    starting with ``_`` or ``.`` are left alone. ``links`` are the captured directory symlinks,
+    relative to ``path``."""
     if contents is not None:
         sources = [os.path.relpath(name, path) for name in contents]
     else:
@@ -529,6 +536,7 @@ def _unread_root_errors(
                 os.path.relpath(os.path.join(root, name), path)
                 for name in dirnames
                 if os.path.islink(os.path.join(root, name))
+                and links_package_input(path, os.path.relpath(os.path.join(root, name), path))
             )
             sources.extend(os.path.relpath(os.path.join(root, name), path) for name in filenames)
         links = tuple(found)

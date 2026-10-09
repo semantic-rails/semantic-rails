@@ -5,6 +5,7 @@ the value, so the package behaved differently from what it says.
 """
 
 import asyncio
+import os
 from pathlib import Path
 
 import duckdb
@@ -521,6 +522,8 @@ _LINKED_POLICY = {"day.yml": {"semantic_policies": [_POLICY]}}
         pytest.param("models", {}, id="models-directory"),
         pytest.param("models/core", {}, id="model-subdirectory"),
         pytest.param("examples", {"orders.yml": {"examples": {}}}, id="examples-directory"),
+        pytest.param("data", {"raw/notes.yaml": {"note": "kept"}}, id="data-holding-yaml"),
+        pytest.param("data", {"Orders.YML": {"note": "kept"}}, id="data-holding-upper-yaml"),
     ],
 )
 def test_directory_symlink_is_refused_not_followed(tmp_path, link, files):
@@ -539,6 +542,60 @@ def test_directory_symlink_is_refused_not_followed(tmp_path, link, files):
     with pytest.raises(SemanticLayerError) as refused:
         Runtime.from_path(str(package))
     assert refused.value.details["errors"] == [expected]
+
+
+@pytest.mark.parametrize(
+    "nested",
+    [
+        "directory-link",
+        pytest.param(
+            "unreadable",
+            marks=pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory"),
+        ),
+    ],
+)
+def test_data_symlink_whose_contents_are_unknown_is_refused(tmp_path, nested):
+    package = _linked_directory(tmp_path, "data", {})
+    target = tmp_path / "outside" / "data"
+    target.mkdir(parents=True)
+    if nested == "directory-link":
+        (tmp_path / "shared").mkdir()
+        (target / "shared").symlink_to(tmp_path / "shared", target_is_directory=True)
+    else:
+        (target / "locked").mkdir(mode=0)
+    try:
+        with pytest.raises(SemanticLayerError) as refused:
+            Runtime.from_path(str(package))
+    finally:
+        if nested == "unreadable":
+            (target / "locked").chmod(0o700)
+    assert refused.value.details["errors"] == [
+        f"{package / 'data'} is a directory symlink — the loader does not follow it, so this "
+        "would silently change behavior; copy or link the files instead"
+    ]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        pytest.param({}, id="empty"),
+        pytest.param({"orders.csv": "id\n1\n"}, id="data-files"),
+        pytest.param({"raw/2026/orders.parquet": "", "README.md": "Seeds.\n"}, id="nested-data"),
+    ],
+)
+def test_directory_symlink_to_data_files_loads(tmp_path, files):
+    """A link to a folder of data files hides no package input, so loading allows it."""
+    package = _linked_directory(tmp_path, "data", {})
+    (tmp_path / "outside" / "data").mkdir(parents=True)
+    for name, text in files.items():
+        path = tmp_path / "outside" / "data" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _merge_package_dir(str(package))
+    captured = capture_package_source(package)
+    assert captured.directory_links == ()
+    _merge_package_dir(str(package), captured=captured)
+    Runtime.from_path(str(package)).close()
 
 
 def test_directory_symlink_starting_with_underscore_stays_ignored(tmp_path):

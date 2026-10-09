@@ -736,8 +736,10 @@ counts it as asked; any other required field, or one hidden from the caller, kee
 ago"), or asks for by week, month, quarter or year where the clock or a constraint reads it per
 day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of_unrealized`
 gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
-weeks are allowed), a stock on an event clock, a ratio, or a balance beside a flow keep the
-holds above, and a window in `query.time` is used as passed: a day-grain balance window is read
+weeks are allowed), a stock on an event clock, a ratio, a balance beside a flow, or a metric
+that wraps a balance (`COALESCE(<filtered balance>, 0)`, arithmetic over one, a scoped
+aggregate) keep the holds above, and a window in `query.time` is used as passed: a day-grain
+balance window is read
 only when both bounds are whole days and it ends on or before the last complete day;
 otherwise `stock_as_of_unrealized`.
 **How plan answers by, each and top N.** A term that names an entity by its label or a synonym

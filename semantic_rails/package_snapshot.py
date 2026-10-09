@@ -22,10 +22,29 @@ from .schema import PackageConfig, require_boolean_mnpi_package
 
 _SOURCE_SUFFIXES = (".yml", ".yaml", ".json", ".toml")
 _SOURCE_EXCLUDED_DIRS = {".git", ".pytest_cache", ".uv-cache", "__pycache__", ".compiled"}
+# The package directories the loader and the package tools read YAML from.
+PACKAGE_SOURCE_DIRS = frozenset({"models", "relations", "metrics", "segments", "examples", "tests"})
+
+
+def links_package_input(root: str, link: str) -> bool:
+    """Whether the directory symlink ``link`` (relative to ``root``), which nothing follows,
+    could hide package input: it is or sits under a directory the package reads, or its tree
+    holds a YAML file, a directory symlink or a directory it can't read. A link to a folder of
+    data files hides none."""
+    if Path(link).parts[0] in PACKAGE_SOURCE_DIRS:
+        return True
+    unreadable: list[OSError] = []
+    for parent, dirnames, filenames in os.walk(os.path.join(root, link), onerror=unreadable.append):
+        if any(name.lower().endswith((".yml", ".yaml")) for name in filenames) or any(
+            os.path.islink(os.path.join(parent, name)) for name in dirnames
+        ):
+            return True
+    return bool(unreadable)
 
 
 def _source_files(path: str, links: list[str] | None = None) -> list[str]:
-    """The source files under ``path``; directory symlinks the walk skips go into ``links``."""
+    """The source files under ``path``; directory symlinks the walk skips that could hide
+    package input go into ``links``."""
     if os.path.isfile(path):
         # Single-file packages execute sibling examples/tests just like directory
         # packages. Bind those inputs too, without absorbing unrelated packages.
@@ -49,6 +68,7 @@ def _source_files(path: str, links: list[str] | None = None) -> list[str]:
                 os.path.join(root, name)
                 for name in dirs
                 if os.path.islink(os.path.join(root, name))
+                and links_package_input(path, os.path.relpath(os.path.join(root, name), path))
             )
         files.extend(os.path.join(root, name) for name in names if name.endswith(_SOURCE_SUFFIXES))
     return sorted(files)
@@ -59,7 +79,8 @@ class CapturedSource:
     source_path: str
     is_directory: bool
     files: tuple[tuple[str, bytes], ...] = field(repr=False)
-    # Directory symlinks inside a directory package, relative to it; the walk never follows them.
+    # Directory symlinks inside a directory package that could hide package input, relative to
+    # it; the walk never follows them.
     directory_links: tuple[str, ...] = ()
 
     @property
