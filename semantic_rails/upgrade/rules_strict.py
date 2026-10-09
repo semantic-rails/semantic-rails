@@ -403,7 +403,19 @@ def _loaded(files: PackageFiles) -> tuple[dict[tuple[str, str], Any], set[str]]:
         str(files.source), files.directory, tuple(sorted(files.contents.items()))
     )
     try:
-        normalized = normalize_package(_load_package_source(str(files.source), captured=captured))
+        authored = _load_package_source(str(files.source), captured=captured)
+        defaults = _mapping(authored.get("defaults"))
+        for row in (
+            _mapping(defaults.get("measure")),
+            *(
+                _mapping(measure)
+                for model in _mapping(authored.get("models")).values()
+                for measure in _mapping(_mapping(model).get("measures")).values()
+            ),
+        ):
+            if "time" in row and not row.get("times"):  # the clock a legacy measure read
+                row["times"] = row.pop("time")
+        normalized = normalize_package(authored)
         config = _parse_package(deepcopy(normalized), path=str(files.source))
     except Exception:  # noqa: BLE001 - each finding stops instead
         return {}, set()
@@ -581,5 +593,6 @@ RULES = (
         "same_meaning",
         "Write a measure's clock as times: [<role>] instead of time:.",
         _measure_times,
+        refused=True,
     ),
 )

@@ -1040,8 +1040,8 @@ The graph is the canonical source for entity identity. It declares the entities
 the package exposes, their key column names, and any non-default relationships
 between them.
 
-Each graph entity must have a key, declared on the entity or through its own
-model's `keys.primary:`. An explicit graph model binding makes that
+Each graph entity must have a key: `key:` on the entity, or the `expr:` of its entry
+in its own model's `entities:` block. An explicit graph model binding makes that
 entity the model's primary entity, regardless of the order of its `entities:` block. A
 conflicting resolved `entity:` fails with `INVALID_CONFIG` naming both entities,
 including for implicit bindings and bindings by model name. A
@@ -1219,6 +1219,9 @@ model:
       value_type: count
 ```
 
+Freshness metadata (`freshness_source`, `freshness_sla_seconds`, `freshness_as_of`) is
+declared on the model, or on one of its physical variants, never on its graph entity.
+
 ### `model.entities:` — explicit declaration of exposed entities
 
 Required on every model. Lists which entities the model exposes. Defaults bind to
@@ -1238,10 +1241,9 @@ The **primary entity** of a model is the entity whose `graph.entities.<x>.model:
 names the model (the jaffle and tpch packages author it this way), and the model's rows
 are keyed by that entity's canonical key, or its `expr:` override.
 
-Without an explicit graph model binding, the loader resolves the primary from an
-authored `entity:` beside the `entities:` block, then an entity listed in the
-model's `entities:` block whose name matches the model and which has no explicit
-graph binding. It back-fills implicit graph bindings from the resolved identity.
+Without an explicit graph model binding, the loader resolves the primary from the
+entity listed in the model's `entities:` block whose name matches the model and which
+has no explicit graph binding. It back-fills implicit graph bindings from the resolved identity.
 Declaration order never selects the primary; loading fails with `INVALID_CONFIG`
 if it cannot be resolved or two graph entities bind to one model. Two models
 claiming the same unbound graph entity also fail with `INVALID_CONFIG` naming both
@@ -1840,6 +1842,10 @@ metrics:
     value_type: currency
 ```
 
+`as:` works the same way on graph entities and relationships, dimensions, times,
+measures, metrics and segments; `id:` on any of them is refused. A model's `id:` stays its
+identity in a `model:` file.
+
 `as:` does not cross namespaces — single-package authoring only. The validator
 rejects `as:` whose namespace doesn't match `package.namespace` and warns when
 `as:` produces an ID identical to the auto-derived one (use is unnecessary).
@@ -1864,12 +1870,17 @@ form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
 |---|---|---|
 | `package.schema_strict` (either value) | Delete it: one set of rules applies to every package | `package-schema-strict` |
 | A measure `publish:` mapping (`publish: {id: ..., label: ...}`) | Author the metric under `metrics:`; a measure never publishes one of its own name. `publish: false` still marks an [unoffered measure](#building-block-measures). A measure with no `publish:` key or with `publish: true` no longer publishes its metric either, and the upgrade can't detect it: [author those metrics by hand](#metrics-a-measure-published-implicitly) | `measure-auto-publish` |
-| `id:` on a graph entity, dimension or measure | The key derives the id; `as:` only to keep a public id | `object-as` |
+| `id:` on a graph entity or relationship, dimension, time, measure, metric or segment | The key derives the id; `as:` only to keep a public id | `object-as` |
+| A measure's `time:` | `times: [<role>]` | `measure-times` |
+| A measure's `aggregation:` (never read) | `default_agg:` | |
+| A dimension's `valid_values:` | `domain:` | |
+| `freshness_source`, `freshness_sla_seconds` or `freshness_as_of` on a graph entity | The same keys on the entity's model | |
+| `from_` or `label` in a measure's `validity_windows` or `external_discontinuities` row | `from`; `semantics` (validity window) or `what` (discontinuity) | |
 | A model `grain:` | The bound entity's key keys the model's rows; rows finer than an entity are an [entity of their own](#graphyml) | `model-grain` |
-| A singular `entity:` without `entities:`; `keys.foreign:`; `keys.primary:` beside `entities:` | List the model's entities under `entities:` | `model-primary-key` |
+| A model's singular `entity:` or `keys:` (a fact model keeps `keys.primary:`, its row key) | Bind the model with `graph.entities.<x>.model` and list its entities under `entities:` | `model-primary-key` |
 | A model `joins:` block | One `graph.relationships` row per join | `model-joins` |
 | A model `id:` that differs from its key in a `models:` map | Delete it: the key is the model's id | |
-| `topics:` on a dimension, measure, metric or segment; `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) | |
+| `topics:` on any object (model, graph entity, dimension, time, measure, metric or segment); `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) | |
 | A measure without `kind:` | `kind: aggregate`, `entity_count` or `lookup` | |
 | A metric with an absent, null or blank `value_type:` | Declare it; `number` is valid when intentional | |
 | `relations:` in a directory package's `package.yml` | `relations.yml` or `relations/` | |
@@ -2513,7 +2524,7 @@ between daily, weekly, and monthly rollups, then override only the differences.
 ## Default-time cascade
 
 A model's default `times:` entry (the one with `default: true`) cascades to its
-measures. Measures only need an explicit `time:` field when they override the
+measures. Measures only need an explicit `times:` list when they override the
 model default:
 
 ```yaml
@@ -2526,12 +2537,12 @@ model:
   measures:
     order_count:
       kind: entity_count
-      entity_key: order_id     # inherits time: ordered_at
+      entity_key: order_id     # inherits ordered_at
     refund_amount:
       kind: aggregate
       expr: refund_usd
       default_agg: sum
-      time: refund_recognized_time   # explicit override
+      times: [refund_recognized_time]   # explicit override
 ```
 
 Metrics do NOT inherit a model's default time — they remain explicit because

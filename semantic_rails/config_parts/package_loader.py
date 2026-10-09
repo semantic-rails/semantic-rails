@@ -130,13 +130,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             models[model_id] = model
             continue
         if model_id in bound_entities:
-            authored_entity = str(model.get("entity", "") or "").strip()
-            if authored_entity and authored_entity != bound_entities[model_id]:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"model '{model_id}' declares entity '{authored_entity}' but is explicitly "
-                    f"bound to graph entity '{bound_entities[model_id]}'",
-                )
             model["entity"] = bound_entities[model_id]
         entities_block_raw = model.get("entities")
         if not isinstance(entities_block_raw, dict):
@@ -189,16 +182,12 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
 
         # Translate to canonical singular-entity shape.
         model.setdefault("entity", primary_entity)
-        keys = dict(model.get("keys", {}) or {})
-        if "primary" not in keys:
-            keys["primary"] = list(
+        keys: dict[str, Any] = {
+            "primary": list(
                 effective_cols.get(primary_entity) or _canonical_key_for(primary_entity)
             )
-        foreign = dict(keys.get("foreign", {}) or {})
-        for ent_name, cols in effective_cols.items():
-            if ent_name == primary_entity:
-                continue
-            foreign.setdefault(ent_name, list(cols))
+        }
+        foreign = {name: cols for name, cols in effective_cols.items() if name != primary_entity}
         if foreign:
             keys["foreign"] = foreign
         model["keys"] = keys
@@ -208,15 +197,9 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         # default join entry if one isn't already authored. The downstream
         # parser produces a RelationshipConfig from each joins entry.
         if bool(bridge):
-            existing_joins = dict(model.get("joins", {}) or {})
-            for ent_name in per_entity:
-                if ent_name == primary_entity:
-                    continue
-                if ent_name in existing_joins:
-                    continue
-                existing_joins[ent_name] = {"to": ent_name}
-            if existing_joins:
-                model["joins"] = existing_joins
+            joins = {name: {"to": name} for name in per_entity if name != primary_entity}
+            if joins:
+                model["joins"] = joins
         # Don't propagate the entities: block to the downstream parser; it's been translated.
         model.pop("entities", None)
         models[model_id] = model
@@ -544,8 +527,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             joins = dict(model.get("joins", {}) or {})
             edge_spec: dict[str, Any] = {
                 # `as:` keeps a public id, as on every other object.
-                "id": str(spec.get("as") or "").strip()
-                or str(spec.get("id", f"relationship.{_slug(rel_name)}")),
+                "id": str(spec.get("as") or "").strip() or f"relationship.{_slug(rel_name)}",
                 "to": b,
             }
             if cardinality:
