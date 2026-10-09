@@ -205,9 +205,22 @@ def _strict(edit):
     return wrapped
 
 
+def _profile(value):
+    def edit(doc):
+        doc["package"]["schema_strict"] = value
+
+    return edit
+
+
+def _no_profile(doc):
+    doc["package"].pop("schema_strict", None)
+
+
 GROSS = {"label": "Gross revenue", "description": "Gross order revenue."}
 # rule, legacy edit, current edit (None: the rule stops and names the current form)
 REWRITES = {
+    "profile-strict": ("package-schema-strict", _profile(True), _no_profile),
+    "profile-default": ("package-schema-strict", _profile(False), _no_profile),
     "grain-equals-bound-key": ("model-grain", _model("orders", grain=["order_id"]), _current),
     "grain-picks-unbound-entity": (
         "model-grain",

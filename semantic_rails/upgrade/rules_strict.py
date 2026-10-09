@@ -455,6 +455,21 @@ def _measure_publish(files: PackageFiles) -> Iterator[Finding]:
         yield Finding("measure-auto-publish", file, files.line(file, key), key, message, edits)
 
 
+def _profile(files: PackageFiles) -> Iterator[Finding]:
+    for file, path, package in files.package():
+        if isinstance(package, dict) and "schema_strict" in package:
+            key = (*path, "schema_strict")
+            message = "Delete schema_strict: strict is the only profile."
+            yield Finding(
+                "package-schema-strict",
+                file,
+                files.line(file, key),
+                key,
+                message,
+                (Edit(file, "delete", key),),
+            )
+
+
 RULES = (
     Rule(
         "ignored-key",
@@ -462,6 +477,15 @@ RULES = (
         "same_meaning",
         "Remove keys the loader never read.",
         _keys,
+        refused=True,
+    ),
+    Rule(
+        "package-schema-strict",
+        "0.3.2",
+        "drops",
+        "Delete package.schema_strict; strict is the only profile.",
+        _profile,
+        masks=("package.schema_strict",),
         refused=True,
     ),
     Rule(

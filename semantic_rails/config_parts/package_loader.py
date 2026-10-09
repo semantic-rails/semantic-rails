@@ -71,8 +71,8 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize the ergonomic authoring contract into the canonical
     PackageConfig-shaped dict.
 
-    Fills namespace-derived IDs and default publish blocks for fields the
-    author left out. Existing explicit values are preserved unchanged.
+    Fills namespace-derived IDs for fields the author left out. Existing
+    explicit values are preserved unchanged.
     """
     out = dict(raw or {})
     package = dict(out.get("package", {}) or {})
@@ -469,13 +469,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 _with_default(measure, "id", f"measure.{namespace}.{_slug(str(measure_key))}")
                 _with_default(measure, "name", f"{namespace}.{_slug(str(measure_key))}")
             _apply_as_override(measure, "measure", namespace=namespace)
-            if measure.get("publish") is None:
-                measure["publish"] = {
-                    "id": f"metric.{namespace}.{_slug(str(measure_key))}"
-                    if namespace
-                    else f"metric.{_slug(str(measure_key))}",
-                    "label": str(measure.get("label", _titleize(str(measure_key)))),
-                }
             measures[measure_key] = measure
         model["measures"] = measures
         models[model_id] = model
@@ -520,13 +513,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 _with_default(measure, "id", f"measure.{namespace}.{_slug(str(measure_key))}")
                 _with_default(measure, "name", f"{namespace}.{_slug(str(measure_key))}")
             _apply_as_override(measure, "measure", namespace=namespace)
-            if measure.get("publish") is None:
-                measure["publish"] = {
-                    "id": f"metric.{namespace}.{_slug(str(measure_key))}"
-                    if namespace
-                    else f"metric.{_slug(str(measure_key))}",
-                    "label": str(measure.get("label", _titleize(str(measure_key)))),
-                }
             measures[measure_key] = measure
         model["measures"] = measures
         models[model_id] = model
