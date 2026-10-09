@@ -145,7 +145,7 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
 
 
 def _wrapped_balance(config: Any, query: dict[str, Any]) -> _Balance | None:
-    """The balances a draft ``_balance`` doesn't shape reads, on the draft's clock, or None.
+    """The balances a draft reads that ``_balance`` doesn't shape, on the draft's clock, or None.
 
     A stock read at any depth through a wrapper (``COALESCE``, arithmetic, a scoped aggregate, a
     flow beside it) is still a balance: never shaped to a read day, but read only on complete
