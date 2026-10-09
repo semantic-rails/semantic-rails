@@ -332,7 +332,9 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
 
     if group_by:
         query["group_by"] = group_by
-    query = _normalize_value_filters(query, _matched_value_rows(runtime, query, text), text=text)
+    query = _normalize_value_filters(
+        query, _matched_value_rows(runtime, query, text), text=text, config=config
+    )
     # The governed metric over the chosen measure answers instead ("how many stores were
     # active" means Active stores, not the all-kinds count it filters).
     governed = _governed_target(config, target_focus or text, query)
