@@ -8,7 +8,6 @@ package:
   warehouse: duckdb
   environments: [development, staging, production]
   default_db: data/jaffle_shop.duckdb
-  schema_strict: true
   seed:
     kind: csv_dir_duckdb
     source: data/jaffle_csv

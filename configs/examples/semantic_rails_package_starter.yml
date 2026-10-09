@@ -33,7 +33,6 @@ package:
   default_db: data/shop_starter.duckdb
   # schema_strict rejects every legacy authoring form with a clear error
   # and migration pointer. Recommended for new packages.
-  schema_strict: true
   environments: [development, staging, production]
   seed:
     kind: sql_script
