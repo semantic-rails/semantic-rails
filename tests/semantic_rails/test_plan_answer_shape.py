@@ -49,6 +49,11 @@ ORDERS = {"measure": "measure.jaffle.order_count"}
 REVENUE = {"measure": "measure.jaffle.revenue_usd"}
 LAST_WEEK = "WHERE ordered_at >= TIMESTAMP '2017-08-14' AND ordered_at < TIMESTAMP '2017-08-21'"
 COMPARED = "Orders by store name last week compared with the week ?"
+STORE_REVENUE_LAST_MONTH = (
+    "SELECT s.store_id, s.store_name, sum(o.order_total_cents) / 100.0 "
+    "FROM jaffle_order o JOIN jaffle_store s USING (store_id) WHERE o.ordered_at >= "
+    "TIMESTAMP '2017-07-01' AND o.ordered_at < TIMESTAMP '2017-08-01' GROUP BY 1, 2"
+)
 
 
 def _selects(*expressions: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +187,7 @@ NARROWER = [
     ("List customers by month", {}, "list_unrealized", '"list"'),
     ("Who are our customers by store name?", {}, "list_unrealized", '"who"'),
     ("Who ordered last week by store name?", {}, "list_unrealized", '"who"'),
+    ("Who ordered last week by store?", {}, "list_unrealized", '"who"'),
     # A category declares its values: its rows list none of the entity's.
     ("Who are our customers?", {"group_by": [CUSTOMER_TYPE]}, "list_unrealized", '"who"'),
     ("Who ordered last week?", {"group_by": [CUSTOMER_TYPE]}, "list_unrealized", '"who"'),
@@ -202,6 +208,13 @@ NARROWER = [
     # A group_by splits one value: it compares it with nothing.
     (COMPARED, {}, "comparison_unrealized", '"compared"'),
     ("Compare revenue by store name last month", {}, "comparison_unrealized", '"compare"'),
+    (
+        "Orders by store last week compared with the week ?",
+        {},
+        "comparison_unrealized",
+        '"compared"',
+    ),
+    ("Compare revenue by store last month", {}, "comparison_unrealized", '"compare"'),
     # Only a prior-period select is a value to compare with. A second select may spell the
     # first one again, and two values don't say what the question compares.
     (
@@ -413,20 +426,9 @@ def test_an_answer_of_the_asked_shape_stays_ready(jaffle: Runtime, question: str
 @pytest.mark.parametrize(
     ("question", "code"),
     [
-        ("Who are our customers by store?", "VALIDATION_FAILED"),
-        ("Who ordered last week by store?", UNMATCHED),
-        ("Which 3 stores had the most revenue last month?", GAP),
-        ("List revenue by store", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        ("Orders by store last week compared with the week ?", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        ("Compare revenue by store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        ("Revenue by store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("Who are our customers by store?", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
         ("Revenue per store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        ("Revenue for each store last month", UNMATCHED),
-        ("Show orders by store last week.", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        (
-            "Orders by store last week compared with the week before?",
-            "PLAN_FALLBACK_SEMANTIC_DRIFT",
-        ),
+        ("Orders by store last week compared with the week before?", UNMATCHED),
         ("What's the store's revenue last month?", UNMATCHED),
     ],
 )
@@ -499,6 +501,42 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
             "SELECT sum(order_total_cents) / 100.0 FROM jaffle_order WHERE ordered_at >= "
             "TIMESTAMP '2017-07-01' AND ordered_at < TIMESTAMP '2017-08-01'",
         ),
+        # "store" names the Store entity: its key, with its one naming dimension beside it.
+        *(
+            (question, {}, STORE_REVENUE_LAST_MONTH)
+            for question in ("Revenue by store last month", "Revenue for each store last month")
+        ),
+        (
+            "Which 3 stores had the most revenue last month?",
+            {},
+            f"{STORE_REVENUE_LAST_MONTH} ORDER BY 3 DESC LIMIT 3",
+        ),
+        (
+            "List revenue by store",
+            {},
+            "SELECT s.store_id, s.store_name, sum(o.order_total_cents) / 100.0 "
+            "FROM jaffle_order o JOIN jaffle_store s USING (store_id) GROUP BY 1, 2",
+        ),
+        *(
+            (
+                question,
+                {},
+                "SELECT s.store_id, s.store_name, count(DISTINCT o.order_id) FROM jaffle_order o "
+                f"JOIN jaffle_store s USING (store_id) {LAST_WEEK.replace('ordered_at', 'o.ordered_at')} "
+                "GROUP BY 1, 2",
+            )
+            for question in (
+                "Show orders by store last week.",
+                "How many orders did each store get last week?",
+            )
+        ),
+        # "which customers" lists the customers who ordered, by their key: Customer declares no
+        # display name and has several naming dimensions.
+        (
+            "Which customers ordered last week?",
+            {},
+            f"SELECT customer_id, count(DISTINCT order_id) FROM jaffle_order {LAST_WEEK} GROUP BY 1",
+        ),
     ],
 )
 def test_a_ready_answer_equals_its_reference(
@@ -545,11 +583,9 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
 # Held because a word carries meaning: a catalog name, a grouping, a value plan can't find, or a
 # number. Asking again without it changes the question, so no hint offers that.
 MEANINGFUL = [
-    "Which customers ordered last week?",
     "List the customers who ordered last week.",
     "How many orders did we get last week compared with the week before?",
     "Orders by store name last week compared with the week before?",
-    "How many orders did each store get last week?",
     "How many orders did each plan get last week?",
     "Orders between 9 and 17 on 15 March 2017",
 ]

@@ -37,6 +37,8 @@ from tests.semantic_rails.result_helpers import assert_plan_held, disable_planne
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
+# "store" names the Store entity: its key, then its one naming dimension.
+STORES = ["dimension.jaffle_store_id", STORE]
 PRODUCT = "dimension.jaffle_item_product_name"
 PRODUCT_TYPE = "dimension.jaffle_item_product_type"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
@@ -1686,7 +1688,9 @@ def test_a_number_in_a_time_phrase_is_not_a_ranking(
     adapter: SemanticLayerMCPAdapter, intent: str, limit: int | None, held: bool
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
-    assert_plan_held(plan, "PLAN_INTENT_COVERAGE_GAP" if limit else "PLAN_UNMATCHED_TERMS")
+    assert (plan["status"], (plan.get("why") or {}).get("code")) == (
+        ("low_confidence", "PLAN_UNASKED_GROUPING") if held else ("ok", None)
+    )
     assert plan["best"]["query_ir"].get("limit") == limit
 
 
@@ -1699,30 +1703,30 @@ Q1_2017 = {"start": "2017-01-01", "end": "2017-04-01"}
         # "Order date" names the order clock; it used to group by Customer first order at.
         (
             "revenue by store and order date at month grain, from January 1 2017 to March 31 2017",
-            [STORE],
+            STORES,
             {"grain": "month", **Q1_2017},
         ),
         (
             "revenue by store and order month from January 1 2017 to March 31 2017",
-            [STORE],
+            STORES,
             {
                 "grain": "month",
                 **Q1_2017,
             },
         ),
-        ("revenue by store by order month", [STORE], {"grain": "month"}),
+        ("revenue by store by order month", STORES, {"grain": "month"}),
         # By a date means by day; "by order date" used to be dropped after "by store".
-        ("revenue by store by order date", [STORE], {"grain": "day"}),
-        ("revenue by store and order date", [STORE], {"grain": "day"}),
+        ("revenue by store by order date", STORES, {"grain": "day"}),
+        ("revenue by store and order date", STORES, {"grain": "day"}),
         ("revenue by order date", [], {"grain": "day"}),
         # The grouping sets the grain; a unit a window names doesn't replace it.
         ("revenue by order date for the first quarter of 2017", [], {"grain": "day", **Q1_2017}),
-        ("revenue by store by order date in 2017", [STORE], {"grain": "day", **YEAR_2017}),
+        ("revenue by store by order date in 2017", STORES, {"grain": "day", **YEAR_2017}),
         # A cadence the question names still sets the grain; the grouping's own unit comes first.
         ("monthly revenue by order date", [], {"grain": "month"}),
-        ("weekly revenue by store by order date", [STORE], {"grain": "week"}),
+        ("weekly revenue by store by order date", STORES, {"grain": "week"}),
         ("revenue by order date, at week grain", [], {"grain": "week"}),
-        ("weekly revenue by store by order month", [STORE], {"grain": "month"}),
+        ("weekly revenue by store by order month", STORES, {"grain": "month"}),
     ],
 )
 def test_a_named_order_date_is_the_order_clock(
@@ -1730,11 +1734,7 @@ def test_a_named_order_date_is_the_order_clock(
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
     query = plan["best"]["query_ir"]
-    if group_by == [STORE]:
-        assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
-        group_by = ["dimension.jaffle_customer_history_preferred_store_id"]
-    else:
-        assert plan["status"] == "ok"
+    assert plan["status"] == "ok"
     # "At <unit> grain" names no catalog object, so the plan reports "grain" as unmatched.
     grain_only = [{"code": "PLAN_UNMATCHED_TERMS", "terms": ["grain"]}] if "grain" in intent else []
     warnings = [{"code": w["code"], "terms": w["details"]["terms"]} for w in plan["warnings"]]
@@ -1748,16 +1748,12 @@ def test_the_order_date_answer_groups_by_store_and_month_only(
 ) -> None:
     intent = "revenue by store and order date at month grain, from January 1 2017 to March 31 2017"
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
-    assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
-    query = {
-        **plan["best"]["query_ir"],
-        "group_by": [STORE],
-        "order_by": [{"field": "time", "direction": "ASC"}],
-    }
+    assert plan["status"] == "ok"
+    query = plan["best"]["query_ir"]
     rows = adapter.call_tool("execute", {"query": query})["rows"]
     assert len(rows) == 4  # Philadelphia for three months, Brooklyn from March
     assert {key for row in rows for key in row} == {
-        STORE,
+        *STORES,
         f"{ORDER_TIME}__month",
         "revenue_usd",
     }

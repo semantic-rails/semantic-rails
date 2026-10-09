@@ -175,6 +175,9 @@ def _entity_grouping(config: Any, term: str) -> tuple[Any, list[str]] | None:
     if len(named) != 1:
         return None
     keys, shown = _entity_stand_ins(config, named[0], term)
+    if len(keys) > 1:  # other dimensions read the key column: the key is the loader's own
+        kinds = {row.id: row.semantic_kind for row in visible_dimensions(config)}
+        keys = [key for key in keys if kinds.get(key) == "id"]
     return (named[0], [*keys, *shown]) if len(keys) == 1 else None
 
 
