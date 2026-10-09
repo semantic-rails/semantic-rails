@@ -1309,12 +1309,18 @@ def _relation_id_for_key(key: str, spec: dict[str, Any], *, namespace: str) -> s
 
 
 def _normalize_relation_step(raw: Any) -> RelationPipelineStep:
-    if not isinstance(raw, dict) or len(raw) != 1 or next(iter(raw)) not in RELATION_STEP_KEYS:
+    # Keys starting with `_` are annotations, beside the one key naming the step's kind.
+    step = (
+        {key: value for key, value in raw.items() if not str(key).startswith("_")}
+        if isinstance(raw, dict)
+        else raw
+    )
+    if not isinstance(step, dict) or len(step) != 1 or next(iter(step)) not in RELATION_STEP_KEYS:
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"Relation pipeline step must be one key naming its kind, got {raw!r}",
         )
-    ((kind, value),) = raw.items()
+    ((kind, value),) = step.items()
     return RelationPipelineStep(
         kind=kind, config=dict(value) if isinstance(value, dict) else {"value": value}
     )

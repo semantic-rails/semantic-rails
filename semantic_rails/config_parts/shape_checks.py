@@ -93,6 +93,31 @@ _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
 _UPGRADE = "(`semantic-rails project upgrade` rewrites it)"
 _AS = f"the key derives the id; write `as:` only to keep a public id {_UPGRADE}"
 _ONE_KIND = "write each step as one key naming its kind, such as `{where: [...]}`"
+# Each key a relation step's lowering reads has one spelling: a retired one, by block (a step
+# kind or a mapping nested in one), names the key the lowering reads.
+_RELATION_RENAMED_KEYS: dict[str, dict[str, str]] = {
+    "source": {"table": "relation", "name": "relation", "value": "relation"},
+    "select": {"value": "columns"},
+    "where": {"where": "predicates", "value": "predicates"},
+    "group_by": {"group_by": "dimensions", "measures": "aggregates"},
+    "pre_aggregate side": {"group_by": "dimensions", "measures": "aggregates"},
+    "aggregate": {"agg": "function", "expression": "expr"},
+    "join": {"table": "relation", "require_preaggregated": "require_pre_aggregate"},
+    **{kind: {"table": "relation"} for kind in ("semi_join", "anti_join", "exclude")},
+    "date_lag": {"value": "max"},
+    "window": {"columns": "windows"},
+    "window spec": {"kind": "function", "expression": "expr"},
+    "order_by": {"column": "expr"},
+    "explode": {"alias": "as"},
+    "json_extract": {"alias": "as"},
+    "date_spine": {"date_column": "column"},
+    "state_as_of": {"date_spine": "spine"},
+    "attribution_join": {"base_relation": "base", "attributed_relation": "attributed"},
+    "attribution key": {"left": "base", "right": "attributed"},
+    "lookback": {"max": "value"},
+    "union_all": {"value": "branches"},
+    "union branch": {"table": "relation", "source": "relation", "select": "columns"},
+}
 # A key a release retired from a block, and where its meaning is authored now: the one hint
 # the unknown-key error adds, by (block, key).
 _REPLACED_KEYS: dict[tuple[str, str], str] = {
@@ -113,6 +138,11 @@ _REPLACED_KEYS: dict[tuple[str, str], str] = {
     ("relation step", "unnest"): "write `explode:`",
     ("relation step", "kind"): _ONE_KIND,
     ("relation step", "config"): _ONE_KIND,
+    **{
+        (f"relation {block}", old): f"write `{new}:`"
+        for block, renamed in _RELATION_RENAMED_KEYS.items()
+        for old, new in renamed.items()
+    },
 }
 _PACKAGE_KEYS: frozenset[str] = frozenset(
     {
@@ -174,27 +204,41 @@ _RELATION_KEYS: frozenset[str] = frozenset(
     {"id", "name", "label", "description", "meta", "steps", "output_name", "columns"}
 )
 # A relation step is one key naming its kind; its mapping holds what that kind's lowering
-# reads (relation_pipelines.py). `select` and `window` also take their columns directly.
-_SEMI_JOIN_KEYS = frozenset({"relation", "table", "on", "where"})
+# reads (relation_pipelines.py), one spelling per key. `select` and `window` also take their
+# columns directly.
+_SEMI_JOIN_KEYS = frozenset({"relation", "on", "where"})
 RELATION_STEP_KEYS: dict[str, frozenset[str]] = {
-    "source": frozenset({"relation", "table", "name", "value", "columns"}),
-    "select": frozenset({"columns", "value"}),
-    "where": frozenset({"predicates", "where", "value"}),
-    "group_by": frozenset({"dimensions", "group_by", "aggregates", "measures"}),
-    "join": frozenset({"relation", "table", "on", "type", "select", "pre_aggregate"})
-    | {"require_pre_aggregate", "require_preaggregated"},
+    "source": frozenset({"relation", "columns"}),
+    "select": frozenset({"columns"}),
+    "where": frozenset({"predicates"}),
+    "group_by": frozenset({"dimensions", "aggregates"}),
+    "join": frozenset({"relation", "on", "type", "select", "pre_aggregate"})
+    | {"require_pre_aggregate"},
     "semi_join": _SEMI_JOIN_KEYS,
     "anti_join": _SEMI_JOIN_KEYS,
     "exclude": _SEMI_JOIN_KEYS,
-    "union_all": frozenset({"branches", "value"}),
-    "explode": frozenset({"column", "as", "alias", "delimiter"}),
-    "json_extract": frozenset({"column", "as", "alias", "path", "as_text"}),
-    "date_spine": frozenset({"column", "date_column", "start", "end", "max_days"}),
-    "state_as_of": frozenset({"spine", "date_spine", "date_column", "valid_from", "valid_to"})
-    | {"keys", "select"},
-    "window": frozenset({"windows", "columns"}),
-    "attribution_join": frozenset({"base", "base_relation", "attributed", "attributed_relation"})
-    | {"base_time", "attributed_time", "keys", "lookback", "select", "type"},
+    "union_all": frozenset({"branches"}),
+    "explode": frozenset({"column", "as", "delimiter"}),
+    "json_extract": frozenset({"column", "as", "path", "as_text"}),
+    "date_spine": frozenset({"column", "start", "end", "max_days"}),
+    "state_as_of": frozenset({"spine", "date_column", "valid_from", "valid_to", "keys", "select"}),
+    "window": frozenset({"windows"}),
+    "attribution_join": frozenset({"base", "attributed", "base_time", "attributed_time"})
+    | {"keys", "lookback", "select", "type"},
+}
+# The mappings nested in a step that its lowering reads, each closed the same way.
+_RELATION_BLOCK_KEYS: dict[str, frozenset[str]] = {
+    **RELATION_STEP_KEYS,
+    "aggregate": frozenset({"function", "expr", "distinct"}),
+    "pre_aggregate": frozenset({"left", "right"}),
+    "pre_aggregate side": frozenset({"columns", "dimensions", "aggregates"}),
+    "join on": frozenset({"left", "right", "op", "transform", "date_lag"}),
+    "date_lag": frozenset({"unit", "max", "warehouse"}),
+    "window spec": frozenset({"function", "expr", "order_by", "partition_by", "frame"}),
+    "order_by": frozenset({"expr", "direction"}),
+    "attribution key": frozenset({"base", "attributed", "transform"}),
+    "lookback": frozenset({"unit", "value"}),
+    "union branch": frozenset({"relation", "columns"}),
 }
 _CAVEAT_KEYS: frozenset[str] = frozenset(
     {
@@ -880,14 +924,69 @@ def _check_relation_step(step: Any, *, label: str, errors: list[str]) -> None:
     _unknown_key_errors(
         step, frozenset(RELATION_STEP_KEYS), label=label, errors=errors, block="relation step"
     )
+    if all(str(key).startswith("_") for key in step):
+        add_error(errors, f"{label} names no kind; {_ONE_KIND}")
     if len(kinds) > 1:
         add_error(
             errors, f"{label} names {len(kinds)} kinds ({', '.join(kinds)}); write one per step"
         )
     for kind in kinds:
-        allowed, value = RELATION_STEP_KEYS[kind], step[kind]
-        if isinstance(value, dict) and (kind not in {"select", "window"} or allowed & set(value)):
-            _unknown_key_errors(value, allowed, label=f"{label} {kind}", errors=errors)
+        _check_relation_body(kind, step[kind], label=f"{label} {kind}", errors=errors)
+
+
+def _listed(raw: Any) -> list[Any]:
+    """Rows as the lowering's ``_ensure_list`` reads them."""
+    return [] if raw is None else raw if isinstance(raw, list) else [raw]
+
+
+def _check_relation_body(kind: str, body: Any, *, label: str, errors: list[str]) -> None:
+    """Close every mapping a step's lowering reads, so a key it doesn't read, or a second
+    spelling of one it does, refuses. `select` and `window` take their columns directly when
+    their mapping names none of their keys."""
+
+    def check(raw: Any, block: str, where: str) -> None:
+        if isinstance(raw, dict):
+            allowed = _RELATION_BLOCK_KEYS[block]
+            _unknown_key_errors(raw, allowed, label=where, errors=errors, block=f"relation {block}")
+
+    def check_aggregates(raw: Any, where: str) -> None:
+        for alias, spec in raw.items() if isinstance(raw, dict) else ():
+            check(spec, "aggregate", f"{where} aggregate {alias!r}")
+
+    mapping = body if isinstance(body, dict) else {}
+    named = RELATION_STEP_KEYS[kind] | set(_RELATION_RENAMED_KEYS.get(kind, {}))
+    direct = kind in {"select", "window"} and not named & set(mapping)
+    if not direct:
+        check(body, kind, label)
+    if kind == "group_by":
+        check_aggregates(mapping.get("aggregates"), label)
+    if kind == "join":
+        pre_aggregate = mapping.get("pre_aggregate")
+        check(pre_aggregate, "pre_aggregate", f"{label} pre_aggregate")
+        for side in ("left", "right") if isinstance(pre_aggregate, dict) else ():
+            spec, where = pre_aggregate.get(side), f"{label} pre_aggregate.{side}"
+            check(spec, "pre_aggregate side", where)
+            check_aggregates(spec.get("aggregates") if isinstance(spec, dict) else None, where)
+    if kind in {"join", "semi_join", "anti_join", "exclude"}:
+        for index, item in enumerate(_listed(mapping.get("on"))):
+            check(item, "join on", f"{label} on {index}")
+            if isinstance(item, dict):
+                check(item.get("date_lag"), "date_lag", f"{label} on {index} date_lag")
+    if kind == "window":
+        windows = mapping if direct else mapping.get("windows")
+        for alias, spec in windows.items() if isinstance(windows, dict) else ():
+            check(spec, "window spec", f"{label} {alias!r}")
+            order_by = spec.get("order_by") if isinstance(spec, dict) else None
+            for index, item in enumerate(_listed(order_by)):
+                check(item, "order_by", f"{label} {alias!r} order_by {index}")
+    if kind == "attribution_join":
+        for index, key in enumerate(_listed(mapping.get("keys"))):
+            check(key, "attribution key", f"{label} keys {index}")
+        check(mapping.get("lookback"), "lookback", f"{label} lookback")
+    if kind == "union_all":
+        branches = mapping.get("branches") if isinstance(body, dict) else body
+        for index, branch in enumerate(_listed(branches)):
+            check(branch, "union branch", f"{label} branch {index}")
 
 
 def authoring_errors(raw: dict[str, Any], *, path_label: str) -> list[str]:
