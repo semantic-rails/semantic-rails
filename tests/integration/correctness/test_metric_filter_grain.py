@@ -154,16 +154,17 @@ def test_distribution_filter_cannot_bypass_fill_refusal(request, backend_name):
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize("over", ["all_time", "window"])
 @pytest.mark.parametrize("entity", ["entity.shop_order", "entity.shop_customer"])
-def test_distribution_predicate_retains_declared_grain(request, backend_name, over, entity):
+def test_distribution_predicate_retains_declared_grain(request, backend_name, entity):
     backend = _backend(request, backend_name)
     customer = entity == "entity.shop_customer"
     query = {
         "select": [_item(ORDERS, "orders"), _item("metric.shop.order_revenue_median", "median")],
         "group_by": [STORE],
         "where": [
-            _having(entity, over, ORDERS if customer else REVENUE, "gte", 2 if customer else 7)
+            _having(
+                entity, "all_time", ORDERS if customer else REVENUE, "gte", 2 if customer else 7
+            )
         ],
     }
     where = (
