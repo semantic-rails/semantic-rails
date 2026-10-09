@@ -251,12 +251,23 @@ def test_a_ranking_by_a_value_nothing_names_is_a_gap(
     assert _gap_kinds(adapter, text, draft, partial_query={"select": [select]}) == []
 
 
-def test_a_named_metric_names_the_ranked_value(adapter: SemanticLayerMCPAdapter) -> None:
-    aov = {"as": "aov_usd", "expression": {"metric": "metric.sales.aov_usd"}}
+@pytest.mark.parametrize(
+    ("text", "metric", "limit"),
+    [
+        ("which store had the highest average order value", "metric.sales.aov_usd", 1),
+        # A whole metric name the draft selects stands in the question as the metric's id.
+        ("top 3 stores by repeat customer orders", "metric.sales.repeat_customer_orders", 3),
+        ("top 3 stores by metric.sales.aov_usd", "metric.sales.aov_usd", 3),
+    ],
+)
+def test_a_metric_the_question_names_is_the_ranked_value(
+    adapter: SemanticLayerMCPAdapter, text: str, metric: str, limit: int
+) -> None:
+    select = {"as": "value", "expression": {"metric": metric}}
     draft = _query(
-        aov, group_by=STORES, limit=1, order_by=[{"field": "aov_usd", "direction": "DESC"}]
+        select, group_by=STORES, limit=limit, order_by=[{"field": "value", "direction": "DESC"}]
     )
-    assert _gap_kinds(adapter, "which store had the highest average order value", draft) == []
+    assert _gap_kinds(adapter, text, draft) == []
 
 
 def test_a_grouping_noun_never_names_the_value(adapter: SemanticLayerMCPAdapter) -> None:
