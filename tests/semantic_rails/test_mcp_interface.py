@@ -22,29 +22,26 @@ from semantic_rails.request_context import (
 REQUIRED_TOOL_NAMES = {"discover", "inspect", "valid-values", "plan", "execute", "segment"}
 
 
-def test_mcp_normalizes_policy_context_once_per_tool_call(runtime_factory, monkeypatch):
-    import semantic_rails.mcp as mcp_module
-
-    calls = []
-    original = mcp_module.context_from_policy_context
-
-    def counting(context, *, request_id=""):
-        calls.append((dict(context or {}), request_id))
-        return original(context, request_id=request_id)
-
-    monkeypatch.setattr(mcp_module, "context_from_policy_context", counting)
+@pytest.mark.parametrize("remote", [False, True])
+def test_mcp_reads_identity_only_from_the_request_context(runtime_factory, remote):
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
+    context = RequestContext(request_id="one-context", audience="ops") if remote else None
     try:
-        result = adapter.call_tool(
+        answered = adapter.call_tool("discover", {"terms": ""}, request_context=context)
+        claimed = adapter.call_tool(
             "discover",
-            {"terms": "", "policy_context": {"audience": "ops"}, "request_id": "one-context"},
+            {"terms": "", "policy_context": {"audience": "ops"}},
+            request_context=context,
         )
     finally:
         adapter.close()
 
-    assert result["ok"] is True
-    assert calls == [({"audience": "ops"}, "one-context")]
+    assert answered["ok"] is True
+    assert ("request_context" in answered) is remote
+    assert claimed["ok"] is False
+    assert claimed["errors"][0]["code"] == ("IDENTITY_CLAIM_REFUSED" if remote else "INVALID_QUERY")
+    assert claimed["errors"][0]["details"]["path"] == "policy_context"
 
 
 def _orders_by_store_query() -> dict:
@@ -160,20 +157,22 @@ def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary(
     trusted = RequestContext(request_id="trusted", tenant="tenant-a", roles=("analyst",))
     spoofed = {"object_id": "measure.x", "policy_context": {"tenant": "tenant-b"}}
 
-    response = adapter.call_tool("inspect", spoofed, request_context=trusted)
+    response = adapter.call_tool("inspect", {"object_id": "measure.x"}, request_context=trusted)
+    claimed = adapter.call_tool("inspect", spoofed, request_context=trusted)
     missing = adapter.call_tool("inspect", {}, request_context=trusted)
 
-    assert [(args["object_id"], args["policy_context"]) for args in seen] == [
-        ("measure.x", trusted.to_policy_context())
-    ]
+    # The handler sees the tool's arguments, never an identity; a claim never reaches it.
+    assert seen == [{"object_id": "measure.x", "request_id": "trusted"}]
     assert response["ok"] is (code is None)
     assert [issue["code"] for issue in response.get("errors", [])] == ([code] if code else [])
     assert response["request_context"]["tenant"] == "tenant-a"
     assert [(row["tool"], row["request_context"]["tenant"]) for row in audited] == [
         ("inspect", "tenant-a"),
         ("inspect", "tenant-a"),
+        ("inspect", "tenant-a"),
     ]
     assert audited[0]["error_codes"] == ([code] if code else [])
+    assert claimed["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED"
     assert missing["errors"][0]["code"] == "INVALID_MCP_ARGUMENTS"
     assert other.tool_handlers["inspect"] == other._handle_inspect  # noqa: SLF001
     with pytest.raises(ValueError, match="Unknown MCP tool 'no-such-tool'"):
@@ -278,7 +277,7 @@ def test_mcp_valid_values_requires_explicit_live_lookup(runtime_factory):
     def _raise_live_query(*args, **kwargs):
         raise AssertionError("valid-values should not query by default")
 
-    def _fake_query(payload):
+    def _fake_query(payload, **_options):
         dimension = list(payload.get("group_by", []) or ["dimension.jaffle_order_customer_id"])[0]
         return {
             "rows": [{dimension: "customer_1", "anchor": 1}],
@@ -291,7 +290,8 @@ def test_mcp_valid_values_requires_explicit_live_lookup(runtime_factory):
             "normalized_query": {},
         }
 
-    runtime.query = _raise_live_query
+    # The live lookup is an engine sub-query.
+    runtime.query_internal = _raise_live_query
     runtime._get_adapter = _raise_live_query
     try:
         default_payload = adapter.call_tool(
@@ -299,7 +299,7 @@ def test_mcp_valid_values_requires_explicit_live_lookup(runtime_factory):
             {"dimension_id": "dimension.jaffle_order_customer_id", "query": {"version": 1}},
         )
 
-        runtime.query = _fake_query
+        runtime.query_internal = _fake_query
         live_payload = adapter.call_tool(
             "valid-values",
             {
@@ -326,7 +326,7 @@ def test_mcp_adapter_runtime_and_segment_tools(runtime_factory):
     adapter = SemanticLayerMCPAdapter(runtime)
     query = _orders_by_store_query()
 
-    def _fake_query(payload):
+    def _fake_query(payload, **_options):
         return {
             "rows": [{"dimension.jaffle_store_name": "Brooklyn", "orders": 42}],
             "row_count": 1,
@@ -511,45 +511,3 @@ def test_mcp_discover_with_bad_limit_returns_integer_hint(runtime_factory):
     assert hints
     assert any(h.get("kind") == "use_integer" for h in hints)
     assert any("limit" in h["message"] for h in hints)
-
-
-def test_mcp_jsonrpc_error_envelope_includes_recovery_hints_for_policy_context(runtime_factory):
-    """Malformed policy context returns a tool error with its recovery hint."""
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        result = handle_jsonrpc_message(
-            adapter,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "execute",
-                    "arguments": {
-                        "mode": "validate",
-                        "query": {"select": []},
-                        "policy_context": "prod",
-                    },
-                },
-            },
-        )
-    finally:
-        adapter.close()
-    assert result is not None
-    tool_result = result["result"]
-    assert tool_result["isError"] is True
-    payload = tool_result["structuredContent"]
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    assert "request_context" not in payload
-    data = payload["errors"][0]
-    assert data["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = list(data.get("recovery_hints", []) or [])
-    assert hints, (
-        "policy_context: 'prod' must surface a recovery hint — empty "
-        "array means the agent has to guess the fix"
-    )
-    hint = next(h for h in hints if h.get("kind") == "wrap_policy_context_as_object")
-    assert '{"environment": "production", "audience": "internal"}' in hint["message"]
-    assert "closest_valid_query" not in data

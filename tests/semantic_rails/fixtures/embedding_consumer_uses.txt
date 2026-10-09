@@ -13,7 +13,7 @@ PUBLIC_V1_ROUTES
 PackageReference(_)
 PackageReference(package_id=, source_path=)
 PackageReference(source_path=)
-PolicyContextResolver{resolve(self, headers, *, payload=, request_id=)}
+PolicyContextResolver{resolve(self, headers, *, request_id=)}
 PreparedQuery().column_mapping
 PreparedQuery().sql
 PreparedQuery(_)
