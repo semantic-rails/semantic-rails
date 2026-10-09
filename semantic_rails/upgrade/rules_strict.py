@@ -190,6 +190,8 @@ def _model_primary_key(files: PackageFiles) -> Iterator[Finding]:
             legacy and {"entity", "keys", "grain"} & set(model)
         ):
             continue
+        if _fact(model) and "foreign" not in _mapping(keys):
+            continue  # a fact model's keys.primary is its row key; only keys.foreign is refused
         keys = _mapping(keys)
         foreign = keys.get("foreign") or {}
         _, primary, _ = _primary(model_id, model, graph)
