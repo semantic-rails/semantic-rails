@@ -17,6 +17,7 @@ import yaml
 from semantic_rails.compiler import compile_query, plan_query
 from semantic_rails.compiler_parts.sql_lowering import lower_to_sql
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.test_stock_filtered_by_changing_attribute import (
     PLAN,
@@ -150,7 +151,9 @@ def test_a_parent_lookup_source_refuses_stock_and_keeps_flow(package: Path, sour
             "where": [_is(NOTICE_KIND, "renewal")],
         }
         assert (
-            compile_query(engine.config, None, query)["logical_plan"]
+            compile_query(engine.config, None, read_call(query, config=engine.config)[0])[
+                "logical_plan"
+            ]
             .measure_plans[0]
             .rewrite_strategy
             == "parent_lookup"
@@ -232,7 +235,7 @@ def test_bypassing_the_stock_lookup_source_check_refuses_at_sql_lowering(
             "select": [{"expression": "measure.fees.carried_fee", "as": "v"}],
             "group_by": ["dimension.fees_notice_account_id"],
         }
-        plan = plan_query(engine.config, None, query)
+        plan = plan_query(engine.config, None, read_call(query, config=engine.config)[0])
         assert plan.measure_plans[0].rewrite_strategy == "parent_lookup"
         # The same supplied plan lowers while its source remains a flow.
         lower_to_sql(plan, engine.config, guard_empty=guard_empty)

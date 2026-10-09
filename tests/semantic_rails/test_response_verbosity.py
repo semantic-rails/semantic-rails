@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 _BASE_QUERY = {
     "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
     "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
@@ -54,7 +56,7 @@ _MINIMAL_EXECUTE_KEYS = frozenset(
 def test_validate_minimal_keeps_only_ok_errors_warnings(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.validate({**_BASE_QUERY, "verbosity": "minimal"})
+        result = runtime.validate(_BASE_QUERY, verbosity="minimal")
 
         # Only the minimal keys remain.
         assert set(result.keys()) <= _MINIMAL_NONEXECUTE_KEYS, (
@@ -102,7 +104,7 @@ def test_validate_compact_drops_heavy_keys(runtime_factory):
 def test_validate_full_preserves_legacy_envelope(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.validate({**_BASE_QUERY, "verbosity": "full"})
+        result = runtime.validate(_BASE_QUERY, verbosity="full")
 
         # Every heavy key must be back.
         for key in ("compile_stats", "performance_plan", "semantic_summary"):
@@ -119,7 +121,7 @@ def test_validate_sql_profile_off_strips_rendered_sql(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         # sql_profile=off works at any verbosity. Test at compact (default).
-        result = runtime.validate({**_BASE_QUERY, "sql_profile": "off"})
+        result = runtime.validate(_BASE_QUERY, sql_profile="off")
 
         assert result.get("sql_profile") == "off"
         assert "rendered_sql" not in result
@@ -143,7 +145,7 @@ def test_compile_minimal_keeps_sql_plus_envelope(runtime_factory):
     """
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.compile({**_BASE_QUERY, "verbosity": "minimal"})
+        result = runtime.compile(_BASE_QUERY, verbosity="minimal")
 
         assert set(result.keys()) <= _MINIMAL_COMPILE_KEYS
         assert result["ok"] is True
@@ -183,7 +185,7 @@ def test_compile_compact_drops_heavy_keys(runtime_factory):
 def test_compile_full_preserves_legacy_envelope(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.compile({**_BASE_QUERY, "verbosity": "full"})
+        result = runtime.compile(_BASE_QUERY, verbosity="full")
 
         for key in ("compile_stats", "performance_plan", "semantic_summary", "physical_plan"):
             assert key in result, f"full compile must keep {key}"
@@ -197,7 +199,7 @@ def test_compile_full_preserves_legacy_envelope(runtime_factory):
 def test_compile_sql_profile_off_strips_sql_and_plan(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.compile({**_BASE_QUERY, "sql_profile": "off"})
+        result = runtime.compile(_BASE_QUERY, sql_profile="off")
 
         assert result.get("sql_profile") == "off"
         assert "rendered_sql" not in result
@@ -215,7 +217,7 @@ def test_compile_sql_profile_off_at_full_verbosity_still_strips(runtime_factory)
     try:
         # Verbosity full keeps the heavy plans, but sql_profile=off must
         # still suppress rendered_sql + sql_plan.
-        result = runtime.compile({**_BASE_QUERY, "verbosity": "full", "sql_profile": "off"})
+        result = runtime.compile(_BASE_QUERY, verbosity="full", sql_profile="off")
 
         assert "rendered_sql" not in result
         assert "sql_plan" not in result
@@ -234,7 +236,7 @@ def test_compile_sql_profile_off_at_full_verbosity_still_strips(runtime_factory)
 def test_execute_minimal_keeps_rows_and_envelope(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.query({**_BASE_QUERY, "verbosity": "minimal"})
+        result = runtime.query(_BASE_QUERY, verbosity="minimal")
 
         # rows / row_count must survive even in minimal mode.
         assert set(result.keys()) <= _MINIMAL_EXECUTE_KEYS
@@ -274,7 +276,7 @@ def test_execute_compact_drops_heavy_keys_but_keeps_rows_and_sql(runtime_factory
 def test_execute_full_preserves_legacy_envelope(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.query({**_BASE_QUERY, "verbosity": "full"})
+        result = runtime.query(_BASE_QUERY, verbosity="full")
 
         for key in ("compile_stats", "performance_plan", "semantic_summary", "physical_plan"):
             assert key in result, f"full execute must keep {key}"
@@ -287,7 +289,7 @@ def test_execute_full_preserves_legacy_envelope(runtime_factory):
 def test_execute_sql_profile_off_strips_rendered_sql_and_plan(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.query({**_BASE_QUERY, "sql_profile": "off"})
+        result = runtime.query(_BASE_QUERY, sql_profile="off")
 
         assert result.get("sql_profile") == "off"
         assert "rendered_sql" not in result
@@ -371,7 +373,7 @@ def test_mcp_execute_defaults_to_record_rows(runtime_factory):
 def test_mcp_execute_columns_row_format_preserves_values_and_counts(runtime_factory):
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
-    query = {**_BASE_QUERY, "order_by": [{"field": "time", "direction": "ASC"}]}
+    query = {**_BASE_QUERY, "order_by": [{"field": "period", "direction": "asc"}]}
     runtime = runtime_factory("jaffle_shop")
     try:
         adapter = SemanticLayerMCPAdapter(runtime)
@@ -414,7 +416,8 @@ def test_mcp_execute_rejects_invalid_row_format(runtime_factory):
     assert envelope["errors"][0]["details"]["field"] == "row_format"
 
 
-def test_mcp_execute_top_level_ir_row_format_does_not_leak_to_runtime(runtime_factory):
+def test_mcp_execute_refuses_a_call_spread_beside_its_arguments(runtime_factory):
+    """The call travels as ``query``; its keys beside ``row_format`` are refused, never read."""
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
     runtime = runtime_factory("jaffle_shop")
@@ -424,44 +427,32 @@ def test_mcp_execute_top_level_ir_row_format_does_not_leak_to_runtime(runtime_fa
     finally:
         adapter.close()
 
-    assert envelope["ok"] is True
-    assert envelope["row_format"] == "columns"
-    assert isinstance(envelope["rows"], list)
-    assert envelope["rows"]
-    assert isinstance(envelope["rows"][0], list)
-    if "query" in envelope:
-        assert "row_format" not in envelope["query"]
-    assert not any(error.get("code") == "INVALID_QUERY" for error in envelope.get("errors", []))
+    assert envelope["ok"] is False
+    (error,) = envelope["errors"]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "select"
+    (hint,) = error["recovery_hints"]
+    assert '{"query":' in hint["message"]
 
 
-def test_http_query_payload_hoists_verbosity_and_sql_profile():
-    """The HTTP shim must mirror the MCP hoisting so /validate, /compile,
-    /explain, /query all honour the outer-envelope keys.
-    """
-    from semantic_rails.http_core import query_payload
+def test_http_call_options_carry_verbosity_and_sql_profile():
+    """A REST body sends its rendering options beside the call, under ``options``."""
+    from semantic_rails.http_core import call_arguments
 
-    body = {
-        "query": {"select": []},
-        "verbosity": "minimal",
-        "sql_profile": "off",
-    }
-    out = query_payload(body)
-    assert out["verbosity"] == "minimal"
-    assert out["sql_profile"] == "off"
+    body = {"query": {"select": []}, "options": {"verbosity": "minimal", "sql_profile": "off"}}
+    call, options = call_arguments(body)
+    assert call == {"select": []}
+    assert options == {"verbosity": "minimal", "sql_profile": "off"}
 
 
-def test_http_query_payload_in_query_values_win_over_outer():
-    """A caller can override verbosity inside the Query IR itself; the
-    outer envelope is only a default for callers that don't.
-    """
-    from semantic_rails.http_core import query_payload
+def test_http_options_beside_the_call_are_refused_at_their_path():
+    """Verbosity is never a key of the call, nor a sibling of ``query``."""
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.http_core import call_arguments
 
-    body = {
-        "query": {"select": [], "verbosity": "full"},
-        "verbosity": "minimal",
-    }
-    out = query_payload(body)
-    assert out["verbosity"] == "full"
+    with pytest.raises(SemanticLayerError) as exc:
+        call_arguments({"query": {"select": []}, "verbosity": "minimal"})
+    assert exc.value.details["path"] == "verbosity"
 
 
 # ---------------------------------------------------------------------------
@@ -521,8 +512,8 @@ def test_mcp_plan_tool_schema_advertises_query_detail():
 def test_minimal_response_is_dramatically_smaller_than_full(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        minimal = runtime.validate({**_BASE_QUERY, "verbosity": "minimal"})
-        full = runtime.validate({**_BASE_QUERY, "verbosity": "full"})
+        minimal = runtime.validate(_BASE_QUERY, verbosity="minimal")
+        full = runtime.validate(_BASE_QUERY, verbosity="full")
 
         minimal_size = len(json.dumps(minimal, default=str))
         full_size = len(json.dumps(full, default=str))

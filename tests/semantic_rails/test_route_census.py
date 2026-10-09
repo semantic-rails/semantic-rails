@@ -128,6 +128,17 @@ DIMENSION = {
 }
 
 
+def _package_part(details: dict) -> dict:
+    """A route refusal without what only a query has: each option's call and the hint."""
+    clarification = details["clarification"]
+    options = [
+        {key: value for key, value in option.items() if key != "query"}
+        for option in clarification["options"]
+    ]
+    rest = {key: value for key, value in details.items() if key != "hint"}
+    return {**rest, "clarification": {**clarification, "options": options}}
+
+
 def test_the_census_lists_each_refused_pair_with_the_refusal_its_query_raises(tmp_path):
     pkg = _write_package(tmp_path)
     config = load_package_config(str(pkg))
@@ -145,7 +156,18 @@ def test_the_census_lists_each_refused_pair_with_the_refusal_its_query_raises(tm
             else:
                 resolve_path(config, start=start, target=target)
         assert exc_info.value.code == "AMBIGUOUS_PATH"
-        assert exc_info.value.details == details
+        assert _package_part(exc_info.value.details) == _package_part(details)
+        # A query's refusal also hands back each option as that query with its route.
+        for option in exc_info.value.details["clarification"]["options"]:
+            if start in MEASURE:
+                decision = option["decision"]
+                assert option["query"]["routes"] == [
+                    {
+                        "from": decision["source_entity"],
+                        "to": decision["target_entity"],
+                        "via": decision["relationship_path"],
+                    }
+                ]
     # Only multi-route own-key choices ask for confirmation.
     assert census["assumed"] == [
         {
@@ -504,7 +526,7 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
             if grouped
             # A plain-SQL reference, where a sum of no rows is NULL: the query scope.
             else {
-                "where": [{"field": CODE, "op": "=", "value": "SFO"}],
+                "where": [{"field": CODE, "op": "is", "value": "SFO"}],
                 "observation_scope": "query",
             }
         )
@@ -812,9 +834,8 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
         "measure.small.a_amount",
         where=[
             {
-                "child": "entity.small_c",
-                "match": "any",
-                "where": [{"field": "dimension.small_d_name", "op": "=", "value": "yes"}],
+                "entity": "entity.small_c",
+                "any": [{"field": "dimension.small_d_name", "op": "is", "value": "yes"}],
             }
         ],
     )
@@ -882,9 +903,8 @@ def test_queries_without_authored_measures_require_explicit_decisions(tmp_path):
     """,
     )
     b_name, c_name = "dimension.small_b_name", "dimension.small_c_name"
-    distinct = {"version": 1, "select": [], "group_by": [b_name, c_name]}
+    distinct = {"select": [], "group_by": [b_name, c_name]}
     count = {
-        "version": 1,
         "select": [
             {
                 "as": "v",

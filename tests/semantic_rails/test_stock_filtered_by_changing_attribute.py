@@ -29,6 +29,7 @@ from semantic_rails.compiler import plan_query
 from semantic_rails.compiler_parts.sql_lowering import lower_to_sql
 from semantic_rails.dialects import DuckDbDialect
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 
 ROLE = "temporal_role.fees_account_day_date_day"
@@ -204,7 +205,7 @@ def _query(
     **options: Any,
 ) -> list[tuple[Any, ...]]:
     query: dict[str, Any] = {
-        "select": [{"expression": expression or {"measure": f"measure.fees.{measure}"}, "as": "v"}],
+        "select": [{"expression": expression or f"measure.fees.{measure}", "as": "v"}],
         "group_by": list(group_by or []),
     }
     if time is not None:
@@ -213,7 +214,7 @@ def _query(
         query["where"] = where
     result = runtime.query({**query, **options})
     assert result["ok"], result.get("errors")
-    time_alias = f"{ROLE}__{time['grain']}" if time and time.get("grain") else None
+    time_alias = "period" if time and time.get("grain") else None
     rows = []
     for row in result["rows"]:
         period = [_day(row[time_alias])] if time_alias else []
@@ -222,7 +223,7 @@ def _query(
     return sorted(rows, key=lambda row: tuple(str(cell) for cell in row))
 
 
-def _is(field: str, value: Any, op: str = "=") -> dict[str, Any]:
+def _is(field: str, value: Any, op: str = "is") -> dict[str, Any]:
     return {"field": field, "op": op, "value": value}
 
 
@@ -255,7 +256,7 @@ def runtime(snapshot_lowering, tmp_path: Path) -> Iterator[Runtime]:
         (_is(PLAN, "basic"), "plan = 'basic'", 99),
         # b cancelled on Wednesday: a's 500 and c's 99, not b's Tuesday too (698).
         (_is(STATE, "active"), "state = 'active'", 599),
-        (_is(PLAN, ["pro", "enterprise"], "IN"), "plan in ('pro', 'enterprise')", 500),
+        (_is(PLAN, ["pro", "enterprise"]), "plan in ('pro', 'enterprise')", 500),
         # Reached through the account: the same for every snapshot of a series.
         (_is(SEGMENT, "customer"), "segment = 'customer'", 500),
     ],
@@ -302,7 +303,8 @@ def test_a_filter_equals_its_row_of_the_grouped_breakdown(
 
 def test_no_snapshot_reads_null_and_no_match_reads_zero(runtime: Runtime) -> None:
     enterprise = [_is(PLAN, "enterprise")]
-    filled = {"grain": "week", "start": "2026-09-07", "end": "2026-10-12", "fill": True}
+    # A named window answers every week in it.
+    filled = {"grain": "week", "start": "2026-09-07", "end": "2026-10-12"}
     # Every account has snapshots through the week of 09-21; none in the two after it.
     assert _query(runtime, enterprise, time=filled) == [
         (date(2026, 9, 7), 0),
@@ -331,8 +333,8 @@ def test_no_snapshot_reads_null_and_no_match_reads_zero(runtime: Runtime) -> Non
         (date(2026, 9, 21), 0),
     ]
     # A metric predicate chooses the series measured: keeping none, the stock has no data.
-    over = {"entity": "entity.fees_account", "measure": "measure.fees.fee", "op": ">"}
-    over |= {"value": 1000, "time_alignment": "same_query_period"}
+    over = {"entity": "entity.fees_account", "input": "measure.fees.fee", "op": "gt"}
+    over |= {"value": 1000, "over": "all_time"}
     largest_accounts = {**customers, "kind": "scoped_aggregate", "predicates": [over]}
     del largest_accounts["filter"]
     assert _query(runtime, enterprise, expression=largest_accounts) == [(None,)]
@@ -357,7 +359,7 @@ def test_a_matching_snapshot_of_unknown_value_stays_null(snapshot_lowering, tmp_
 
 def test_only_a_balance_summed_across_series_reads_zero(runtime: Runtime) -> None:
     enterprise = [_is(PLAN, "enterprise")]
-    largest = {"measure": "measure.fees.fee", "aggregation": "max"}
+    largest = {"kind": "measure", "measure": "measure.fees.fee", "aggregation": "max"}
     # The largest closing fee of no account is undefined.
     assert _query(runtime, enterprise, expression=largest) == [(None,)]
     assert _query(runtime, enterprise, expression=largest, time={"grain": "week"}) == []
@@ -384,13 +386,13 @@ def test_only_a_balance_summed_across_series_reads_zero(runtime: Runtime) -> Non
     ("where", "before", "expected"),
     [
         # The stock's clock: as of Wednesday, a is still on basic and b is cancelled.
-        (_is(DAY, "2026-09-16", "<="), "date_day <= '2026-09-16'", 198),
+        (_is(DAY, "2026-09-16", "lte"), "date_day <= '2026-09-16'", 198),
         # A calendar dimension: the last Monday or Tuesday, when b was still active.
-        (_is(WEEKDAY, 2, "<="), "weekday <= 2", 297),
+        (_is(WEEKDAY, 2, "lte"), "weekday <= 2", 297),
         (_is("dimension.fees_time_week_start", "2026-09-14"), "c.week_start = '2026-09-14'", 599),
         # A second dimension on the clock's entity and column is the same clock.
         (
-            _is("dimension.fees_account_day_observed_on", "2026-09-16", "<="),
+            _is("dimension.fees_account_day_observed_on", "2026-09-16", "lte"),
             "date_day <= '2026-09-16'",
             198,
         ),
@@ -411,10 +413,10 @@ def test_an_entity_set_share_reads_the_same_closing_snapshots(runtime: Runtime) 
     fee = {"kind": "scoped_aggregate", "measure": "measure.fees.fee", "aggregation": "sum"}
     predicate = {
         "entity": "entity.fees_account",
-        "measure": "measure.fees.fee",
-        "op": ">",
+        "input": "measure.fees.fee",
+        "op": "gt",
         "value": 100,
-        "time_alignment": "same_query_period",
+        "over": "period",
     }
     query = {
         "select": [
@@ -432,7 +434,7 @@ def test_an_entity_set_share_reads_the_same_closing_snapshots(runtime: Runtime) 
     }
     result = runtime.query(query)
     assert "latest_fees_account_day_snapshot" in result["rendered_sql"]
-    answer = [(_day(row[f"{ROLE}__week"]), row["v"]) for row in result["rows"]]
+    answer = [(_day(row["period"]), row["v"]) for row in result["rows"]]
     with duckdb.connect() as connection:
         _load(connection)
         reference = connection.execute(
@@ -446,7 +448,8 @@ def test_an_entity_set_share_reads_the_same_closing_snapshots(runtime: Runtime) 
     assert reference[1] == (WEEK, 500 / 599)
 
 
-def _share(filter_item: dict[str, Any] | None = None) -> dict[str, Any]:
+def _share(filter_item: dict[str, Any] | None = None, over: str = "period") -> dict[str, Any]:
+    """The share of fees from accounts paying over 100, per output period (or over all time)."""
     fee: dict[str, Any] = {
         "kind": "scoped_aggregate",
         "measure": "measure.fees.fee",
@@ -456,10 +459,10 @@ def _share(filter_item: dict[str, Any] | None = None) -> dict[str, Any]:
         fee["where"] = [filter_item]
     predicate = {
         "entity": "entity.fees_account",
-        "measure": "measure.fees.fee",
-        "op": ">",
+        "input": "measure.fees.fee",
+        "op": "gt",
         "value": 100,
-        "time_alignment": "same_query_period",
+        "over": over,
     }
     return {"kind": "ratio", "numerator": {**fee, "predicates": [predicate]}, "denominator": fee}
 
@@ -476,15 +479,15 @@ def test_a_date_attribute_filter_refuses(
     attribute = "renewal_on" if entity == "notice" and attribute == "snapshot_week" else attribute
     dimension = f"dimension.fees_{entity}_{attribute}"
     item = _is(dimension, "2026-09-14" if attribute == "snapshot_week" else "2027-01-01")
-    expression: dict[str, Any] = {"measure": "measure.fees.fee"}
+    expression: Any = "measure.fees.fee"
     where = [item]
     if placement == "measure_filter":
-        expression = {**expression, "kind": "aggregate", "filter": {"all": [item]}}
+        expression = {"kind": "aggregate", "measure": expression, "filter": {"all": [item]}}
         where = []
     elif placement == "anchored":
-        expression = _share()
+        expression = _share(over="period" if grain else "all_time")
     elif placement == "child_group":
-        where = [{"child": "entity.fees_notice", "match": "any", "where": [item]}]
+        where = [{"entity": "entity.fees_notice", "any": [item]}]
     with pytest.raises(SemanticLayerError) as raised:
         _query(runtime, where, expression=expression, time={"grain": grain} if grain else None)
     assert raised.value.code == "REWRITE_NOT_SUPPORTED"
@@ -522,12 +525,10 @@ def test_lowering_cannot_bypass_the_date_attribute_refusal(
 ) -> None:
     # Force a caller to bypass the planning check: both stock choices must refuse too.
     query = {
-        "select": [
-            {"expression": _share() if anchored else {"measure": "measure.fees.fee"}, "as": "v"}
-        ],
+        "select": [{"expression": _share() if anchored else "measure.fees.fee", "as": "v"}],
         "time": {"temporal_role": ROLE, "grain": "week"},
     }
-    plan = plan_query(runtime.config, runtime.registry, query)
+    plan = plan_query(runtime.config, runtime.registry, read_call(query, config=runtime.config)[0])
     dimension = "dimension.fees_account_day_renewal_on"
     plan.query["where"] = [_is(dimension, "2027-01-01")]
     with pytest.raises(SemanticLayerError) as raised:
@@ -623,7 +624,7 @@ def test_an_unknown_series_key_distinguishes_observed_and_missing_weeks(
                 "observation_scope": scope,
             }
         )
-        answer = sorted((_day(row[f"{role}__week"]), row["v"]) for row in result["rows"])
+        answer = sorted((_day(row["period"]), row["v"]) for row in result["rows"])
         assert answer == [(_day(period), value) for period, value in reference]
         assert [value for _, value in answer] == (
             [0, None, 0] if scope == "dataset" else [None] * 3
@@ -690,7 +691,7 @@ def test_an_anchored_share_grouped_by_a_period_refuses(
         _query(
             runtime,
             where,
-            expression=_share(),
+            expression=_share(over="period" if grain else "all_time"),
             group_by=[dimension],
             time={"grain": grain} if grain else None,
         )
@@ -760,7 +761,7 @@ def test_lowering_cannot_bypass_the_period_grouping_refusal(runtime: Runtime) ->
         "group_by": [SEGMENT],
         "time": {"temporal_role": ROLE, "grain": "week"},
     }
-    plan = plan_query(runtime.config, runtime.registry, query)
+    plan = plan_query(runtime.config, runtime.registry, read_call(query, config=runtime.config)[0])
     ctes = lower_to_sql(plan, runtime.config).ctes
     assert "latest_fees_account_day_snapshot" in {cte.name for cte in ctes}
     with pytest.raises(SemanticLayerError) as raised:

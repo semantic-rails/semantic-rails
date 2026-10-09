@@ -35,6 +35,7 @@ from semantic_rails.fanout import analyze_fanout
 from semantic_rails.metadata import discover_payload, inspect_payload
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner.plan import plan_payload
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import opened
@@ -223,20 +224,23 @@ def gold():
 
 
 def _amount(**extra: Any) -> dict[str, Any]:
-    select = [{"as": "value", "expression": {"measure": "measure.hist.amount"}}]
-    return {"version": 1, "select": select, **extra}
+    return {"select": [{"as": "value", "expression": "measure.hist.amount"}], **extra}
 
 
 def _seats(**extra: Any) -> dict[str, Any]:
-    select = [{"as": "value", "expression": {"measure": "measure.hist.seats"}}]
-    return {"version": 1, "select": select, **extra}
+    return {"select": [{"as": "value", "expression": "measure.hist.seats"}], **extra}
+
+
+def _engine(query: dict[str, Any], config: Any = None) -> dict[str, Any]:
+    """The engine's own form of a call, for the compiler's internals."""
+    return read_call(query, config=config, partial=True)[0]
 
 
 def _amount_and_seats(*, seats_first: bool = False, **extra: Any) -> dict[str, Any]:
-    amount = {"as": "value", "expression": {"measure": "measure.hist.amount"}}
-    seats = {"as": "seats", "expression": {"measure": "measure.hist.seats"}}
+    amount = {"as": "value", "expression": "measure.hist.amount"}
+    seats = {"as": "seats", "expression": "measure.hist.seats"}
     select = [seats, amount] if seats_first else [amount, seats]
-    return {"version": 1, "select": select, **extra}
+    return {"select": select, **extra}
 
 
 def _compound(*, seats_first: bool = False, **extra: Any) -> dict[str, Any]:
@@ -244,15 +248,15 @@ def _compound(*, seats_first: bool = False, **extra: Any) -> dict[str, Any]:
         row["expression"] for row in _amount_and_seats(seats_first=seats_first)["select"]
     ]
     expression = {"kind": "arithmetic", "op": "add", "left": left, "right": right}
-    return {"version": 1, "select": [{"as": "value", "expression": expression}], **extra}
+    return {"select": [{"as": "value", "expression": expression}], **extra}
 
 
 def _named_metric(*, seats_first: bool = False, **extra: Any) -> dict[str, Any]:
     metric = "metric.hist.seats_plus_amount" if seats_first else "metric.hist.amount_plus_seats"
-    return {"version": 1, "select": [{"as": "value", "expression": {"metric": metric}}], **extra}
+    return {"select": [{"as": "value", "expression": metric}], **extra}
 
 
-STARTER = [{"field": SEGMENT, "op": "=", "value": "starter"}]
+STARTER = [{"field": SEGMENT, "op": "is", "value": "starter"}]
 
 
 def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any, float]:
@@ -271,13 +275,12 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
         pytest.param(_amount(group_by=[HISTORY_KEY]), id="group-by-history-key"),
         pytest.param(_amount(where=STARTER), id="where"),
         pytest.param(
-            _amount(where=[{"field": HISTORY_KEY, "op": "=", "value": "A1"}]),
+            _amount(where=[{"field": HISTORY_KEY, "op": "is", "value": "A1"}]),
             id="where-history-key",
         ),
         pytest.param(_amount(group_by=[TIER]), id="two-hops"),
         pytest.param(
             {
-                "version": 1,
                 "select": [
                     {
                         "as": "value",
@@ -291,7 +294,7 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
             },
             id="measure-filter",
         ),
-        pytest.param({"version": 1, "group_by": [USAGE_ID, SEGMENT]}, id="dimension-only"),
+        pytest.param({"group_by": [USAGE_ID, SEGMENT]}, id="dimension-only"),
         # Amount and seats, as two measures, one compound, or a named metric, in either order.
         *[
             pytest.param(
@@ -343,7 +346,7 @@ def test_with_a_time_each_row_reads_the_version_valid_at_its_time(runtime, gold)
 def test_with_a_time_a_filter_and_a_second_hop_read_the_same_version(runtime, gold):
     starter = _rows(
         runtime,
-        _amount(where=[{"field": SEGMENT, "op": "=", "value": "starter"}], time=MONTHLY),
+        _amount(where=[{"field": SEGMENT, "op": "is", "value": "starter"}], time=MONTHLY),
         [MONTH],
     )
     by_tier = _rows(runtime, _amount(group_by=[TIER], time=MONTHLY), [TIER, MONTH])
@@ -380,7 +383,7 @@ def test_a_relationship_without_temporal_validity_needs_no_time(runtime, gold):
             id="group-by",
         ),
         pytest.param(
-            {"where": [{"field": HISTORY_KEY, "op": "=", "value": "A1"}]},
+            {"where": [{"field": HISTORY_KEY, "op": "is", "value": "A1"}]},
             {(1,): 10.0, (2,): 20.0},
             "SELECT month(u.used_at), SUM(u.amount) FROM usage AS u"
             f" WHERE {SQL_AS_OF.format(column='account_id')} = 'A1' GROUP BY 1",
@@ -397,7 +400,10 @@ def test_the_history_key_reads_the_version_valid_at_the_usage_time(
 
     result = _rows(runtime, query, [*clause.get("group_by", []), MONTH])
 
-    assert "LEFT JOIN account_segments" in compile_query(config, Registry(config), query)["sql"]
+    assert (
+        "LEFT JOIN account_segments"
+        in compile_query(config, Registry(config), _engine(query, config))["sql"]
+    )
     assert result == expected
     assert result == gold(sql)
 
@@ -421,7 +427,7 @@ def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
 def test_a_hop_out_of_the_validity_window_keeps_the_source_key(runtime, package, gold):
     query = _seats(group_by=[ACCOUNT_KEY])
     config = load_package_config(str(package))
-    sql = compile_query(config, Registry(config), query)["sql"]
+    sql = compile_query(config, Registry(config), _engine(query, config))["sql"]
 
     by_account = _rows(runtime, query, [ACCOUNT_KEY])
 
@@ -458,7 +464,7 @@ def test_an_anchored_outgoing_hop_keeps_closed_and_open_versions_regions(
     (package / "data" / "seed.sql").write_text(seed)
     runtime = opened(Runtime.from_path(str(package)))
     role = f"temporal_role.hist_account_segment_{clock}"
-    time_key = f"{role}__month"
+    time_key = "period"
     query = _seats(group_by=[REGION], time={"temporal_role": role, "grain": "month"})
     try:
         rows = runtime.query(query)["rows"]
@@ -554,36 +560,36 @@ def test_measures_aggregated_on_their_own_need_no_time(
     assert result == {key: (amounts[key], seats[key]) for key in amounts}
 
 
-def _predicate(entity: str, scope_mode: str) -> dict[str, Any]:
+def _contextual(**extra: Any) -> dict[str, Any]:
+    """An engine query whose predicate is taken in the query's own context (no call spells it)."""
     expression = {
         "kind": "metric_predicate",
-        "entity": entity,
-        "scope_mode": scope_mode,
-        "input": {"measure": "measure.hist.seats"},
+        "entity": HISTORY,
+        "scope_mode": "contextual",
+        "input": {"kind": "measure", "measure": "measure.hist.seats"},
         "op": ">",
         "value": 0,
     }
-    return {"expression": expression, "op": "=", "value": True}
+    predicate = {"expression": expression, "op": "is", "value": True}
+    return {**_engine(_seats(**extra)), "metric_filters": [predicate]}
+
+
+SEATED_ACCOUNTS = {
+    "entity": ACCOUNT,
+    "having": [{"field": "measure.hist.seats", "op": "gt", "value": 0}],
+    "over": "all_time",
+}
 
 
 @pytest.mark.parametrize(
     ("query", "code"),
     [
+        pytest.param(_seats(where=[SEATED_ACCOUNTS]), "PREDICATE_SCOPE_UNSAFE", id="entity"),
         pytest.param(
-            _seats(metric_filters=[_predicate(ACCOUNT, "entity_only")]),
-            "PREDICATE_SCOPE_UNSAFE",
-            id="entity",
+            _contextual(group_by=[REGION]), "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE", id="context"
         ),
         pytest.param(
-            _seats(group_by=[REGION], metric_filters=[_predicate(HISTORY, "contextual")]),
-            "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
-            id="context",
-        ),
-        pytest.param(
-            _seats(
-                where=[{"field": REGION, "op": "=", "value": "North"}],
-                metric_filters=[_predicate(HISTORY, "contextual")],
-            ),
+            _contextual(where=[{"field": REGION, "op": "is", "value": "North"}]),
             "PREDICATE_FILTER_INCOMPATIBLE",
             id="filter",
         ),
@@ -593,7 +599,10 @@ def test_a_metric_predicate_needs_a_time_for_any_time_valid_hop_on_its_path(runt
     """Stricter than the query itself: the predicate's scope refuses even the hop out of the
     segment table, which seats grouped or filtered by region crosses without a time."""
     with pytest.raises(SemanticLayerError) as exc:
-        runtime.query(query)
+        if "metric_filters" in query:
+            runtime.query_internal(query)
+        else:
+            runtime.query(query)
 
     assert exc.value.code == code
     assert "requires a time anchor" in str(exc.value)
@@ -616,7 +625,7 @@ def _order_conversion(
         **extra,
     }
     select = [{"as": "rate", "expression": conversion}]
-    return {"version": 1, "select": select, "group_by": list(group_by or [])}
+    return {"select": select, "group_by": list(group_by or [])}
 
 
 @pytest.mark.parametrize(
@@ -626,7 +635,7 @@ def _order_conversion(
         pytest.param(_order_conversion(constant_properties=[CUSTOMER_SEGMENT]), id="property"),
         pytest.param(
             _order_conversion(
-                base={"filter": {"all": [{"field": CUSTOMER_SEGMENT, "op": "=", "value": "new"}]}}
+                base={"filter": {"all": [{"field": CUSTOMER_SEGMENT, "op": "is", "value": "new"}]}}
             ),
             id="operand-filter",
         ),
@@ -650,7 +659,7 @@ def test_a_conversion_reading_a_history_dimension_without_a_time_is_refused(runt
 def test_valid_values_counts_usage_at_its_version_or_refuses(runtime):
     """A live lookup filtered by usage has to count usage, which reads the segment through the
     hop: at each usage's version with a time, and never through every version without one."""
-    by_usage = {"where": [{"field": USAGE_ID, "op": ">", "value": 0}]}
+    by_usage = {"where": [{"field": USAGE_ID, "op": "gt", "value": 0}]}
 
     counted = valid_values_payload(
         runtime,
@@ -687,7 +696,7 @@ def test_the_classification_names_the_hop_and_the_fix(package):
     assert analyze_fanout(config, usage, [HOP], validity_windows=False)["status"] == "ok"
 
 
-UNKNOWN = {"as": "nope", "expression": {"measure": "measure.hist.nope"}}
+UNKNOWN = {"as": "nope", "expression": "measure.hist.nope"}
 
 
 @pytest.mark.parametrize(
@@ -705,6 +714,7 @@ def test_discovery_offers_the_history_grouping_that_compilation_refuses_without_
     """Discovery and inspection answer from reachability alone, also with an unknown measure in
     the partial query. The grouping they offer without a time is refused when it is compiled,
     naming the hop and asking for a time; it is never answered from every version."""
+    partial = _engine(partial)
     found = discover_payload(runtime, terms="segment", partial_query=partial, kinds=["dimension"])
     card = inspect_payload(runtime, object_id=SEGMENT, partial_query=partial)["card"]
 
@@ -732,7 +742,7 @@ def test_the_planner_keeps_a_history_filter_when_the_question_gives_a_time(runti
         runtime.close()
 
     assert plan["status"] == "ok"
-    assert {"field": CUSTOMER_SEGMENT, "op": "=", "value": "high_value"} in query["where"]
+    assert {"field": CUSTOMER_SEGMENT, "op": "is", "value": "high_value"} in query["where"]
     assert query["time"]["temporal_role"] == "temporal_role.jaffle_order_time"
     assert report["ok"] is True
 
@@ -745,7 +755,7 @@ def test_recovery_hints_skip_a_dimension_behind_a_time_valid_hop(package):
     def compatible(query: dict[str, Any]) -> dict[str, Any]:
         return mixed_grain_pairing_enrichment(
             config=config,
-            query=normalize_query(query),
+            query=normalize_query(_engine(query, config)),
             measure_ids=["measure.hist.amount"],
             target_entity=ACCOUNT,
         )
@@ -775,7 +785,7 @@ def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(
     )
 
     with pytest.raises(SemanticLayerError) as exc:
-        compile_query(config, Registry(config), _amount(group_by=[dimension]))
+        compile_query(config, Registry(config), _engine(_amount(group_by=[dimension]), config))
 
     assert exc.value.code == "FANOUT_UNSAFE"
     assert exc.value.details["relationships"] == [HOP]

@@ -28,7 +28,8 @@ from semantic_rails.fanout import visible_route
 from semantic_rails.manifest import write_manifest
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import handle_jsonrpc_message
-from semantic_rails.request_context import TrustedAttributes
+from semantic_rails.query_call import read_call
+from semantic_rails.request_context import TrustedAttributes, context_from_policy_context
 from semantic_rails.runtime import Runtime, runtime_request_scope
 from semantic_rails.schema import (
     MeasureExternalDiscontinuity,
@@ -52,14 +53,13 @@ from tests.semantic_rails.hidden_absent import (
     decoded_strings,
     envelope,
     hidden_tokens,
-    http_call,
     leaks,
-    mcp_call,
     object_rows,
     outcome,
     visibility_policy,
     with_policies,
 )
+from tests.semantic_rails.visible_view_sweep import http_as, mcp_as
 
 CUSTOMERS = "metric.sales.customer_count"
 AOV = "metric.sales.aov_usd"
@@ -70,12 +70,12 @@ CUSTOMER_TYPE = "dimension.jaffle_customer_type"
 FOOD = "dimension.jaffle_order_has_food_item"
 SEGMENT = "segment.jaffle.high_value_customers"
 BY_STORE = {
-    "select": [{"expression": {"metric": CUSTOMERS}, "as": "value"}],
+    "select": [{"expression": CUSTOMERS, "as": "value"}],
     "group_by": [STORE],
 }
 RANKED = {**BY_STORE, "order_by": [{"field": "value", "direction": "desc"}], "limit": 3}
 ORDERS_BY_STORE = {
-    "select": [{"expression": {"measure": ORDERS}, "as": "value"}],
+    "select": [{"expression": ORDERS, "as": "value"}],
     "group_by": [STORE],
 }
 ROW_FILTER = SemanticPolicyConfig(
@@ -103,6 +103,8 @@ ENFORCEMENT = {
     ),
 }
 FOOD_CALLER = {"roles": ["support"], "attributes": TrustedAttributes({"has_food": True})}
+# Every call is asked at one instant, so two answers compare whole.
+NOW = "2026-10-05T06:00:00Z"
 
 
 @pytest.fixture(scope="module")
@@ -134,15 +136,15 @@ def runtimes(package: tuple[Path, PackageConfig]) -> Iterator[Callable[..., Runt
 
 def _enforced(runtime: Runtime, enforcement: str, surface: str, query: dict[str, Any]) -> Any:
     context = FOOD_CALLER if enforcement == "row_filter" else CALLER
-    payload = {**query, "policy_context": context, "verbosity": "full"}
     if surface == "http /query":
-        return http_call(runtime, "/query", payload)
+        options = {"verbosity": "full", "now": NOW}
+        return http_as(runtime, "/query", {"query": query, "options": options}, context)
     if enforcement == "row_filter":
         # Trusted attributes come from the host, never from a tool argument.
         method = {"run": runtime.query, "validate": runtime.validate, "sql": runtime.compile}
-        return outcome(lambda: method[surface](payload))
-    arguments = {"query": query, "mode": surface, "verbosity": "full", "policy_context": context}
-    return mcp_call(runtime, "execute", arguments)
+        return outcome(lambda: method[surface](query, context=context, verbosity="full", now=NOW))
+    arguments = {"query": query, "mode": surface, "verbosity": "full", "now": NOW}
+    return mcp_as(runtime, "execute", arguments, context)
 
 
 @pytest.mark.parametrize("surface", ["run", "validate", "sql", "http /query"])
@@ -198,7 +200,7 @@ def test_enforcement_never_takes_a_view(runtimes):
         "row_filter": lambda: row_filter(view, ROW_FILTER),
         "route_guard": lambda: _guard_route_row_filters(view, ("", ""), (), "", view),
         "validity_guard": lambda: _validate_measure_validity_windows(
-            [], view, normalize_query(BY_STORE)
+            [], view, normalize_query(read_call(BY_STORE)[0])
         ),
         "validity_warnings": lambda: _measure_validity_warnings(view, None),
         "withholding": lambda: _withhold_values({}, [], view),
@@ -234,9 +236,11 @@ def _surfaces(runtime: Runtime, context: dict[str, Any]) -> dict[str, Any]:
     adapter = SemanticLayerMCPAdapter(runtime)
 
     def tool(name: str, **arguments: Any) -> Any:
-        return adapter.call_tool(name, {**arguments, "policy_context": context})
+        return adapter.call_tool(
+            name, {**arguments}, request_context=context_from_policy_context(context)
+        )
 
-    aov_by_store = {"select": [{"expression": {"metric": AOV}, "as": "aov"}], "group_by": [STORE]}
+    aov_by_store = {"select": [{"expression": AOV, "as": "aov"}], "group_by": [STORE]}
     return {
         "catalog": outcome(lambda: resolve_catalog(runtime, policy_context=context)),
         "catalog_full": outcome(
@@ -248,8 +252,8 @@ def _surfaces(runtime: Runtime, context: dict[str, Any]) -> dict[str, Any]:
         "inspect_aov": tool("inspect", object_id=AOV, verbosity="full"),
         "inspect_store": tool("inspect", object_id=STORE, verbosity="full"),
         "plan": tool("plan", intent="revenue by store"),
-        "validate": tool("execute", query=aov_by_store, mode="validate", verbosity="full"),
-        "sql": tool("execute", query=aov_by_store, mode="sql", verbosity="full"),
+        "validate": tool("execute", query=aov_by_store, mode="validate", verbosity="full", now=NOW),
+        "sql": tool("execute", query=aov_by_store, mode="sql", verbosity="full", now=NOW),
         "valid_values": tool("valid-values", dimension_id=STORE),
         "segment": tool("segment", segment_id=SEGMENT, action="validate", verbosity="full"),
     }
@@ -341,17 +345,21 @@ def test_concurrent_callers_get_their_own_responses(on_disk, cold):
         for _ in range(2):
             discovered = adapter.call_tool(
                 "discover",
-                {"terms": "revenue", "verbosity": "full", "limit": 20, "policy_context": context},
+                {"terms": "revenue", "verbosity": "full", "limit": 20},
+                request_context=context_from_policy_context(context),
             )
             results.append(envelope(discovered) == cold[name]["discover"])
             for key, object_id in (("inspect_aov", AOV), ("inspect_store", STORE)):
                 card = adapter.call_tool(
                     "inspect",
-                    {"object_id": object_id, "verbosity": "full", "policy_context": context},
+                    {"object_id": object_id, "verbosity": "full"},
+                    request_context=context_from_policy_context(context),
                 )
                 results.append(envelope(card) == cold[name][key])
             values = adapter.call_tool(
-                "valid-values", {"dimension_id": STORE, "policy_context": context}
+                "valid-values",
+                {"dimension_id": STORE},
+                request_context=context_from_policy_context(context),
             )
             results.append(envelope(values) == cold[name]["valid_values"])
             catalog = outcome(lambda: resolve_catalog(runtime, policy_context=context))
@@ -400,20 +408,28 @@ def test_an_unresolved_hidden_set_refuses_before_the_warehouse(package, monkeypa
     try:
         responses = {
             "execute": adapter.call_tool(
-                "execute", {"query": BY_STORE, "mode": "run", "policy_context": CALLER}
+                "execute",
+                {"query": BY_STORE, "mode": "run"},
+                request_context=context_from_policy_context(CALLER),
             ),
-            "validate": runtime.validate({**BY_STORE, "policy_context": CALLER}),
+            "validate": runtime.validate(BY_STORE, context=CALLER),
             "discover": adapter.call_tool(
-                "discover", {"terms": "revenue", "policy_context": CALLER}
+                "discover",
+                {"terms": "revenue"},
+                request_context=context_from_policy_context(CALLER),
             ),
             "plan": adapter.call_tool(
-                "plan", {"intent": "customers by store", "policy_context": CALLER}
+                "plan",
+                {"intent": "customers by store"},
+                request_context=context_from_policy_context(CALLER),
             ),
             "inspect": adapter.call_tool(
-                "inspect", {"object_id": CUSTOMERS, "policy_context": CALLER}
+                "inspect",
+                {"object_id": CUSTOMERS},
+                request_context=context_from_policy_context(CALLER),
             ),
             "catalog": outcome(lambda: resolve_catalog(runtime, policy_context=CALLER)),
-            "http catalog": http_call(runtime, "/catalog", {"policy_context": CALLER}),
+            "http catalog": http_as(runtime, "/catalog", {}, CALLER),
         }
         for name, response in responses.items():
             assert _unresolved(response), (name, response)
@@ -434,7 +450,7 @@ def test_a_nested_call_never_widens_the_pinned_view(runtimes, monkeypatch):
     @runtime_request_scope
     def outer(runtime: Runtime, *, policy_context: dict[str, Any]) -> dict[str, Any]:
         # Asks again as an eligible caller from inside a restricted caller's request.
-        return runtime.query({**query, "policy_context": {"roles": ["finance"]}})
+        return runtime.query(query, context={"roles": ["finance"]})
 
     response = outcome(lambda: outer(runtime, policy_context=CALLER))
     assert _unresolved(response), response
@@ -444,15 +460,13 @@ def test_a_nested_call_never_widens_the_pinned_view(runtimes, monkeypatch):
 
 def test_failed_enrichment_suggests_nothing(runtimes, monkeypatch):
     runtime = runtimes(visibility_policy("hidden", REVENUE))
-    typo = {"select": [{"expression": {"metric": "metric.sales.customer_cont"}, "as": "v"}]}
+    typo = {"select": [{"expression": "metric.sales.customer_cont", "as": "v"}]}
 
     def boom(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("visibility unavailable")
 
-    working_mcp = mcp_call(
-        runtime, "execute", {"query": typo, "mode": "sql", "policy_context": CALLER}
-    )
-    working_http = http_call(runtime, "/compile", {**typo, "policy_context": CALLER})
+    working_mcp = mcp_as(runtime, "execute", {"query": typo, "mode": "sql"}, CALLER)
+    working_http = http_as(runtime, "/compile", {"query": typo}, CALLER)
     assert CUSTOMERS in json.dumps(working_mcp)
     assert CUSTOMERS in json.dumps(working_http)
     monkeypatch.setattr(type(runtime), "view_for", boom)
@@ -467,7 +481,7 @@ def test_failed_enrichment_suggests_nothing(runtimes, monkeypatch):
     )
     assert CUSTOMERS not in json.dumps(payload)
     adapter = SemanticLayerMCPAdapter(runtime)
-    mcp_payload = adapter._error_response(error, {"policy_context": CALLER})
+    mcp_payload = adapter._error_response(error, {})
     assert CUSTOMERS not in json.dumps(mcp_payload)
 
 
@@ -489,19 +503,16 @@ def test_a_hidden_row_kept_by_mistake_is_refused_after_binding(package, monkeypa
         return replace(view, measures=[*view.measures, revenue])
 
     monkeypatch.setattr(visible_view, "build_view", leaky)
-    query = {
-        "select": [{"expression": REVENUE, "as": "revenue"}],
-        "policy_context": CALLER,
-    }
+    query = {"select": [{"expression": REVENUE, "as": "revenue"}]}
     try:
         for call in (runtime.query, runtime.compile):
-            refused = outcome(lambda call=call: call(query))
+            refused = outcome(lambda call=call: call(query, context=CALLER))
             assert (refused["raised"], refused["message"], refused["details"]) == (
                 "OBJECT_NOT_FOUND",
                 "The requested object was not found.",
                 {},
             )
-        report = runtime.validate(query)
+        report = runtime.validate(query, context=CALLER)
         assert [issue["code"] for issue in report["errors"]] == ["OBJECT_NOT_FOUND"]
         assert REVENUE not in json.dumps(report["errors"])
         assert spy.calls == 0
@@ -596,8 +607,9 @@ def _route_calls(runtime: Runtime) -> dict[str, Any]:
                     "query": diamond.BALANCE_BY_DISTRICT,
                     "mode": mode,
                     "verbosity": verbosity,
-                    "policy_context": READER,
+                    "now": NOW,
                 },
+                request_context=context_from_policy_context(READER),
             )
     return out
 
@@ -673,9 +685,7 @@ def test_an_ambiguous_route_offers_only_visible_options_and_never_answers(tmp_pa
 
 
 def _card(runtime: Runtime, object_id: str) -> dict[str, Any]:
-    return mcp_call(
-        runtime, "inspect", {"object_id": object_id, "verbosity": "full", "policy_context": CALLER}
-    )
+    return mcp_as(runtime, "inspect", {"object_id": object_id, "verbosity": "full"}, CALLER)
 
 
 def test_prose_naming_a_hidden_object_is_omitted(package):
@@ -699,11 +709,7 @@ def test_prose_naming_a_hidden_object_is_omitted(package):
         kept = _card(runtime, "metric.sales.inventory_on_hand_eop")["card"]["description"]
         assert kept == described["metric.sales.inventory_on_hand_eop"]
         assert REVENUE not in json.dumps(
-            mcp_call(
-                runtime,
-                "discover",
-                {"terms": "customer", "verbosity": "full", "policy_context": CALLER},
-            )
+            mcp_as(runtime, "discover", {"terms": "customer", "verbosity": "full"}, CALLER)
         )
     finally:
         runtime.close()
@@ -722,7 +728,7 @@ def test_a_policy_listing_a_hidden_object_shows_its_generic_form(runtimes):
     assert "policy_id" not in effects[0]
     assert effects[0]["object_ids"] == [ORDERS]
     assert deny.rationale not in json.dumps(card)
-    refusal = runtime.validate({**ORDERS_BY_STORE, "policy_context": CALLER})
+    refusal = runtime.validate(ORDERS_BY_STORE, context=CALLER)
     public = [
         row
         for row in refusal["errors"][0]["details"]["policy_effects"]
@@ -812,17 +818,11 @@ def test_a_non_ascii_hidden_label_in_a_visible_note_reaches_no_caller(package, a
 
     def responses(context: dict[str, Any]) -> dict[str, Any]:
         return {
-            "mcp inspect": mcp_call(
-                runtime,
-                "inspect",
-                {"object_id": ORDERS, "verbosity": "full", "policy_context": context},
+            "mcp inspect": mcp_as(
+                runtime, "inspect", {"object_id": ORDERS, "verbosity": "full"}, context
             ),
-            "http /inspect": http_call(
-                runtime, "/inspect", {"object_id": ORDERS, "policy_context": context}
-            ),
-            "http /catalog": http_call(
-                runtime, "/catalog", {"verbosity": "full", "policy_context": context}
-            ),
+            "http /inspect": http_as(runtime, "/inspect", {"object_id": ORDERS}, context),
+            "http /catalog": http_as(runtime, "/catalog", {"verbosity": "full"}, context),
         }
 
     try:
@@ -895,7 +895,7 @@ def test_diamond_routes_in_both_mcp_channels(tmp_path, tool, verbosity, mode, hi
     adapter = SemanticLayerMCPAdapter(runtime)
     query = dict(diamond.BALANCE_BY_DISTRICT)
     if mode == "query_choice":
-        query["route_decisions"] = [decision]
+        query = diamond._routed(query, decision)
     try:
         # Use the same runtime/cache across readers and authors.
         for audience in ("author", "reader", "author"):
@@ -915,11 +915,7 @@ def test_diamond_routes_in_both_mcp_channels(tmp_path, tool, verbosity, mode, hi
                     assert diamond.OWNER_ROUTE[0] in channel
             if mode != "refusal":
                 direct = getattr(runtime, {"execute": "query"}.get(tool, tool))(
-                    {
-                        **query,
-                        "verbosity": verbosity,
-                        "policy_context": RequestContext(audience=audience).to_policy_context(),
-                    }
+                    query, context=RequestContext(audience=audience), verbosity=verbosity
                 )
                 if audience == "reader":
                     assert all(
@@ -1114,7 +1110,7 @@ def test_multi_measure_routes_check_every_relationship_endpoint(tmp_path, tool, 
     query = {
         **diamond.BALANCE_BY_DISTRICT,
         "select": [
-            {"expression": {"measure": "measure.bank.budget"}, "as": "budget"},
+            {"expression": "measure.bank.budget", "as": "budget"},
             *diamond.BALANCE_BY_DISTRICT["select"],
         ],
     }
@@ -1125,11 +1121,7 @@ def test_multi_measure_routes_check_every_relationship_endpoint(tmp_path, tool, 
             out, channels = _mcp(adapter, tool, query, verbosity, audience)
             assert out["ok"] is True, out
             direct = getattr(runtime, {"execute": "query"}.get(tool, tool))(
-                {
-                    **query,
-                    "verbosity": verbosity,
-                    "policy_context": RequestContext(audience=audience).to_policy_context(),
-                }
+                query, context=RequestContext(audience=audience), verbosity=verbosity
             )
             assert direct["ok"] is True, direct
             for channel in (*channels, json.dumps(direct)):
@@ -1169,19 +1161,21 @@ def test_route_projection_preserves_literal_objects(tmp_path, tool, literal):
             )
         ],
     )
-    query = {
-        **diamond.BALANCE_BY_DISTRICT,
-        "select": [
-            *diamond.BALANCE_BY_DISTRICT["select"],
-            {"expression": {"kind": "literal", "value": literal}, "as": "x"},
-        ],
-        "route_decisions": [{**diamond.DIAMOND_ROW, "relationship_path": diamond.BRANCH_ROUTE}],
-        "policy_context": RequestContext(audience="reader").to_policy_context(),
-        "verbosity": "full",
-    }
+    query = diamond._routed(
+        {
+            **diamond.BALANCE_BY_DISTRICT,
+            "select": [
+                *diamond.BALANCE_BY_DISTRICT["select"],
+                {"expression": {"kind": "literal", "value": literal}, "as": "x"},
+            ],
+        },
+        {**diamond.DIAMOND_ROW, "relationship_path": diamond.BRANCH_ROUTE},
+    )
     runtime = Runtime.from_config(config, source_path=str(pkg))
     try:
-        out = getattr(runtime, tool)(query)
+        out = getattr(runtime, tool)(
+            query, context=RequestContext(audience="reader"), verbosity="full"
+        )
         assert out["ok"] is True, out
         assert out["logical_plan"]["query"]["select"][1]["expression"]["value"] == literal
         assert out["explain"]["normalized_query"]["select"][1]["expression"]["value"] == literal
@@ -1219,15 +1213,16 @@ def test_a_visible_route_cannot_step_around_a_hidden_row_filter(
     runtime = Runtime.from_config(config, source_path=str(root))
     spy = _Spy()
     monkeypatch.setattr(runtime, "_get_adapter", spy)
-    query = {
-        **diamond.BALANCE_BY_DISTRICT,
-        "route_decisions": [{**diamond.DIAMOND_ROW, "relationship_path": diamond.BRANCH_ROUTE}],
-        "policy_context": {**CALLER, "attributes": TrustedAttributes({"owner": "Ann"})},
-        "verbosity": "full",
-    }
+    query = diamond._routed(
+        diamond.BALANCE_BY_DISTRICT,
+        {**diamond.DIAMOND_ROW, "relationship_path": diamond.BRANCH_ROUTE},
+    )
+    context = {**CALLER, "attributes": TrustedAttributes({"owner": "Ann"})}
     try:
         for method in (runtime.validate, runtime.compile, runtime.query):
-            response = outcome(lambda method=method: method(query))
+            response = outcome(
+                lambda method=method: method(query, context=context, verbosity="full")
+            )
             error = (
                 response["errors"][0]
                 if "errors" in response
@@ -1288,10 +1283,8 @@ def test_hidden_prose_never_removes_validity_or_discontinuities(package, action,
             assert measure.external_discontinuities == [replace(discontinuity, what="")]
             assert measure.cross_window_policy == policy
         for mode in ("validate", "sql"):
-            response = mcp_call(
-                runtime,
-                "execute",
-                {"query": query, "mode": mode, "policy_context": CALLER, "verbosity": "full"},
+            response = mcp_as(
+                runtime, "execute", {"query": query, "mode": mode, "verbosity": "full"}, CALLER
             )
             assert not leaks(response, hidden_tokens(config, [REVENUE])), response
             if policy == "refuse":
@@ -1311,7 +1304,7 @@ def test_hidden_prose_never_removes_validity_or_discontinuities(package, action,
 
 @pytest.mark.parametrize("action", ACTIONS)
 @pytest.mark.parametrize("field", ["meta", "operational"])
-def test_hidden_prose_keeps_the_mnpi_export_hint(package, action, field):
+def test_hidden_prose_keeps_the_mnpi_flag(package, action, field):
     root, config = package
     config = replace(
         config,
@@ -1328,11 +1321,8 @@ def test_hidden_prose_keeps_the_mnpi_export_hint(package, action, field):
         for shown in (runtime.view_for(CALLER), absent(config, [REVENUE])):
             measure = next(row for row in shown.measures if row.id == ORDERS)
             assert getattr(measure, field) == {"mnpi": True}
-        response = runtime.validate({**ORDERS_BY_STORE, "export": True, "policy_context": CALLER})
+        response = runtime.validate(ORDERS_BY_STORE, context=CALLER)
         assert response["ok"] is True, response
-        assert "MNPI_BULK_EXPORT_DISCOURAGED" in {
-            row["code"] for row in response["methodology_hints"]
-        }
         assert not leaks(response, hidden_tokens(config, [REVENUE]))
     finally:
         runtime.close()
@@ -1350,15 +1340,11 @@ def test_a_hidden_default_metric_is_never_generated(package, action):
     runtime = Runtime.from_config(config, source_path=str(root))
     try:
         responses = [
-            mcp_call(
-                runtime,
-                "inspect",
-                {"object_id": ORDERS, "verbosity": verbosity, "policy_context": CALLER},
-            )
+            mcp_as(runtime, "inspect", {"object_id": ORDERS, "verbosity": verbosity}, CALLER)
             for verbosity in ("minimal", "compact", "full")
         ]
         responses.extend(
-            http_call(runtime, route, {"object_id": ORDERS, "policy_context": CALLER})
+            http_as(runtime, route, {"object_id": ORDERS}, CALLER)
             for route in ("/inspect", "/catalog")
         )
         for response in responses:
@@ -1382,13 +1368,9 @@ def test_a_measure_card_names_no_metric_of_its_own(package, authored):
         config = replace(config, metric_recipes=[*config.metric_recipes, metric])
     runtime = Runtime.from_config(config, source_path=str(root))
     try:
-        minimal = mcp_call(
-            runtime,
-            "inspect",
-            {"object_id": ORDERS, "verbosity": "minimal", "policy_context": CALLER},
-        )
-        inspected = http_call(runtime, "/inspect", {"object_id": ORDERS, "policy_context": CALLER})
-        catalog = http_call(runtime, "/catalog", {"verbosity": "full", "policy_context": CALLER})
+        minimal = mcp_as(runtime, "inspect", {"object_id": ORDERS, "verbosity": "minimal"}, CALLER)
+        inspected = http_as(runtime, "/inspect", {"object_id": ORDERS}, CALLER)
+        catalog = http_as(runtime, "/catalog", {"verbosity": "full"}, CALLER)
         row = next(row for row in catalog["catalog"]["measures"] if row["id"] == ORDERS)
         assert "default_metric_id" not in minimal["card"], minimal
         assert "default_metric_id" not in inspected["card"], inspected

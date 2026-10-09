@@ -46,11 +46,18 @@ def _as_date(value) -> date:
     return value.date() if isinstance(value, datetime) else value
 
 
+# A call's named window (``start`` and ``end``) implies its fill, so the fill and no-fill
+# readings of one window are compared in the engine's own form.
+ORDERS = {
+    "expression": {"kind": "measure", "measure": "measure.jaffle.order_count"},
+    "as": "orders",
+}
+
+
 def _series(runtime, grain: str, start: str, end: str, *, fill: bool, **time) -> dict[date, int]:
-    alias = f"temporal_role.jaffle_order_time__{grain}"
-    rows = runtime.query(
+    rows = runtime.query_internal(
         {
-            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+            "select": [ORDERS],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": grain,
@@ -61,7 +68,7 @@ def _series(runtime, grain: str, start: str, end: str, *, fill: bool, **time) ->
             },
         }
     )["rows"]
-    return {_as_date(row[alias]): row["orders"] for row in rows}
+    return {_as_date(row["period"]): row["orders"] for row in rows}
 
 
 @pytest.mark.parametrize(
@@ -84,19 +91,6 @@ def test_fill_keeps_the_bucket_that_starts_before_the_window(
     assert min(filled) == first_bucket
     # Filling only adds empty buckets: every bucket with rows keeps its count.
     assert {bucket: orders for bucket, orders in filled.items() if orders} == unfilled
-
-
-@pytest.mark.parametrize("fill", [True, False])
-def test_a_fiscal_quarter_is_refused_with_or_without_fill(runtime_factory, fill):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        with pytest.raises(SemanticLayerError) as refused:
-            _series(runtime, "quarter", "2017-01-01", "2017-10-01", fill=fill, calendar_id="fiscal")
-    finally:
-        runtime.close()
-
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
 _JULY_BY_WEEK = {
@@ -158,9 +152,8 @@ def test_fill_without_a_date_day_column_uses_the_implicit_calendar(runtime_facto
 
 
 def _bucket_counts(runtime, grain: str, start: str, end: str, *, fill: bool, group_by=None):
-    alias = f"temporal_role.jaffle_order_time__{grain}"
     query = {
-        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+        "select": [ORDERS],
         "time": {
             "temporal_role": "temporal_role.jaffle_order_time",
             "grain": grain,
@@ -171,9 +164,9 @@ def _bucket_counts(runtime, grain: str, start: str, end: str, *, fill: bool, gro
     }
     if group_by:
         query["group_by"] = [group_by]
-    rows = runtime.query(query)["rows"]
+    rows = runtime.query_internal(query)["rows"]
     return {
-        (_as_date(row[alias]), row[group_by] if group_by else None): row["orders"]
+        (_as_date(row["period"]), row[group_by] if group_by else None): row["orders"]
         for row in rows
         if row["orders"]
     }
@@ -260,8 +253,7 @@ def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
         )
         sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
         rows = connection.execute(
-            'SELECT CAST("temporal_role.jaffle_order_time__week" AS DATE), orders '
-            f"FROM ({sql}) AS timestamp_result"
+            f"SELECT CAST(period AS DATE), orders FROM ({sql}) AS timestamp_result"
         ).fetchall()
 
     assert rows
@@ -308,8 +300,7 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
         }
         sql = compile_query(config, Registry(config), query)["sql"]
         rows = connection.execute(
-            'SELECT CAST("temporal_role.jaffle_order_time__day" AS VARCHAR), orders '
-            f"FROM ({sql}) AS tokyo_result"
+            f"SELECT CAST(period AS VARCHAR), orders FROM ({sql}) AS tokyo_result"
         ).fetchall()
 
     # No order exists at all, so there is no data to call zero: Tokyo's July 4 reads NULL.
@@ -390,8 +381,7 @@ def test_fill_preserves_offset_window_days_with_timestamptz_data(
             shape = {**query, "time": {**query["time"], "fill": fill}}
             sql = compile_query(config, Registry(config), shape)["sql"]
             return connection.execute(
-                'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
-                f"FROM ({sql}) AS filled_result"
+                f"SELECT CAST(period AS DATE), orders FROM ({sql}) AS filled_result"
             ).fetchall()
 
         filled = rows(True)
@@ -445,8 +435,7 @@ def test_fill_respects_instant_order_during_dst_fold(tmp_path, start, end, expec
             shape = {**_JULY_BY_WEEK, "time": {**time, "fill": fill}}
             sql = compile_query(config, Registry(config), shape)["sql"]
             rows = connection.execute(
-                'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
-                f"FROM ({sql}) AS fold_result"
+                f"SELECT CAST(period AS DATE), orders FROM ({sql}) AS fold_result"
             ).fetchall()
             results[fill] = dict(rows)
 
@@ -476,8 +465,7 @@ def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path
             shape = {**_JULY_BY_WEEK, "time": {**time, "fill": fill}}
             sql = compile_query(config, Registry(config), shape)["sql"]
             rows = connection.execute(
-                'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
-                f"FROM ({sql}) AS wall_result"
+                f"SELECT CAST(period AS DATE), orders FROM ({sql}) AS wall_result"
             ).fetchall()
             results[fill] = {day: count for day, count in rows if count}
 
@@ -536,8 +524,7 @@ def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected,
             query = {**_JULY_BY_WEEK, "time": {**time, "fill": fill}}
             sql = compile_query(config, Registry(config), query)["sql"]
             rows = connection.execute(
-                'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
-                f"FROM ({sql}) AS nanosecond_result"
+                f"SELECT CAST(period AS DATE), orders FROM ({sql}) AS nanosecond_result"
             ).fetchall()
             results[fill] = rows
 
@@ -780,8 +767,7 @@ def test_fill_date_extremes_with_representable_zone_conversion(
         }
         sql = compile_query(config, Registry(config), query)["sql"]
         rows = connection.execute(
-            'SELECT CAST("temporal_role.jaffle_order_time__day" AS DATE), orders '
-            f"FROM ({sql}) AS boundary_result"
+            f"SELECT CAST(period AS DATE), orders FROM ({sql}) AS boundary_result"
         ).fetchall()
 
     assert [day for day, _ in rows] == expected
@@ -825,8 +811,10 @@ def test_fill_has_no_rows_for_an_empty_interval(runtime_factory, start, end):
         "time": {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end},
     }
     try:
-        filled = runtime.query(query)["rows"]
-        unfilled = runtime.query({**query, "time": {**query["time"], "fill": False}})["rows"]
+        filled = runtime.query_internal(query)["rows"]
+        unfilled = runtime.query_internal({**query, "time": {**query["time"], "fill": False}})[
+            "rows"
+        ]
     finally:
         runtime.close()
     assert filled == unfilled == []

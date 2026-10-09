@@ -332,8 +332,7 @@ def _rows(out: dict[str, Any], columns: list[str]) -> list[tuple]:
 
 
 def _query(select: str, **parts: Any) -> dict[str, Any]:
-    kind = "metric" if select.startswith("metric.") else "measure"
-    return {"version": 1, "select": [{"expression": {kind: select}, "as": "v"}], **parts}
+    return {"select": [{"expression": select, "as": "v"}], **parts}
 
 
 def _notes(out: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -541,7 +540,7 @@ def test_fan_out_only_alternatives_refuse_and_a_row_decides(tmp_path):
     customer, order = "entity.shop_customer", "entity.shop_order"
     query = _query(
         "measure.shop.customer_count",
-        where=[{"field": "dimension.shop_order_status", "op": "=", "value": "returned"}],
+        where=[{"field": "dimension.shop_order_status", "op": "is", "value": "returned"}],
     )
     err = _refusal(_write_shop(tmp_path / "none"), query)
     assert sorted(_routes(err), key=len) == [DIRECT_ORDERS, SESSION_ORDERS]
@@ -943,16 +942,13 @@ def test_every_route_excluded_by_rows_is_refused_naming_the_rows(tmp_path):
     assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("loan", "owner"))
 
 
-_METRIC_PREDICATE = {
-    "kind": "metric_predicate",
+# Districts holding at least 100 in loans, over every loan of the district.
+_LENDING_DISTRICTS = {
     "entity": DISTRICT,
-    "scope_mode": "entity_only",
-    "input": {"measure": LOAN_AMOUNT},
-    "op": ">=",
-    "value": 100,
+    "having": [{"field": LOAN_AMOUNT, "op": "gte", "value": 100}],
+    "over": "all_time",
 }
 _CONVERSION = {
-    "version": 1,
     "select": [
         {
             "as": "v",
@@ -972,21 +968,16 @@ _CONVERSION = {
 ENTRY_POINTS = {
     "group_by": (_query(LOAN_AMOUNT, group_by=[DISTRICT_NAME]), [DISTRICT_NAME, "v"]),
     "where": (
-        _query(LOAN_AMOUNT, where=[{"field": DISTRICT_NAME, "op": "=", "value": "Alpha"}]),
+        _query(LOAN_AMOUNT, where=[{"field": DISTRICT_NAME, "op": "is", "value": "Alpha"}]),
         ["v"],
     ),
     "measure_filter": (_query("metric.lender.alpha_loans"), ["v"]),
-    "metric_predicate": (
-        _query(
-            LOAN_AMOUNT,
-            metric_filters=[{"expression": _METRIC_PREDICATE, "op": "=", "value": True}],
-        ),
-        ["v"],
-    ),
+    "metric_predicate": (_query(LOAN_AMOUNT, where=[_LENDING_DISTRICTS]), ["v"]),
+    # Each district opened on its own day, so a day grain keeps one row per opening.
     "time_role": (
         _query(
             "measure.lender.amount_by_district_opening",
-            time={"temporal_role": "temporal_role.lender_district_opened"},
+            time={"temporal_role": "temporal_role.lender_district_opened", "grain": "day"},
         ),
         ["v"],
     ),
@@ -1088,7 +1079,7 @@ def test_a_child_filter_through_an_inherited_route_counts_each_loan_once(tmp_pat
     pkg = _write_package(tmp_path, rows=rows)
     resolution = resolve_route(load_package_config(str(pkg)), start=LOAN, target=_entity("branch"))
     assert resolution.basis == "inherited"
-    query = _query(LOAN_AMOUNT, where=[{"field": BRANCH_NAME, "op": "=", "value": "Main"}])
+    query = _query(LOAN_AMOUNT, where=[{"field": BRANCH_NAME, "op": "is", "value": "Main"}])
     runtime = Runtime.from_path(str(pkg))
     out = runtime.query(query)
     gold = (

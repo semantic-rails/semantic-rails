@@ -10,7 +10,7 @@ from semantic_rails.dialects import dialect_for_warehouse, supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 
 ROLE = "temporal_role.jaffle_order_time"
-TIME = f"{ROLE}__month"
+TIME = "period"
 GROUPS = ["dimension.jaffle_store_name", "dimension.jaffle_store_id"]
 
 
@@ -54,7 +54,8 @@ def test_default_order_is_time_then_authored_groups(
     quote = "`" if warehouse in {"bigquery", "databricks"} else '"'
     order_sql = compiled["sql"].rsplit("\nORDER BY\n", 1)[1].split("\nLIMIT ", 1)[0]
     assert order_sql == ",\n".join(
-        [f"  {quote}{aliases.get(alias, alias)}{quote} ASC" for alias in expected[:-1]]
+        [f"  {TIME} ASC"]
+        + [f"  {quote}{aliases.get(alias, alias)}{quote} ASC" for alias in groups]
         + ["  orders ASC NULLS LAST"]
     )
 
@@ -81,7 +82,7 @@ def test_explicit_order_wins_without_extra_tiebreakers(
 def test_empty_explicit_order_uses_the_default(package_config_factory, order_by):
     config, _ = package_config_factory("jaffle_shop")
     compiled = compile_query(config, None, _query(order_by=order_by))
-    assert compiled["sql"].endswith(f'\nORDER BY\n  "{TIME}" ASC')
+    assert compiled["sql"].endswith(f"\nORDER BY\n  {TIME} ASC")
 
 
 def test_raw_time_axis_is_ordered(package_config_factory):
@@ -139,9 +140,8 @@ def test_default_order_covers_alternate_lowering_paths(package_config_factory, s
         assert any(
             row["kind"] == "anchored_entity_set" for row in compiled["physical_plan"].optimizations
         )
-    expected_time = f"{query['time']['temporal_role']}__month"
     assert [o.expression.parts for o in compiled["sql_ast"].order_by] == [
-        [expected_time],
+        [TIME],
         *[[group] for group in GROUPS],
     ]
 
