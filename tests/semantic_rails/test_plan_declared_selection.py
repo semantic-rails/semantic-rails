@@ -64,8 +64,9 @@ def _package(
     clock: str = CALL_CLOCK,
     governors: tuple[str, ...] = ("calls",),
 ) -> Path:
-    """Appendix fixture plus a calls fact. ``calls`` is the governed metrics' form:
-    ``zero_filled`` (``COALESCE(<filtered count>, 0)``), ``bare`` or ``one_filled``."""
+    """Accounts with their events, daily balances and calls. ``calls`` is the form of the
+    governed call metrics: ``zero_filled`` (``COALESCE(<filtered count>, 0)``), ``bare`` or
+    ``one_filled``."""
 
     customer = {"field": SEGMENT, "op": "=", "value": "customer"}
 
