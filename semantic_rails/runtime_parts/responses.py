@@ -112,8 +112,15 @@ def apply_response_verbosity(
         else:
             allowed = _MINIMAL_KEYS_NONEXECUTE
         out = {key: value for key, value in out.items() if key in allowed}
-        # An assumption changes what the numbers mean, so it survives the cheapest response.
-        for key in ("assumptions", "time_shape", "withheld"):
+        # What changes what the numbers mean survives the cheapest response.
+        for key in (
+            "assumptions",
+            "time_shape",
+            "window",
+            "clock",
+            "observation_scope",
+            "withheld",
+        ):
             if response.get(key):
                 out[key] = response[key]
     elif verbosity == "compact":

@@ -37,9 +37,9 @@ def test_relative_bounds_use_one_local_date(request, backend_name, clock, calend
     source = CLOCK[clock]
     within = f"{source} >= TIMESTAMP '{start}' AND {source} < TIMESTAMP '{end}'"
     if shape == "total":
-        reference = (
-            f"SELECT COALESCE(SUM(o.amount), 0) FROM orders o WHERE {within} HAVING COUNT(*) > 0"
-        )
+        # One total even for a window with no order (New York's June 29): inside the loaded
+        # data, it reads 0.
+        reference = f"SELECT COALESCE(SUM(o.amount), 0) FROM orders o WHERE {within}"
     else:
         reference = (
             f"SELECT TIMESTAMP '{start}', COALESCE(SUM(o.amount), 0) FROM orders o WHERE {within}"
@@ -109,7 +109,7 @@ def test_a_call_cannot_pick_a_fiscal_calendar(request, backend_name, variant, sh
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("variant", ["date_authored", "date_implicit"])
 @pytest.mark.parametrize("end", ["2024-07-01T03:00:00", "2024-07-01T00:00:00"])
-@pytest.mark.parametrize("shape", ["sparse", "total", "folded", "dimensions"])
+@pytest.mark.parametrize("shape", ["series", "total", "folded", "dimensions"])
 def test_date_source_and_spine_share_the_end_day(request, backend_name, variant, end, shape):
     backend = _backend(request, backend_name)
     source = "CAST(o.order_date AS TIMESTAMP)"
@@ -136,10 +136,8 @@ def test_date_source_and_spine_share_the_end_day(request, backend_name, variant,
     _assert_rows(
         backend.reference(reference), [tuple(r.values()) for r in typed_rows(result)], shape
     )
-    if shape == "sparse" and end.endswith("00:00:00"):
-        assert "FROM orders_monthly" in result["rendered_sql"]
-    if not end.endswith("00:00:00"):
-        assert "FROM orders_monthly" not in result["rendered_sql"]
+    # A named window bounds its zeros by the base's loaded data, so no shape reads the rollup.
+    assert "FROM orders_monthly" not in result["rendered_sql"]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -349,13 +347,16 @@ def test_entity_only_predicate_window_refuses_timezone_conversion(
         assert caught.value.details["temporal_role"] == role
     else:
         result = runtime.query(query)
+        # The named window answers both its days; June 30 is before the first row, so NULL.
         expected = backend.reference(
-            "SELECT CAST(source_day AS TIMESTAMP), SUM(amount) FROM clock_edges "
-            "WHERE source_day >= DATE '2024-06-30' AND source_day <= DATE '2024-07-01' GROUP BY 1"
+            "SELECT g.d, SUM(c.amount) FROM generate_series(TIMESTAMP '2024-06-30', "
+            "TIMESTAMP '2024-07-01', INTERVAL '1 day') AS g(d) LEFT JOIN clock_edges AS c "
+            "ON CAST(c.source_day AS TIMESTAMP) = g.d GROUP BY 1"
         )
-        assert len(expected) == 1
-        assert expected[0][0].date() == date(2024, 7, 1)
-        assert expected[0][1] == 10
+        assert [(row[0].date(), row[1]) for row in sorted(expected)] == [
+            (date(2024, 6, 30), None),
+            (date(2024, 7, 1), 10),
+        ]
         _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], clock)
 
 

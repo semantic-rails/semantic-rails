@@ -598,13 +598,18 @@ def _record_time_scope(
     bucket: Any,
     local: bool,
 ) -> None:
-    if not plan.time or leaf.ctes:
+    if not plan.time or not _needs_time_scope(plan, config):
         return
-    if not _needs_time_scope(plan, config):
+    # A leaf with CTEs of its own (an entity filter's population) records only where its
+    # base is loaded: its conditions read those CTEs, which an observation probe can't see.
+    nested = bool(leaf.ctes)
+    if nested and (
+        not isinstance(leaf.from_table, SqlTableRef)
+        or leaf.from_table.name in {cte.name for cte in leaf.ctes}
+    ):
         return
     if not isinstance(leaf.from_table, SqlTableRef):
         raise SemanticLayerError("EMPTY_GROUPS_UNSETTLED", "A time scope needs a base relation.")
-    dialect = _dialect(config)
     for row in rows:
         alias = row.bound_measure.alias
         value = next(field.expression for field in leaf.select if field.alias == alias)
@@ -634,14 +639,13 @@ def _record_time_scope(
             alias,
             LeafScope(
                 from_table=leaf.from_table,
-                joins=tuple(leaf.joins),
-                where=tuple(untimed),
+                joins=() if nested else tuple(leaf.joins),
+                where=() if nested else tuple(untimed),
                 value=value,
                 bucket=coverage_bucket if local else None,
                 raw_time=raw_time,
                 storage_zone=role.column_timezone or role.timezone or "UTC",
-                now=dialect.now("UTC"),
-                bounded=bool(plan.time.get("start") or plan.time.get("end")),
+                bounded=not nested and bool(plan.time.get("start") or plan.time.get("end")),
             ),
         )
 
@@ -1564,20 +1568,34 @@ def _single_expression_branch_select(
 def _lower_agent_dag_to_sql(
     plan: LogicalPlan, config: PackageConfig, guard_empty: bool = True
 ) -> SqlSelect:
-    # Filling a distribution's per-entity values put every entity in every period as a 0.
-    if plan.time and plan.time.get("fill"):
+    # A named window answers each of its periods, filled over the combined answer: a
+    # distribution reads NULL in a period with no rows. Its per-entity values are never filled,
+    # which would put every entity in every period as a 0, so an explicit fill refuses.
+    dense = bool(plan.time and plan.time.get("fill"))
+    if dense and not _window_is_named(plan.time):
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
             "time.fill isn't supported for distributions; query without fill (periods with no "
             "data are omitted).",
         )
+    if dense and guard_empty and zero_outputs(plan, config):
+        # Filled after the combine, a sum's empty period can't tell 0 from no data yet.
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "A distribution beside a sum or count can't answer every period of a named window "
+            "yet. Ask for the distribution and the sum or count in separate calls.",
+            details={"reason": "distribution_beside_additive_in_named_window"},
+        )
+    branch_plan = replace(plan, time={**plan.time, "fill": False}) if dense else plan
     key_aliases = _query_key_aliases(plan)
     branch_ctes: list[SqlCte] = []
     output_aliases: list[str] = []
     for index, (alias, expr_payload) in enumerate(plan.post_aggregation_exprs.items(), start=1):
         expr = _parse_public_expr(expr_payload)
         branch_name = f"agent_branch_{index}"
-        branch_query = _single_expression_branch_select(expr, alias=alias, plan=plan, config=config)
+        branch_query = _single_expression_branch_select(
+            expr, alias=alias, plan=branch_plan, config=config
+        )
         branch_ctes.append(
             SqlCte(name=branch_name, query=_namespace_sql_select(branch_query, f"{branch_name}__"))
         )
@@ -1645,6 +1663,27 @@ def _lower_agent_dag_to_sql(
         )
         combined_name = next_name
         available_aliases.append(output_aliases[index - 1])
+
+    if dense:
+        combined = SqlSelect(
+            select=[
+                SqlField(SqlIdentifier(parts=["base", alias]), alias)
+                for alias in [*key_aliases, *output_aliases]
+            ],
+            from_table=SqlTableRef(name=combined_name, alias="base"),
+        )
+        combine_ctes.append(SqlCte(name="leaf_base", query=combined))
+        combine_ctes.extend(
+            _series_base_ctes(
+                plan,
+                config,
+                _calendar_fill_binding(plan, config),
+                key_aliases[-1],
+                key_aliases[:-1],
+                output_aliases,
+            )
+        )
+        combined_name = "series_base"
 
     # A branch that has no row for a group leaves its output NULL in the combine: settle
     # those outputs again over the combined result, the same way each branch did.
@@ -3322,7 +3361,7 @@ def _minimal_predicate_set_ctes(
         mini_query["time"] = {
             key: value
             for key, value in dict(time_spec).items()
-            if key in {"temporal_role", "grain", "start", "end", "fill", "calendar_id"}
+            if key in {"temporal_role", "grain", "start", "end", "fill"}
         }
         time_alias = _predicate_time_alias(
             str(time_spec.get("output_temporal_role") or time_spec["temporal_role"]),
@@ -5212,6 +5251,15 @@ def _metric_filters_require_dense_series(plan: LogicalPlan, config: PackageConfi
     return False
 
 
+def _window_is_named(time: Mapping[str, Any]) -> bool:
+    """A named window (``last``, ``this``, or ``start`` and ``end``) answers every period."""
+    return bool(
+        time.get("last_unit")
+        or time.get("this")
+        or (time.get("start") is not None and time.get("end") is not None)
+    )
+
+
 def _calendar_fill_binding(
     plan: LogicalPlan, config: PackageConfig, *, force: bool = False
 ) -> tuple[str, str, str | None] | None:
@@ -5541,6 +5589,73 @@ def _dense_time_ctes(
     return ctes
 
 
+def _series_base_ctes(
+    plan: LogicalPlan,
+    config: PackageConfig,
+    binding: tuple[str, str, str | None] | None,
+    time_alias: str,
+    group_aliases: list[str],
+    value_aliases: list[str],
+) -> list[SqlCte]:
+    """``series_base``: every period of ``dense_time`` for each group ``leaf_base`` holds, with
+    ``leaf_base``'s values where it has the row (NULL elsewhere, for the guard to settle).
+
+    ``binding`` is the calendar the periods come from; without one the series is the window
+    total's single bucket.
+    """
+    if binding is not None:
+        ctes = _dense_time_ctes(plan, config, binding, time_alias)
+    else:
+        spine = SqlSelect(select=[SqlField(SqlLiteral(0), time_alias)])
+        ctes = [SqlCte(name="dense_time", query=spine)]
+    joins: list[SqlJoin] = []
+    filled_fields: list[SqlField] = []
+    from_table = SqlTableRef(name="dense_time")
+    if group_aliases:
+        ctes.append(
+            SqlCte(
+                name="dense_groups",
+                query=SqlSelect(
+                    select=[
+                        SqlField(SqlIdentifier(parts=["leaf_base", alias]), alias)
+                        for alias in group_aliases
+                    ],
+                    from_table=SqlTableRef(name="leaf_base"),
+                    group_by=[SqlIdentifier(parts=["leaf_base", alias]) for alias in group_aliases],
+                ),
+            )
+        )
+        from_table = SqlTableRef(name="dense_groups")
+        # `dense_time` and `dense_groups` are independent enumerations; emit
+        # the cross-product as CROSS JOIN rather than `INNER JOIN ... ON TRUE`.
+        joins.append(SqlJoin(join_type="CROSS", table=SqlTableRef(name="dense_time"), on=None))
+        filled_fields.extend(
+            SqlField(SqlIdentifier(parts=["dense_groups", alias]), alias) for alias in group_aliases
+        )
+    filled_fields.append(SqlField(SqlIdentifier(parts=["dense_time", time_alias]), time_alias))
+    join_condition: Any = SqlBinary(
+        SqlIdentifier(parts=["dense_time", time_alias]),
+        "=",
+        SqlIdentifier(parts=["leaf_base", time_alias]),
+    )
+    for alias in group_aliases:
+        join_condition = SqlBinary(
+            join_condition,
+            "AND",
+            _dialect(config).null_safe_eq(
+                SqlIdentifier(parts=["dense_groups", alias]),
+                SqlIdentifier(parts=["leaf_base", alias]),
+            ),
+        )
+    joins.append(SqlJoin(join_type="LEFT", table=SqlTableRef(name="leaf_base"), on=join_condition))
+    filled_fields.extend(
+        SqlField(SqlIdentifier(parts=["leaf_base", alias]), alias) for alias in value_aliases
+    )
+    # No inner ORDER BY: the outer SELECT controls final ordering.
+    series = SqlSelect(select=filled_fields, from_table=from_table, joins=joins)
+    return [*ctes, SqlCte(name="series_base", query=series)]
+
+
 def _tier_internal_aliases(
     plan: LogicalPlan,
     select: SqlSelect,
@@ -5811,11 +5926,19 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     fill_binding = _calendar_fill_binding(
         plan, config, force=_query_requires_dense_series(plan, config)
     )
+    # A window total answers its one row even when no row fell in the window; the guard
+    # then reads it as 0 or NULL by the loaded coverage, like any filled period.
+    total_spine = bool(
+        plan.time.get("window_total")
+        and not group_aliases
+        and plan.measure_plans
+        and _emits_time_coverage(plan, config)
+    )
     # When no calendar fill is needed, the `leaf_base` CTE is a passthrough
     # rename of the underlying leaf (`SELECT base.X AS X FROM <leaf> AS base`)
     # — pure noise. Skip it whenever we have leaf CTEs to reference directly,
     # whether they came from measures or from conversion metrics.
-    if fill_binding is None and (plan.measure_plans or conversion_exprs):
+    if fill_binding is None and not total_spine and (plan.measure_plans or conversion_exprs):
         ctes: list[SqlCte] = list(base_leaf_select.ctes)
         assert isinstance(base_leaf_select.from_table, SqlTableRef)  # leaf select uses table ref
         base_table = SqlTableRef(name=base_leaf_select.from_table.name, alias="base")
@@ -5825,66 +5948,15 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         base_table = SqlTableRef(name="leaf_base", alias="base")
         base_name = "leaf_base"
 
-    if fill_binding is not None:
-        ctes.extend(_dense_time_ctes(plan, config, fill_binding, time_alias))
-
-        joins: list[SqlJoin] = []
-        filled_fields: list[SqlField] = []
-        order_fields: list[SqlOrder] = []
-        from_table = SqlTableRef(name="dense_time")
-        if group_aliases:
-            ctes.append(
-                SqlCte(
-                    name="dense_groups",
-                    query=SqlSelect(
-                        select=[
-                            SqlField(SqlIdentifier(parts=["leaf_base", alias]), alias)
-                            for alias in group_aliases
-                        ],
-                        from_table=SqlTableRef(name="leaf_base"),
-                        group_by=[
-                            SqlIdentifier(parts=["leaf_base", alias]) for alias in group_aliases
-                        ],
-                    ),
-                )
-            )
-            from_table = SqlTableRef(name="dense_groups")
-            # `dense_time` and `dense_groups` are independent enumerations; emit
-            # the cross-product as CROSS JOIN rather than `INNER JOIN ... ON TRUE`.
-            joins.append(SqlJoin(join_type="CROSS", table=SqlTableRef(name="dense_time"), on=None))
-            for alias in group_aliases:
-                filled_fields.append(SqlField(SqlIdentifier(parts=["dense_groups", alias]), alias))
-                order_fields.append(SqlOrder(SqlIdentifier(parts=["dense_groups", alias]), "ASC"))
-        filled_fields.append(SqlField(SqlIdentifier(parts=["dense_time", time_alias]), time_alias))
-        order_fields.append(SqlOrder(SqlIdentifier(parts=["dense_time", time_alias]), "ASC"))
-        join_condition: Any = SqlBinary(
-            SqlIdentifier(parts=["dense_time", time_alias]),
-            "=",
-            SqlIdentifier(parts=["leaf_base", time_alias]),
-        )
-        for alias in group_aliases:
-            join_condition = SqlBinary(
-                join_condition,
-                "AND",
-                _dialect(config).null_safe_eq(
-                    SqlIdentifier(parts=["dense_groups", alias]),
-                    SqlIdentifier(parts=["leaf_base", alias]),
-                ),
-            )
-        joins.append(
-            SqlJoin(join_type="LEFT", table=SqlTableRef(name="leaf_base"), on=join_condition)
-        )
-        for alias in [*measure_aliases, *rows.values()]:
-            filled_fields.append(SqlField(SqlIdentifier(parts=["leaf_base", alias]), alias))
-        ctes.append(
-            SqlCte(
-                name="series_base",
-                query=SqlSelect(
-                    select=filled_fields,
-                    from_table=from_table,
-                    joins=joins,
-                    # No inner ORDER BY: the outer SELECT controls final ordering.
-                ),
+    if fill_binding is not None or total_spine:
+        ctes.extend(
+            _series_base_ctes(
+                plan,
+                config,
+                fill_binding,
+                time_alias,
+                group_aliases,
+                [*measure_aliases, *rows.values()],
             )
         )
         base_name = "series_base"

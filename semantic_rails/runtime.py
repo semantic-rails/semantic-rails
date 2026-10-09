@@ -22,6 +22,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import asdict, replace
+from datetime import datetime
 from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
@@ -49,7 +50,7 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .clock import format_now, parse_now
+from .clock import describe_window, engine_window, format_now, local_date, parse_now
 from .compiler import (
     BoundQuery,
     NonAdditiveRefusal,
@@ -60,6 +61,7 @@ from .compiler import (
 )
 from .compiler_parts.empty_groups import (
     GUARDED_BASE,
+    CoverageClock,
     base_reads,
     observation_scope,
     observed_outside_filters,
@@ -1089,11 +1091,50 @@ def _compiled_warnings(
     return warnings
 
 
-def _window_total_fields(compiled) -> dict[str, Any]:
-    """``assumptions`` for every response, plus ``time_shape`` when the window was collapsed."""
-    if not compiled["logical_plan"].time.get("window_total"):
-        return {"assumptions": []}
-    return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
+def _answer_time_fields(config, compiled, payload, *, coverage=None) -> dict[str, Any]:
+    """What an answer's time means, said on every response: its ``window``, ``clock``,
+    ``observation_scope`` and ``assumptions``.
+
+    ``window`` ({start, end, now, partial, data_through}, only the keys that apply) whenever a
+    window or a grain series was resolved; ``data_through`` is the date, in the clock's zone, of
+    the last row at or before ``now`` that the answer's coverage read (``coverage``), so it
+    is known only once the query ran on a warehouse with loaded coverage. ``clock`` whenever
+    a time-bearing measure was read; ``observation_scope`` always, since it decides 0 or NULL.
+    A ``this`` window is assumed partial ("October 2026 so far (8 of 31 days)").
+    """
+    plan = compiled["logical_plan"]
+    time = plan.time or {}
+    now = parse_now(_policy_context(payload or {}).get("now"))
+    zone = _time_zone(config, compiled) or "UTC"
+    out: dict[str, Any] = {"assumptions": []}
+    if time.get("window_total"):
+        out["assumptions"].append(WINDOW_TOTAL_ASSUMPTION)
+        out["time_shape"] = TIME_SHAPE_WINDOW_TOTAL
+    if time.get("grain") or time.get("start") is not None or time.get("end") is not None:
+        window = engine_window(time, now=now, timezone=zone)
+        shown = {"start": window.start, "end": window.end, "now": format_now(now)}
+        out["window"] = {key: value for key, value in shown.items() if value is not None}
+        if window.start is not None or window.end is not None:
+            out["window"]["partial"] = window.partial
+        edges = [
+            value
+            for key, value in (coverage or {}).items()
+            if key.endswith("__data_through") and isinstance(value, datetime)
+        ]
+        if edges:
+            out["window"]["data_through"] = local_date(min(edges), zone)
+        if "this" in window.spec:
+            text = describe_window(window, now=now, timezone=zone)
+            out["assumptions"].append({"code": "PARTIAL_PERIOD", "text": text})
+    clocks = (
+        {time["temporal_role"]}
+        if time.get("temporal_role")
+        else {row.temporal_role for row in plan.bound_measures if row.temporal_role}
+    )
+    if len(clocks) == 1:
+        out["clock"] = clocks.pop()
+    out["observation_scope"] = observation_scope(plan.query, config)
+    return out
 
 
 def _withheld_columns(policy_effects: list[dict[str, Any]]) -> set[str]:
@@ -1566,14 +1607,31 @@ def _requested_window(compiled, payload):
     window: dict[str, Any] = {
         key: str(time.get(key) or normalized.get(key) or "") for key in ("start", "end")
     }
-    if time.get("range"):
-        window["relative_range"] = dict(time["range"])
     return window
 
 
-def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=()):
+def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
+    """The loaded coverage the answer's guard read, once: each coverage CTE's first and last
+    loaded bucket and the instant (UTC) of its last row at or before ``now``.
+
+    ``{}`` when the SQL reads no coverage or the read fails: a failed disclosure read never
+    changes the answer or its warnings.
+    """
+    by_alias, _ = _guard_probe_names(compiled, "coverage_")
+    probes = sorted(set().union(*by_alias.values()))
+    if not probes:
+        return {}
+    try:
+        return _compiled_cte_row(
+            runtime, compiled, payload, probes, ("loaded_from", "loaded_to", "data_through")
+        )
+    except Exception:
+        return {}
+
+
+def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excluded_outputs=()):
     """Disclose only edges proven by the same coverage that guarded the answer's NULLs."""
-    from datetime import date, datetime
+    from datetime import date
 
     from .compiler_parts.aliasing import AliasRegistry
 
@@ -1592,15 +1650,7 @@ def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=
         return []
     by_alias, by_output = _guard_probe_names(compiled, "coverage_")
     probes = sorted(set().union(*(by_output.get(name, set()) for name in outputs)))
-    if not probes:
-        return []
-    try:
-        coverage = _compiled_cte_row(
-            runtime, compiled, payload, probes, ("loaded_from", "loaded_to")
-        )
-    except Exception:
-        return []  # A failed disclosure read never changes the answer or its other warnings.
-    if not coverage or any(f"{p}__loaded_to" not in coverage for p in probes):
+    if not probes or any(f"{p}__loaded_to" not in coverage for p in probes):
         return []
     window = _requested_window(compiled, payload)
     bound = [row.bound_measure for row in compiled["logical_plan"].measure_plans]
@@ -1610,6 +1660,7 @@ def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=
     time_key = time_output_alias(time)
     affected: list[str] = []
     measures: list[dict[str, Any]] = []
+    last_rows: dict[str, str] = {}
     for output, item in outputs.items():
         for measure in item["measures"]:
             names = set().union(
@@ -1633,9 +1684,12 @@ def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=
             if all(value is None for value in edges):
                 pass  # No visible rows: an undated disclosure, never another caller's edge.
             elif time.get("window_total"):
-                if rows or not window["start"] or not all(value == -1 for value in edges):
+                if not window["start"] or not all(value == -1 for value in edges):
                     continue
                 edge, source = window["start"], "before_window"
+                through = [coverage.get(f"{p}__data_through") for p in names]
+                if all(isinstance(value, datetime) for value in through):
+                    last_rows[measure] = local_date(max(through), zone)
             else:
                 # Require every mapped leaf to have a dated edge before claiming one.
                 if not rows or any(value is None for value in edges):
@@ -1672,7 +1726,9 @@ def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=
     grain = str(time.get("grain") or "day")
     for item in measures:
         if item["edge_source"] == "before_window":
-            reason = f"in this window: its data ends before {item['edge']}, the window start, so the total reads NULL, not 0"
+            last = last_rows.get(item["id"])
+            ends = f"its data runs through {last}, " if last else "its data ends "
+            reason = f"in this window: {ends}before {item['edge']}, the window start, so the total reads NULL, not 0"
         elif item["edge"] is not None:
             reason = f"after the {grain} of {item['edge']}, the last {grain} with data, so later {grain}s read NULL, not 0"
         else:
@@ -2748,6 +2804,14 @@ class Runtime:
         # see cache.py:33,37).
         with self._cache_lock:
             cached = self._compile_cache.get(key)
+        # A plan whose loaded coverage caps at the request's ``now`` serves that ``now`` only.
+        now = (
+            binding.coverage_now
+            if binding is not None
+            else CoverageClock(parse_now((payload.get("policy_context") or {}).get("now"))).literal
+        )
+        if cached is not None and cached.compiled.get("coverage_now") not in ("", now):
+            cached = None
         if cached is not None:
             stats = {
                 **dict(cached.compiled.get("compile_stats", {}) or {}),
@@ -2907,7 +2971,7 @@ class Runtime:
             out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
-            out.update(_window_total_fields(compiled))
+            out.update(_answer_time_fields(self._config, compiled, payload))
             out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
             out["freshness_by_leaf"] = freshness_rows
             out["freshness_as_of"] = _freshness_as_of(freshness_rows)
@@ -3008,7 +3072,7 @@ class Runtime:
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
-            **_window_total_fields(compiled),
+            **_answer_time_fields(self._config, compiled, payload),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -3126,8 +3190,14 @@ class Runtime:
                     seed_warnings=self._seed_warnings,
                 ),
             ) from exc
+        coverage = _coverage_read(self, compiled, payload) if compiled["logical_plan"].time else {}
         coverage_warnings = _no_data_yet_warnings(
-            self, compiled, rows, payload, excluded_outputs=_withheld_columns(policy_effects)
+            compiled,
+            rows,
+            payload,
+            coverage,
+            zone=_time_zone(self._config, compiled) or "UTC",
+            excluded_outputs=_withheld_columns(policy_effects),
         )
         coverage_outputs = [
             name for warning in coverage_warnings for name in warning["details"]["outputs"]
@@ -3164,7 +3234,7 @@ class Runtime:
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            **_window_total_fields(compiled),
+            **_answer_time_fields(self._config, compiled, payload, coverage=coverage),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -3204,14 +3274,8 @@ class Runtime:
         # the applied time bounds and point at inspect for freshness.
         if not rows and not coverage_warnings:
             time_block = dict(payload.get("time", {}) or {})
-            # Time block accepts ``{start, end}`` or a relative ``range``
-            # (see ast.py:_SUPPORTED_TIME_KEYS). Either signal counts as
-            # an applied filter for the diagnostic.
             has_time_filter = (
-                time_block.get("start")
-                or time_block.get("end")
-                or time_block.get("range")
-                or time_block.get("temporal_role")
+                time_block.get("start") or time_block.get("end") or time_block.get("temporal_role")
             )
             if has_time_filter and policy_context.get("metric_allowlist") is None:
                 root_entity = ""
@@ -3231,7 +3295,7 @@ class Runtime:
                 }
                 # Echo whichever interval shape was supplied so the
                 # agent can see exactly what bounds applied.
-                for key in ("start", "end", "range"):
+                for key in ("start", "end"):
                     if time_block.get(key):
                         applied[key] = time_block[key]
                 # Probe the root entity's time column for actual data
@@ -3251,13 +3315,8 @@ class Runtime:
                             temporal_role=str(time_block.get("temporal_role", "") or ""),
                             limits=limits,
                         )
-                # Resolve requested_window from whichever shape was supplied.
-                # When the agent uses `range.last`, the payload only has the
-                # relative window — show the resolved absolute bounds so the
-                # agent can see WHERE the filter actually landed (a relative
-                # window against historical data ends up far outside the
-                # data range, the original cause of the blind-agent's
-                # silent 0-rows on Q2).
+                # The resolved bounds show where the filter landed: a relative window
+                # resolves against now, which can fall far outside historical data.
                 requested_window = _requested_window(compiled, payload)
                 out["data_diagnostics"] = {
                     "rows_returned": 0,

@@ -428,16 +428,16 @@ tests:
   shop/months-on-the-new-york-clock:
     kind: query_matches_snapshot
     expect: answer
-    why: Order 3 is still in November in New York, so the half-open local window has one month totaling 22.
+    why: Order 3 is still in November in New York, so the half-open local window totals 22 in November; December, inside the loaded data with no order on the local clock, reads 0.
     cites: *clock_cites
     tags: [time-window, clock]
     variant: ny_authored
     query: *months
-    expected_rows: [{period: '2023-11-01', revenue: 22}]
+    expected_rows: [{period: '2023-11-01', revenue: 22}, {period: '2023-12-01', revenue: 0}]
     reference_sql: |
-      SELECT CAST(date_trunc('month', (ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') AS DATE), SUM(amount)
-      FROM orders WHERE (ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York' >= TIMESTAMP '2023-11-01'
-        AND (ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York' < TIMESTAMP '2024-01-01'
+      SELECT CAST(g.b AS DATE), COALESCE(SUM(o.amount), 0)
+      FROM generate_series(TIMESTAMP '2023-11-01', TIMESTAMP '2023-12-01', INTERVAL '1 month') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('month', (o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') = g.b
       GROUP BY 1 ORDER BY 1
   shop/quarters-on-the-new-york-clock:
     kind: query_matches_snapshot
@@ -2171,7 +2171,7 @@ tests:
   shop/unknown_day:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for unknown day.
+    why: Order 7, alone on 2024-05-06, has an unknown amount, so that day's revenue is NULL while its order counts; the named window also answers 2024-05-07, inside the loaded data with no order, as 0.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
@@ -2192,14 +2192,15 @@ tests:
         grain: day
         start: '2024-05-06'
         end: '2024-05-08'
-    reference_sql: SELECT date_trunc('day', o.ordered_at) AS b, SUM(o.amount), COUNT(*) FROM orders AS o WHERE o.ordered_at
-      >= TIMESTAMP '2024-05-06' AND o.ordered_at < TIMESTAMP '2024-05-08' GROUP BY 1
+    reference_sql: |-
+      SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END, COUNT(o.order_id) FROM generate_series(date_trunc('day', TIMESTAMP '2024-05-06'), TIMESTAMP '2024-05-07', INTERVAL '1 day') AS g(b) LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b AND o.ordered_at >= TIMESTAMP '2024-05-06' AND o.ordered_at < TIMESTAMP '2024-05-08' GROUP BY 1
     expected_rows:
       - {period: '2024-05-06', revenue: null, orders: 1}
+      - {period: '2024-05-07', revenue: 0, orders: 0}
   shop/unknown_day_filled:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for unknown day filled.
+    why: 'The same window on the implicit calendar: 2024-05-06 reads NULL revenue and one order, 2024-05-07 reads 0 and 0.'
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
@@ -2221,12 +2222,7 @@ tests:
         start: '2024-05-06'
         end: '2024-05-08'
     reference_sql: |-
-      SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END,
-                COUNT(o.order_id)
-              FROM generate_series(TIMESTAMP '2024-05-06', TIMESTAMP '2024-05-07', INTERVAL '1 day')
-                AS g(b)
-              LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b
-              GROUP BY 1
+      SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END, COUNT(o.order_id) FROM generate_series(date_trunc('day', TIMESTAMP '2024-05-06'), TIMESTAMP '2024-05-07', INTERVAL '1 day') AS g(b) LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b AND o.ordered_at >= TIMESTAMP '2024-05-06' AND o.ordered_at < TIMESTAMP '2024-05-08' GROUP BY 1
     expected_rows:
       - {period: '2024-05-06', revenue: null, orders: 1}
       - {period: '2024-05-07', revenue: 0, orders: 0}
@@ -2939,7 +2935,7 @@ tests:
   shop/utc-march_bounds_by_day:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for utc march bounds by day.
+    why: 'A named window answers every day it holds: March 1 (order 5) and March 31 (order 6) on the UTC clock, and 0 on the days between, inside the loaded data.'
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
@@ -2957,15 +2953,44 @@ tests:
         grain: day
         start: '2024-03-01'
         end: '2024-04-01'
-    reference_sql: SELECT date_trunc('day', o.ordered_at) AS b, SUM(o.amount) FROM orders AS o WHERE o.ordered_at >=
-      TIMESTAMP '2024-03-01' AND o.ordered_at < TIMESTAMP '2024-04-01' GROUP BY 1
+    reference_sql: |-
+      SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END FROM generate_series(date_trunc('day', TIMESTAMP '2024-03-01'), TIMESTAMP '2024-03-31', INTERVAL '1 day') AS g(b) LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b AND o.ordered_at >= TIMESTAMP '2024-03-01' AND o.ordered_at < TIMESTAMP '2024-04-01' GROUP BY 1
     expected_rows:
       - {period: '2024-03-01', revenue: 8}
+      - {period: '2024-03-02', revenue: 0}
+      - {period: '2024-03-03', revenue: 0}
+      - {period: '2024-03-04', revenue: 0}
+      - {period: '2024-03-05', revenue: 0}
+      - {period: '2024-03-06', revenue: 0}
+      - {period: '2024-03-07', revenue: 0}
+      - {period: '2024-03-08', revenue: 0}
+      - {period: '2024-03-09', revenue: 0}
+      - {period: '2024-03-10', revenue: 0}
+      - {period: '2024-03-11', revenue: 0}
+      - {period: '2024-03-12', revenue: 0}
+      - {period: '2024-03-13', revenue: 0}
+      - {period: '2024-03-14', revenue: 0}
+      - {period: '2024-03-15', revenue: 0}
+      - {period: '2024-03-16', revenue: 0}
+      - {period: '2024-03-17', revenue: 0}
+      - {period: '2024-03-18', revenue: 0}
+      - {period: '2024-03-19', revenue: 0}
+      - {period: '2024-03-20', revenue: 0}
+      - {period: '2024-03-21', revenue: 0}
+      - {period: '2024-03-22', revenue: 0}
+      - {period: '2024-03-23', revenue: 0}
+      - {period: '2024-03-24', revenue: 0}
+      - {period: '2024-03-25', revenue: 0}
+      - {period: '2024-03-26', revenue: 0}
+      - {period: '2024-03-27', revenue: 0}
+      - {period: '2024-03-28', revenue: 0}
+      - {period: '2024-03-29', revenue: 0}
+      - {period: '2024-03-30', revenue: 0}
       - {period: '2024-03-31', revenue: 4}
   shop/ny-march_bounds_by_day:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for ny march bounds by day.
+    why: On the New York clock order 5 falls on February 29, so March 31 (order 6) is the window's only day with revenue; the other March days read 0.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
@@ -2983,16 +3008,44 @@ tests:
         grain: day
         start: '2024-03-01'
         end: '2024-04-01'
-    reference_sql: SELECT date_trunc('day', ((o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')) AS
-      b, SUM(o.amount) FROM orders AS o WHERE ((o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') >=
-      TIMESTAMP '2024-03-01' AND ((o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') < TIMESTAMP '2024-04-01'
-      GROUP BY 1
+    reference_sql: |-
+      SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END FROM generate_series(date_trunc('day', TIMESTAMP '2024-03-01'), TIMESTAMP '2024-03-31', INTERVAL '1 day') AS g(b) LEFT JOIN orders AS o ON date_trunc('day', ((o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')) = g.b AND ((o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') >= TIMESTAMP '2024-03-01' AND ((o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') < TIMESTAMP '2024-04-01' GROUP BY 1
     expected_rows:
+      - {period: '2024-03-01', revenue: 0}
+      - {period: '2024-03-02', revenue: 0}
+      - {period: '2024-03-03', revenue: 0}
+      - {period: '2024-03-04', revenue: 0}
+      - {period: '2024-03-05', revenue: 0}
+      - {period: '2024-03-06', revenue: 0}
+      - {period: '2024-03-07', revenue: 0}
+      - {period: '2024-03-08', revenue: 0}
+      - {period: '2024-03-09', revenue: 0}
+      - {period: '2024-03-10', revenue: 0}
+      - {period: '2024-03-11', revenue: 0}
+      - {period: '2024-03-12', revenue: 0}
+      - {period: '2024-03-13', revenue: 0}
+      - {period: '2024-03-14', revenue: 0}
+      - {period: '2024-03-15', revenue: 0}
+      - {period: '2024-03-16', revenue: 0}
+      - {period: '2024-03-17', revenue: 0}
+      - {period: '2024-03-18', revenue: 0}
+      - {period: '2024-03-19', revenue: 0}
+      - {period: '2024-03-20', revenue: 0}
+      - {period: '2024-03-21', revenue: 0}
+      - {period: '2024-03-22', revenue: 0}
+      - {period: '2024-03-23', revenue: 0}
+      - {period: '2024-03-24', revenue: 0}
+      - {period: '2024-03-25', revenue: 0}
+      - {period: '2024-03-26', revenue: 0}
+      - {period: '2024-03-27', revenue: 0}
+      - {period: '2024-03-28', revenue: 0}
+      - {period: '2024-03-29', revenue: 0}
+      - {period: '2024-03-30', revenue: 0}
       - {period: '2024-03-31', revenue: 4}
   shop/rollup_month_bounds:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for rollup month bounds.
+    why: A named window answers every month it holds, February and April (no orders, inside the loaded data) as 0; its zeros are bounded by the base's loaded data, so the base answers.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
@@ -3010,17 +3063,19 @@ tests:
         grain: month
         start: '2024-01-01'
         end: '2024-07-01'
-    reference_sql: SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) FROM orders AS o WHERE o.ordered_at
-      >= TIMESTAMP '2024-01-01' AND o.ordered_at < TIMESTAMP '2024-07-01' GROUP BY 1
+    reference_sql: |-
+      SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END FROM generate_series(date_trunc('month', TIMESTAMP '2024-01-01'), TIMESTAMP '2024-06-01', INTERVAL '1 month') AS g(b) LEFT JOIN orders AS o ON date_trunc('month', o.ordered_at) = g.b AND o.ordered_at >= TIMESTAMP '2024-01-01' AND o.ordered_at < TIMESTAMP '2024-07-01' GROUP BY 1
     expected_rows:
       - {period: '2024-01-01', revenue: 20}
+      - {period: '2024-02-01', revenue: 0}
       - {period: '2024-03-01', revenue: 12}
+      - {period: '2024-04-01', revenue: 0}
       - {period: '2024-05-01', revenue: 6}
       - {period: '2024-06-01', revenue: 3}
   shop/rollup_skipped_for_mid_month_bounds:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for rollup skipped for mid month bounds.
+    why: 'Mid-month bounds keep order 4 (January 15) and drop order 9 (June 30): every month the window touches is answered, June included as 0.'
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
@@ -3038,35 +3093,15 @@ tests:
         grain: month
         start: '2024-01-15'
         end: '2024-06-15'
-    reference_sql: SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) FROM orders AS o WHERE o.ordered_at
-      >= TIMESTAMP '2024-01-15' AND o.ordered_at < TIMESTAMP '2024-06-15' GROUP BY 1
+    reference_sql: |-
+      SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END FROM generate_series(date_trunc('month', TIMESTAMP '2024-01-15'), TIMESTAMP '2024-06-01', INTERVAL '1 month') AS g(b) LEFT JOIN orders AS o ON date_trunc('month', o.ordered_at) = g.b AND o.ordered_at >= TIMESTAMP '2024-01-15' AND o.ordered_at < TIMESTAMP '2024-06-15' GROUP BY 1
     expected_rows:
       - {period: '2024-01-01', revenue: 20}
+      - {period: '2024-02-01', revenue: 0}
       - {period: '2024-03-01', revenue: 12}
+      - {period: '2024-04-01', revenue: 0}
       - {period: '2024-05-01', revenue: 6}
-  shop/empty_window:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for empty window.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
-    tags: [time-window]
-    variant: utc_authored
-    query:
-      select:
-      - measure.shop.revenue
-      time:
-        temporal_role: temporal_role.shop_order_ordered_at
-        grain: month
-        start: '2024-02-01'
-        end: '2024-03-01'
-    reference_sql: SELECT 1 WHERE FALSE
-    expected_rows: []
+      - {period: '2024-06-01', revenue: 0}
   shop/large_orders:
     kind: query_matches_snapshot
     expect: answer
