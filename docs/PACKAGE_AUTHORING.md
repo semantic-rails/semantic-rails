@@ -1876,6 +1876,7 @@ form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
 | A file under `models/` holding a `models:` map or a bare model; a file under `relations/`, `metrics/` or `segments/` holding a `relation:`, `metric:` or `segment:` wrapper or a bare spec | One model per file under `model:`; a `relations:`, `metrics:` or `segments:` map in the other three | |
 | Expression `kind: binary` or `kind: measure_ref`; conversion `matching:`; `in`/`not_in` `left:` (in metrics, segments and queries) | `kind: arithmetic`, `kind: measure`, `matching_mode:`, `expr:` | `expression-arithmetic` |
 | `relations:` as a list; relation-level `source:` or `date_spine:`; `cte:`; `output_columns:`; a step written as `{kind: ..., config: ...}` or as a bare string; an `unnest` step | A `relations:` map; each relation's `steps:` as one-key steps (`{source: <relation>}` first, `{date_spine: {...}}`); `output_name:`; `columns:`; `explode` | |
+| A second spelling of a key a relation step reads: `table:`, `name:` or `value:` for `relation:` (`source`, joins, `union_all` branches, which also refuse `source:`); `value:` for `columns:` (`select`), `predicates:` (`where`) or `branches:` (`union_all`); `where:` in a `where` step; `group_by:` and `measures:` (`group_by`, `pre_aggregate` sides); an aggregate's `agg:` or `expression:`; `require_preaggregated:`; `date_lag` `value:`; `window` `columns:`; a window's `kind:` or `expression:`; `order_by` `column:`; `alias:`; `date_spine` `date_column:`; `state_as_of` `date_spine:`; `base_relation:`, `attributed_relation:`; an `attribution_join` key's `left:` or `right:`; `lookback` `max:`; a `union_all` branch's `select:` | The key the step reads, which the error names: `relation:`, `columns:`, `predicates:`, `branches:`, `dimensions:`, `aggregates:`, `function:`, `expr:`, `require_pre_aggregate:`, `max:`, `windows:`, `as:`, `column:`, `spine:`, `base:`, `attributed:`, `value:`. The short forms `{source: <relation>}`, `{where: [...]}` and `{union_all: [...]}` stay | |
 | A graph relationship `cardinality:` written `N:1`, `1:N`, `1:1`, `M:N` or any other spelling | `many_to_one`, `one_to_many`, `one_to_one` or `many_to_many` | |
 | Top-level `path_policy:` or `path_preferences:` | `graph.path_policy:` and `graph.path_preferences:` | |
 | Sibling `snapshot_policy:` | Nested `accumulation: { kind: stock, snapshot: end_of_period }` | `authoring-aliases` |
@@ -2719,7 +2720,10 @@ could mean: the loader would ignore it, and a measure it meant to bind would rea
 named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
 `as:` value. Each `relations` entry and each of its steps is closed too: a step is one key
 naming its kind, and its mapping takes the keys that kind reads (a `select` or `window` step
-may instead hold its columns directly). A key that starts with `_` is an annotation.
+may instead hold its columns directly), each in one spelling. So does each mapping nested in a
+step: a `group_by` aggregate, a join's `on` rows, `date_lag` and `pre_aggregate` sides, a
+window's specs and `order_by` rows, an `attribution_join` key and `lookback`, and a `union_all`
+branch. A key that starts with `_` is an annotation, beside a step's kind too.
 
 In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,
 `relations.yml`, `metrics.yml` and `segments.yml` through `defaults:`, `graph:`,

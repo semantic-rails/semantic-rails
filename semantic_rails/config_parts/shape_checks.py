@@ -963,8 +963,9 @@ def _check_relation_body(kind: str, body: Any, *, label: str, errors: list[str])
     if kind == "join":
         pre_aggregate = mapping.get("pre_aggregate")
         check(pre_aggregate, "pre_aggregate", f"{label} pre_aggregate")
-        for side in ("left", "right") if isinstance(pre_aggregate, dict) else ():
-            spec, where = pre_aggregate.get(side), f"{label} pre_aggregate.{side}"
+        sides = pre_aggregate if isinstance(pre_aggregate, dict) else {}
+        for side in ("left", "right"):
+            spec, where = sides.get(side), f"{label} pre_aggregate.{side}"
             check(spec, "pre_aggregate side", where)
             check_aggregates(spec.get("aggregates") if isinstance(spec, dict) else None, where)
     if kind in {"join", "semi_join", "anti_join", "exclude"}:

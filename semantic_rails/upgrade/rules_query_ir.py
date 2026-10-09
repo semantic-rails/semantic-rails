@@ -31,15 +31,14 @@ def _version_two(files: PackageFiles) -> Iterator[Finding]:
 
 
 def _expression_nodes(files: PackageFiles) -> Iterator[Row]:
-    """Expression nodes in metrics, segments, measure `expr:` and `filter:`, relation steps and
-    every example, test and membership query."""
+    """Expression nodes in metrics, segments, measure `expr:`, relation steps and every example,
+    test and membership query."""
     roots = {(file, path) for file, path, _ in (*files.metrics(), *files.segments())}
     yield from (row for row in files.expressions() if row[:2] not in roots)
     trees = [
-        (file, (*path, key), measure[key])
+        (file, (*path, "expr"), measure["expr"])
         for file, path, measure in files.measures()
-        for key in ("expr", "filter")
-        if isinstance(measure.get(key), (dict, list))
+        if isinstance(measure.get("expr"), dict)
     ]
     trees += [
         (file, (*path, "steps"), relation["steps"])

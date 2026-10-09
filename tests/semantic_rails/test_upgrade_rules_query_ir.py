@@ -217,17 +217,12 @@ BINARY = "{kind: binary, op: subtract, left: {kind: column, column: a}, right: 1
 ARITHMETIC = "{kind: arithmetic, op: subtract, left: {kind: column, column: a}, right: 1}"
 NOT_IN = "{kind: not_in, left: {kind: column, column: channel}, values: [web]}"
 CURRENT_NOT_IN = "{kind: not_in, expr: {kind: column, column: channel}, values: [web]}"
-# The parser refuses a retired spelling in a measure's `expr:` and `filter:` and in a relation
-# step, so the rule reaches each of them.
+# The parser refuses a retired spelling in a measure's `expr:` and in a relation step, so the
+# rule reaches both.
 PLACES = {
     "measure": (
-        "models:\n"
-        "  orders:\n"
-        "    measures:\n"
-        "      margin:\n"
-        "        expr: <expr>\n"
-        "        filter: <filter>\n",
-        ((5, "kind binary becomes arithmetic"), (6, "left becomes expr")),
+        "models:\n  orders:\n    measures:\n      margin:\n        expr: <expr>\n",
+        ((5, "kind binary becomes arithmetic"),),
     ),
     "relation": (
         "relations:\n"
