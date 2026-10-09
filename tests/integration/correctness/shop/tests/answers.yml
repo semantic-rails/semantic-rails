@@ -6879,7 +6879,7 @@ tests:
   shop/stock_by_changing_plan:
     kind: query_matches_snapshot
     expect: answer
-    why: An account whose plan changes within the week counts once, under the plan of its last snapshot that week.
+    why: An account whose plan changes within the week counts once, under its plan on the week's closing day; account 3, whose last snapshot is that Friday, is not carried forward.
     cites:
       - tests/integration/correctness/shop/models/account_days.yml#model.dimensions.plan
       - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
@@ -6897,20 +6897,18 @@ tests:
       - dimension.shop_account_day_plan
     reference_sql: |-
       SELECT a.plan, a.b, SUM(a.seats) FROM (
-                SELECT a.*, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) AS b, ROW_NUMBER() OVER (
-                  PARTITION BY a.account_id, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) ORDER BY a.snapshot_day DESC) AS n
+                SELECT a.*, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) AS b, MAX(a.snapshot_day) OVER (PARTITION BY date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP))) AS closing
                 FROM account_days AS a
-              ) AS a WHERE a.n = 1 GROUP BY 1, 2
+              ) AS a WHERE a.snapshot_day = a.closing GROUP BY 1, 2
     expected_rows:
       - {dimension.shop_account_day_plan: builder, period: '2024-01-01', seats: 1006}
       - {dimension.shop_account_day_plan: pro, period: '2024-01-01', seats: 16}
       - {dimension.shop_account_day_plan: pro, period: '2024-01-15', seats: 20}
-      - {dimension.shop_account_day_plan: team, period: '2024-01-01', seats: 100}
       - {dimension.shop_account_day_plan: team, period: '2024-01-15', seats: 200}
   shop/stock_by_week:
     kind: query_matches_snapshot
     expect: answer
-    why: A stock adds up each account's last snapshot of the week, once per account.
+    why: A balance reads the week's closing day only, its last day with a snapshot, once per account; account 3's Friday seats are not carried forward to Sunday.
     cites:
       - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
       - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
@@ -6925,12 +6923,11 @@ tests:
         grain: week
     reference_sql: |-
       SELECT a.b, SUM(a.seats) FROM (
-                SELECT a.*, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) AS b, ROW_NUMBER() OVER (
-                  PARTITION BY a.account_id, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) ORDER BY a.snapshot_day DESC) AS n
+                SELECT a.*, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) AS b, MAX(a.snapshot_day) OVER (PARTITION BY date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP))) AS closing
                 FROM account_days AS a
-              ) AS a WHERE a.n = 1 GROUP BY 1
+              ) AS a WHERE a.snapshot_day = a.closing GROUP BY 1
     expected_rows:
-      - {period: '2024-01-01', seats: 1122}
+      - {period: '2024-01-01', seats: 1022}
       - {period: '2024-01-15', seats: 220}
   shop/stock_by_snapshot_day:
     kind: query_matches_snapshot
@@ -7058,3 +7055,89 @@ tests:
     reference_sql: |
       SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel <> 'store'
       AND (signed_up_at < TIMESTAMP '2024-06-01' OR signed_up_at >= TIMESTAMP '2024-07-01')
+  shop/a-quiet-week-inside-the-data-reads-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The last complete week before May 10 (April 29 to May 6) has no order, and order 7 on May 6 shows the data is loaded past it: the count and the revenue read 0, not NULL, and the named window answers its one total.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#timeblock, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.order_count, measure.shop.revenue]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-05-10T00:00:00Z'
+    expected_rows: [{order_count: 0, revenue: 0}]
+    reference_sql: |
+      SELECT COUNT(o.order_id),
+        CASE WHEN EXISTS (SELECT 1 FROM orders WHERE ordered_at >= TIMESTAMP '2024-05-06'
+          AND ordered_at <= TIMESTAMP '2024-05-10') THEN COALESCE(SUM(o.amount), 0) END
+      FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-04-29' AND o.ordered_at < TIMESTAMP '2024-05-06'
+  shop/a-named-window-reads-zero-in-its-empty-middle-month:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The first quarter of 2024 answers each of its months: February has no order inside the loaded data, so it reads 0 between January and March.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#timeblock, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.revenue]
+      time: {start: '2024-01-01', end: '2024-04-01', grain: month}
+    now: '2024-07-05T06:00:00Z'
+    expected_rows:
+      - {period: '2024-01-01', revenue: 20}
+      - {period: '2024-02-01', revenue: 0}
+      - {period: '2024-03-01', revenue: 12}
+    reference_sql: |
+      SELECT g.b, COALESCE(SUM(o.amount), 0)
+      FROM generate_series(TIMESTAMP '2024-01-01', TIMESTAMP '2024-03-01', INTERVAL '1 month') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('month', o.ordered_at) = g.b
+      GROUP BY 1
+  shop/days-after-the-last-order-read-null-not-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'August 2024 so far on August 3 at noon: order 11 on August 1 is the last row, so August 2 and 3 are after the data-through edge and read NULL (no data yet), never 0; only August 3, still filling, is a partial period.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#timeblock, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.order_count]
+      time: {this: month, grain: day}
+    now: '2024-08-03T12:00:00Z'
+    expected_rows:
+      - {period: '2024-08-01', order_count: 1}
+      - {period: '2024-08-02', order_count: null}
+      - {period: '2024-08-03', order_count: null}
+    reference_sql: |
+      SELECT g.b, CASE WHEN g.b <= (SELECT date_trunc('day', MAX(ordered_at)) FROM orders
+          WHERE ordered_at <= TIMESTAMP '2024-08-03 12:00:00') THEN COUNT(o.order_id) END
+      FROM generate_series(TIMESTAMP '2024-08-01', TIMESTAMP '2024-08-03', INTERVAL '1 day') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b
+        AND o.ordered_at < TIMESTAMP '2024-08-03 12:00:00'
+      GROUP BY 1
+  shop/a-ratio-with-no-denominator-in-the-window-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'In the quiet week of April 29 both operands of the average order value read 0, so the ratio divides by zero and reads NULL, not 0.'
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [metric.shop.average_order_value]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-05-10T00:00:00Z'
+    expected_rows: [{average_order_value: null}]
+    reference_sql: |
+      SELECT SUM(o.amount) / CAST(NULLIF(COUNT(o.order_id), 0) AS DOUBLE PRECISION) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-04-29' AND o.ordered_at < TIMESTAMP '2024-05-06'
+  shop/a-balance-by-month-reads-the-closing-day:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'January closes on its last day with a snapshot, January 15 (accounts 1 and 3): account 2, last seen on January 7, is not carried forward, so seats read 220, not 1226.'
+    cites: [tests/integration/correctness/shop/models/account_days.yml#model.measures.seats, tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day, docs/QUERY_IR_SCHEMA.md#timeblock]
+    tags: [time-window, clock]
+    query:
+      select: [measure.shop.seats]
+      time: {start: '2024-01-01', end: '2024-02-01', grain: month}
+    now: '2024-07-05T06:00:00Z'
+    expected_rows: [{period: '2024-01-01', seats: 220}]
+    reference_sql: |
+      SELECT TIMESTAMP '2024-01-01', SUM(a.seats) FROM account_days AS a
+      WHERE a.snapshot_day = (SELECT MAX(snapshot_day) FROM account_days
+        WHERE snapshot_day >= DATE '2024-01-01' AND snapshot_day < DATE '2024-02-01')

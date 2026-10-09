@@ -988,9 +988,10 @@ def _cases() -> Iterator[Case]:
         """,
     )
 
-    # A stock takes each account's last snapshot in the week, under the plan it has that day,
-    # so an account whose plan changes mid-week counts once. Grouped by its own day, each day
-    # is a period of its own.
+    # A stock reads the week's closing day only (its last day with a snapshot), under the plan
+    # each account has that day, so an account whose plan changes mid-week counts once and one
+    # whose last snapshot is earlier (account 3, Friday) isn't carried forward. Grouped by its
+    # own day, each day is a period of its own.
     seats = _item(SEATS, "seats")
     yield Case(
         "stock_by_changing_plan",
@@ -1040,14 +1041,14 @@ def _cases() -> Iterator[Case]:
 
 
 def _closing_seats(*, head: str = "") -> str:
-    """Seats per week (and ``head``): each account's last snapshot of the week."""
+    """Seats per week (and ``head``): the snapshots of the week's closing day, its last day with
+    any snapshot (one per account and day)."""
     week = "date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP))"
     return f"""
         SELECT {head}a.b, SUM(a.seats) FROM (
-          SELECT a.*, {week} AS b, ROW_NUMBER() OVER (
-            PARTITION BY a.account_id, {week} ORDER BY a.snapshot_day DESC) AS n
+          SELECT a.*, {week} AS b, MAX(a.snapshot_day) OVER (PARTITION BY {week}) AS closing
           FROM account_days AS a
-        ) AS a WHERE a.n = 1 GROUP BY {"1, 2" if head else "1"}
+        ) AS a WHERE a.snapshot_day = a.closing GROUP BY {"1, 2" if head else "1"}
     """
 
 

@@ -1887,6 +1887,11 @@ def _semi_additive_leaf_select(
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in partition_aliases
     ]
 
+    # A balance is read on its period's closing day only (the last day with a snapshot, the
+    # edge day for a period still filling): a series without a snapshot that day is not
+    # carried forward from an earlier one.
+    closing = window_choice == "last_value" and final_aggregation in {"last_value", "sum"}
+
     if dialect.capabilities().get("qualify"):
         direction = "ASC" if window_choice == "first_value" else "DESC"
         snapshot_name = "snapshot_rows"
@@ -1895,6 +1900,13 @@ def _semi_additive_leaf_select(
             partition_by=[field.expression for field in period_fields] + list(row_grain_exprs),
             order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
         )
+        qualify: list[Any] = [SqlBinary(row_number, "=", SqlLiteral(1))]
+        if closing:
+            last = SqlWindow(
+                function=SqlCall("MAX", [order_expr]),
+                partition_by=[field.expression for field in period_fields],
+            )
+            qualify.append(SqlBinary(SqlCast(order_expr, "DATE"), "=", SqlCast(last, "DATE")))
         final_expr, kept_rows = chosen_value(snapshot_name)
         return SqlSelect(
             ctes=[
@@ -1906,7 +1918,7 @@ def _semi_additive_leaf_select(
                         from_table=from_table,
                         joins=joins,
                         where=where_clauses,
-                        qualify=[SqlBinary(row_number, "=", SqlLiteral(1))],
+                        qualify=[_and_conditions(qualify)],
                     ),
                 ),
             ],
@@ -1940,6 +1952,43 @@ def _semi_additive_leaf_select(
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in key_aliases
     ]
     final_expr, kept_rows = chosen_value("snapshot_base")
+    closing_ctes: list[SqlCte] = []
+    closing_joins: list[SqlJoin] = []
+    if closing:
+        periods = [SqlIdentifier(parts=["snapshot_base", f.alias]) for f in period_fields]
+        latest = SqlCall("MAX", [SqlIdentifier(parts=["snapshot_base", "__snapshot_order"])])
+        closing_ctes.append(
+            SqlCte(
+                name="snapshot_closing",
+                query=SqlSelect(
+                    select=[
+                        *(
+                            SqlField(ref, f.alias)
+                            for ref, f in zip(periods, period_fields, strict=True)
+                        ),
+                        SqlField(latest, "__closing"),
+                    ],
+                    from_table=SqlTableRef(name="snapshot_base"),
+                    group_by=list(periods),
+                ),
+            )
+        )
+        on_close = SqlBinary(
+            SqlCast(SqlIdentifier(parts=["snapshot_base", "__snapshot_order"]), "DATE"),
+            "=",
+            SqlCast(SqlIdentifier(parts=["snapshot_closing", "__closing"]), "DATE"),
+        )
+        same_period = [
+            dialect.null_safe_eq(ref, SqlIdentifier(parts=["snapshot_closing", f.alias]))
+            for ref, f in zip(periods, period_fields, strict=True)
+        ]
+        closing_joins.append(
+            SqlJoin(
+                join_type="INNER",
+                table=SqlTableRef(name="snapshot_closing"),
+                on=_and_conditions([*same_period, on_close]),
+            )
+        )
     return SqlSelect(
         ctes=[
             *list(ctes or []),
@@ -1960,6 +2009,7 @@ def _semi_additive_leaf_select(
                     group_by=complete_group_by,
                 ),
             ),
+            *closing_ctes,
         ],
         select=[
             *[
@@ -1974,7 +2024,8 @@ def _semi_additive_leaf_select(
                 join_type="INNER",
                 table=SqlTableRef(name="snapshot_complete"),
                 on=_and_conditions(join_conditions),
-            )
+            ),
+            *closing_joins,
         ],
         where=kept_rows,
         group_by=final_key_exprs,
