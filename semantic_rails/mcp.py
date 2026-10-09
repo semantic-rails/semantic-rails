@@ -2485,7 +2485,7 @@ class SemanticLayerMCPAdapter:
                 self.runtime,
                 terms=terms_str,
                 kinds=requested_kinds,
-                partial_query=_partial_query_payload(args)
+                partial_query=self.runtime.engine_seed(_partial_query_payload(args))
                 if args.get("query") or args.get("policy_context")
                 else None,
                 stage=str(args.get("stage", "")),
@@ -2571,7 +2571,7 @@ class SemanticLayerMCPAdapter:
             lambda args: inspect_payload(
                 self.runtime,
                 object_id=str(args.get("object_id", "")),
-                partial_query=_partial_query_payload(args)
+                partial_query=self.runtime.engine_seed(_partial_query_payload(args))
                 if args.get("query") or args.get("policy_context")
                 else None,
                 verbosity=str(args.get("verbosity") or "minimal"),
@@ -2582,7 +2582,7 @@ class SemanticLayerMCPAdapter:
         def build(args: dict[str, Any]) -> dict[str, Any]:
             call_arguments: dict[str, Any] = {
                 "dimension_id": str(args.get("dimension_id", "")),
-                "query": _partial_query_payload(args)
+                "query": self.runtime.engine_seed(_partial_query_payload(args))
                 if args.get("query") or args.get("policy_context")
                 else None,
                 "search": str(args.get("search", "")),

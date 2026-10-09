@@ -145,8 +145,9 @@ class MetricFilter:
 class TimeSpec:
     """The query's time block, resolved: the clock, the grain and ``[start, end)``.
 
-    ``last_unit``/``last_value`` and ``this`` keep the caller's relative spelling and ``now``
-    the instant it was resolved against, so the answer can say what window it used.
+    ``last_unit``/``last_value`` and ``this`` keep the caller's relative spelling, so the answer
+    can say what window it used; the request's ``now`` it was resolved against travels with
+    the request (``policy_context["now"]``), never in the query.
     """
 
     temporal_role: str
@@ -154,7 +155,6 @@ class TimeSpec:
     start: Any = None
     end: Any = None
     fill: bool = False
-    now: str = ""
     last_unit: str = ""
     last_value: int = 0
     this: str = ""
@@ -217,7 +217,7 @@ def route_decisions_from_payload(payload: dict[str, Any]) -> list[RouteDecision]
         )
     rows: list[RouteDecision] = []
     for index, row in enumerate(raw):
-        where = f"route_decisions[{index}]"
+        where = f"routes[{index}]"
         path = row.get("relationship_path") if isinstance(row, dict) else None
         if (
             not isinstance(row, dict)
@@ -416,7 +416,7 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
 
 
 _TIME_KEYS = frozenset(
-    {"temporal_role", "grain", "start", "end", "fill", "now", "last_unit", "last_value", "this"}
+    {"temporal_role", "grain", "start", "end", "fill", "last_unit", "last_value", "this"}
 )
 
 
@@ -448,7 +448,6 @@ def _time_spec_from_payload(
         start=payload.get("start"),
         end=payload.get("end"),
         fill=bool(payload.get("fill", False)),
-        now=str(payload.get("now", "") or ""),
         last_unit=str(payload.get("last_unit", "") or ""),
         last_value=int(payload.get("last_value", 0) or 0),
         this=str(payload.get("this", "") or ""),
