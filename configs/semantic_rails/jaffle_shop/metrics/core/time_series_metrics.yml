@@ -85,10 +85,10 @@ metrics:
     value_type: percent
     temporal_role: temporal_role.jaffle_order_time
     expression:
-      kind: binary
+      kind: arithmetic
       op: divide
       left:
-        kind: binary
+        kind: arithmetic
         op: subtract
         left:
           kind: aggregate

@@ -82,3 +82,96 @@ def test_versions_converting_to_two_become_one(tmp_path, version):
 
     assert len(result.findings) == 1
     assert result.files[name] == b"example: {id: e, query: {version: 1}}\n"
+
+
+EXPRESSION_CASES = {
+    "examples/convert.yml": (
+        "examples:\n"
+        "  convert:\n"
+        "    query:\n"
+        "      select:\n"
+        "        - as: rate\n"
+        "          expression:\n"
+        "            kind: conversion\n"
+        "            matching: first_converted_after_base\n"
+        "        - as: both\n"
+        "          expression:\n"
+        "            kind: conversion\n"
+        "            matching_mode: first_converted_after_base\n"
+        "            matching: closest_converted_after_base\n",
+        "examples:\n"
+        "  convert:\n"
+        "    query:\n"
+        "      select:\n"
+        "        - as: rate\n"
+        "          expression:\n"
+        "            kind: conversion\n"
+        "            matching_mode: first_converted_after_base\n"
+        "        - as: both\n"
+        "          expression:\n"
+        "            kind: conversion\n"
+        "            matching_mode: first_converted_after_base\n",
+    ),
+    "pkg.yml": (
+        "segments:\n"
+        "  web:\n"
+        "    membership:\n"
+        "      where:\n"
+        "        - kind: not_in\n"
+        "          left: {kind: column, column: channel}\n"
+        "          values: [web]\n"
+        "        - {kind: in, expr: {kind: column, column: a}, left: {kind: column, column: b}}\n"
+        "metrics:\n"
+        "  margin:\n"
+        "    kind: derived\n"
+        "    expression:\n"
+        "      kind: binary # retired\n"
+        "      op: subtract\n"
+        "      left: {kind: measure_ref, measure: measure.shop.revenue}\n"
+        "      right: {kind: literal, value: {kind: binary, left: 1}}\n",
+        "segments:\n"
+        "  web:\n"
+        "    membership:\n"
+        "      where:\n"
+        "        - kind: not_in\n"
+        "          expr: {kind: column, column: channel}\n"
+        "          values: [web]\n"
+        "        - {kind: in, expr: {kind: column, column: a}}\n"
+        "metrics:\n"
+        "  margin:\n"
+        "    kind: derived\n"
+        "    expression:\n"
+        "      kind: arithmetic # retired\n"
+        "      op: subtract\n"
+        "      left: {kind: measure, measure: measure.shop.revenue}\n"
+        "      right: {kind: literal, value: {kind: binary, left: 1}}\n",
+    ),
+    "tests/current.yml": (
+        "tests:\n  current: {query: {select: [{expression: {kind: arithmetic, left: {}}}]}}\n",
+        None,
+    ),
+}
+
+
+def test_retired_expression_spellings_become_current(tmp_path):
+    for name, (legacy, _) in EXPRESSION_CASES.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(legacy)
+    files = PackageFiles(tmp_path / "pkg.yml")
+
+    result = plan(files, QUERY_IR_RULES, {})
+
+    expected = {
+        name: current for name, (_, current) in EXPRESSION_CASES.items() if current is not None
+    }
+    assert {name: data.decode() for name, data in result.files.items() if data} == expected
+    assert sorted((finding.file, finding.line) for finding in result.findings) == [
+        ("examples/convert.yml", 8),
+        ("examples/convert.yml", 13),
+        ("pkg.yml", 6),
+        ("pkg.yml", 8),
+        ("pkg.yml", 13),
+        ("pkg.yml", 15),
+    ]
+    upgraded = PackageFiles(files.source, contents={**files.contents, **result.files})
+    assert plan(upgraded, RULES, {}).findings == ()
