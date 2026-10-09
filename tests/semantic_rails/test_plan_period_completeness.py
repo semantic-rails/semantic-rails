@@ -472,7 +472,7 @@ _RATIO = [
             {"time": {"end": "2024-07-01T00:00:00+02:00"}},
             False,
         ),
-        # A where bound on a date can cut a period short; another calendar's ends aren't read.
+        # A where bound on a date can cut a period short.
         pytest.param(
             "utc_authored",
             NOW,
@@ -485,14 +485,6 @@ _RATIO = [
             },
             False,
             id="date-where-bound",
-        ),
-        pytest.param(
-            "utc_authored",
-            NOW,
-            "revenue month over month",
-            {"time": {"end": "2024-07-01", "calendar_id": "fiscal", "fill": True}},
-            False,
-            id="fiscal-calendar",
         ),
     ],
 )
@@ -778,6 +770,30 @@ def test_a_period_is_complete_when_its_bucket_has_ended_by_now(
 def test_a_draft_that_compares_nothing_is_not_checked(select: dict[str, Any]) -> None:
     query = {"select": [select], "time": {"temporal_role": "role", "grain": "month"}}
     assert incomplete_period_why(_CONFIG, query, policy_context={"now": NOW}) is None
+
+
+def test_another_calendars_comparison_is_held(live: Callable[..., Runtime]) -> None:
+    """Plan can't read where another calendar's periods end. Validation refuses the calendar
+    first; the check holds it on its own too."""
+
+    query = {
+        "select": [{"expression": {"metric": "metric.growth"}}],
+        "time": {"temporal_role": "role", "grain": "month", "end": "2018-01-01"},
+    }
+    fiscal = {**query, "time": {**query["time"], "calendar_id": "fiscal"}}
+    assert incomplete_period_why(_CONFIG, query, policy_context={"now": NOW}) is None
+    why = incomplete_period_why(_CONFIG, fiscal, policy_context={"now": NOW})
+    assert why is not None and why["code"] == HELD
+    assert why["details"]["calendar_id"] == "fiscal"
+    payload = plan_payload(
+        live(NOW),
+        intent="revenue month over month",
+        partial_query={
+            "time": {"end": "2024-07-01", "calendar_id": "fiscal", "fill": True},
+            "policy_context": {"now": NOW},
+        },
+    )
+    assert payload["status"] == "low_confidence" and not _ready(payload)
 
 
 def test_a_clock_that_cannot_be_read_holds_a_comparison() -> None:
