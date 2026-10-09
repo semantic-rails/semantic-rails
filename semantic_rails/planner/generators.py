@@ -383,7 +383,7 @@ def _target_focus_text(intent: str) -> str:
     if not lowered.strip():
         return ""
     top_by_match = re.search(
-        rf"^\s*top\s+(?:{_RANK_COUNT_RE}\s+)?[a-z0-9 _-]+?\s+by\s+([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
+        rf"^\s*(?:top|bottom)\s+(?:{_RANK_COUNT_RE}\s+)?[a-z0-9 _-]+?\s+by\s+([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
         lowered,
     )
     if top_by_match:
@@ -419,7 +419,7 @@ def _target_focus_text(intent: str) -> str:
 def _requested_grouping_terms(text: str) -> list[str]:
     lowered = str(text or "").lower()
     top_by_match = re.search(
-        r"^(?:top|highest|lowest)\s+([a-z0-9 _-]+?)\s+by\s+([a-z0-9 _-]+)$", lowered
+        r"^(?:top|bottom|highest|lowest)\s+([a-z0-9 _-]+?)\s+by\s+([a-z0-9 _-]+?)[.?!]*$", lowered
     )
     if top_by_match:
         raw_terms = re.sub(rf"^\s*{_RANK_COUNT_RE}\s+", "", top_by_match.group(1).strip())
@@ -526,9 +526,16 @@ def _choose_group_dimensions(
         row.id for row in visible_dimensions(runtime._config)
     }:
         return [chosen_group_dim]
+    from .groupings import _entity_grouping  # noqa: WPS433
+
     selection = _selection_context(runtime._config, query)
     group_dims: list[str] = []
     for term in _requested_grouping_terms(text):
+        # A term naming an entity is its stand-ins, never a dimension discovery scores.
+        entity = _entity_grouping(runtime._config, term)
+        if entity is not None:
+            group_dims.extend(entity[1])
+            continue
         matched_ids = _grouping_term_matches(runtime, query, term)
         if matched_ids is None:
             continue

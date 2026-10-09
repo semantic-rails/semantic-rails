@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import duckdb
 import pytest
 
 from semantic_rails.planner import plan_payload
@@ -27,7 +28,7 @@ from semantic_rails.planner.patterns.metric_by_dimension_rollup import (
 from semantic_rails.planner.time_checks import _caller_window_gaps
 from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
 from semantic_rails.planner.unmatched_words import unmatched_intent_terms
-from tests.semantic_rails.result_helpers import assert_plan_held, disable_planner_patterns
+from tests.semantic_rails.result_helpers import disable_planner_patterns
 
 MARCH_15 = "2017-03-15"
 HOUR = {"start": f"{MARCH_15}T12:00:00", "end": f"{MARCH_15}T13:00:00"}
@@ -308,12 +309,6 @@ def test_a_question_whose_numbers_and_time_words_are_all_consumed_is_ok(
         }
         assert "ready_for" not in payload["next"]
         return
-    if text in {
-        "top 5 stores by revenue in 2017",
-        "monthly revenue for the last 3 months by store",
-    }:
-        assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
-        return
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
 
@@ -548,14 +543,8 @@ def test_a_ranking_question_with_its_limit_is_ok(
     runtime_factory: Any, text: str, limit: int
 ) -> None:
     payload = _plan(runtime_factory, text)
-    code = (
-        "PLAN_UNMATCHED_TERMS"
-        if text == "top 5 stores by revenue in 2017"
-        else "PLAN_INTENT_COVERAGE_GAP"
-    )
-    if text in {"top 5 stores by revenue", "top five stores by revenue", "top 3 stores by orders"}:
-        code = "PLAN_FALLBACK_SEMANTIC_DRIFT"
-    assert_plan_held(payload, code)
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
     assert _query(payload)["limit"] == limit
 
 
@@ -784,9 +773,6 @@ def test_a_question_with_a_day_or_coarser_window_is_still_ok(
     runtime_factory: Any, text: str
 ) -> None:
     payload = _plan(runtime_factory, text)
-    if text in {"top 5 stores by revenue in 2017", "orders on 15 March 2017 by store"}:
-        assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
-        return
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
 
@@ -1216,9 +1202,9 @@ def test_a_window_with_no_open_end_states_no_assumption(text: str) -> None:
         ("total item revenue by month", "measure.jaffle.item_revenue_usd", []),
         ("Item revenue (USD) in 2017", "measure.jaffle.item_revenue_usd", []),
         ("revenue in 2017", "measure.jaffle.revenue_usd", []),
-        # The words are not a name when they are not adjacent, or name another thing. The draft
-        # groups by an order's drink flag, not the Item key, so it isn't ready for "item".
-        ("revenue by item in 2017", "measure.jaffle.revenue_usd", ["item"]),
+        # The words are not a name when they are not adjacent, or name another thing. "item" names
+        # the Item entity, and validation refuses revenue, read per order, by an item's key.
+        ("revenue by item in 2017", "measure.jaffle.revenue_usd", None),
         ("food revenue in 2017", "measure.jaffle.food_revenue_usd", []),
         # A name inside other words is not the ask: this is revenue, not the count of large orders.
         # The draft doesn't filter on the large-order flag, so it isn't ready.
@@ -1227,12 +1213,16 @@ def test_a_window_with_no_open_end_states_no_assumption(text: str) -> None:
     ],
 )
 def test_an_exact_multi_word_label_outranks_a_partial_one(
-    runtime_factory: Any, text: str, measure: str, unconsumed: list[str]
+    runtime_factory: Any, text: str, measure: str, unconsumed: list[str] | None
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=text, detail="query")
         assert _measures(payload) == [measure]
+        if unconsumed is None:
+            assert payload["status"] == "low_confidence"
+            assert payload["why"]["code"] == "VALIDATION_FAILED"
+            return
         assert payload["status"] == ("low_confidence" if unconsumed else "ok"), payload.get("why")
         assert (payload.get("why") or {}).get("details", {}).get("terms", []) == unconsumed
     finally:
@@ -1327,9 +1317,6 @@ def test_a_second_measure_is_never_dropped_silently(
     disable_planner_patterns(runtime, "conjoined_metrics")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
-        if intent == "revenue and orders by store":
-            assert_plan_held(payload, "VALIDATION_FAILED")
-            return
         assert payload["status"] == "low_confidence"
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
         gaps = [gap for gap in payload["why"]["details"]["gaps"] if "subjects" in gap["kind"]]
@@ -1340,13 +1327,35 @@ def test_a_second_measure_is_never_dropped_silently(
         runtime.close()
 
 
-def test_conjoined_store_grouping_stays_held_with_pattern_enabled(runtime_factory: Any) -> None:
+def test_conjoined_store_grouping_answers_with_the_keyed_store(runtime_factory: Any) -> None:
+    # "store" names the Store entity: both subjects group by its key and its name.
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent="revenue and orders by store", detail="query")
-        assert_plan_held(payload, "VALIDATION_FAILED")
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query_ir"]
+        assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
+        rows = runtime.query(query)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute(
+                "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0), "
+                "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN jaffle_store s "
+                "USING (store_id) GROUP BY 1, 2 ORDER BY 1"
+            ).fetchall()
     finally:
         runtime.close()
+    actual = [
+        (
+            row["dimension.jaffle_store_id"],
+            row["dimension.jaffle_store_name"],
+            round(float(row["revenue_usd"]), 2),
+            row["order_count"],
+        )
+        for row in rows
+    ]
+    assert actual == [
+        (key, name, round(float(revenue), 2), count) for key, name, revenue, count in reference
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1357,10 +1366,6 @@ def test_a_single_measure_still_plans(runtime_factory: Any, intent: str) -> None
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
-        if intent == "revenue by store for the first half of 2017":
-            assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
-            assert _measures(payload) == ["measure.jaffle.revenue_usd"]
-            return
         assert payload["status"] == "ok", payload.get("why")
         assert _measures(payload) == ["measure.jaffle.revenue_usd"]
         assert "why" not in payload

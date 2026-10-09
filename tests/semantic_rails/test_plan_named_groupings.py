@@ -21,7 +21,7 @@ from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig
-from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
+from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_unasked_groupings import _CASES
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
 
@@ -1239,8 +1239,8 @@ def test_repeated_description_of_one_grouping_stays_ready(
     before, complete = _compare_base(
         jaffle, monkeypatch, "revenue at store name level for each store"
     )
-    assert_plan_held(before, "PLAN_UNMATCHED_TERMS")
-    assert_plan_held(complete, "PLAN_UNMATCHED_TERMS")
+    assert before["status"] == complete["status"] == "ok", complete.get("why")
+    assert "execute" in complete["next"]["ready_for"]
     assert typed_rows(jaffle.query(complete["best"]["query_ir"])) == typed_rows(
         jaffle.query(before["best"]["query_ir"])
     )

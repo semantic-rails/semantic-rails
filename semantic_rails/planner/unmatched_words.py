@@ -239,11 +239,27 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     return out
 
 
-def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
-    """The objects a draft uses: those it names, and the entity and clock of each measure or
-    metric it names ("revenue from orders" uses the Order entity of Revenue)."""
+def _grouped_entities(config: Any, query: dict[str, Any]) -> set[str]:
+    """The entities whose one-column key dimension the draft groups by: what "by product" names
+    when the key's own name ("Sku") doesn't say it."""
 
-    used = set(_referenced_ids(query))
+    grouped = set(query.get("group_by") or [])
+    owners = {row.id: row for row in config.entities}
+    return {
+        row.entity
+        for row in config.dimensions
+        if row.id in grouped
+        and row.entity in owners
+        and list(owners[row.entity].key) == [row.column]
+    }
+
+
+def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
+    """The objects a draft uses: those it names, the entities whose key it groups by, and the
+    entity and clock of each measure or metric it names ("revenue from orders" uses the Order
+    entity of Revenue)."""
+
+    used = set(_referenced_ids(query)) | _grouped_entities(config, query)
     for row in [*config.measures, *config.metric_recipes]:
         if str(row.id) in used:
             for attr in ("entity", "default_temporal_role", "temporal_role"):
@@ -335,7 +351,7 @@ def _unconsumed_words(
     text = str(question or "")
     lowered = text.lower()
     spans = [*_time_window(text).spans, *_honored_clause_spans(runtime, text, query)]
-    referenced = set(_referenced_ids(query))
+    referenced = set(_referenced_ids(query)) | _grouped_entities(runtime._config, query)
     selected = {"expressions": [item.get("expression") for item in query.get("select", [])]}
     selected_ids = set(_referenced_ids(selected))
     measures = {row.id: row for row in runtime._config.measures}

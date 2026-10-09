@@ -35,6 +35,8 @@ from semantic_rails.runtime import Runtime
 from tests.semantic_rails.result_helpers import assert_plan_held
 
 STORE = "dimension.jaffle_store_name"
+# "store" names the Store entity: its key, then its one naming dimension.
+STORES = ["dimension.jaffle_store_id", STORE]
 
 
 @pytest.fixture()
@@ -118,7 +120,11 @@ def _not_ready(payload: dict[str, Any], terms: list[str]) -> None:
 def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue by store, customer type and product type")
 
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    _not_ready(payload, ["customer type", "product type"])
+    assert payload["best"]["query_ir"]["group_by"] == STORES
+    assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
+    assert payload["why"]["details"]["ambiguous_groupings"] == ["product type"]
+    assert payload["why"]["message"].startswith("The draft drops the grouping by customer type")
 
 
 @contextmanager
@@ -149,25 +155,25 @@ def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -
 
 
 @pytest.mark.parametrize(
-    ("dimensions", "intent", "grouping", "terms"),
+    ("dimensions", "intent", "group_by", "terms"),
     [
         # "status" (Membership status) is one typo from "states".
         (
             [("states", "States", "store_name")],
             "revenue by states, status",
-            "dimension.states",
+            ["dimension.states"],
             ["status"],
         ),
         # "sales" is this dimension's whole name, and only a namespace elsewhere (metric.sales.*).
-        ([("sales", "", "store_name")], "revenue by store, sales", STORE, ["sales"]),
+        ([("sales", "", "store_name")], "revenue by store, sales", STORES, ["sales"]),
         # The draft's own metric sits in that namespace: metric.sales.aov_usd, named
         # jaffle.sales_aov_usd.
-        ([("sales", "", "store_id")], "aov by store, sales", STORE, ["sales"]),
+        ([("sales", "", "store_id")], "aov by store, sales", STORES, ["sales"]),
         # The planner reads "sent" as a synonym of "received"; here each names its own dimension.
         (
             [("received", "Received", "store_name"), ("sent", "Sent", "store_id")],
             "revenue by received, sent",
-            "dimension.received",
+            ["dimension.received"],
             ["sent"],
         ),
     ],
@@ -176,20 +182,14 @@ def test_one_catalog_name_never_consumes_another(
     jaffle: Runtime,
     dimensions: list[tuple[str, str, str]],
     intent: str,
-    grouping: str,
+    group_by: list[str],
     terms: list[str],
 ) -> None:
     with _with_store_dimensions(jaffle, *dimensions) as runtime:
         payload = plan_payload(runtime, intent=intent)
 
-        if intent in {"revenue by store, sales", "aov by store, sales"}:
-            assert_plan_held(
-                payload,
-                "VALIDATION_FAILED" if intent.startswith("aov") else "PLAN_FALLBACK_SEMANTIC_DRIFT",
-            )
-            return
         _not_ready(payload, terms)
-        assert payload["best"]["query_ir"]["group_by"] == [grouping]
+        assert payload["best"]["query_ir"]["group_by"] == group_by
         assert payload["why"]["details"]["dropped_groupings"] == terms
         assert unconsumed_catalog_words(runtime, intent, payload["best"]["query_ir"]) == terms
 
@@ -285,28 +285,19 @@ def test_light_verbs_do_not_hide_unknown_modifiers(jaffle: Runtime, verb: str) -
 def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
     jaffle: Runtime, name: str
 ) -> None:
-    # An unresolved store grouping is held even without the extra catalog object.
-    assert_plan_held(
-        plan_payload(jaffle, intent="show monthly revenue by store"), "PLAN_UNMATCHED_TERMS"
-    )
+    # The same framing remains valid when it names no extra catalog object.
+    assert plan_payload(jaffle, intent="show monthly revenue by store")["status"] == "ok"
     with _with_store_dimensions(jaffle, (name, name.title(), "store_id")) as runtime:
-        assert_plan_held(
-            plan_payload(runtime, intent="monthly revenue by store"), "PLAN_UNMATCHED_TERMS"
-        )
+        assert plan_payload(runtime, intent="monthly revenue by store")["status"] == "ok"
         payload = plan_payload(runtime, intent=f"monthly revenue by store, {name}")
-        _not_ready(payload, ["store", name] if name == "date" else [name])
-        assert payload["best"]["query_ir"]["group_by"] == [
-            "dimension.jaffle_customer_history_preferred_store_id"
-        ]
+        _not_ready(payload, [name])
+        assert payload["best"]["query_ir"]["group_by"] == STORES
         for intent in (
             "revenue by store by order date",
             "monthly revenue by order date",
             "revenue by order date, at week grain",
         ):
-            if intent == "revenue by store by order date":
-                assert_plan_held(plan_payload(runtime, intent=intent), "PLAN_UNMATCHED_TERMS")
-            else:
-                assert plan_payload(runtime, intent=intent)["status"] == "ok"
+            assert plan_payload(runtime, intent=intent)["status"] == "ok"
         query = {
             "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}}],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
@@ -355,10 +346,7 @@ def test_a_plural_is_consumed_by_the_same_forms_that_recognize_it(
         assert selected["status"] == "ok", selected.get("why")
         assert "execute" in selected["next"]["ready_for"]
         assert selected["best"]["query_ir"]["group_by"] == [f"dimension.{name}"]
-        assert_plan_held(
-            plan_payload(runtime, intent=f"revenue by store, {plural}"),
-            "PLAN_FALLBACK_SEMANTIC_DRIFT",
-        )
+        _not_ready(plan_payload(runtime, intent=f"revenue by store, {plural}"), [plural])
 
 
 def test_es_does_not_invent_short_or_unrelated_catalog_names(jaffle: Runtime) -> None:
@@ -485,9 +473,6 @@ def test_a_declared_filter_value_matches_reference_sql(jaffle: Runtime) -> None:
 )
 def test_an_unknown_modifier_is_not_ready(jaffle: Runtime, intent: str, terms: list[str]) -> None:
     payload = plan_payload(jaffle, intent=intent)
-    if intent == "revenue decile by store":
-        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-        return
     _not_ready(payload, terms)
     assert payload["why"]["details"]["kind"] == "filter_values_unrealized"
 
@@ -557,14 +542,6 @@ def test_a_count_reads_only_its_number_of(
 def test_a_word_naming_an_object_the_draft_does_not_use_is_not_ready(
     jaffle: Runtime, intent: str, terms: list[str]
 ) -> None:
-    if intent in {
-        "revenue by store, order",
-        "revenue by store, date",
-        "orders by store, time",
-        "revenue by store, statuses",
-    }:
-        assert_plan_held(plan_payload(jaffle, intent=intent), "PLAN_FALLBACK_SEMANTIC_DRIFT")
-        return
     _not_ready(plan_payload(jaffle, intent=intent), terms)
 
 
@@ -603,7 +580,7 @@ def test_every_draft_goes_through_the_one_gate(
         jaffle, intent="food revenue vs drink revenue by store, customer type"
     )
     assert comparison["best"]["pattern"] == "inline_comparison"
-    assert_plan_held(comparison, "PLAN_UNMATCHED_TERMS")
+    _not_ready(comparison, ["customer", "type"])
 
     # The catalog fallback's draft, for a question no pattern realizes.
     monkeypatch.setattr(
@@ -615,12 +592,10 @@ def test_every_draft_goes_through_the_one_gate(
     )
     fallback = plan_payload(jaffle, intent="orders by store, customer type")
     assert fallback["best"]["pattern"] == "catalog_fallback"
-    # The history grouping needs query time. Validation refuses the primary;
-    # the validating delivered-orders alternative changes its target and grouping.
-    assert fallback["status"] == "low_confidence"
-    assert fallback["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
-    assert fallback["best"]["validation_ok"] is False
-    assert "ready_for" not in fallback["next"]
+    # "store" names the Store entity, so the fallback groups by it and drops the customer type.
+    assert fallback["best"]["validation_ok"] is True
+    assert fallback["best"]["query_ir"]["group_by"] == STORES
+    _not_ready(fallback, ["customer", "type"])
 
     # Force an executable catalog draft past validation: it must still pass the
     # same catalog-word gate as a named pattern, rather than become ready.

@@ -28,7 +28,6 @@ from semantic_rails.planner.groupings import _time_spec
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolved_time_phrases
 from semantic_rails.planner.time_windows import _time_bounds_from_text
-from tests.semantic_rails.result_helpers import assert_plan_held
 
 # ---------------------------------------------------------------------------
 # Pure helper-level tests (no runtime needed)
@@ -156,11 +155,11 @@ def test_plan_last_month_is_time_bounded_and_ready(runtime_factory) -> None:
         payload = plan_payload(runtime, intent="revenue by store last month")
     finally:
         runtime.close()
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert payload["status"] == "ok"
     time_spec = payload["best"]["query_ir"]["time"]
     assert time_spec["range"] == {"last": {"unit": "month", "value": 1}}
-    assert payload["best"]["validation_ok"] is False
-    assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["best"]["validation_ok"] is True
+    assert payload["next"]["ready_for"] == ["execute"]
 
 
 def test_plan_last_n_days_is_time_bounded(runtime_factory) -> None:
@@ -174,7 +173,8 @@ def test_plan_last_n_days_is_time_bounded(runtime_factory) -> None:
     assert time_spec["grain"] == "day"
     # The draft splits the 7 days into days, which the question never asks for.
     assert payload["status"] == "low_confidence"
-    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+    assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
+    assert payload["why"]["details"]["grain"] == "day"
 
 
 def test_plan_unresolved_window_downgrades_instead_of_silently_dropping(
@@ -222,7 +222,7 @@ def test_mcp_plan_offers_no_runnable_draft_without_the_window(
         assert all("query_ir" not in row for row in rows)
         assert "validate" not in refused.get("next", {})
     # The recovery hint's way out: pass the window with its temporal role and grain.
-    assert_plan_held(bounded, "PLAN_UNMATCHED_TERMS")
+    assert bounded["status"] == "ok"
     assert bounded["best"]["query_ir"]["time"] == window
 
 

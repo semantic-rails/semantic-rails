@@ -328,7 +328,7 @@ def _subject_candidates(
 def _grouping_candidates(
     config: Any, text: str, target_terms: tuple[str, ...]
 ) -> list[ResolvedTerm]:
-    dim_ids = _maybe_group_by(config, text, target_terms=target_terms)
+    dim_ids = _maybe_group_by(config, text, target_terms=target_terms, each=True)
     out: list[ResolvedTerm] = []
     for dim_id in dim_ids:
         dim = next((row for row in visible_dimensions(config) if row.id == dim_id), None)

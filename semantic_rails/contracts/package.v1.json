@@ -21,6 +21,12 @@
     "graph": {
       "type": "object",
       "properties": {
+        "entities": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/GraphEntity"
+          }
+        },
         "path_policy": {
           "type": "object"
         },
@@ -171,6 +177,15 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "GraphEntity": {
+      "type": "object",
+      "properties": {
+        "display": {
+          "type": "string",
+          "description": "The dimension key on the entity's own model, other than its key, that names one row in an answer."
         }
       }
     }
