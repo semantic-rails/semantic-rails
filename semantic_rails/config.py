@@ -2947,8 +2947,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                                 variant.get("eligible_time_grains")
                             )
                             or _coarser_time_grains(time_grain),
-                            "excluded_entities": list(excluded_entities),
-                            "excluded_dimensions": list(excluded_dimensions),
+                            "excluded_entities": sorted(excluded_entities),
+                            "excluded_dimensions": sorted(excluded_dimensions),
                             "selection_priority": int(selection.get("priority", 0) or 0),
                             "equivalence_kind": str(equivalence.get("kind", "exact") or "exact"),
                             "model_id": model_id,

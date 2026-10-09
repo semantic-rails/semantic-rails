@@ -543,7 +543,9 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             model = dict(models[source_model] or {})
             joins = dict(model.get("joins", {}) or {})
             edge_spec: dict[str, Any] = {
-                "id": str(spec.get("id", f"relationship.{_slug(rel_name)}")),
+                # `as:` keeps a public id, as on every other object.
+                "id": str(spec.get("as") or "").strip()
+                or str(spec.get("id", f"relationship.{_slug(rel_name)}")),
                 "to": b,
             }
             if cardinality:

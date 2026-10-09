@@ -644,7 +644,7 @@ def test_a_conversion_reading_a_history_dimension_without_a_time_is_refused(runt
 
     assert exc.value.code == "FANOUT_UNSAFE"
     assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
-    assert exc.value.details["relationships"] == ["relationship.order_to_customer_history"]
+    assert exc.value.details["relationships"] == ["relationship.jaffle_order_customer_history"]
     assert exc.value.details["entities"] == ["entity.jaffle_customer_history"]
 
 
