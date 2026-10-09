@@ -723,14 +723,18 @@ kind names must match exactly.
   restricts how governed metrics or measures may be cut by `group_by`,
   `where`, temporal role, and metric-filter predicates.
   `allowed_metric_filter_entities` and `allowed_metric_filter_metrics` apply
-  to compiler-resolved cuts in `metric_filters` and inside select or recipe
-  expressions, including aggregate filters and scoped predicates. Measures,
+  to compiler-resolved cuts the caller adds: in `having` and entity filters and
+  inside the call's own expressions, including aggregate filters and scoped
+  predicates. A package metric's own filter is its author's governed definition,
+  never a caller's cut, so a plain select of a filtered package metric passes
+  these lists and `allow_metric_filters: false`; to keep a caller away from that
+  metric, deny the metric itself. Measures,
   columns and dimensions count as their owning entities; referenced recipes
   count even when nested. The outer query's grouping, where, time axis and
   attachment joins are excluded from these filter dependency sets. Constant
   cuts have no object reads; unresolved cut bindings are refused under these
   allowlists. A cut in `metric_filters` counts for every governed object in
-  the query. A cut inside a select or recipe expression counts only for the
+  the query. A cut inside a select expression counts only for the
   measures and recipes whose values it filters, so an unfiltered governed
   measure may sit beside a separately filtered one. When a cut has no single
   owner, or the governed object is read inside a cut, every cut in the query
