@@ -50,7 +50,7 @@ def test_authoring_alias_golden_rewrite(tmp_path, path, old, new, value):
     expected = {"snapshot": value} if old == "snapshot_policy" else value
     row[new] = expected
     source.write_text(yaml.safe_dump(doc, sort_keys=False))
-    baseline = load_package_snapshot(source)
+    baseline = None if old == "snapshot_policy" else load_package_snapshot(source)
     del row[new]
     row[old] = value
     source.write_text(yaml.safe_dump(doc, sort_keys=False))
@@ -65,15 +65,15 @@ def test_authoring_alias_golden_rewrite(tmp_path, path, old, new, value):
         PackageFiles(source, contents={**files.contents, **result.files}), RULES, {}
     ).findings
     source.write_bytes(result.files[source.name])
+    if baseline is None:
+        # Only a stock reads a snapshot, so one on a measure without `kind: stock` is refused
+        # at load; stocks keep their meaning (test_snapshot_golden_keeps_effective_semantics).
+        with pytest.raises(SemanticLayerError, match="without 'kind: stock'") as exc:
+            load_package_snapshot(source)
+        assert exc.value.code == "INVALID_CONFIG"
+        return
     upgraded = load_package_snapshot(source)
     assert upgraded.semantic_fingerprint == baseline.semantic_fingerprint
-    if old == "snapshot_policy":
-        assert (
-            next(
-                m for m in upgraded.config.measures if m.id == "measure.shop.revenue_usd"
-            ).default_aggregation
-            == "sum"
-        )
 
 
 def _nested(path, row):
@@ -112,6 +112,18 @@ def test_authoring_alias_upgrade_loads_and_is_idempotent(tmp_path, path, old, ne
     else:
         expected_row[new] = value
     source.write_text(yaml.safe_dump(canonical))
+    if old == "snapshot_policy":
+        # The measure is a flow; only a stock reads a snapshot, so the canonical form is
+        # refused at load and the upgrade writes nothing.
+        with pytest.raises(SemanticLayerError, match="without 'kind: stock'"):
+            load_package_snapshot(source)
+        source.write_text(yaml.safe_dump(doc, sort_keys=False))
+        legacy = source.read_bytes()
+        with pytest.raises(SemanticLayerError, match="without 'kind: stock'") as exc:
+            upgrade_project(source, workspace_root=tmp_path, dry_run=False)
+        assert exc.value.code == "CONFIG_CONFLICT"
+        assert source.read_bytes() == legacy
+        return
     baseline = load_package_snapshot(source)
     source.write_text(yaml.safe_dump(doc, sort_keys=False))
     with pytest.raises(SemanticLayerError, match=old) as exc:

@@ -5,7 +5,8 @@
   `entities:`, a singular `entity:` without `entities:`, `id:` on graph entities,
   dimensions and measures (use `as:`), a model `id:` that differs from its key, `topics:`,
   a measure's `preferred_companion_metrics`, a measure without `kind:`, a metric without
-  `value_type:`, and `relations:` in a directory package's `package.yml`. Rows finer than
+  `value_type:`, an `accumulation:` kind outside `{flow, stock, event, population}` under
+  `defaults.measure`, and `relations:` in a directory package's `package.yml`. Rows finer than
   their entity are modelled as an entity of their own, keyed by the row and related to its
   parent. See
   [Refused legacy forms](docs/PACKAGE_AUTHORING.md#refused-legacy-forms).
