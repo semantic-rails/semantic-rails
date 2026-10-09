@@ -918,7 +918,7 @@ def _parts_payload(
                     **({"question_why": whole["why"]} if whole.get("why") else {}),
                 },
             },
-            "next": {key: value for key, value in whole["next"].items() if key != "action"},
+            "next": {key: value for key, value in whole.get("next", {}).items() if key != "action"},
             "parts": listed,
         }
 
@@ -942,7 +942,7 @@ def _parts_payload(
     payload: dict[str, Any] = {
         "plan_version": _VERSION,
         "intent": whole["intent"],
-        "intent_ir": planned[0].get("intent_ir", whole["intent_ir"]),
+        "intent_ir": planned[0].get("intent_ir", whole.get("intent_ir")),
         "status": status,
         "best": planned[0]["best"],
         "parts": parts,
