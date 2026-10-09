@@ -1774,6 +1774,42 @@ dimensions are those of the measure's entity it filters on. Only when it has non
 the dimensions on entities reached through many-to-one or one-to-one relationships (for
 example a team's class read from a daily team fact) that its aggregates of this measure filter on.
 
+The metric `plan` answers with must be a governed form of the measure: one aggregate of it,
+at the draft's aggregation, through a filter, either bare (as above) or as the first argument
+of `COALESCE(<aggregate>, 0)`, the usual way to report a count as 0 rather than `NULL` for a
+period without rows:
+
+```yaml
+metrics:
+  calls:
+    label: Calls
+    kind: derived
+    value_type: count
+    temporal_role: temporal_role.crm_call_called_at
+    expression:
+      kind: call
+      name: COALESCE
+      args:
+        - kind: aggregate
+          measure: measure.crm.calls_all      # a publish: false building block
+          aggregation: count_distinct
+          filter:
+            all:
+              - {field: dimension.crm_account_segment, op: "=", value: customer}
+        - {kind: literal, value: 0}
+```
+
+Any other wrapper, filler or argument is not a governed form, so `plan` keeps the measure
+and holds the draft. The swap applies to every single-subject `plan` draft, from any pattern
+or the catalog fallback, before validation and readiness, and only when the caller's
+`partial_query` has no `select`, the draft doesn't filter or group by a dimension the metric's
+filter reads, and the draft has no time block (the metric is then read over all time) or one
+on the metric's own clock. Readiness then decides the swapped draft like any other. A part of
+a compound question ("calls and callers") and a semi-additive measure swap only to the bare
+governed form, and a compound part only on the metric's own clock. For a semi-additive measure
+that form is a plain aggregate with a `filter` (not a `scoped_aggregate`), the one form its
+read day is shaped for.
+
 ### Long-tail kind — `derived` (expression AST)
 
 For arbitrary formulas, `kind: derived` keeps the existing AST authoring path:

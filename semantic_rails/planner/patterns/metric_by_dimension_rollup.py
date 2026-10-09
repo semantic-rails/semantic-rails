@@ -20,13 +20,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ...config_parts.measure_governance import (
-    building_block_measures,
-    governing_metrics,
-    whole_aggregate,
-)
-from ...errors import SemanticLayerError
-from ...expressions import collect_object_references
 from ...naming import semantic_token as _semantic_token
 from .._base import (
     _NAME_CONNECTORS,
@@ -39,7 +32,6 @@ from .._base import (
     _preferred_measure,
     _preferred_metric,
     _resolved,
-    _said_name,
     _singular,
     _tokens,
 )
@@ -58,66 +50,7 @@ from ..intent_ir import _FALLBACK_STOPWORDS
 from ..qualifiers import _add_order, _target_measure_terms, _top_n_intent
 from ..ranking_checks import _dimension_nouns, _ranking_request, _ranking_words, _superlative
 from ..time_windows import _time_bounds_from_text, _time_window
-from ..visibility import visible_object_ids
 from ._protocol import IntentPattern
-
-
-def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | None:
-    """The metric a one-select draft over a measure answers with instead.
-
-    The select reads a measure, or the metric that is its plain aggregate. A metric that
-    aggregates that measure the same way through a filter governs it ("Active stores" over
-    "Active stores (all kinds)"). It is the answer when the question's target phrase ``focus``
-    names it (``_said_name``), and names no other such metric as fully nor the measure more
-    fully; or when the measure is a building block and this metric alone governs it. Never
-    when the draft filters or groups by something its filter reads: "demo stores" asks for
-    rows the governed metric leaves out.
-    """
-
-    select = list(query.get("select") or [])
-    expression = select[0].get("expression") if len(select) == 1 else None
-    if not isinstance(expression, dict):
-        return None
-    plain = _object_by_id(config.metric_recipes, str(expression.get("metric", "")))
-    whole = whole_aggregate(plain) if plain is not None else None
-    if plain is not None and (whole is None or whole[2]):
-        return None
-    measure_id, aggregation = whole[:2] if whole else (expression.get("measure"), "")
-    measure = _object_by_id(config.measures, str(measure_id or ""))
-    if measure is None:
-        return None
-    aggregation = aggregation or expression.get("aggregation") or measure.default_aggregation
-    governing = governing_metrics(config, measure.id)
-    visible = set(visible_object_ids(config, (metric.id for metric in governing)))
-    governing = [metric for metric in governing if metric.id in visible]
-    candidates = {
-        metric.id: (metric, governed[2])
-        for metric in governing
-        if (governed := whole_aggregate(metric)) is not None
-        and governed[0] == measure.id
-        and (governed[1] or measure.default_aggregation) == aggregation
-    }
-    named = {metric.id: words for metric in governing if (words := _said_name(metric, focus))}
-    widest = [key for key in named if all(words <= named[key] for words in named.values())]
-    if named:
-        chosen = widest[0] if len(widest) == 1 else ""
-    elif measure.id in building_block_measures(config) and len(governing) == 1:
-        chosen = governing[0].id
-    else:
-        chosen = ""
-    asked = _said_name(measure, focus) | (_said_name(plain, focus) if plain else frozenset())
-    if chosen not in candidates or not asked <= named.get(chosen, frozenset()):
-        return None
-    metric, narrowing = candidates[chosen]
-    try:
-        cuts = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
-        if set(collect_object_references(narrowing, config)) & set(
-            collect_object_references(cuts, config)
-        ):
-            return None
-    except SemanticLayerError:
-        return None
-    return metric
 
 
 def _named_measure(config: Any, text: str, ordinary: Any | None = None) -> Any | None:
@@ -436,16 +369,6 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     query = _normalize_value_filters(
         query, _matched_value_rows(runtime, query, text), text=text, config=config
     )
-    # The governed metric over the chosen measure answers instead ("how many stores were
-    # active" means Active stores, not the all-kinds count it filters).
-    governed = _governed_target(config, target_focus or text, query)
-    if (
-        governed is not None
-        and (query.get("time") or {}).get("temporal_role", "") == governed.temporal_role
-    ):
-        target, target_id, is_measure = governed, str(governed.id), False
-        select_alias = _semantic_token(target_id, fallback="value")
-        query["select"] = [{"as": select_alias, "expression": {"metric": target_id}}]
     if is_top:
         query["order_by"] = [{"field": select_alias, "direction": direction}]
         query["limit"] = top_n

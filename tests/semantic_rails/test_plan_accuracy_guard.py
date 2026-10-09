@@ -1660,9 +1660,12 @@ def test_a_where_clause_is_honored_by_a_filter_on_its_dimension(
     ("text", "named"),
     [
         ("large order revenue by month", "metric.sales.large_order_revenue"),
-        # Revenue named again outside the metric's name leaves the measure first.
-        ("large order revenue minus revenue by month", None),
-        ("revenue minus large order revenue by month", None),
+        # A measure named outside the metric's name vetoes it only with a word the metric's
+        # names lack: "revenue" is one of its words, "tax paid" isn't. Either way the second
+        # subject holds the plan.
+        ("large order revenue minus revenue by month", "metric.sales.large_order_revenue"),
+        ("revenue minus large order revenue by month", "metric.sales.large_order_revenue"),
+        ("large order revenue minus tax paid by month", None),
     ],
 )
 def test_a_metric_is_named_only_around_every_measure_named(
@@ -1670,6 +1673,10 @@ def test_a_metric_is_named_only_around_every_measure_named(
 ) -> None:
     found = _named_metric(named_metrics.runtime._config, text)
     assert (found[0].id if found else None) == named
+    if " minus " in text:
+        payload = named_metrics.call_tool("plan", {"intent": text, "detail": "best"})
+        assert payload["status"] == "low_confidence"
+        assert "execute" not in payload["next"].get("ready_for", [])
 
 
 @pytest.mark.parametrize(
