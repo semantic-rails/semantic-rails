@@ -1249,6 +1249,20 @@ def expression_field(
 
 
 def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> SemanticExpr:
+    """``raw`` parsed; a malformed-shape error names the innermost kind that holds it and,
+    from the top call, the ``path`` the expression came from."""
+    try:
+        return _parse_semantic_expression(raw, context=context, path=path)
+    except SemanticLayerError as exc:
+        if exc.code == "INVALID_EXPRESSION_AST":
+            if isinstance(raw, dict) and raw.get("kind"):
+                exc.details.setdefault("expression_kind", raw["kind"])
+            if path:
+                exc.details.setdefault("path", path.removeprefix("query."))
+        raise
+
+
+def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> SemanticExpr:
     if path:
         validate_expression_shapes(raw, path=path)
     if not isinstance(raw, dict):
@@ -1546,7 +1560,12 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         )
     if kind == "case":
         whens = []
-        for row in list(expr.get("whens", []) or []):
+        rows = expr.get("whens")
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", "Case expressions require whens: a list of {when, then}"
+            )
+        for row in rows:
             whens.append(
                 CaseWhenExpr(
                     when=parse_semantic_expression(row.get("when"), context=context),
