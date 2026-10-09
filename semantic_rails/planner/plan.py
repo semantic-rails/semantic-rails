@@ -746,10 +746,12 @@ def _planned_row(
         )
         if retry_validation["ok"]:
             merged_draft, validation = replace(merged_draft, query=reshaped), retry_validation
-    if merged_draft.ask:
-        ask = _with_ready_options(runtime, merged_draft.ask)
-        if not validation["ok"]:
-            return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
+    # A question needs two readings the engine runs; with one, the draft is that reading.
+    ask = _with_ready_options(runtime, merged_draft.ask) if merged_draft.ask else {}
+    if len(ask.get("details", {}).get("options") or []) < 2:
+        ask = {}
+    if ask and not validation["ok"]:
+        return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
     return {
         "status": "ok" if validation["ok"] else "low_confidence",
         "draft": merged_draft,
@@ -757,7 +759,7 @@ def _planned_row(
         "validation": validation,
         "blocked": False,
         "start_dropped": start_dropped,
-        **({"ask": ask} if merged_draft.ask else {}),
+        **({"ask": ask} if ask else {}),
     }
 
 

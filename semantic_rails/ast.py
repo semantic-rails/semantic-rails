@@ -984,6 +984,7 @@ def normalize_partial_query(
     for idx, row in enumerate(list(payload.get("select", []) or [])):
         if not isinstance(row, dict):
             raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
+        _check_query_item_keys(row, _SELECT_ITEM_KEYS, f"select[{idx}]")
         raw_expr = row.get("expression", {}) or {}
         expression = (
             parse_semantic_expression(

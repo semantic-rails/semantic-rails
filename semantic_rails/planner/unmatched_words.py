@@ -482,7 +482,8 @@ def _unconsumed_words(runtime: Any, question: str, query: Call) -> tuple[list[st
 
 
 def _measure_aggregations(config: Any, query: Call) -> list[tuple[str, str]]:
-    """Each measure the draft's selects aggregate, with the aggregation each reads it at."""
+    """Each measure the draft aggregates, in its selects and in the conditions of its entity
+    filters and having, with the aggregation each reads it at."""
 
     measures = {row.id: row for row in config.measures}
     out: list[tuple[str, str]] = []
@@ -504,6 +505,11 @@ def _measure_aggregations(config: Any, query: Call) -> list[tuple[str, str]]:
 
     for item in query.select:
         walk(item.expression)
+    for row in query.entity_filters:
+        for condition in row.conditions:
+            walk(condition.field)
+    for condition in query.having:
+        walk(condition.field)
     return out
 
 

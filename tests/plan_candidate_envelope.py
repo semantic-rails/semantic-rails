@@ -82,7 +82,7 @@ def plan_candidate_envelope(
             runtime, row, index=emitted, verbosity=verbosity, intent=intent
         )
         emitted += 1
-        if payload.get("status") == "low_confidence":
+        if payload.get("status") in {"low_confidence", "needs_clarification"}:
             if payload.get("blocked"):
                 continue
             out["blocked"].append(
