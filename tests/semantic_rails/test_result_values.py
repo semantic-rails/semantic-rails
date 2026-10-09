@@ -151,9 +151,9 @@ def test_date_bucket_and_timestamp_bucket_have_one_wire_type(runtime_factory, mo
     monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: [row])
     query = {**QUERY, "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"}}
     try:
-        duckdb_result = runtime.query(query, **MINIMAL)
+        duckdb_result = runtime.query(query, now="2026-10-01T00:00:00Z", **MINIMAL)
         row[column] = datetime(2026, 9, 30)
-        postgres_result = runtime.query(query, **MINIMAL)
+        postgres_result = runtime.query(query, now="2026-10-01T00:00:00Z", **MINIMAL)
         assert json_text(duckdb_result) == json_text(postgres_result)
         assert duckdb_result["column_types"][column] == {"type": "date"}
         assert duckdb_result["rows"][0][column] == "2026-09-30"

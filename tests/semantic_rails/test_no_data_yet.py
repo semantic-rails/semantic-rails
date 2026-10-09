@@ -51,15 +51,11 @@ def test_window_total_markers_only_disclose_proven_edges(
     query["time"]["start"] = start
     compiled["logical_plan"].time["start"] = start
     compiled["explain"].normalized_query["time"]["start"] = start
-    monkeypatch.setattr(
-        runtime_module,
-        "_compiled_cte_row",
-        lambda *a: {
-            "coverage_1__loaded_from": loaded_from,
-            "coverage_1__loaded_to": loaded_to,
-        },
-    )
-    warnings = _no_data_yet_warnings(None, compiled, [], query)
+    coverage = {
+        "coverage_1__loaded_from": loaded_from,
+        "coverage_1__loaded_to": loaded_to,
+    }
+    warnings = _no_data_yet_warnings(compiled, [], query, coverage)
     assert bool(warnings) is (expected is not None)
     if expected:
         assert warnings[0]["details"]["measures"] == [
@@ -74,25 +70,19 @@ def test_window_total_markers_only_disclose_proven_edges(
 def test_relative_window_total_names_the_normalized_start(total, monkeypatch):
     compiled, query = total
     query["time"] = {"temporal_role": ROLE, "last_unit": "week", "last_value": 1}
-    monkeypatch.setattr(
-        runtime_module,
-        "_compiled_cte_row",
-        lambda *a: {
-            "coverage_1__loaded_from": -1,
-            "coverage_1__loaded_to": -1,
-        },
-    )
-    warning = _no_data_yet_warnings(None, compiled, [], query)[0]
+    coverage = {
+        "coverage_1__loaded_from": -1,
+        "coverage_1__loaded_to": -1,
+    }
+    warning = _no_data_yet_warnings(compiled, [], query, coverage)[0]
     assert warning["details"]["measures"][0]["edge"] == "2026-09-21"
 
 
 @pytest.mark.parametrize("rows,excluded", [([{"value": 1}], ()), ([{"value": None}], ("value",))])
-def test_no_extra_read_for_values_or_withheld_outputs(total, monkeypatch, rows, excluded):
+def test_no_warning_for_values_or_withheld_outputs(total, rows, excluded):
     compiled, query = total
-    calls = []
-    monkeypatch.setattr(runtime_module, "_compiled_cte_row", lambda *a: calls.append(a))
-    assert _no_data_yet_warnings(None, compiled, rows, query, excluded_outputs=excluded) == []
-    assert calls == []
+    coverage = {"coverage_1__loaded_from": -1, "coverage_1__loaded_to": -1}
+    assert _no_data_yet_warnings(compiled, rows, query, coverage, excluded_outputs=excluded) == []
 
 
 @pytest.mark.parametrize("window_total", [False, True])
@@ -121,18 +111,14 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
     for node in sql_nodes(field.expression):
         if isinstance(node, SqlIdentifier) and node.parts[0] == "coverage_1":
             node.parts[0] = "coverage_2"
-    monkeypatch.setattr(
-        runtime_module,
-        "_compiled_cte_row",
-        lambda *a: {
-            "coverage_1__loaded_from": -1 if window_total else datetime(2026, 9, 7),
-            "coverage_1__loaded_to": -1 if window_total else datetime(2026, 9, 7),
-            "coverage_2__loaded_from": None,
-            "coverage_2__loaded_to": None,
-        },
-    )
+    coverage = {
+        "coverage_1__loaded_from": -1 if window_total else datetime(2026, 9, 7),
+        "coverage_1__loaded_to": -1 if window_total else datetime(2026, 9, 7),
+        "coverage_2__loaded_from": None,
+        "coverage_2__loaded_to": None,
+    }
     rows = [] if window_total else [{"period": datetime(2026, 9, 21), "money": None, "count": None}]
-    warnings = _no_data_yet_warnings(None, compiled, rows, query)
+    warnings = _no_data_yet_warnings(compiled, rows, query, coverage)
     assert len(warnings) == 1
     assert warnings[0]["details"]["outputs"] == ["money", "count"]
     assert warnings[0]["details"]["measures"] == [
@@ -225,13 +211,9 @@ def test_series_compares_only_compatible_sql_bucket_keys(
             {"value": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
         ),
     )
-    monkeypatch.setattr(
-        runtime_module,
-        "_compiled_cte_row",
-        lambda *a: {f"coverage_{i}__loaded_to": edge for i, edge in enumerate(edges, 1)},
-    )
+    coverage = {f"coverage_{i}__loaded_to": edge for i, edge in enumerate(edges, 1)}
     rows = [{"period": bucket, "value": None} for bucket in buckets]
-    warnings = _no_data_yet_warnings(None, compiled, rows, query)
+    warnings = _no_data_yet_warnings(compiled, rows, query, coverage)
     assert bool(warnings) is (expected is not None)
     if expected:
         assert warnings[0]["details"]["measures"] == [

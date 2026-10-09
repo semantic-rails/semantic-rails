@@ -808,11 +808,11 @@ def test_empty_time_window_reports_diagnostics_warning_and_data_coverage(runtime
                         "as": "rev",
                     }
                 ],
+                # An open window: a named one would answer its every day, NULL, no data yet.
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
                     "grain": "day",
                     "start": "2099-01-01",
-                    "end": "2099-12-31",
                 },
             }
         )

@@ -10,7 +10,8 @@ After Phase 1:
   drops those heavy keys while keeping ``rendered_sql`` and the
   ``sql_plan`` outline.
 - ``verbosity="minimal"`` strips to ``{ok, errors, warnings}`` (plus
-  ``rows`` / ``row_count`` for execute) so an agent loop with a 25K
+  ``rows`` / ``row_count`` for execute, and the answer's ``window``, ``clock`` and
+  ``observation_scope``) so an agent loop with a 25K
   token tool-output cap can iterate without blowing the budget.
 - ``verbosity="full"`` returns the maximal envelope (every heavy field).
 - ``sql_profile="off"`` drops ``rendered_sql`` and ``sql_plan`` at any
@@ -41,10 +42,13 @@ _COMPACT_DROPPED_KEYS = (
 )
 
 
-_MINIMAL_NONEXECUTE_KEYS = frozenset({"ok", "errors", "warnings"})
-_MINIMAL_COMPILE_KEYS = frozenset({"ok", "errors", "warnings", "rendered_sql"})
+# What the answer's time means (window, clock, observation scope) survives minimal too.
+_TIME_MEANING_KEYS = frozenset({"window", "clock", "observation_scope"})
+_MINIMAL_NONEXECUTE_KEYS = frozenset({"ok", "errors", "warnings", *_TIME_MEANING_KEYS})
+_MINIMAL_COMPILE_KEYS = frozenset({"ok", "errors", "warnings", "rendered_sql", *_TIME_MEANING_KEYS})
 _MINIMAL_EXECUTE_KEYS = frozenset(
     {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
+    | _TIME_MEANING_KEYS
 )
 
 

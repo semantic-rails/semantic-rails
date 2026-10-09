@@ -980,15 +980,14 @@ def test_clock_row_policy_refuses_or_keeps_its_existing_scan_refusal(
     try:
         with pytest.raises(SemanticLayerError) as caught:
             runtime.query(query, context=reader)
-        if expression in (CUMULATIVE, MONTH_TO_DATE):
-            code = "CUMULATIVE" if expression is CUMULATIVE else "WINDOWED"
-            assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
-            assert caught.value.details["filter_source"] == "policy"
-            assert caught.value.details["policy_id"] == VISIBLE_DAY_POLICY
-            assert "2026-09-15" not in str(caught.value.details)
-            assert recovery_hints_for_error(caught.value.code, caught.value.details) == []
-        else:
-            assert caught.value.code == "POLICY_DENIED"
+        # The series' calendar spine reads no relation, so the row filter reaches every
+        # window kind, and each refuses on the policy's cut of its clock.
+        code = "CUMULATIVE" if expression is CUMULATIVE else "WINDOWED"
+        assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
+        assert caught.value.details["filter_source"] == "policy"
+        assert caught.value.details["policy_id"] == VISIBLE_DAY_POLICY
+        assert "2026-09-15" not in str(caught.value.details)
+        assert recovery_hints_for_error(caught.value.code, caught.value.details) == []
         # The same declared policy does not match the internal audience.
         assert dict(_rows(runtime, _query(expression, [])))[date(2026, 9, 15)] == expected
     finally:

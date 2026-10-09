@@ -253,12 +253,10 @@ def test_routed_values_survive_shorter_raw_retention(changed_runtime, expression
         pytest.fail("A routed plan must not lower or record a shadow raw leaf")
 
     monkeypatch.setattr(sql_lowering, "record_leaf_scope", no_shadow)
+    # An open window routes; a named one bounds its zeros by the base's loaded data instead.
     result = rt.query(
         _ask(
-            "month",
-            *[_item(expr, f"v{i}") for i, expr in enumerate(expressions)],
-            start="2023-11-01",
-            end="2023-12-01",
+            "month", *[_item(expr, f"v{i}") for i, expr in enumerate(expressions)], end="2023-12-01"
         )
     )
     assert "FROM orders_monthly" in result["rendered_sql"]
@@ -337,7 +335,7 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_filled_query_executes_one_warehouse_statement(raw_runtime, monkeypatch):
+def test_filled_query_executes_one_answer_statement(raw_runtime, monkeypatch):
     rt = raw_runtime("utc_implicit")
     original = runtime_module._adapter_query
     calls = []
@@ -348,7 +346,10 @@ def test_filled_query_executes_one_warehouse_statement(raw_runtime, monkeypatch)
 
     monkeypatch.setattr(runtime_module, "_adapter_query", query)
     result = rt.query(_ask("month", _item(REVENUE, "v"), start="2024-01-01", end="2024-03-01"))
-    assert len(calls) == 1 and result["row_count"] == 2
+    # Beside the answer, one read of the coverage it used gives the window's data_through.
+    answers = [sql for sql in calls if "guarded_base" in sql]
+    assert len(answers) == 1 and len(calls) == 2 and result["row_count"] == 2
+    assert result["window"]["data_through"] == "2024-08-01"
 
 
 # 2024-01-31 22:00 in Los Angeles is 2024-02-01 06:00 UTC.

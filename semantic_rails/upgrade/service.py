@@ -42,6 +42,10 @@ def _query_key(file: str, path: YamlPath) -> str:
     return f"{file}:{'.'.join(map(str, path))}"
 
 
+# Every stage compiles at one instant, so a window's SQL compares by what it means.
+_COMPARED_AT = "2026-01-01T00:00:00Z"
+
+
 def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mapping) -> _State:
     """Load the package with ``changed`` applied and compile its examples and tests (never run)."""
     contents = {k: v for k, v in {**files.contents, **changed}.items() if v is not None}
@@ -63,7 +67,7 @@ def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mappin
                 if Path(file).parts[0] not in {"examples", "tests"}:
                     continue
                 try:
-                    sql = str(runtime.compile(dict(query))["rendered_sql"])
+                    sql = str(runtime.compile(dict(query), now=_COMPARED_AT)["rendered_sql"])
                     queries[_query_key(file, path)] = ("sql", relative(sql))
                 except Exception as exc:  # noqa: BLE001 - every failure is compared evidence
                     code = getattr(exc, "code", type(exc).__name__)

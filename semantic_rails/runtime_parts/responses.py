@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from ..ast import is_child_group, time_output_alias
+from ..ast import PERIOD_PARTIAL, is_child_group, time_output_alias
 from ..dialects import dialect_for_warehouse
 from ..expressions import collect_object_references, expr_to_dict
 
@@ -112,8 +112,15 @@ def apply_response_verbosity(
         else:
             allowed = _MINIMAL_KEYS_NONEXECUTE
         out = {key: value for key, value in out.items() if key in allowed}
-        # An assumption changes what the numbers mean, so it survives the cheapest response.
-        for key in ("assumptions", "time_shape", "withheld"):
+        # What changes what the numbers mean survives the cheapest response.
+        for key in (
+            "assumptions",
+            "time_shape",
+            "window",
+            "clock",
+            "observation_scope",
+            "withheld",
+        ):
             if response.get(key):
                 out[key] = response[key]
     elif verbosity == "compact":
@@ -186,6 +193,18 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
                 "lineage": [role_id],
             }
         )
+        if time.get("grain"):
+            # Each period of a series says whether it ends after ``now`` (still filling).
+            columns.append(
+                {
+                    "field": PERIOD_PARTIAL,
+                    "semantic_id": role_id,
+                    "display_label": "Partial period",
+                    "sql_alias": PERIOD_PARTIAL,
+                    "type": "boolean",
+                    "lineage": [role_id],
+                }
+            )
     for item in list(query.get("select", []) or []):
         alias = str(item.get("as", "") or "")
         expr = dict(item.get("expression", {}) or {})

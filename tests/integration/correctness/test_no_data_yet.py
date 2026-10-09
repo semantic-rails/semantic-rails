@@ -20,6 +20,8 @@ from .test_correctness import _backend
 MEASURE = "measure.events.new_workspaces"
 METRIC = "metric.events.new_workspaces"
 ROLE = "temporal_role.events_event_event_at"
+# Every call is pinned to one instant, after the seeded September events.
+NOW = "2026-10-05T06:00:00Z"
 
 
 @pytest.fixture
@@ -193,7 +195,7 @@ def test_past_coverage_names_its_bucket_without_changing_sql_or_rows(
     monkeypatch.setattr(runtime_module, "_adapter_query", record)
     monkeypatch.setattr(runtime_module, "_data_coverage_probe", lambda *a, **k: probes.append(1))
     query = _query(grain=grain)
-    result = rt.query(query, verbosity=verbosity)
+    result = rt.query(query, verbosity=verbosity, now=NOW)
     warning = _warning(result)
     edge = {"week": "2026-09-07", "day": "2026-09-12", "": "2026-09-21"}[grain]
     source = "last_bucket" if grain else "before_window"
@@ -208,12 +210,14 @@ def test_past_coverage_names_its_bucket_without_changing_sql_or_rows(
         f"SELECT COUNT(*) FROM {events} WHERE caller='early' "
         "AND event_at >= TIMESTAMP '2026-09-21'",
     ) == [(0,)]
-    assert result["row_count"] == (1 if grain == "week" else 7 if grain else 0)
+    # The named window answers its one week, its seven days, or its one total.
+    assert result["row_count"] == (7 if grain == "day" else 1)
     assert all(row["value"] is None for row in result["rows"])
+    assert result["window"]["data_through"] == "2026-09-12"
     with monkeypatch.context() as patch:
         patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
         next_main = len(prepared_calls)
-        before = rt.query(query, verbosity=verbosity)
+        before = rt.query(query, verbosity=verbosity, now=NOW)
     assert prepared_calls[0] == prepared_calls[next_main]
     assert result["rows"] == before["rows"]
     if verbosity != "minimal":
@@ -223,11 +227,19 @@ def test_past_coverage_names_its_bucket_without_changing_sql_or_rows(
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("grain,days", [("week", [12, 13]), ("", [12, 13, 20])])
 def test_moving_an_event_within_the_bucket_has_identical_warning(sparse_runtime, grain, days):
+    """A series names the last bucket with data; a window total, whose bucket is the time
+    before the window, names the last day with data, as its window's data_through does."""
     rt, events, _ = sparse_runtime
     warnings = []
     for day in days:
         _mutate(rt, f"UPDATE {events} SET event_at=TIMESTAMP '2026-09-{day}' WHERE caller='early'")
-        warnings.append(json.dumps(_warning(rt.query(_query(grain=grain))), sort_keys=True))
+        result = rt.query(_query(grain=grain), now=NOW)
+        assert result["window"]["data_through"] == f"2026-09-{day}"
+        warning = _warning(result)
+        if not grain:
+            assert f"runs through 2026-09-{day}," in warning["message"]
+            warning["message"] = warning["message"].replace(f"2026-09-{day}", "<day>")
+        warnings.append(json.dumps(warning, sort_keys=True))
     assert len(set(warnings)) == 1
 
 
@@ -240,8 +252,9 @@ def test_coverage_uses_only_the_callers_visible_rows(sparse_runtime, grain, call
     query = _query(grain=grain)
     if grain:
         query["select"][0]["expression"] = _counting_callers_but("never")
-    result = rt.query(query, context=_caller(caller))
-    expected = caller == "missing" or (caller == "early" and not grain)
+    result = rt.query(query, context=_caller(caller), now=NOW)
+    # The window's week (or total) follows the early caller's last row: no data yet for them.
+    expected = caller in {"missing", "early"}
     assert any(row["code"] == "NO_DATA_YET" for row in result["warnings"]) is expected
     if expected:
         warning = _warning(result)
@@ -255,16 +268,16 @@ def test_coverage_uses_only_the_callers_visible_rows(sparse_runtime, grain, call
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 def test_a_series_straddling_the_edge_warns_even_with_a_populated_bucket(sparse_runtime):
     rt, _, _ = sparse_runtime
-    result = rt.query(_query(start="2026-09-07"))
+    result = rt.query(_query(start="2026-09-07"), now=NOW)
     assert [row["value"] for row in result["rows"]] == [1, None, None]
     assert _warning(result)["details"]["measures"][0]["edge"] == "2026-09-07"
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize("case", ["after_window", "failed_read", "no_coverage"])
-def test_unproven_coverage_keeps_the_existing_empty_window_warning(
-    sparse_runtime, monkeypatch, case
-):
+@pytest.mark.parametrize("case", ["before_data", "failed_read", "before_data_by_week"])
+def test_unproven_coverage_never_says_no_data_yet(sparse_runtime, monkeypatch, case):
+    """A window before the data, or one whose coverage can't be read, reads NULL with no
+    data-through claim: the answer says no data is in scope, never "not yet"."""
     rt, _, _ = sparse_runtime
     query = _query(grain="", start="2026-09-01", end="2026-09-07")
     if case == "failed_read":
@@ -274,30 +287,33 @@ def test_unproven_coverage_keeps_the_existing_empty_window_warning(
             raise RuntimeError("coverage unavailable")
 
         monkeypatch.setattr(runtime_module, "_compiled_cte_row", fail)
-    elif case == "no_coverage":
-        query["time"].update(grain="week")  # An unfilled single-leaf series has no coverage.
-    result = rt.query(query)
-    assert not any(row["code"] == "NO_DATA_YET" for row in result["warnings"])
-    assert any(row["code"] == "EMPTY_RESULT_WINDOW" for row in result["warnings"])
+    elif case == "before_data_by_week":
+        query["time"].update(grain="week")
+    result = rt.query(query, now=NOW)
+    assert [row["value"] for row in result["rows"]] == [None]
+    codes = [row["code"] for row in result["warnings"]]
+    assert "NO_DATA_YET" not in codes and "EMPTY_RESULT_WINDOW" not in codes
+    assert "NO_DATA_IN_SCOPE" in codes
+    assert ("data_through" in result["window"]) is (case != "failed_read")
     with monkeypatch.context() as patch:
         patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
-        assert result["warnings"] == rt.query(query)["warnings"]
+        assert result["warnings"] == rt.query(query, now=NOW)["warnings"]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_empty_row_filtered_series_keep_existing_warnings(sparse_runtime, monkeypatch):
+def test_a_row_filtered_week_after_the_callers_data_reads_no_data_yet(sparse_runtime):
+    """Each caller's edge is its own last visible row: the week after it reads NULL."""
     rt, events, _ = sparse_runtime
     _mutate(rt, f"INSERT INTO {events} VALUES (2, 'late', TIMESTAMP '2026-09-23', NULL)")
-    for caller in ["early", "late"]:
+    for caller, day, week in [("early", "12", "07"), ("late", "23", "21")]:
         query = _query(start="2026-09-28", end="2026-10-05")
         query["select"][0]["expression"] = _counting_callers_but("never")
-        result = rt.query(query, context=_caller(caller))
-        assert result["rows"] == []
-        assert not any(row["code"] == "NO_DATA_YET" for row in result["warnings"])
-        assert any(row["code"] == "EMPTY_RESULT_WINDOW" for row in result["warnings"])
-        with monkeypatch.context() as patch:
-            patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
-            assert result["warnings"] == rt.query(query, context=_caller(caller))["warnings"]
+        result = rt.query(query, context=_caller(caller), now=NOW)
+        assert result["rows"] == [{"period": "2026-09-28", "period_partial": False, "value": None}]
+        assert result["window"]["data_through"] == f"2026-09-{day}"
+        assert _warning(result)["details"]["measures"] == [
+            {"id": MEASURE, "edge": f"2026-09-{week}", "edge_source": "last_bucket"}
+        ]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -310,7 +326,7 @@ def test_series_disclosure_uses_bucket_precision(sparse_runtime, monkeypatch, gr
     _mutate(rt, f"UPDATE {events} SET event_at=TIMESTAMP '2024-09-21 10:30:00'")
     query = _query(grain=grain, start=start, end=end)
     query["select"][0]["expression"] = _counting_callers_but("early")
-    result = rt.query(query)
+    result = rt.query(query, now=NOW)
     assert result["ok"]
     assert (
         _rows(
@@ -321,13 +337,15 @@ def test_series_disclosure_uses_bucket_precision(sparse_runtime, monkeypatch, gr
     )
     with monkeypatch.context() as patch:
         patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
-        before = rt.query(query)
+        before = rt.query(query, now=NOW)
     assert result["rows"] == before["rows"]
     assert result["rendered_sql"] == before["rendered_sql"]
     assert not any(row["code"] == "NO_DATA_YET" for row in result["warnings"])
     assert result["warnings"] == before["warnings"]
-    assert result["rows"] == []
-    assert any(row["code"] == "EMPTY_RESULT_WINDOW" for row in result["warnings"])
+    # The window's one bucket holds the last row, so no later bucket is claimed: the measure,
+    # which counts no early event, simply has no data in scope.
+    assert [row["value"] for row in result["rows"]] == [None]
+    assert any(row["code"] == "NO_DATA_IN_SCOPE" for row in result["warnings"])
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -337,6 +355,6 @@ def test_a_metric_grant_never_exposes_its_ungranted_measure(sparse_runtime, verb
     query = _query()
     query["select"] = [{"expression": METRIC, "as": "value"}]
     grant = {"metric_allowlist": [METRIC], "dimension_allowlist": [ROLE]}
-    result = rt.query(query, verbosity=verbosity, context=grant)
+    result = rt.query(query, verbosity=verbosity, context=grant, now=NOW)
     assert result["ok"]
     assert MEASURE not in json.dumps(result)

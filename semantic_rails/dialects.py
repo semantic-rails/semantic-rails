@@ -192,15 +192,12 @@ class SqlDialect:
     def has_time_coverage(self) -> bool:
         """Whether an empty time bucket reads 0 only inside the base's loaded range.
 
-        That coverage compares stored instants with :meth:`now` through :meth:`utc_timestamp`,
-        spelled here for DuckDB (and MotherDuck and DuckLake, which run it) and Postgres, the
-        warehouses whose execution is tested. The others keep the in-window observation test.
+        That coverage compares stored instants with the request's ``now`` through
+        :meth:`utc_timestamp`, spelled here for DuckDB (and MotherDuck and DuckLake, which run
+        it) and Postgres, the warehouses whose execution is tested. The others keep the
+        in-window observation test.
         """
         return isinstance(self, DuckDbDialect | PostgresDialect)
-
-    def now(self, timezone: str = "UTC") -> Any:
-        """Current instant as wall time in ``timezone``, independent of the session zone."""
-        return SqlCall("TIMEZONE", [SqlLiteral(timezone), SqlCall("NOW", [])])
 
     def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
         """UTC wall time for an instant, or for naive storage in its declared zone.

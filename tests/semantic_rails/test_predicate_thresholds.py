@@ -425,8 +425,14 @@ def test_a_window_in_which_an_operand_has_no_data_keeps_no_customer(runtime, op,
     net = {"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": RETURNED_ORDERS}
     filters = [_predicate(CUSTOMER, net, op, value, scope_mode="contextual")]
     # Orders 2 and 4 are the February orders of customers 1 and 3, and neither customer is kept.
-    # A window with nothing left in it returns no row at all, not a row of NULL.
-    assert _run(runtime, "order_count", filters, time=FEBRUARY) == []
+    # The predicate is tested per output period, so the window is asked by month. Its one
+    # month holds no order of a kept customer: nothing in the population measured has data
+    # there, so it reads NULL, not 0.
+    rows = _run(runtime, "order_count", filters, time={**FEBRUARY, "grain": "month"})
+    assert [row["n"] for row in rows] == [None]
+    with pytest.raises(SemanticLayerError) as refused:
+        _run(runtime, "order_count", filters, time=FEBRUARY)
+    assert refused.value.code == "WINDOW_TOTAL_UNSUPPORTED"
 
 
 def _if_count(entity: str, column: str, floor: int) -> dict:
@@ -578,7 +584,8 @@ def test_a_conditional_count_with_one_match_in_a_period_gives_every_other_custom
     )[0]
     filters = [_predicate(CUSTOMER, LARGE_ORDERS, "=", 0, scope_mode="contextual")]
     assert expected == 1
-    assert [row["n"] for row in _run(runtime, "order_count", filters, time=january)] == [1]
+    by_month = {**january, "grain": "month"}
+    assert [row["n"] for row in _run(runtime, "order_count", filters, time=by_month)] == [1]
 
 
 def test_an_empty_not_in_list_is_satisfied_by_every_entity(runtime):

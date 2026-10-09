@@ -109,7 +109,7 @@ def apply_row_filters(
     reads = [
         node
         for node in nodes
-        if isinstance(node, SqlTableFunction)
+        if (isinstance(node, SqlTableFunction) and not _reads_nothing(node))
         or (isinstance(node, SqlTableRef) and node.name not in ctes)
     ]
     selects = [node for node in nodes if isinstance(node, SqlSelect)]
@@ -151,6 +151,15 @@ def apply_row_filters(
 
 
 _OBSERVING = frozenset({"MIN", "MAX", "COUNT"})
+
+
+def _reads_nothing(function: SqlTableFunction) -> bool:
+    """The engine's day series (a named window's periods): a generator of values from its
+    arguments, which reach no relation, so it holds no row a filter could have removed."""
+    return function.name == "GENERATE_SERIES" and not any(
+        isinstance(node, SqlTableRef | SqlTableFunction | SqlSelect)
+        for node in _walk([function.args, function.named_args])
+    )
 
 
 def _aggregate_only(expr: Any) -> bool:

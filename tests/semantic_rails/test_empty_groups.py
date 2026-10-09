@@ -525,12 +525,20 @@ def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amoun
         "function": "sum",
         "over": {"kind": "entity_value", "entity": "entity.shop_customer", "input": amount},
     }
-    response = shop.query(
-        {
-            "select": _select(total=distribution, **({"amount": amount} if beside_amount else {})),
-            "time": {**SHOP_MONTH, "grain": "week", "start": "2023-11-20", "end": "2023-11-27"},
-        }
-    )
+    query = {
+        "select": _select(total=distribution, **({"amount": amount} if beside_amount else {})),
+        "time": {**SHOP_MONTH, "grain": "week", "start": "2023-11-20", "end": "2023-11-27"},
+    }
+    if beside_amount:
+        # A named window fills the combined answer, where the amount's empty week can't tell
+        # 0 from no data yet: the two are asked for separately.
+        with pytest.raises(SemanticLayerError) as refused:
+            shop.query(query)
+        assert refused.value.details["reason"] == "distribution_beside_additive_in_named_window"
+        query["select"] = _select(total=distribution)
+        alone = shop.query({**query, "select": _select(amount=amount)})
+        assert typed_rows(alone)[0]["amount"] == 0
+    response = shop.query(query)
     gold = _gold(
         shop,
         "SELECT SUM(v) AS total FROM (SELECT customer_id, "
@@ -541,8 +549,6 @@ def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amoun
     assert gold == [{"total": 0}]
     assert response["row_count"] == 1
     assert typed_rows(response)[0]["total"] == gold[0]["total"]
-    if beside_amount:
-        assert typed_rows(response)[0]["amount"] == 0
     assert not _warnings(response)
 
 
@@ -569,14 +575,20 @@ def test_a_window_total_observes_conditional_counts_outside_its_bounds(
         },
         now="2023-12-04T00:00:00+00:00",
     )
+    # Each bucket the window touches: one week (or total), or November and December.
+    buckets = "TIMESTAMP '2023-11-01', TIMESTAMP '2023-12-01'" if grain == "month" else "0"
     gold = _gold(
         shop,
-        "SELECT a, b, a - b AS net FROM (SELECT "
+        "SELECT a, b, a - b AS net FROM (SELECT g.k, "
         "COUNT(CASE WHEN store_id = 'a' THEN order_id END) AS a, "
-        "COUNT(CASE WHEN store_id = 'b' THEN order_id END) AS b FROM orders "
-        "WHERE ordered_at >= TIMESTAMP '2023-11-27' AND ordered_at < TIMESTAMP '2023-12-04') counts",
+        "COUNT(CASE WHEN store_id = 'b' THEN order_id END) AS b "
+        f"FROM (VALUES {', '.join(f'({b})' for b in buckets.split(', '))}) AS g(k) "
+        "LEFT JOIN orders ON ordered_at >= TIMESTAMP '2023-11-27' "
+        "AND ordered_at < TIMESTAMP '2023-12-04'"
+        + (" AND date_trunc('month', ordered_at) = g.k" if grain == "month" else "")
+        + " GROUP BY g.k ORDER BY g.k) counts",
     )
-    assert gold == [{"a": 1, "b": 0, "net": 1}]
+    assert gold[-1] == {"a": 1, "b": 0, "net": 1}
     assert [{key: row[key] for key in gold[0]} for row in response["rows"]] == gold
     assert not _warnings(response)
 
@@ -603,8 +615,8 @@ def test_a_window_total_refuses_a_missing_time_scope(
 def test_a_window_count_never_matched_reads_zero_where_its_bucket_is_checked(
     shop: Runtime, grain: str | None
 ) -> None:
-    """A window total's bucket gets the loaded-bucket check. A week bucket of one leaf, with
-    no fill, doesn't, so a count that never matched is held at NULL with the warning."""
+    """A named window's buckets, its total's or its weeks', get the loaded-bucket check, so a
+    count that never matched reads 0 where the data is loaded."""
     response = shop.query(
         {
             "select": _select(huge={"kind": "measure", "measure": "measure.shop.huge_order_count"}),
@@ -622,12 +634,8 @@ def test_a_window_count_never_matched_reads_zero_where_its_bucket_is_checked(
         "WHERE ordered_at >= TIMESTAMP '2023-11-27' AND ordered_at < TIMESTAMP '2023-12-04'",
     )
     assert [row["huge"] for row in gold] == [0]
-    if grain:
-        assert [row["huge"] for row in response["rows"]] == [None]
-        assert _warnings(response)[0]["details"]["outputs"] == ["huge"]
-    else:
-        assert [row["huge"] for row in response["rows"]] == [row["huge"] for row in gold]
-        assert not _warnings(response)
+    assert [row["huge"] for row in response["rows"]] == [row["huge"] for row in gold]
+    assert not _warnings(response)
 
 
 @pytest.fixture(scope="module")
@@ -682,13 +690,9 @@ def test_a_never_matched_count_preserves_the_window_difference(
     )
     assert gold == [{"a": 3, "b": 0, "net": 3}]
     got = [{key: row[key] for key in gold[0]} for row in typed_rows(response)]
-    if grain:
-        # One leaf's week bucket gets no loaded-bucket check, so b is held at NULL.
-        assert got == [{"a": 3, "b": None, "net": None}]
-        assert _warnings(response)[0]["details"]["outputs"] == ["b", "net"]
-    else:
-        assert got == gold
-        assert not _warnings(response)
+    # The named window's week, like its total, gets the loaded-bucket check: b reads 0.
+    assert got == gold
+    assert not _warnings(response)
 
 
 def test_a_window_total_without_its_loaded_bucket_check_never_settles_from_source_rows(
@@ -961,13 +965,14 @@ def test_a_never_matched_operand_reads_null_beyond_the_loaded_range(
             "select": _select(b=b),
             "time": {**SHOP_MONTH, "start": "2098-01-01", "end": "2098-02-01"},
         }
-        response = rt.query(query)
+        now = "2026-10-01T00:00:00Z"  # One instant: both answers' SQL reads it.
+        response = rt.query(query, now=now)
         gold = _gold(rt, FUTURE_GOLD.format(value=FUTURE_B[shape], where=""))
         assert gold == [{"b": None}]
         assert [{"b": row["b"]} for row in typed_rows(response)] == gold
         with monkeypatch.context() as patch:
             patch.setattr("semantic_rails.runtime._no_data_yet_warnings", lambda *a, **k: [])
-            undisclosed = rt.query(query)
+            undisclosed = rt.query(query, now=now)
         assert (response["rows"], response["rendered_sql"]) == (
             undisclosed["rows"],
             undisclosed["rendered_sql"],
@@ -1016,7 +1021,8 @@ def test_a_never_matched_operand_reads_null_beyond_the_loaded_range_under_datase
         gold = _gold(rt, FUTURE_GOLD.format(value=FUTURE_B[shape], where=" AND store_id = 'a'"))
         assert gold == [{"b": None}]
         assert [{"b": row["b"]} for row in typed_rows(response)] == gold
-        assert _warnings(response)[0]["details"]["outputs"] == ["b"]
+        # The window's month is past the last loaded one: no data yet.
+        assert _warnings(response, "NO_DATA_YET")[0]["details"]["outputs"] == ["b"]
     finally:
         if rt is not future_shop:
             rt.close()

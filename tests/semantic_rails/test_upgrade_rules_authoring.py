@@ -364,4 +364,4 @@ def test_stock_upgrade_matches_weekly_reference_sql(tmp_path, inherited):
         for r in rows
     )
     assert actual == sorted(reference)
-    assert actual[0][1] == 1122
+    assert actual[0][1] == 1022  # the week's closing day; account 3's Friday is not carried

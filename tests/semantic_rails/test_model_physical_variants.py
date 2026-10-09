@@ -889,24 +889,31 @@ _SHIP_TO_KEY = {
             None,
             id="distinct-fact-key",
         ),
+        # Open windows: a named window bounds its zeros by the base's loaded data instead.
+        pytest.param(
+            _MONTHLY_ONLY,
+            _rollup_query(_REVENUE, "sum", "quarter", start="2026-02-01"),
+            None,
+            id="aligned-bounds",
+        ),
         pytest.param(
             _MONTHLY_ONLY,
             _rollup_query(_REVENUE, "sum", "quarter", start="2026-02-01", end="2026-04-01"),
-            None,
-            id="aligned-bounds",
+            "base_time_coverage_required",
+            id="named-window",
         ),
         pytest.param(
             ({"weekly": _WEEKLY},), _rollup_query(_REVENUE, "sum", "week"), None, id="week"
         ),
         pytest.param(
             ({"hourly": _HOURLY},),
-            _rollup_query(_REVENUE, "sum", "day", start="2026-01-01", end="2026-04-01"),
+            _rollup_query(_REVENUE, "sum", "day", start="2026-01-01"),
             None,
             id="hourly-day-bounds",
         ),
         pytest.param(
             ({"minutely": _MINUTELY},),
-            _rollup_query(_REVENUE, "sum", "day", start="2026-01-01", end="2026-04-01"),
+            _rollup_query(_REVENUE, "sum", "day", start="2026-01-01"),
             None,
             id="minutely-day-bounds",
         ),

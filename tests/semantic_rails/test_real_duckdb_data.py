@@ -128,7 +128,7 @@ def test_distinct_value_queries_execute_on_real_data(runtime_factory):
         assert grouped_result["row_count"] > 0
         assert set(grouped_result["rows"][0].keys()) == {"dimension.jaffle_store_name"}
         assert time_only_result["row_count"] > 0
-        assert set(time_only_result["rows"][0].keys()) == {"period"}
+        assert set(time_only_result["rows"][0].keys()) == {"period", "period_partial"}
         assert joined_filter_result["row_count"] > 0
         assert set(joined_filter_result["rows"][0].keys()) == {"dimension.jaffle_store_name"}
     finally:

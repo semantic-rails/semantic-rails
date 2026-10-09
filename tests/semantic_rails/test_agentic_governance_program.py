@@ -451,10 +451,12 @@ def test_empty_window_example_checks_declared_columns(tmp_path, columns, min_row
                 "empty": {
                     "query": {
                         "select": ["metric.sales.orders"],
+                        # An open window after the data: no row (a named one answers
+                        # every day it holds).
                         "time": {
                             "temporal_role": "temporal_role.demo_order_time",
                             "grain": "day",
-                            "last": {"unit": "month", "value": 1},
+                            "start": "2026-04-01",
                         },
                     },
                     "now": "2026-05-04",
@@ -491,7 +493,7 @@ def test_example_checks_declared_columns(tmp_path, empty_window, columns, code):
     row_count = 0 if empty_window else 2
     example = {"query": query}
     if empty_window:
-        query["time"]["last"] = {"unit": "month", "value": 1}
+        query["time"]["start"] = "2026-04-01"  # open, after the data: no row
         example["now"] = "2026-05-04"
     _write_yaml(
         package_dir / "examples" / "orders.yml",
