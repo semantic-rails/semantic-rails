@@ -70,7 +70,7 @@ def prepare_streamable_http_request(
             status=401,
             payload=_jsonrpc_error(None, -32001, "Missing or invalid bearer API key."),
         )
-    return get_policy_context_resolver().resolve(headers, payload=None, request_id=request_id)
+    return get_policy_context_resolver().resolve(headers, request_id=request_id)
 
 
 def handle_streamable_http_request(
@@ -144,14 +144,11 @@ def handle_streamable_http_request(
         return _error(400, -32600, "Streamable HTTP accepts one JSON-RPC object per request.")
 
     message = dict(decoded)
-    # Streamable HTTP is always a remote boundary. Resolve identity only
-    # from transport-trusted inputs; the JSON-RPC body may contain spoofed
-    # outer or nested policy_context values and is deliberately excluded.
+    # Streamable HTTP is always a remote boundary. Identity comes only from
+    # credentials; a JSON-RPC body that claims one is refused by the adapter.
     if request_context is None:
         request_context = get_policy_context_resolver().resolve(
-            headers,
-            payload=None,
-            request_id=request_id_from_parts(headers),
+            headers, request_id=request_id_from_parts(headers)
         )
     response = handle_jsonrpc_message(adapter, message, request_context=request_context)
     if response is None:

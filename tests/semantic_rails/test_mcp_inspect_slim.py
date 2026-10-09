@@ -148,6 +148,10 @@ def test_minimal_inspect_preserves_starter_query_literals(
         "inspect",
         {"object_id": "measure.jaffle.revenue_usd", "query": query, "verbosity": "minimal"},
     )
+    if value is None or isinstance(value, dict):
+        # A filter value is a string, number or boolean: the seed is refused at its path.
+        assert response["errors"][0]["details"]["path"] == "where[0].value", response
+        return
     assert response["ok"] is True
     filter_row = response["card"]["starter_query_patches"][0]["query_patch"]["where"][0]
     assert "value" in filter_row

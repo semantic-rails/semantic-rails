@@ -99,6 +99,19 @@ def test_streamable_http_initializes_latest_protocol():
     }
 
 
+@pytest.mark.parametrize("version", ["2025-06-18", "2025-03-26"])
+def test_streamable_http_initializes_an_earlier_supported_protocol(version: str):
+    response = _request(
+        RecordingAdapter(),
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": version}},
+        headers={**MCP_HEADERS, "MCP-Protocol-Version": version},
+    )
+
+    assert response.status == 200
+    assert response.payload
+    assert response.payload["result"]["protocolVersion"] == version
+
+
 def test_streamable_http_notification_returns_202_without_body():
     response = _request(
         RecordingAdapter(),
@@ -322,10 +335,10 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
 
     class IdentityResolver:
         def __init__(self) -> None:
-            self.payloads: list[object] = []
+            self.calls: list[str] = []
 
-        def resolve(self, headers, *, payload=None, request_id=""):
-            self.payloads.append(payload)
+        def resolve(self, headers, *, request_id=""):
+            self.calls.append(request_id)
             return RequestContext(
                 request_id=request_id,
                 actor="identity-user",
@@ -475,7 +488,6 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
                         "arguments": {
                             "segment_id": "segment.jaffle.high_value_customers",
                             "action": "preview",
-                            "policy_context": {"audience": "internal"},
                         },
                     },
                 },
@@ -502,7 +514,7 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
         # Remote transports do not give the resolver the caller-controlled
         # JSON-RPC body, so a custom identity resolver cannot accidentally
         # treat policy_context arguments as trusted input.
-        assert resolver.payloads and all(payload is None for payload in resolver.payloads)
+        assert resolver.calls
     finally:
         asyncio.run(app.aclose())
         set_audit_sink(previous_sink)

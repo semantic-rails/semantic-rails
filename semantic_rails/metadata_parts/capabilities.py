@@ -129,22 +129,24 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
 _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
     {
         "name": "aggregate",
-        "description": "raw measure aggregate",
-        "example": {"aggregation": "sum", "measure": "measure.<id>"},
+        "description": (
+            "a measure with a statistic the package allows; a plain measure or metric is "
+            "its id string"
+        ),
+        "example": {"kind": "measure", "measure": "measure.<id>", "aggregation": "sum"},
     },
     {
         "name": "metric",
-        "description": "governed metric recipe",
-        "example": {"metric": "metric.<id>"},
+        "description": "governed metric recipe: its id string is the expression",
+        "example": "metric.<id>",
     },
     {
         "name": "prior_period",
-        "description": "windowed prior period",
+        "description": "the input one or more periods earlier; needs time.grain",
         "example": {
             "kind": "prior_period",
-            "measure": "measure.<id>",
-            "offset": -1,
-            "grain": "month",
+            "input": "measure.<id>",
+            "offset": {"unit": "month", "value": 1},
         },
     },
     {
@@ -152,7 +154,7 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
         "description": "rolling window. window is an object {unit, value} — not an int.",
         "example": {
             "kind": "rolling",
-            "input": {"measure": "measure.<id>"},
+            "input": "measure.<id>",
             "window": {"unit": "day", "value": 7},
         },
     },
@@ -162,15 +164,15 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
             "running total. grain comes from the outer query.time.grain — "
             "cumulative itself takes only input + optional partition_by/window_scope."
         ),
-        "example": {"kind": "cumulative", "input": {"measure": "measure.<id>"}},
+        "example": {"kind": "cumulative", "input": "measure.<id>"},
     },
     {
         "name": "ratio",
         "description": "derived ratio",
         "example": {
             "kind": "ratio",
-            "numerator": {"measure": "measure.<num>"},
-            "denominator": {"measure": "measure.<den>"},
+            "numerator": "measure.<num>",
+            "denominator": "measure.<den>",
         },
     },
     {
@@ -183,17 +185,17 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
             "e.g. base = orders containing Product A, converted = orders "
             "containing Product B; the filters are applied in the event CTEs "
             "with EXISTS semantics. Operand-level 'window' specs and "
-            "expression-valued filter clauses are rejected (use query-level "
-            "metric_filters for those)."
+            "expression-valued filter clauses are rejected (use the call's "
+            "having or an entity filter for those)."
         ),
         "example": {
             "kind": "conversion",
             "base": {
                 "kind": "aggregate",
                 "measure": "measure.<start>",
-                "filter": {"all": [{"field": "dimension.<id>", "op": "=", "value": "<value>"}]},
+                "filter": {"all": [{"field": "dimension.<id>", "op": "is", "value": "<value>"}]},
             },
-            "converted": {"measure": "measure.<end>"},
+            "converted": "measure.<end>",
             "entity": "entity.<id>",
             "window": {"unit": "day", "value": 7},
             "matching_mode": "first_converted_after_base",
@@ -212,7 +214,7 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
             "over": {
                 "kind": "entity_value",
                 "entity": "entity.<id>",
-                "input": {"measure": "measure.<id>"},
+                "input": "measure.<id>",
             },
             "p": 0.5,
         },
@@ -226,7 +228,7 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
             "of the value's entity; `condition` may also read entities that "
             "entity reaches over many-to-one relationships. A value row with no "
             "match there never satisfies it; a condition such a row could "
-            "satisfy (IS NULL, OR with the value's own column) is refused. Compiles to "
+            "satisfy (a missing test, OR with the value's own column) is refused. Compiles to "
             "COUNT_IF / SUM_IF natively on Snowflake; portable CASE WHEN "
             "elsewhere. `value` may be omitted when aggregation=count."
         ),

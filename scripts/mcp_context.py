@@ -68,7 +68,7 @@ EVAL_SET_PATH = CONTEXT_DIR / "eval_jaffle.jsonl"
 PLAN_BASELINE_PATH = CONTEXT_DIR / "plan_accuracy_baseline.json"
 # Digest of the frozen dev split, EVAL_SET_PATH. Change a case only through a
 # reviewed revision of the eval set, and update this digest in that change.
-DEV_SET_SHA256 = "1fc2f61c30547ff63a9836374edfd2ae0540cf3ef526ef2551063df8c84b5836"
+DEV_SET_SHA256 = "8a5b5c345d5a8fddac66b960bc54aeecf11561c3e9d6d115da5a30951523ea01"
 # Commitment to the held-out split: 12 more cases kept outside this repository
 # so the planner can't be tuned against them. ``--eval-file`` checks a copy.
 HELDOUT_SET_SHA256 = "ce5ef85b14f8b92a3f6944a55dd4657631ddde104006dcb50178fd0800027730"
@@ -242,8 +242,8 @@ class QueryMCPClient:
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
 PRODUCT = "dimension.jaffle_item_product_name"
-REVENUE = {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
-ITEM_REVENUE = {"measure": "measure.jaffle.item_revenue_usd", "aggregation": "sum"}
+REVENUE = "measure.jaffle.revenue_usd"
+ITEM_REVENUE = "measure.jaffle.item_revenue_usd"
 SEGMENT = "segment.jaffle.high_value_customers"
 
 
@@ -258,27 +258,24 @@ QUESTIONS = (
 )
 # The queries an agent composes for the three questions after discovery.
 Q1 = {
-    "version": 1,
-    "select": [{"as": "revenue_usd", "expression": REVENUE}],
+    "select": [REVENUE],
     "time": _window("month", "2017-01-01", "2018-01-01"),
     "group_by": [STORE],
-    "order_by": [{"field": "time", "direction": "ASC"}, {"field": STORE, "direction": "ASC"}],
+    "order_by": [{"field": "period", "direction": "asc"}, {"field": STORE, "direction": "asc"}],
 }
 Q2 = {
-    "version": 1,
-    "select": [{"as": "item_revenue_usd", "expression": ITEM_REVENUE}],
+    "select": [ITEM_REVENUE],
     "time": _window("year", "2017-01-01", "2018-01-01"),
     "group_by": [PRODUCT],
-    "order_by": [{"field": "item_revenue_usd", "direction": "DESC"}],
+    "order_by": [{"field": "item_revenue_usd", "direction": "desc"}],
     "limit": 5,
 }
 Q3 = {
-    "version": 1,
-    "select": [{"as": "aov_usd", "expression": {"metric": "metric.sales.aov_usd"}}],
+    "select": ["metric.sales.aov_usd"],
     "time": _window("quarter", "2017-04-01", "2017-07-01"),
     "group_by": [STORE],
-    "where": [{"field": STORE, "op": "in", "value": ["Philadelphia", "Brooklyn"]}],
-    "order_by": [{"field": "aov_usd", "direction": "DESC"}],
+    "where": [{"field": STORE, "op": "is", "value": ["Philadelphia", "Brooklyn"]}],
+    "order_by": [{"field": "aov_usd", "direction": "desc"}],
 }
 # A plausible agent mistake: a time window with no grain. It returns one total per
 # store, with no time column.
@@ -296,7 +293,7 @@ Step = tuple[str, str, dict[str, Any]]
 V2_PROBES: list[Step] = [
     ("discover", "discover", {"terms": "revenue by store"}),
     ("discover_ids", "discover", {"terms": ""}),
-    ("inspect", "inspect", {"object_id": REVENUE["measure"]}),
+    ("inspect", "inspect", {"object_id": REVENUE}),
     ("valid_values", "valid-values", {"dimension_id": STORE}),
     ("plan", "plan", {"intent": QUESTIONS[0]}),
     ("execute", "execute", {"query": Q1}),
@@ -311,7 +308,7 @@ SESSIONS: dict[str, list[Step]] = {
     "by_the_book": [
         ("s1_discover_ids", "discover", {"terms": ""}),
         ("q1_discover", "discover", {"terms": "monthly revenue by store"}),
-        ("q1_inspect_measure", "inspect", {"object_id": REVENUE["measure"]}),
+        ("q1_inspect_measure", "inspect", {"object_id": REVENUE}),
         ("q1_inspect_dimension", "inspect", {"object_id": STORE}),
         ("q1_plan", "plan", {"intent": QUESTIONS[0]}),
         ("q1_execute", "execute", {"query": Q1}),
@@ -344,7 +341,7 @@ SESSIONS: dict[str, list[Step]] = {
 # so the probes ask for the compact cards that carry them.
 HOSTED_PROBES: list[Step] = [
     ("discover", "discover", {"terms": "revenue by store", "verbosity": "compact"}),
-    ("inspect", "inspect", {"object_id": REVENUE["measure"], "verbosity": "compact"}),
+    ("inspect", "inspect", {"object_id": REVENUE, "verbosity": "compact"}),
 ]
 
 
@@ -372,7 +369,7 @@ ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool, str]] = [
             "query": {
                 **Q1,
                 "group_by": ["dimension.jaffle_store"],
-                "order_by": [{"field": "time", "direction": "ASC"}],
+                "order_by": [{"field": "period", "direction": "asc"}],
             },
         },
         False,
@@ -386,7 +383,7 @@ ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool, str]] = [
             "query": {
                 **Q2,
                 "select": Q1["select"],
-                "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
+                "order_by": [{"field": "revenue_usd", "direction": "desc"}],
             },
         },
         False,
@@ -761,18 +758,20 @@ def _bound(value: Any) -> str | None:
 
 
 def _filter_parts(item: Mapping[str, Any]) -> tuple[str, str, list[str]]:
-    op = " ".join(str(item.get("op") or "=").upper().split())
     value = item.get("value")
-    if isinstance(value, (list, tuple)):
-        # "=" with a list compares against the list's text, not its members.
-        values = list(value)
-        op_class = {"IN": "in", "NOT IN": "not_in"}.get(op, op)
-    else:
-        values = [value]
-        op_class = {"=": "in", "IN": "in", "!=": "not_in", "<>": "not_in", "NOT IN": "not_in"}.get(
-            op, op
-        )
+    # ``is`` and ``not`` take a value or a list; one element and the scalar are the same.
+    values = list(value) if isinstance(value, (list, tuple)) else [value]
+    op_class = {"is": "in", "not": "not_in"}.get(str(item.get("op")), str(item.get("op")))
     return str(item.get("field")), op_class, sorted(compact_json(v) for v in values)
+
+
+def _engine_query(query: Mapping[str, Any]) -> dict[str, Any]:
+    """A query call in the engine's own form, read by the front door."""
+
+    from semantic_rails.ast import normalize_query
+    from semantic_rails.query_call import read_call
+
+    return normalize_query(read_call(copy.deepcopy(dict(query)))[0]).to_dict()
 
 
 def _pinned_dimensions(normalized: Mapping[str, Any]) -> set[str]:
@@ -800,9 +799,7 @@ def query_slots(
     ``group_by``. Order only matters for ranking questions.
     """
 
-    from semantic_rails.ast import normalize_query
-
-    normalized = normalize_query(copy.deepcopy(dict(query))).to_dict()
+    normalized = _engine_query(query)
     aliases: dict[str, str] = {}
     select: list[str] = []
     for item in normalized["select"]:
@@ -819,8 +816,7 @@ def query_slots(
         "grain": time.get("grain") or None,
         "window": [start, end] if start or end else None,
         "fill": bool(time.get("fill")),
-        "calendar_id": time.get("calendar_id") or "default",
-        "temporal_role_overrides": normalized["temporal_role_overrides"],
+        "observation_scope": normalized.get("observation_scope") or None,
         "where": sorted(compact_json(parts) for parts in filters),
         "metric_filters": sorted(
             compact_json(_canonical_expression(item, aggregations))
@@ -1078,9 +1074,7 @@ def answer_table(
     from the ``group_by`` slot.
     """
 
-    from semantic_rails.ast import normalize_query
-
-    normalized = normalize_query(copy.deepcopy(dict(query))).to_dict()
+    normalized = _engine_query(query)
     select = {
         str(item["as"]): _value_column(item["expression"], aggregations)
         for item in normalized["select"]
@@ -1088,7 +1082,7 @@ def answer_table(
     pinned = _pinned_dimensions(normalized)
     named: dict[str, str] = {}
     for key in dict.fromkeys(str(key) for row in rows for key in row):
-        if key.startswith("temporal_role."):
+        if key == "period":
             if trend:
                 named[key] = TIME_COLUMN
         elif key not in pinned:
@@ -1176,7 +1170,7 @@ def query_answer(
     payload = client.tool_payload(
         "execute",
         {
-            "query": {**dict(query), "limits": {"max_rows": GOLD_MAX_ROWS}},
+            "query": dict(query),
             "max_rows": GOLD_MAX_ROWS,
         },
     )

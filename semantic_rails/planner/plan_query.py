@@ -295,7 +295,7 @@ def _structural_precheck(query: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(query, dict):
         return {
             "code": "STRUCTURAL_NOT_A_QUERY",
-            "message": "Pattern emitted something that is not a Query IR dict.",
+            "message": "Pattern emitted something that is not a query call.",
         }
     select = query.get("select")
     if not isinstance(select, list) or not select:

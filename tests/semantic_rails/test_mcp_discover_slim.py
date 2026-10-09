@@ -24,10 +24,7 @@ from semantic_rails.schema import SemanticPolicyConfig
 
 SLIM_KEYS = {"id", "kind", "label", "measure", "description", "default_temporal_role", "available"}
 VALUE_KEYS = {"id", "kind", "dimension_id", "value", "label", "available"}
-SESSION_STARTS = {
-    "version": 1,
-    "select": [{"as": "s", "expression": {"measure": "measure.jaffle.session_starts"}}],
-}
+SESSION_STARTS = {"select": [{"as": "s", "expression": "measure.jaffle.session_starts"}]}
 
 
 @pytest.fixture()
@@ -329,11 +326,7 @@ def test_denied_metric_does_not_hide_allowed_equivalent_or_measure(
         assert {metric.id, alias.id} <= {row["id"] for row in minimal["metrics"]}
         assert any(row["id"] == measure_id for row in full["measures"])
         assert any(row.get("measure") == measure_id for row in minimal["metrics"])
-        for expression, ok in (
-            ({"metric": metric.id}, False),
-            ({"metric": alias.id}, True),
-            ({"measure": measure_id}, True),
-        ):
+        for expression, ok in ((metric.id, False), (alias.id, True), (measure_id, True)):
             query = {"select": [{"as": "value", "expression": expression}]}
             result = runtime.validate(query)
             assert result["ok"] is ok, result

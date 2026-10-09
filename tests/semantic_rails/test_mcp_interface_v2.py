@@ -34,13 +34,12 @@ QUERY = {
     "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
     "group_by": [STORE],
     "time": {"temporal_role": ORDER_TIME, "grain": "month", "start": "2017-01-01"},
-    "order_by": [{"field": "period", "direction": "asc"}, {"field": STORE, "direction": "ASC"}],
+    "order_by": [{"field": "period", "direction": "asc"}, {"field": STORE, "direction": "asc"}],
 }
-# A time role without a grain or window groups by the raw timestamp: thousands of rows.
-UNGRAINED = {
-    **QUERY,
-    "time": {"temporal_role": ORDER_TIME},
-    "order_by": [{"field": STORE, "direction": "ASC"}],
+# One row per customer: more rows than execute returns by default.
+PER_CUSTOMER = {
+    "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
+    "group_by": ["dimension.jaffle_order_customer_id"],
 }
 V2_TOOLS = ["discover", "inspect", "valid-values", "plan", "execute", "segment"]
 UNAVAILABLE_TOOLS = {
@@ -85,14 +84,12 @@ def _stable(response: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in response.items() if key not in VOLATILE}
 
 
-@pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("verbosity", ["compact", " Compact ", "bogus"])
 @pytest.mark.parametrize("sql_size", [10, 4000])
 def test_execute_budget_applies_after_the_final_envelope(
     v2: SemanticLayerMCPAdapter,
     monkeypatch: pytest.MonkeyPatch,
     sql_size: int,
-    nested: bool,
     verbosity: str,
 ) -> None:
     monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "2000")
@@ -103,12 +100,8 @@ def test_execute_budget_applies_after_the_final_envelope(
         "explain": "e" * 4000,
         "sql_plan": "s" * sql_size,
     }
-    monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
-    arguments = (
-        {"query": {**QUERY, "verbosity": verbosity}, "verbosity": "full"}
-        if nested
-        else {"query": QUERY, "verbosity": verbosity}
-    )
+    monkeypatch.setattr(v2.runtime, "query", lambda *_args, **_kwargs: payload.copy())
+    arguments = {"query": QUERY, "verbosity": verbosity}
     for args in (arguments, {"query": QUERY, "verbosity": "full"}):
         result = v2.call_tool("execute", args)
         assert result["ok"] and result["rows"] == payload["rows"]
@@ -130,7 +123,7 @@ def test_compact_execute_omits_plans_even_under_budget(
         "explain": {"query": QUERY},
         "sql_plan": {"sql": "SELECT 12.5 AS revenue"},
     }
-    monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
+    monkeypatch.setattr(v2.runtime, "query", lambda *_args, **_kwargs: payload.copy())
     response = v2.call_tool("execute", {"query": QUERY, "verbosity": "compact"})
     assert response["rows"] == payload["rows"]
     assert {"explain", "sql_plan"} <= set(response["omitted_fields"])
@@ -144,7 +137,7 @@ def test_compact_execute_refuses_an_envelope_that_cannot_fit(
     monkeypatch.setattr(
         v2.runtime,
         "query",
-        lambda _query: {"ok": True, "row_count": 1, "rows": [{"value": "x" * 450}]},
+        lambda *_args, **_kwargs: {"ok": True, "row_count": 1, "rows": [{"value": "x" * 450}]},
     )
     result = v2.call_tool("execute", {"query": QUERY, "verbosity": "compact"})
     assert not result["ok"] and result["error"]["code"] == "RESULT_TOO_LARGE"
@@ -185,6 +178,8 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     assert "call it before 'execute'" in tools["plan"]["description"]
     assert "call plan first" in tools["execute"]["description"]
     assert "time.end is exclusive" in tools["execute"]["description"]
+    assert "$defs" in tools["execute"]["inputSchema"]
+    assert tools["execute"]["inputSchema"]["required"] == ["query"]
 
 
 def _descriptions(node: Any) -> Iterator[str]:
@@ -220,21 +215,23 @@ def test_execute_modes_run_validate_or_compile(v2: SemanticLayerMCPAdapter) -> N
         ({"query": QUERY}, False, True),
         ({"query": QUERY, "mode": "validate"}, False, False),
         ({"query": QUERY, "mode": "sql", "row_format": "columns"}, True, False),
-        # Top-level Query IR passthrough works in every mode.
-        ({**QUERY, "mode": "validate"}, False, False),
     ):
         response = v2.call_tool("execute", arguments)
         assert response["ok"] is True, response["errors"]
         assert response["api_version"] == "v2"
         assert ("rendered_sql" in response, "rows" in response) == (sql, rows), arguments
+    # The call travels in query; its keys are not arguments of execute.
+    flat = v2.call_tool("execute", {**QUERY, "mode": "validate"})
+    assert flat["ok"] is False and flat["errors"][0]["details"]["path"] == "select"
 
 
 def test_execute_caps_rows_by_default(v2: SemanticLayerMCPAdapter) -> None:
-    capped = v2.call_tool("execute", {"query": UNGRAINED})
+    capped = v2.call_tool("execute", {"query": PER_CUSTOMER})
     assert capped["truncated"] is True
     assert capped["row_count"] == MCP_DEFAULT_MAX_ROWS
     assert "EXECUTE_ROWS_TRUNCATED" in {warning["code"] for warning in capped["warnings"]}
-    assert v2.call_tool("execute", {"query": UNGRAINED, "max_rows": 5})["row_count"] == 5
+    assert capped["total_row_count"] is None
+    assert v2.call_tool("execute", {"query": PER_CUSTOMER, "max_rows": 5})["row_count"] == 5
 
 
 def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) -> None:
@@ -340,7 +337,7 @@ def test_unknown_tools_use_one_refusal(v2: SemanticLayerMCPAdapter, tool: str) -
     )
 
 
-AIRSPEED = {"measure": "measure.jaffle.airspeed", "aggregation": "sum"}
+AIRSPEED = {"kind": "measure", "measure": "measure.jaffle.airspeed", "aggregation": "sum"}
 
 
 def _hint_texts(node: Any, key: str = "") -> Iterator[str]:
@@ -439,7 +436,9 @@ def test_mcp_doctor_checks_the_v2_tools(runtime: Any) -> None:
     assert check["tool_count"] == len(V2_TOOLS)
 
 
-def test_v2_tools_take_the_trusted_transport_context(v2: SemanticLayerMCPAdapter) -> None:
+def test_v2_tools_take_the_trusted_transport_context(
+    v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
     for tool in v2.list_tools():
         assert not {"request_id", "policy_context"} & set(tool["inputSchema"]["properties"])
     context = RequestContext(
@@ -447,20 +446,27 @@ def test_v2_tools_take_the_trusted_transport_context(v2: SemanticLayerMCPAdapter
     )
     seen: dict[str, Any] = {}
 
-    def validate(arguments: dict[str, Any]) -> dict[str, Any]:
-        seen.update(arguments)
+    def validate(query: Any, **arguments: Any) -> dict[str, Any]:
+        seen.update(arguments, query=query)
         return {"ok": True}
 
-    v2._handle_validate = validate  # type: ignore[method-assign]
-    claimed = {"roles": ["admin"], "environment": "prod"}
+    monkeypatch.setattr(v2.runtime, "validate", validate)
     response = v2.call_tool(
-        "execute",
-        {"query": {**QUERY, "policy_context": claimed}, "mode": "validate", "request_id": "x"},
-        request_context=context,
+        "execute", {"query": QUERY, "mode": "validate", "request_id": "x"}, request_context=context
     )
-    assert response["request_id"] == "trusted"
-    assert seen["policy_context"] == context.to_policy_context()
-    assert "policy_context" not in seen["query"] and "mode" not in seen
+    assert response["ok"] and response["request_id"] == "trusted"
+    assert seen["context"] == context and seen["query"] == QUERY
+    # A request that says who is asking is refused, never stripped and answered.
+    seen.clear()
+    claimed = {"roles": ["admin"], "environment": "prod"}
+    for arguments in (
+        {"query": {**QUERY, "policy_context": claimed}, "mode": "validate"},
+        {"query": QUERY, "mode": "validate", "policy_context": claimed},
+    ):
+        refused = v2.call_tool("execute", arguments, request_context=context)
+        assert refused["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED", refused
+        assert refused["request_id"] == "trusted"
+    assert not seen
 
 
 @pytest.mark.parametrize(
@@ -488,21 +494,30 @@ def test_every_v2_call_works_behind_an_authenticated_transport(
         roles=("analyst",),
         environment="development",
     )
-    claimed = {**arguments, "request_id": "caller", "policy_context": {"roles": ["admin"]}}
-    message = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": tool, "arguments": claimed},
-    }
-    response = handle_jsonrpc_message(v2, message, request_context=context)
-    assert response is not None
-    result = response["result"]
+
+    def call(arguments: dict[str, Any]) -> dict[str, Any]:
+        message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        }
+        response = handle_jsonrpc_message(v2, message, request_context=context)
+        assert response is not None
+        result: dict[str, Any] = response["result"]
+        return result
+
+    result = call({**arguments, "request_id": "caller"})
     payload = result["structuredContent"]
     assert result["isError"] is False and payload["ok"] is True, payload.get("errors")
     assert payload["request_id"] == "trusted"
     assert payload["request_context"]["roles"] == ["analyst"]
     assert not [w for w in payload["warnings"] if str(w.get("code", "")).endswith("_UNKNOWN_ARG")]
+    claimed = call({**arguments, "policy_context": {"roles": ["admin"]}})
+    assert claimed["isError"] is True
+    refusal = claimed["structuredContent"]["errors"][0]
+    assert refusal["code"] == "IDENTITY_CLAIM_REFUSED"
+    assert refusal["details"]["path"] == "policy_context"
 
 
 def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
@@ -518,18 +533,18 @@ def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
         "errors",
         "timing_ms",
     } <= set(ok)
-    # Main accepts an unambiguous unwrapped metric; conflicting targets still carry recovery.
-    bare = {"version": 1, "select": [{"metric": "metric.sales.aov_usd", "as": "aov"}]}
+    # A select item is an id string or {expression, as}; anything else carries its fix.
+    bare = {"select": [{"expression": "metric.sales.aov_usd", "as": "aov"}]}
     assert v2.call_tool("execute", {"query": bare, "mode": "validate"})["ok"]
     bad = {
-        "version": 1,
         "select": [{"metric": "metric.sales.aov_usd", "measure": "measure.jaffle.revenue_usd"}],
     }
     failed = v2.call_tool("execute", {"query": bad})
     issue = failed["errors"][0]
     assert failed["error"] == {key: issue[key] for key in ("code", "message")}
-    assert issue["code"] == "INVALID_EXPRESSION_AST"
-    assert "expression" in issue["message"] and "group_by" in issue["message"]
+    assert issue["code"] == "INVALID_QUERY"
+    assert issue["details"]["path"] == "select[0].measure"
+    assert "expression" in issue["message"]
     assert "recovery_hints" not in failed
     assert issue["recovery_hints"]
     empty = [key for key, value in issue.items() if value in (None, "", [], {})]
@@ -635,7 +650,7 @@ def test_analysis_details_follow_requested_verbosity(v2, code, verbosity) -> Non
         {channel: [issue]},
         request_id="test",
         started_at=0,
-        arguments={"query": {"verbosity": verbosity}},
+        arguments={"verbosity": verbosity},
     )
     result = response[channel][0]
     expected = deepcopy(details)
@@ -671,3 +686,82 @@ def test_issue_builder_removes_only_duplicate_nested_hints(severity, duplicate) 
     else:
         assert issue["details"]["recovery_hints"] == nested
     assert details["recovery_hints"] == nested
+
+
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+def test_an_ambiguous_route_offers_one_ready_to_send_call_per_option(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from semantic_rails.runtime import Runtime
+    from tests.semantic_rails import test_route_clarification as routes
+
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
+    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(routes._write_package(tmp_path))))
+    call = {"select": ["measure.bank.balance"], "group_by": ["dimension.bank_district_name"]}
+    try:
+        refused = adapter.call_tool("execute", {"query": call, "mode": mode, "verbosity": "full"})
+        error = refused["errors"][0]
+        assert error["code"] == "AMBIGUOUS_PATH", refused
+        options = error["details"]["clarification"]["options"]
+        assert [option["query"]["routes"] for option in options] == [
+            [{"from": routes.ACCOUNT, "to": routes.DISTRICT, "via": route}]
+            for route in (routes.BRANCH_ROUTE, routes.OWNER_ROUTE)
+        ]
+        assert "send that option's query" in error["details"]["hint"]
+        for option in options:
+            assert {key: value for key, value in option["query"].items() if key != "routes"} == call
+            answered = adapter.call_tool("execute", {"query": option["query"], "mode": mode})
+            assert answered["ok"], answered
+    finally:
+        adapter.close()
+
+
+LAST_MONTH = {
+    "select": ["measure.jaffle.order_count"],
+    "time": {"last": {"unit": "month", "value": 1}},
+}
+FEBRUARY_2017 = {
+    "select": ["measure.jaffle.order_count"],
+    "time": {"start": "2017-02-01", "end": "2017-03-01"},
+}
+
+
+def test_now_pins_a_relative_window_on_execute_and_rest(v2: SemanticLayerMCPAdapter) -> None:
+    from semantic_rails.http_core import SemanticHTTPService
+
+    expected = v2.call_tool("execute", {"query": FEBRUARY_2017})["rows"]
+    pinned = v2.call_tool("execute", {"query": LAST_MONTH, "now": "2017-03-15"})
+    assert pinned["ok"] and pinned["rows"] == expected, pinned
+    service = SemanticHTTPService(v2.runtime)
+    rest, status = service.handle(
+        "POST", "/query", {"query": LAST_MONTH, "options": {"now": "2017-03-15"}}
+    )
+    assert status == 200 and rest["rows"] == expected, rest
+
+
+def test_plan_takes_now_on_mcp_and_rest(
+    v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import semantic_rails.http_core as http_core
+    import semantic_rails.mcp as mcp
+
+    seen: list[Any] = []
+
+    def plan(*_args: Any, now: Any = None, **_kwargs: Any) -> dict[str, Any]:
+        seen.append(now)
+        return {"status": "ok", "best": None}
+
+    monkeypatch.setattr(mcp, "plan_payload", plan)
+    monkeypatch.setattr(http_core, "plan_payload", plan)
+    v2.call_tool("plan", {"intent": "orders last month", "now": "2017-03-15"})
+    http_core.SemanticHTTPService(v2.runtime).handle(
+        "POST", "/plan", {"intent": "orders last month", "options": {"now": "2017-03-16"}}
+    )
+    assert seen == ["2017-03-15", "2017-03-16"]
+
+
+def test_discover_takes_no_now() -> None:
+    tools = {tool["name"]: tool for tool in load_contract("query_mcp.v2.json")["tools"]}
+    assert "now" not in tools["discover"]["inputSchema"]["properties"]
+    assert {"now"} <= set(tools["execute"]["inputSchema"]["properties"])
+    assert {"now"} <= set(tools["plan"]["inputSchema"]["properties"])
