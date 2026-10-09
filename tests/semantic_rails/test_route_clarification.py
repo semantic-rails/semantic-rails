@@ -48,7 +48,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import build_options_payload, valid_values_payload
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.policies import row_filters_for_context
-from semantic_rails.query_call import read_call
+from semantic_rails.query_call import read_call, route_entry
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _route_notes
 from semantic_rails.schema import (
@@ -568,7 +568,9 @@ def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis):
         )
         expected.update(
             meaning=selected["meaning"],
-            route_alternatives=[option["decision"] for option in options if option != selected],
+            route_alternatives=[
+                route_entry(option["decision"]) for option in options if option != selected
+            ],
         )
     assert chosen == expected
     if basis != "undecided":
@@ -743,14 +745,14 @@ def test_query_route_switches_are_disclosed_without_another_execution(
         },
         "replaced": "undecided",
         "meaning": chosen["meaning"],
-        "route_alternatives": [other["decision"]],
+        "route_alternatives": [route_entry(other["decision"])],
     }
     assert chosen["meaning"] in warning["message"]
     assert other["meaning"] in warning["message"]
     assert "one-step switch" in warning["message"]
     assert warning["message"].count("package default") == 1
     assert not warning.get("recovery_hints") and not out.get("recovery_hints")
-    # A switch is its ready row, with its meaning only in label.
+    # A switch is its ready routes entry; the message names its meaning.
     assert len(json.dumps(warning)) < 1500
 
 
@@ -801,7 +803,7 @@ def test_query_switches_use_only_the_options_the_package_refusal_offered(tmp_pat
     if selected_index < 2:
         expected.update(
             meaning=options[selected_index]["meaning"],
-            route_alternatives=[options[1 - selected_index]["decision"]],
+            route_alternatives=[route_entry(options[1 - selected_index]["decision"])],
         )
     assert details == expected
     assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(
@@ -826,7 +828,7 @@ def test_route_switch_notes_reuse_the_cached_refusal_without_enumerating(tmp_pat
     monkeypatch.setattr("semantic_rails.fanout.route_clarification", rebuild)
     (note,) = _route_notes(config, compiled, query)
     assert note["details"]["meaning"] == options[0]["meaning"]
-    assert note["details"]["route_alternatives"] == [options[1]["decision"]]
+    assert note["details"]["route_alternatives"] == [route_entry(options[1]["decision"])]
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
@@ -1044,7 +1046,9 @@ def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
         visible_options = [o for o in options if "A4" not in o["meaning"]] if hidden else options
         assert len(visible_options) == (100 if hidden else 125)
         assert 1 <= len(alternatives) <= 3
-        assert alternatives == [o["decision"] for o in visible_options[1 : 1 + len(alternatives)]]
+        assert alternatives == [
+            route_entry(o["decision"]) for o in visible_options[1 : 1 + len(alternatives)]
+        ]
         assert warning["details"]["more_alternatives"] == len(visible_options) - 1 - len(
             alternatives
         )

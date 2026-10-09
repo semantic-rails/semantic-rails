@@ -1,0 +1,161 @@
+"""Each refusal names its path and one hint the caller can follow, in the call's own terms."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from typing import Any
+
+import pytest
+
+from semantic_rails.embedding import RequestContext
+from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.runtime import Runtime
+
+NOW = "2017-09-04T12:00:00Z"
+ORDERS = "measure.jaffle.order_count"
+REVENUE = "measure.jaffle.revenue_usd"
+
+
+@pytest.fixture()
+def runtime(runtime_factory: Any) -> Iterator[Runtime]:
+    rt = runtime_factory("jaffle_shop")
+    try:
+        yield rt
+    finally:
+        rt.close()
+
+
+def _error(runtime: Runtime, call: dict[str, Any]) -> dict[str, Any]:
+    result = runtime.validate(call, now=NOW)
+    assert result["ok"] is False, result
+    return result["errors"][0]
+
+
+def _hint(error: dict[str, Any]) -> str:
+    (hint,) = error["recovery_hints"]
+    return str(hint["message"])
+
+
+@pytest.mark.parametrize(
+    ("remote", "says"),
+    [(False, "configured credentials"), (True, "from the credentials")],
+    ids=["stdio", "remote"],
+)
+def test_an_mcp_identity_claim_names_where_mcp_reads_identity(
+    runtime: Runtime, remote: bool, says: str
+) -> None:
+    adapter = SemanticLayerMCPAdapter(runtime)
+    claim = {"query": {"select": [ORDERS]}, "policy_context": {"roles": ["admin"]}}
+    context = RequestContext(environment="trusted") if remote else None
+    error = adapter.call_tool("execute", claim, request_context=context)["errors"][0]
+    assert error["details"]["path"] == "policy_context"
+    assert says in _hint(error)
+    assert "`context`" not in _hint(error)
+
+
+def test_an_sdk_identity_claim_names_the_context_argument(runtime: Runtime) -> None:
+    error = _error(runtime, {"select": [ORDERS], "policy_context": {"roles": ["admin"]}})
+    assert error["details"]["path"] == "policy_context"
+    assert "`context` argument" in _hint(error)
+
+
+@pytest.mark.parametrize(
+    ("expression", "kind", "shape"),
+    [
+        ({"kind": "ratio", "numerator": 5}, "ratio", '"denominator": "..."'),
+        ({"kind": "distribution", "function": "median", "over": ORDERS}, "distribution", '"over": "..."'),
+        ({"kind": "case", "whens": "x"}, "case", '"whens": "..."'),
+    ],
+)  # fmt: skip
+def test_a_malformed_expression_names_its_kind_and_path(
+    runtime: Runtime, expression: dict[str, Any], kind: str, shape: str
+) -> None:
+    error = _error(runtime, {"select": [{"as": "x", "expression": expression}]})
+    assert error["code"] == "INVALID_EXPRESSION_AST"
+    assert error["details"]["expression_kind"] == kind
+    assert error["details"]["path"] == "select[0].expression"
+    hint = _hint(error)
+    assert "the expression at select[0].expression" in hint and shape in hint
+    assert "''" not in hint
+
+
+def test_a_malformed_expression_keeps_its_own_hint(runtime: Runtime) -> None:
+    rolling = {"kind": "rolling", "input": ORDERS, "window": "7d"}
+    error = _error(runtime, {"select": [{"as": "x", "expression": rolling}], "time": {"grain": "day"}})  # fmt: skip
+    assert error["recovery_hints"][0]["code"] == "USE_OBJECT_SHAPE"
+    assert len(error["recovery_hints"]) == 1
+
+
+@pytest.mark.parametrize("grain", ["hour", "fortnight"])
+def test_a_grain_the_call_does_not_know_names_the_grains(runtime: Runtime, grain: str) -> None:
+    error = _error(runtime, {"select": [ORDERS], "time": {"grain": grain}})
+    assert error["details"]["path"] == "time.grain"
+    assert _hint(error) == "Omit grain for one total, or use day, week, month, quarter or year."
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"child": "entity.jaffle_item", "match": "none", "where": [{"field": "dimension.jaffle_product_type", "op": "is", "value": "jaffle"}]},
+        {"entity": "entity.jaffle_item", "where": [{"field": "dimension.jaffle_product_type", "op": "is", "value": "jaffle"}]},
+    ],
+    ids=["child-match-where", "entity-where"],
+)  # fmt: skip
+def test_a_child_group_is_pointed_at_the_entity_filter(
+    runtime: Runtime, item: dict[str, Any]
+) -> None:
+    error = _error(runtime, {"select": [ORDERS], "where": [item]})
+    assert error["details"]["path"] == "where[0]"
+    hint = _hint(error)
+    shape = json.loads(hint.removeprefix("Write ").removesuffix("."))
+    word = item.get("match", "any")
+    assert shape == {"entity": "entity.jaffle_item", word: item["where"]}
+    assert runtime.validate({"select": [ORDERS], "where": [shape]}, now=NOW)["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("unit", "value", "most"),
+    [("year", 10000, 2016), ("day", 10**8, 736575), ("month", 10**30, 24200)],
+)
+def test_a_last_window_before_the_calendar_names_the_largest_one(
+    runtime: Runtime, unit: str, value: int, most: int
+) -> None:
+    error = _error(runtime, {"select": [ORDERS], "time": {"last": {"unit": unit, "value": value}}})
+    assert error["details"]["path"] == "time.last.value"
+    assert _hint(error) == f"Use at most {most}, or a dated window with start and end."
+    widest = {"select": [ORDERS], "time": {"last": {"unit": unit, "value": most}}}
+    assert runtime.validate(widest, now=NOW)["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "time",
+    [
+        {"this": "year", "grain": "month"},
+        {"this": "week"},
+        {"start": "9999-12-01", "end": "9999-12-31", "grain": "week"},
+    ],
+)
+def test_a_window_at_the_calendar_s_last_day_answers(
+    runtime: Runtime, time: dict[str, Any]
+) -> None:
+    result = runtime.query({"select": [ORDERS], "time": time}, now="9999-12-31T12:00:00Z")
+    assert result["ok"] is True
+    assert all(row[ORDERS.split(".")[-1]] is None for row in result["rows"])
+
+
+def test_an_unsettled_empty_group_names_the_callers_output(runtime: Runtime) -> None:
+    """A where beside a per-period entity filter can't be judged under the dataset scope."""
+    call = {
+        "select": [{"as": "orders", "expression": ORDERS}],
+        "where": [
+            {"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"},
+            {"entity": "entity.jaffle_customer", "having": [{"field": ORDERS, "op": "gt", "value": 3}], "over": "period"},
+        ],
+        "time": {"grain": "month", "end": "2016-11-01"},
+    }  # fmt: skip
+    error = _error(runtime, call)
+    assert error["code"] == "EMPTY_GROUPS_UNSETTLED"
+    assert error["details"]["outputs"] == ["orders"]
+    assert "leaf__" not in json.dumps(error)
+    assert runtime.validate({**call, "observation_scope": "query"}, now=NOW)["ok"] is True
