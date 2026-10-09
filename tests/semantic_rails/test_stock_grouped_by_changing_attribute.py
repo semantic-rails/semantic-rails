@@ -2,7 +2,7 @@
 
 An end-of-period stock (a balance) is read on each period's closing day only, its last day
 with a snapshot, and adds up the series seen that day; a series whose last snapshot is
-earlier is not carried forward. Grouped by an attribute stored on the snapshot rows, it
+earlier is not carried forward. Untimed, there is no period: each series' latest snapshot. Grouped by an attribute stored on the snapshot rows, it
 used to take the last snapshot per series per attribute value: an account on plan "Builder"
 Monday to Wednesday and "Pro" Thursday to Sunday was counted under both plans in that week,
 and the grouped rows no longer added up to the ungrouped total. The snapshot is chosen per
@@ -226,10 +226,13 @@ def test_each_series_counts_once_under_its_closing_plan(runtime: Runtime) -> Non
 
 
 def test_without_a_time_block_each_series_counts_once(runtime: Runtime) -> None:
-    # Untimed, the period is everything: the snapshots of its last day, under their plans;
-    # c, last seen on September 27, is not carried forward.
-    assert _query(runtime, "seats", [PLAN], None) == [("Pro", 20), ("Team", 200)]
-    assert _query(runtime, "seats", [], None) == [(220,)]
+    # Untimed, there is no period to close: each account's latest snapshot, under its plan.
+    assert _query(runtime, "seats", [PLAN], None) == [
+        ("Builder", 1006),
+        ("Pro", 20),
+        ("Team", 200),
+    ]
+    assert _query(runtime, "seats", [], None) == [(1226,)]
 
 
 def test_an_unobserved_week_reads_null(runtime: Runtime) -> None:

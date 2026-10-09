@@ -1889,8 +1889,12 @@ def _semi_additive_leaf_select(
 
     # A balance is read on its period's closing day only (the last day with a snapshot, the
     # edge day for a period still filling): a series without a snapshot that day is not
-    # carried forward from an earlier one.
-    closing = window_choice == "last_value" and final_aggregation in {"last_value", "sum"}
+    # carried forward from an earlier one. With no period (untimed), each series' latest.
+    closing = (
+        window_choice == "last_value"
+        and final_aggregation in {"last_value", "sum"}
+        and bool(period_fields)
+    )
 
     if dialect.capabilities().get("qualify"):
         direction = "ASC" if window_choice == "first_value" else "DESC"
