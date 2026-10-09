@@ -14,7 +14,7 @@ from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
 from ..query_call import REFERENCE_PREFIXES
 from ._base import _object_by_id, _tokens
-from .call import Call
+from .call import Call, Time
 from .coverage import (
     CoverageGap,
     _engine_query,
@@ -202,9 +202,22 @@ def _subject_window_gaps(config: Any, query: Call) -> list[CoverageGap]:
     return gaps
 
 
+def _one_day_read(time: Time) -> bool:
+    """Whether a time block reads one day: at day grain, or a window of exactly one day
+    without a grain (its one total is that day's)."""
+    if time.grain:
+        return time.grain == "day"
+    if not time.window:
+        return False
+    zone = time_timezone(time.temporal_role) if time.temporal_role else None
+    days = _window_days(time.window, timezone=zone)
+    return bool(days and days[0] and days[1] and (days[1] - days[0]).days == 1)
+
+
 def _stock_as_of_gaps(config: Any, query: Call) -> list[CoverageGap]:
     """Hold predicate stocks at any grain, and direct stocks without one as-of day."""
-    grain = _time_block(query).grain or None
+    time = _time_block(query)
+    grain = "day" if _one_day_read(time) else time.grain or None
     try:
         stocks = _multi_series_stocks(config, query)
     except Exception:  # noqa: BLE001 — an unreadable stock cannot make a draft ready
@@ -214,7 +227,8 @@ def _stock_as_of_gaps(config: Any, query: Call) -> list[CoverageGap]:
     if stocks == {}:
         return []
     shown = visible_object_ids(config, stocks or [])
-    period = f"each {grain}" if grain else "the whole history (no time block)"
+    window = _time_block(query).window
+    period = f"each {grain}" if grain else "its window" if window else "the whole history"
     selected = (
         visible_object_ids(config, _projected_subject_ids(query)) if stocks is not None else []
     )

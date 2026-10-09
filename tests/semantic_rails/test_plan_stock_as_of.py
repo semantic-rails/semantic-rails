@@ -20,9 +20,11 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import ArithmeticExpr, LiteralExpr, MetricRecipeRefExpr
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner import plan_payload, time_checks
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -160,7 +162,7 @@ def _stock_gaps(plan: dict[str, Any]) -> list[dict[str, Any]]:
 def _value(runtime: Runtime, plan: dict[str, Any]) -> int:
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query"]
-    [row] = runtime.query(query)["rows"]
+    [row] = runtime.query(query, now=NOW["now"])["rows"]
     return int(row[_alias(query["select"][0])])
 
 
@@ -179,7 +181,8 @@ def _assert_held(plan: dict[str, Any], grain: str | None) -> None:
         ("total MRR", None),
         ("MRR by week", "week"),
         ("MRR by month", "month"),
-        ("MRR last 3 months", "month"),
+        # No grain asked: one total over the three months.
+        ("MRR last 3 months", None),
     ],
 )
 def test_a_balance_over_more_than_one_day_per_row_is_held(
@@ -206,7 +209,10 @@ def test_a_balance_with_no_day_or_one_period_reads_its_closing_day(
 ) -> None:
     # No day: the last complete day before the clock. One period: its closing day.
     plan = _plan(runtime, intent, detail=detail)
-    assert plan["best"]["query"]["time"]["start"] == day
+    time = plan["best"]["query"]["time"]
+    # The last complete day is spelled relative; a named period's closing day is dated.
+    read = "2026-10-04" if time.get("last") == {"unit": "day", "value": 1} else time["start"]
+    assert read == day
     assert _stock_gaps(plan) == []
     assert _value(runtime, plan) == _closing_day(day)
 
@@ -221,13 +227,11 @@ def test_a_balance_read_on_one_day_drops_closed_accounts(runtime: Runtime) -> No
 
 def test_mcp_plan_reads_a_balance_on_the_last_complete_day(runtime: Runtime) -> None:
     adapter = SemanticLayerMCPAdapter(runtime)
-    plan = adapter.call_tool(
-        "plan", {"intent": "What's our MRR?", "query": {"policy_context": NOW}}
-    )
+    plan = adapter.call_tool("plan", {"intent": "What's our MRR?", "now": NOW["now"]})
     assert plan["status"] == "ok", plan.get("why")
     time = plan["best"]["query"]["time"]
-    assert (time["grain"], time["start"], time["end"]) == ("day", "2026-10-04", "2026-10-05")
-    held = adapter.call_tool("plan", {"intent": "MRR by week", "query": {"policy_context": NOW}})
+    assert (time["grain"], time["last"]) == ("day", {"unit": "day", "value": 1})
+    held = adapter.call_tool("plan", {"intent": "MRR by week", "now": NOW["now"]})
     _assert_held(held, "week")
 
 
@@ -262,11 +266,10 @@ def test_a_stock_read_through_a_metric_filter_or_a_nested_metric_is_held(
     runtime: Runtime,
 ) -> None:
     config = runtime._config
-    users = {"expression": {"measure": "measure.billing.registered_users"}, "as": "users"}
-    assert time_checks._stock_as_of_gaps(config, {"select": [users]}) == []
-    mrr = {"measure": MEASURE, "aggregation": "last_value"}
-    filtered = {"select": [users], "metric_filters": [{"expression": mrr, "op": ">", "value": 0}]}
-    [gap] = time_checks._stock_as_of_gaps(config, filtered)
+    users = {"expression": "measure.billing.registered_users", "as": "users"}
+    assert time_checks._stock_as_of_gaps(config, Call.from_call({"select": [users]})) == []
+    filtered = {"select": [users], "having": [{"field": MEASURE, "op": "gt", "value": 0}]}
+    [gap] = time_checks._stock_as_of_gaps(config, Call.from_call(filtered))
     assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
     metric = next((row for row in config.metric_recipes if row.id == "metric.billing.mrr"), None)
     if metric is None:
@@ -277,10 +280,10 @@ def test_a_stock_read_through_a_metric_filter_or_a_nested_metric_is_held(
         expression=ArithmeticExpr("*", MetricRecipeRefExpr(metric.id), LiteralExpr(2)),
     )
     nested = replace(config, metric_recipes=[*config.metric_recipes, doubled])
-    query = {"select": [{"expression": doubled.id, "as": "v"}]}
+    query = Call.from_call({"select": [{"expression": doubled.id, "as": "v"}]})
     [gap] = time_checks._stock_as_of_gaps(nested, query)
     assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
-    selected = {"select": [{"expression": {"metric": metric.id}, "as": "mrr"}]}
+    selected = {"select": [{"expression": metric.id, "as": "mrr"}]}
     _assert_held(_plan(runtime, "MRR by week", partial=selected), "week")
 
 
@@ -300,31 +303,34 @@ def test_a_where_item_with_a_stock_expression_is_refused(qualifying_runtime: Run
             },
         }
     ]
-    select = [{"expression": {"measure": "measure.billing.account_count"}, "as": "accounts"}]
-    plan = _plan(qualifying_runtime, "Account count", partial={"select": select, "where": where})
-    assert plan["status"] == "low_confidence"
-    assert plan["best"]["validation_ok"] is False
-    assert plan["best"]["query"]["where"] == where
-    assert plan["why"]["code"] == "VALIDATION_FAILED"
-    report = qualifying_runtime.validate(plan["best"]["query"])
+    select = [{"expression": "measure.billing.account_count", "as": "accounts"}]
+    # The seed is refused before any draft is made, naming the key.
+    with pytest.raises(SemanticLayerError) as caught:
+        _plan(qualifying_runtime, "Account count", partial={"select": select, "where": where})
+    assert caught.value.code == "INVALID_QUERY"
+    assert caught.value.details["path"].startswith("where[0]")
+    report = qualifying_runtime.validate({"select": select, "where": where}, now=NOW["now"])
     assert report["ok"] is False
     [error] = report["errors"]
     assert error["code"] == "INVALID_QUERY"
-    assert error["details"]["path"] == "where[0]"
-    assert error["details"]["unsupported_keys"] == ["expression"]
-    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    assert error["details"]["path"].startswith("where[0]")
 
 
 @pytest.mark.parametrize("detail", ["best", "full"])
 def test_an_outer_day_does_not_clear_a_stock_in_a_metric_predicate(
     qualifying_runtime: Runtime, detail: str
 ) -> None:
-    plan = _plan(qualifying_runtime, "Qualifying accounts yesterday", detail=detail)
+    # The caller reads one day at day grain: still no proof for the stock in the predicate.
+    one_day = {"grain": "day", "last": {"unit": "day", "value": 1}}
+    plan = _plan(
+        qualifying_runtime,
+        "Qualifying accounts yesterday",
+        detail=detail,
+        partial={"time": one_day},
+    )
     assert plan["best"]["validation_ok"] is True, plan.get("why")
     assert plan["best"]["query"]["time"]["grain"] == "day"
-    assert plan["best"]["query"]["select"][0]["expression"] == {
-        "metric": "metric.billing.qualifying_accounts"
-    }
+    assert plan["best"]["query"]["select"] == ["metric.billing.qualifying_accounts"]
     _assert_held(plan, "day")
     [hint] = [hint for hint in plan["why"]["recovery_hints"] if hint["kind"] == "ask_for_one_day"]
     assert hint["message"] == (
@@ -339,26 +345,26 @@ def test_a_shared_stock_is_marked_when_reached_through_a_predicate(
 ) -> None:
     config = runtime._config
     metric = next((row for row in config.metric_recipes if row.id == "metric.billing.mrr"), None)
-    stock = {"metric": metric.id} if metric else {"measure": MEASURE}
+    stock = metric.id if metric else MEASURE
     if metric:
         wrapper = replace(
             metric, id="metric.billing.nested_mrr", expression=MetricRecipeRefExpr(metric.id)
         )
         config = replace(config, metric_recipes=[*config.metric_recipes, wrapper])
-        stock = {"metric": wrapper.id}
-    predicate = {"entity": "entity.billing_account_day", "op": ">", "value": 0}
+        stock = wrapper.id
+    predicate = {"entity": "entity.billing_account_day", "op": "gt", "value": 0}
     expression = (
         {"kind": route, "input": stock, **predicate}
         if route == "metric_predicate"
         else {
             "kind": route,
             "measure": "measure.billing.registered_users",
-            "predicates": [{**stock, **predicate}],
+            "predicates": [{"input": stock, **predicate}],
         }
     )
-    select = [{"expression": stock}, {"expression": expression}]
+    select = [{"expression": stock, "as": "stock"}, {"expression": expression, "as": "read"}]
     query = {"select": select if direct_first else select[::-1], "time": {"grain": "day"}}
-    [gap] = time_checks._stock_as_of_gaps(config, query)
+    [gap] = time_checks._stock_as_of_gaps(config, Call.from_call(query))
     assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
     assert gap.actual == {"grain": "day"}
 
@@ -367,12 +373,12 @@ def test_the_recovery_hint_uses_the_selected_label_and_a_date_placeholder(runtim
     metric = next(
         (row for row in runtime._config.metric_recipes if row.id == "metric.billing.mrr"), None
     )
-    partial = {"select": [{"expression": {"metric": metric.id}, "as": "mrr"}]} if metric else {}
+    partial = {"select": [{"expression": metric.id, "as": "mrr"}]} if metric else {}
     plan = _plan(runtime, "MRR by week", partial=partial)
     [hint] = [hint for hint in plan["why"]["recovery_hints"] if hint["kind"] == "ask_for_one_day"]
     assert hint["message"] == (
         "Ask for 'MRR yesterday' or 'MRR on <YYYY-MM-DD>', "
-        "or set time.grain: day with that day's start and end."
+        "or set time.grain: day with that day's start and end (or last: 1 day)."
     )
 
 
@@ -402,7 +408,7 @@ def test_a_direct_daily_stock_with_a_nonstock_predicate_is_unchanged(
                     "measure": MEASURE,
                     "predicates": [
                         {
-                            "measure": "measure.billing.account_count",
+                            "input": "measure.billing.account_count",
                             "op": "gt",
                             "value": 0,
                             "over": "period",
@@ -414,4 +420,4 @@ def test_a_direct_daily_stock_with_a_nonstock_predicate_is_unchanged(
         ],
         "time": {"grain": "day"},
     }
-    assert time_checks._stock_as_of_gaps(qualifying_runtime._config, query) == []
+    assert time_checks._stock_as_of_gaps(qualifying_runtime._config, Call.from_call(query)) == []

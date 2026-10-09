@@ -138,7 +138,7 @@ def _plan(engine: Runtime, intent: str, **partial: Any) -> dict[str, Any]:
 def _rows(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, float]]:
     alias = _alias(query["select"][0])
     rows = engine.query(query, now=NOW["now"])["rows"]
-    return [(str(row[f"{CLOCK}__day"])[:10], row[alias]) for row in rows]
+    return [(str(row["period"])[:10], row[alias]) for row in rows]
 
 
 def _stock_gaps(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -183,8 +183,7 @@ def test_a_wrapped_balance_is_held_on_a_day_not_yet_complete(
     plan = _plan(engine, intent.format(label))
     _assert_held(plan)
     query = plan["best"]["query"]
-    assert query["select"][0]["expression"] == {"metric": METRICS[label][0]}
-    assert query["time"]["grain"] == "day"
+    assert query["select"] == [METRICS[label][0]]
     [gap] = _stock_gaps(plan)
     assert gap["expected"] == {"grain": "day", "stocks": [MRR_ALL]}
     assert gap["clause"] == label
@@ -209,7 +208,7 @@ def test_a_caller_draft_reading_a_day_not_yet_complete_is_held(
     """The caller states the select and the window, so no planner drafting is involved."""
 
     metric = METRICS[label][0]
-    select = [{"as": "value", "expression": {"metric": metric}}]
+    select = [{"as": "value", "expression": metric}]
     plan = _plan(engine, label, select=select, time=time)
     _assert_held(plan)
     [gap] = _stock_gaps(plan)
@@ -243,8 +242,19 @@ def test_a_complete_day_is_still_answered(
     assert "execute" in plan["next"]["ready_for"]
     query = plan["best"]["query"]
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
-    assert query["time"] == {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end}
-    assert _rows(engine, query) == [(day, _gold(day) * METRICS[label][1])]
+    # One day's window, one total: yesterday is spelled relative, a date dated.
+    window = (
+        {"last": {"unit": "day", "value": 1}}
+        if "yesterday" in intent
+        else {
+            "start": day,
+            "end": end,
+        }
+    )
+    assert query["time"] == {"temporal_role": CLOCK, **window}
+    alias = _alias(query["select"][0])
+    rows = engine.query(query, now=NOW["now"])["rows"]
+    assert [row[alias] for row in rows] == [_gold(day) * METRICS[label][1]]
 
 
 @pytest.mark.parametrize("label", list(METRICS))

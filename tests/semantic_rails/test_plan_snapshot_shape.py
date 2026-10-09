@@ -24,6 +24,7 @@ import yaml
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner import snapshot as snapshot_module
+from semantic_rails.planner.call import Call, Time
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -51,7 +52,7 @@ SELECT account_id, day, plan, mrr, CAST(mrr > 0 AS INTEGER) AS paying FROM (
 INSERT INTO accounts VALUES ('e', 'Nonpaying Pro', 'customer');
 INSERT INTO account_day VALUES ('e', DATE '2026-10-04', 'pro', 0, 0);
 """
-CUSTOMERS = {"field": f"dimension.{NS}_account_segment", "op": "=", "value": "customer"}
+CUSTOMERS = {"field": f"dimension.{NS}_account_segment", "op": "is", "value": "customer"}
 DAY_POLICY = {
     "id": "policy.subscriptions.balance_per_day",
     "kind": "metric_constraint",
@@ -206,7 +207,12 @@ def test_a_balance_reads_the_day_the_question_names(
     assert plan["next"]["ready_for"] == ["execute"]
     query = plan["best"]["query"]
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
-    assert query["time"] == {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end}
+    if day == "2026-10-04":
+        # Now: the last complete day before it, spelled relative.
+        last_day = {"last": {"unit": "day", "value": 1}}
+        assert query["time"] == {"temporal_role": CLOCK, "grain": "day", **last_day}
+    else:
+        assert query["time"] == {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end}
     reference = _reference(_balance(column, day, by))
     answer = _answer(runtime, plan, PLAN if by else "")
     assert answer == reference
@@ -228,7 +234,7 @@ def test_the_numbers_are_the_customers_balance_on_that_day(runtime: Runtime) -> 
     assert _reference(_balance("paying", "2026-10-04")) == {(): 2}
     assert _reference(_balance("paying", "2026-10-04", "plan")) == {"basic": 1, "pro": 1}
     plan = _plan(runtime, "What's our MRR?")
-    assert plan["best"]["query"]["select"] == [{"as": "mrr", "expression": {"metric": MRR}}]
+    assert plan["best"]["query"]["select"] == [MRR]
 
 
 def test_right_now_is_the_same_read_as_no_time_words(runtime: Runtime) -> None:
@@ -240,7 +246,7 @@ def test_right_now_is_the_same_read_as_no_time_words(runtime: Runtime) -> None:
 
 def test_a_caller_select_keeps_its_measure_and_alias(runtime: Runtime) -> None:
     select = [{"as": "all_mrr", "expression": {
-        "measure": f"measure.{NS}.mrr_all", "aggregation": "last_value",
+        "kind": "measure", "measure": f"measure.{NS}.mrr_all", "aggregation": "last_value",
     }}]  # fmt: skip
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
         "policy_context": NOW, "select": select,
@@ -250,7 +256,7 @@ def test_a_caller_select_keeps_its_measure_and_alias(runtime: Runtime) -> None:
     assert plan["next"]["ready_for"] == ["execute"]
     query = plan["best"]["query"]
     assert query["select"] == select
-    assert query["order_by"] == [{"field": "all_mrr", "direction": "DESC"}]
+    assert query["order_by"] == [{"field": "all_mrr", "direction": "desc"}]
     assert (
         _answer(runtime, plan)
         == _reference("SELECT SUM(mrr) FROM account_day WHERE day = DATE '2026-10-04'")
@@ -307,7 +313,7 @@ def test_a_balance_window_without_proven_complete_days_is_held(
     runtime: Runtime, bounds: dict[str, str]
 ) -> None:
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
-        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day", **bounds},
         **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
     })  # fmt: skip
@@ -328,11 +334,11 @@ def test_a_balance_window_without_a_clock_reading_is_held(
         "_days",
         lambda bounds, clock: None if bounds is snapshot_module._LAST_DAY else days(bounds, clock),
     )
-    query = {
+    query = Call.from_call({
         "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day",
                  "start": "2026-10-04", "end": "2026-10-05"},
-    }  # fmt: skip
+    })  # fmt: skip
     [gap] = snapshot_module.snapshot_day_gaps(runtime, "What's our MRR?", query, query)
     assert gap.kind == "stock_as_of_unrealized"
     assert "isn't proven to end on a complete day" in gap.message
@@ -342,7 +348,7 @@ def test_a_balance_window_without_a_clock_reading_is_held(
 
 def test_a_caller_balance_window_on_a_complete_day_executes(runtime: Runtime) -> None:
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
-        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day",
                  "start": "2026-10-04", "end": "2026-10-05"},
         **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
@@ -362,7 +368,7 @@ def test_day_completion_uses_the_balance_clock_zone(
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
     # NOW is October 4 on this clock, while UTC has already reached October 5.
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
-        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end},
         **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
     })  # fmt: skip
@@ -392,7 +398,7 @@ def test_a_value_named_with_the_balance_filters_it(runtime: Runtime) -> None:
     assert "subject_ambiguous" in {gap["kind"] for gap in ambiguous["why"]["details"]["gaps"]}
     plan = _plan(runtime, "pro paying accounts right now")
     assert plan["status"] == "ok", plan.get("why")
-    assert plan["best"]["query"]["where"] == [{"field": PLAN, "op": "=", "value": "pro"}]
+    assert plan["best"]["query"]["where"] == [{"field": PLAN, "op": "is", "value": "pro"}]
     assert "Paying accounts" in " ".join(plan["assumptions"])
     assert _answer(runtime, plan) == paying_pro
 
@@ -452,7 +458,7 @@ def test_an_unloaded_last_complete_day_returns_no_rows(runtime: Runtime) -> None
     plan = _plan(runtime, "What's our MRR?", later)
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query"]
-    assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-05", "2026-10-06")
+    assert query["time"]["last"] == {"unit": "day", "value": 1}
     result = runtime.query(query, now=later["now"])
     assert result["rows"] == []
     assert "EMPTY_RESULT_WINDOW" in {warning["code"] for warning in result["warnings"]}
@@ -483,10 +489,10 @@ def test_a_draft_shaped_to_another_day_is_held(
 
     def earlier(*args: Any, **kwargs: Any):
         query, why = shaper(*args, **kwargs)
-        if query.get("time", {}).get("temporal_role") != CLOCK:
+        if query.time is None or query.time.temporal_role != CLOCK:
             return query, why
-        moved = {"temporal_role": CLOCK, "grain": "day", "start": "2026-10-03", "end": "2026-10-04"}
-        return {**query, "time": moved}, why
+        moved = Time(temporal_role=CLOCK, grain="day", start="2026-10-03", end="2026-10-04")
+        return replace(query, time=moved), why
 
     monkeypatch.setattr(plan_module, "shape_snapshot", earlier)
     plan = _plan(runtime, intent)

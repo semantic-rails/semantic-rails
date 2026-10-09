@@ -39,10 +39,7 @@ def _merge_partial_query(config: Any, draft_query: Call, partial_query: Call | N
         for row in draft_query.order_by
         if row.field not in settled
     ]
-    mine = QueryBuilder(config)
-    for item in partial.select:
-        mine.select(item.expression, item.alias)
-    builder = QueryBuilder(config, draft_query).selects([*mine.build().select, *generated])
+    builder = QueryBuilder(config, draft_query).selects([*partial.select, *generated])
     builder.groups([*partial.group_by, *(g for g in draft_query.group_by if g not in settled)])
     builder.filters([*partial.where, *draft_query.where])
     builder.having(

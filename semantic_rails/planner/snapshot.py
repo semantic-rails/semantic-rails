@@ -31,7 +31,7 @@ from .coverage import (
     _time_block,
 )
 from .grouping_checks import _declared_name_spans
-from .time_checks import _multi_series_stocks, _stock_as_of_gaps, _window_days
+from .time_checks import _multi_series_stocks, _one_day_read, _stock_as_of_gaps, _window_days
 from .time_reference import time_timezone
 from .time_windows import _RANGE_END_UNITS, _time_window
 from .unasked_groupings import _names_grain
@@ -251,8 +251,12 @@ def _expected_read(runtime: Any, question: str, query: Call) -> _Read | _Ask | N
     if source == "window" and end - start != _DAY and not _names_one_period(bounds, phrase):
         return None
     day = start if opening else end - _DAY
-    if day >= today:
+    if day > today or (day == today and bounds.get("this") != "day"):
         return None
+    if day == today:
+        # Today is read like any day, and the complete-day check holds it until it ends.
+        time = Time(temporal_role=balance.clock, grain="day", this="day")
+        return _Read(balance, day, time, window.spans, source, "")
     time = Time(
         temporal_role=balance.clock,
         grain="day",
@@ -422,7 +426,7 @@ def snapshot_day_gaps(
     time = _time_block(query)
     balance = _balance(runtime._config, query)
     read_balance = balance or _wrapped_balance(runtime._config, query)
-    if read_balance is not None and time.grain == "day":
+    if read_balance is not None and _one_day_read(time):
         days, latest = _days(time.window, read_balance.clock), _days(_LAST_DAY, read_balance.clock)
         if not (days is not None and latest is not None and days[0] < days[1] <= latest[1]):
             message = (
