@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from ..ast import _parse_now, _relative_range_bounds
 from ..errors import SemanticLayerError
 from ._base import _tokens
+from .exclusions import excluded_time_spans
 from .time_phrases import (
     _BOUNDARY_BEFORE_RE,
     _COMPARISON_GUARD,
@@ -170,6 +171,9 @@ class _TimeWindow:
     # another phrase left the question unresolved.
     windows: tuple[tuple[tuple[int, int], dict[str, Any]], ...] = ()
     as_of: tuple[_AsOfCue, ...] = ()
+    # Time phrases an exclusion names ("signups not in June 2024"): never a positive window,
+    # so each is reported unresolved.
+    excluded: tuple[tuple[int, int], ...] = ()
 
 
 def _phrase(lowered: str, span: tuple[int, int]) -> str:
@@ -309,6 +313,14 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         if not _overlaps(row[0], [item[0] for item in windows]):
             windows.append(row)
     windows.sort(key=lambda row: row[0])
+    # A time phrase an exclusion names is no window the question asks for.
+    candidates = [row[0] for row in windows]
+    for span in [*rejected, *_time_cues(lowered), *(cue.span for cue in as_of)]:
+        if not _overlaps(span, candidates):
+            candidates.append(span)
+    excluded = tuple(excluded_time_spans(lowered, candidates))
+    rejected += [row[0] for row in windows if row[0] in excluded]
+    windows = [row for row in windows if row[0] not in excluded]
     covered = [row[0] for row in windows]
     unread = [cue.span for cue in as_of] + [
         span for span in rejected if not _overlaps(span, covered)
@@ -356,6 +368,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
             windows=tuple((row[0], dict(row[1])) for row in windows),
             as_of=as_of,
+            excluded=excluded,
         )
     if not windows:
         return _TimeWindow()

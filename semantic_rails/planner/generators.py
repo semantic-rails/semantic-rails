@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from ._base import RuntimeCompositionDraft
+from .exclusions import exclusion_clauses, exclusion_regions
 from .plan_query import _append_unique_dicts
 from .visibility import (
     discovery_query,
@@ -150,7 +151,7 @@ def _draft_for_choice(
         query = _apply_time_from_text(runtime, query, intent, [str(choice["id"])])
 
     query = _normalize_value_filters(
-        query, _matched_value_rows(runtime, query, intent), text=intent
+        query, _matched_value_rows(runtime, query, intent), text=intent, config=runtime._config
     )
 
     resolved = [
@@ -176,9 +177,18 @@ def _draft_for_choice(
 
 
 def _normalize_value_filters(
-    query: dict[str, Any], matched_values: list[dict[str, Any]] | None = None, *, text: str = ""
+    query: dict[str, Any],
+    matched_values: list[dict[str, Any]] | None = None,
+    *,
+    text: str = "",
+    config: Any = None,
 ) -> dict[str, Any]:
-    """Fold one contiguous value phrase; preserve separate clauses and caller filters."""
+    """Fold one contiguous value phrase; preserve separate clauses and caller filters.
+
+    Given the ``config``, a value an exclusion names is dropped with ``IS DISTINCT FROM``,
+    which keeps rows with no recorded value, and no other value an exclusion clause mentions
+    is filtered on.
+    """
 
     where = [
         {**row, "field": row["field"].strip()}
@@ -186,8 +196,32 @@ def _normalize_value_filters(
         else row
         for row in list(query.get("where", []) or [])
     ]
-    named: dict[str, list[dict[str, Any]]] = {}
+    from .time_windows import _time_window  # noqa: WPS433
+
+    window = _time_window(text)
+    clauses = exclusion_clauses(config, text, window) if config is not None else []
+    items = [(item.binding, item.span) for clause in clauses for item in clause.items]
+    regions = exclusion_regions(text, window.spans) if clauses else []
+    kept: list[dict[str, Any]] = []
     for row in matched_values or []:
+        span = row.get("matched_span")
+        excluded = any(
+            binding == (row["dimension_id"].strip(), row["value"])
+            and (span is None or (start <= span[0] and span[1] <= end))
+            for binding, (start, end) in items
+        )
+        if excluded:
+            normalized = {
+                "field": row["dimension_id"].strip(),
+                "op": "IS DISTINCT FROM",
+                "value": row["value"],
+            }
+            if normalized not in where:
+                where.append(normalized)
+        elif span is None or not any(start <= span[0] < end for start, end in regions):
+            kept.append(row)
+    named: dict[str, list[dict[str, Any]]] = {}
+    for row in kept:
         rows = named.setdefault(row["dimension_id"].strip(), [])
         value = row["value"]
         if not any(

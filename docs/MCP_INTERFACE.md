@@ -117,7 +117,19 @@ tool/schema drift cannot be merged silently.
 - `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values.
-- `plan`: draft Query IR from a natural-language question.
+- `plan`: draft Query IR from a natural-language question. A fully matched
+  package example uses its validated authored query (`best.pattern:
+  package_example`), including its groupings, filters and limit. An example
+  answers only its exact question: case and whitespace aside (and the
+  contractions `plan` expands in every question), any other wording, including
+  punctuation, plurals, numbers, signs, symbols, a different top-N count or
+  another date or time phrase, gets normal planning. Multiple
+  valid visible matches return
+  `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
+  `why.details.example_ids`. Invalid examples fall through with
+  `why.details.invalid_examples`; an example that reads a hidden object is
+  invalid for that caller, as in a package without the object.
+  Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
@@ -327,8 +339,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   scopes do not prove an outer filter's result. Grouping does not cure an uncertain filter.
   Without grouping by the field, the draft returns one total, so its filter must keep only
   values the question names: "revenue for Brooklyn" filtered to Brooklyn and Philadelphia
-  is a gap, while "revenue for Brooklyn and Philadelphia" is not. An exclusion must drop
-  only values the question names, with or without grouping;
+  is a gap, while "revenue for Brooklyn and Philadelphia" is not. Values an exclusion names
+  follow the exclusion rule below;
 - combines top-level filters on one field so no value can survive, which returns no rows
   (`contradictory_filters`);
 - misses a negation, a prior-period comparison ("vs prior fiscal quarter" included) or one of
@@ -384,9 +396,35 @@ A draft that validates can still leave out part of the question. `plan` returns
   the `PLAN_UNMATCHED_TERMS` checks below included, so it holds only a draft nothing else
   holds.
 
-When a question has several exclusion clauses, `plan` checks each clause. A
-negative filter for one value does not make a later excluded value safe if the
-draft includes it.
+`plan` doesn't answer questions that exclude values yet. An exclusion ("excluding", "except",
+"without", "not", "but not", "other than", "apart from", "aside from", "minus", "outside of",
+"all stores but") holds whatever the draft carries, the caller's `partial_query` included: each
+clause is one gap, `negation_reversed` when a top-level `=` or `IN` filter keeps a value the
+clause names, otherwise `negation_unrealized`. Its recovery hint (`ask_for_breakdown`) suggests
+asking for the breakdown by the excluded dimension instead ("signups by channel"), which shows
+each value and the rows with no recorded value; listing the values to keep would drop those
+rows. A time phrase inside an exclusion ("signups not in June 2024") is never read as the
+question's window.
+
+An exclusion keeps rows with no recorded value, so its executable form is one top-level `where`
+filter per excluded value, `{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`: "signups
+excluding web" counts the signups with no channel, which `!=` and `NOT IN` drop. The held
+draft uses that form, and a hand-written Query IR with it still runs through `execute`.
+
+The gap's `expected.items` lists what the clause names, each with its `kind`: a declared value
+name (its value, label or alias, in double quotes or none) with its `field` and `value`, a
+time phrase, or `unknown` for any other word in an item's place. Commas, semicolons, slashes,
+"&", "and", "or", "nor", "plus", "as well as", "along with", "alongside", "together with",
+dashes, line breaks and brackets separate items; a separator inside a declared name ("Click &
+Collect") doesn't split it. The list ends at the first word that is neither; every other
+character up to that word is an `unknown` item, except the question's final `.`, `?` or `!`.
+The first time phrase after the list with only words between is the question's window
+("signups excluding web in June 2024"); any other value, quoted or time mention before the
+next exclusion, an "including" or the question's end is an `unknown` item. When an exclusion
+word or an "including" falls inside a quoted string or a declared value name ("Including
+Top", "All but Web"), or an exclusion word inside a grouping phrase ("revenue by store
+excluding Brooklyn"), the whole question is one `unknown` item. An excluded value named "Top"
+is never read as a ranking.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),
