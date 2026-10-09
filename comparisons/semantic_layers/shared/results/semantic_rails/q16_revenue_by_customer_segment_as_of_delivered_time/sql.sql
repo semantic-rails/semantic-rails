@@ -23,5 +23,5 @@ SELECT
   base.m1 AS delivered_revenue
 FROM guarded_base AS base
 ORDER BY
-  t ASC,
-  g1 ASC
+  t ASC NULLS LAST,
+  g1 ASC NULLS LAST

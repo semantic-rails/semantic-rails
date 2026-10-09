@@ -39,8 +39,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.663,
-      "compile_ms": 0.35,
+      "cache_lookup_ms": 0.61,
+      "compile_ms": 0.316,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -516,7 +516,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,\n  comparison_storefront_sessions.started_at AS __base_event_time,\n  comparison_storefront_sessions.session_id AS __base_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_storefront_sessions\nINNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  comparison_orders.ordered_at AS __converted_event_time,\n  comparison_orders.order_id AS __converted_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_orders\nINNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND CAST(converted_events.__converted_event_time AS TIMESTAMP) < DATE_ADD(CAST(base_events.__base_event_time AS TIMESTAMP), INTERVAL (14) DAY) AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_14d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH conversion_leaf_1__conversion_base_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_storefront_sessions.started_at AS TIMESTAMP)) AS t,\n  comparison_storefront_sessions.started_at AS __base_event_time,\n  comparison_storefront_sessions.session_id AS __base_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_storefront_sessions\nINNER JOIN comparison_customers ON comparison_storefront_sessions.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_converted_1 AS (\nSELECT\n  comparison_orders.ordered_at AS __converted_event_time,\n  comparison_orders.order_id AS __converted_event_key,\n  comparison_customers.customer_id AS __match_key_1\nFROM comparison_orders\nINNER JOIN comparison_customers ON comparison_orders.customer_id = comparison_customers.customer_id\n),\nconversion_leaf_1__conversion_matches_1 AS (\nSELECT\n  base_events.t AS t,\n  base_events.__base_event_key AS __base_event_key,\n  converted_events.__converted_event_key AS __converted_event_key,\n  ROW_NUMBER() OVER (PARTITION BY base_events.__base_event_key ORDER BY converted_events.__converted_event_time ASC, converted_events.__converted_event_key ASC) AS __match_rank\nFROM conversion_leaf_1__conversion_base_1 AS base_events\nLEFT JOIN conversion_leaf_1__conversion_converted_1 AS converted_events ON converted_events.__converted_event_time >= base_events.__base_event_time AND CAST(converted_events.__converted_event_time AS TIMESTAMP) < DATE_ADD(CAST(base_events.__base_event_time AS TIMESTAMP), INTERVAL (14) DAY) AND base_events.__match_key_1 IS NOT DISTINCT FROM converted_events.__match_key_1\n),\nconversion_leaf_1 AS (\nSELECT\n  matches.t AS t,\n  COUNT(DISTINCT CASE WHEN matches.__converted_event_key IS NOT NULL THEN matches.__base_event_key END) / NULLIF(COUNT(DISTINCT matches.__base_event_key), 0) AS m1\nFROM conversion_leaf_1__conversion_matches_1 AS matches\nWHERE\n  matches.__match_rank = 1\nGROUP BY\n  matches.t\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_session_started_at__month\",\n  base.m1 AS session_to_order_conversion_rate_14d\nFROM conversion_leaf_1 AS base\nORDER BY\n  t ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1030,7 +1030,7 @@
               "t"
             ]
           },
-          "nulls_last": false
+          "nulls_last": true
         }
       ],
       "qualify": [],
@@ -1379,7 +1379,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 3.324,
+  "timing_ms": 3.054,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1432,8 +1432,8 @@
           {
             "relationship_path": [
               "relationship.storefront_sessions_order",
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_customer"
+              "relationship.jaffle_order_customer_history",
+              "relationship.customer_history_customer"
             ],
             "source_entity": "entity.jaffle_storefront_session",
             "target_entity": "entity.jaffle_customer"
@@ -1441,8 +1441,8 @@
           {
             "relationship_path": [
               "relationship.storefront_sessions_order",
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer"
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_customer"
             ],
             "source_entity": "entity.jaffle_storefront_session",
             "target_entity": "entity.jaffle_customer"
@@ -1468,9 +1468,9 @@
           {
             "relationship_path": [
               "relationship.storefront_sessions_order",
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.customer_history_customer"
+              "relationship.jaffle_order_customer_history",
+              "relationship.jaffle_order_lifecycle_customer_history",
+              "relationship.order_lifecycle_customer"
             ],
             "source_entity": "entity.jaffle_storefront_session",
             "target_entity": "entity.jaffle_customer"
@@ -1478,9 +1478,9 @@
           {
             "relationship_path": [
               "relationship.storefront_sessions_order",
-              "relationship.order_to_customer_history",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.order_lifecycle_customer"
+              "relationship.order_lifecycle_order",
+              "relationship.jaffle_order_lifecycle_customer_history",
+              "relationship.customer_history_customer"
             ],
             "source_entity": "entity.jaffle_storefront_session",
             "target_entity": "entity.jaffle_customer"
@@ -1491,6 +1491,16 @@
               "relationship.orders_store",
               "relationship.order_lifecycle_store",
               "relationship.order_lifecycle_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_store",
+              "relationship.order_lifecycle_store",
+              "relationship.jaffle_order_lifecycle_customer_history",
+              "relationship.customer_history_customer"
             ],
             "source_entity": "entity.jaffle_storefront_session",
             "target_entity": "entity.jaffle_customer"
@@ -1508,8 +1518,8 @@
           {
             "relationship_path": [
               "relationship.storefront_sessions_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_to_customer_history",
+              "relationship.orders_store",
+              "relationship.jaffle_order_customer_history",
               "relationship.customer_history_customer"
             ],
             "source_entity": "entity.jaffle_storefront_session",
@@ -1521,16 +1531,6 @@
               "relationship.orders_store",
               "relationship.order_lifecycle_order",
               "relationship.order_lifecycle_customer"
-            ],
-            "source_entity": "entity.jaffle_storefront_session",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_store",
-              "relationship.orders_store",
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer"
             ],
             "source_entity": "entity.jaffle_storefront_session",
             "target_entity": "entity.jaffle_customer"
@@ -1557,8 +1557,8 @@
         "conflicts_with": [
           {
             "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_customer"
+              "relationship.jaffle_order_customer_history",
+              "relationship.customer_history_customer"
             ],
             "rows": [
               {
@@ -1573,8 +1573,8 @@
           },
           {
             "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer"
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_customer"
             ],
             "rows": [
               {
@@ -1605,8 +1605,25 @@
           },
           {
             "relationship_path": [
+              "relationship.jaffle_order_customer_history",
+              "relationship.jaffle_order_lifecycle_customer_history",
+              "relationship.order_lifecycle_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
               "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_to_customer_history",
+              "relationship.jaffle_order_lifecycle_customer_history",
               "relationship.customer_history_customer"
             ],
             "rows": [
@@ -1622,23 +1639,6 @@
           },
           {
             "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.order_lifecycle_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
               "relationship.orders_store",
               "relationship.order_lifecycle_store",
               "relationship.order_lifecycle_customer"
@@ -1693,7 +1693,7 @@
             "relationship_path": [
               "relationship.orders_store",
               "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_to_customer_history",
+              "relationship.jaffle_order_lifecycle_customer_history",
               "relationship.customer_history_customer"
             ],
             "rows": [

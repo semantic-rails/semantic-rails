@@ -21,4 +21,4 @@ SELECT
   base.m1 / NULLIF(base.m2, 0) AS aov_usd
 FROM guarded_base AS base
 ORDER BY
-  aov_usd DESC
+  aov_usd DESC NULLS LAST

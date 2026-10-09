@@ -17,4 +17,4 @@ SELECT
   base.m2 AS max_item_revenue_usd
 FROM leaf_1 AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

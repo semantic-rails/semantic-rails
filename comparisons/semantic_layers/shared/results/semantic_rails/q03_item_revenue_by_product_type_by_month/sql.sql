@@ -23,4 +23,4 @@ SELECT
   base.m1 AS item_revenue_usd
 FROM guarded_base AS base
 ORDER BY
-  item_revenue_usd DESC
+  item_revenue_usd DESC NULLS LAST

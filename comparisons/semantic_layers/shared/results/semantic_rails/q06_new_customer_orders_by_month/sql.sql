@@ -17,4 +17,4 @@ SELECT
   base.m1 AS new_customer_orders
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

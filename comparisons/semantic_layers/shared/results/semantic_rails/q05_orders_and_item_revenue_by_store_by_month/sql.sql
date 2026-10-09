@@ -54,4 +54,4 @@ SELECT
   base.m2 AS item_revenue_usd
 FROM guarded_base AS base
 ORDER BY
-  orders DESC
+  orders DESC NULLS LAST

@@ -50,4 +50,4 @@ SELECT
   base.m1 AS qualifying_orders
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

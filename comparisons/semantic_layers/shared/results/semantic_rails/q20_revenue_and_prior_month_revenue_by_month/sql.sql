@@ -88,4 +88,4 @@ SELECT
   LAG(base.m1, 1) OVER (ORDER BY base.t ASC) AS prior_month_revenue_usd
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST
