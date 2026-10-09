@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .. import operators
 from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
 from ..acceleration.selection import recombine_aggregation
 from ..ast import (
@@ -999,7 +1000,7 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
 
 
 def _validate_metric_predicate_filter_envelope(item: dict[str, Any]) -> None:
-    if str(item.get("op", "is")).strip() in {"is", "="} and item.get("value") is True:
+    if operators.word_of(item.get("op", "is")) == "is" and item.get("value") is True:
         return
     raise SemanticLayerError(
         "INVALID_METRIC_FILTER",

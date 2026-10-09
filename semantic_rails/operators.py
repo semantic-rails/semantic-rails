@@ -122,6 +122,12 @@ def operator_word(raw: Any, *, path: str = "where.op") -> str:
     raise invalid_op(raw, path)
 
 
+def word_of(raw: Any) -> str:
+    """The word for an op the parser already read (a word or an alias); other text as it is."""
+    spelling = _compact(raw)
+    return ALIASES.get(spelling, spelling)
+
+
 def _invalid_value(path: str, message: str, hint: str) -> SemanticLayerError:
     return SemanticLayerError(
         "INVALID_QUERY",
@@ -241,7 +247,7 @@ def exact_complement(word: str, value: Any) -> tuple[str, Any] | None:
 
 def pinned_value(op: str, value: Any) -> tuple[bool, Any]:
     """``(True, v)`` when the condition pins the field to the single value ``v``."""
-    word = ALIASES.get(_compact(op), _compact(op))
+    word = word_of(op)
     if word == "is" and not isinstance(value, (list, tuple)):
         return True, value
     if word == "is" and isinstance(value, (list, tuple)) and len(value) == 1:

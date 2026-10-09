@@ -1828,7 +1828,7 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
     for item in filters:
         field, raw = str(item["field"]), item.get("value")
         literals = [v for v in (raw if isinstance(raw, list) else [raw]) if isinstance(v, str)]
-        op = operators.ALIASES.get(str(item.get("op", "is")).strip().lower(), item.get("op", "is"))
+        op = operators.word_of(item.get("op", "is"))
         if not literals or field not in dimensions or op not in {"is", "not"}:
             continue
         for literal in literals:
@@ -1903,8 +1903,7 @@ def _unknown_rows_kept_warnings(runtime: Runtime, compiled, payload) -> list[dic
     negated = [
         (index, item)
         for index, item in enumerate(where)
-        if not is_child_group(item)
-        and operators.ALIASES.get(str(item.get("op", "")).strip().lower(), item.get("op")) == "not"
+        if not is_child_group(item) and operators.word_of(item.get("op")) == "not"
     ]
     if not negated or not plan.measure_plans:
         return []
