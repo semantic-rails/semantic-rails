@@ -104,10 +104,8 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     excluded = exclusion_regions(text, _time_window(text).spans)
     grouped = {str(item) for item in list(query.get("group_by") or [])}
     referenced = set(_referenced_ids(query))
-    # Singular forms: a value matched in the plural ("upgrades") is carried by a name that
-    # spells it so (Upgrades).
     carried = {
-        _singular(token)
+        token
         for row in _catalog_rows(config)
         if str(getattr(row, "id", "")) in referenced
         for token in _tokens(_core_text(row))
@@ -130,7 +128,7 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
             for domain, value in rows
             for dimension in domain.dimensions
         )
-        if not relevant_filter and {_singular(token) for token in _tokens(phrase)} <= carried:
+        if not relevant_filter and set(_tokens(phrase)) <= carried:
             continue
         said.append(phrase)
         for domain, value in rows:

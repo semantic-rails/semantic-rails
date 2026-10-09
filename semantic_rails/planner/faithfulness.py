@@ -65,6 +65,7 @@ from .time_checks import (
     _time_window_gaps,
 )
 from .time_windows import _time_window
+from .unasked_groupings import _asked_grouping_terms
 from .visibility import visible_object_ids
 
 
@@ -596,6 +597,11 @@ def intent_subject_why(
     and neither the question nor the caller's ``partial_query`` names that
     subject (see ``_base._tied_top``).
 
+    The words of a grouping the question asks for (``_asked_grouping_terms``) name the rows,
+    not the value: a subject that tops the ranking only by them ("store" in "how many
+    customers did each store have" matches a count of storefront sessions) is tied as it is
+    without them.
+
     ``plan`` reports it after every other reason, which says more.
     """
 
@@ -614,13 +620,20 @@ def intent_subject_why(
         or _named_metric(config, text)
     ):
         return None
-    tied, named = _tied_top(
-        config.measures if measure else config.metric_recipes,
-        terms,
-        set(_tokens(_target_focus_text(text))) or terms,
-    )
-    ids = [row.id for row in tied]
-    if len(ids) < 2 or subjects[0] not in ids or getattr(named, "id", None) == subjects[0]:
+    rows = config.measures if measure else config.metric_recipes
+    words = set(_tokens(_target_focus_text(text))) or terms
+    grouped = {
+        form
+        for term in _asked_grouping_terms(config, text)
+        for word in _tokens(term)
+        for form in (word, _singular(word))
+    }
+    for tie_terms, tie_words in ((terms, words), (terms - grouped, words - grouped)):
+        tied, named = _tied_top(rows, tie_terms, tie_words)
+        ids = [row.id for row in tied]
+        if len(ids) >= 2 and subjects[0] in ids and getattr(named, "id", None) != subjects[0]:
+            break
+    else:
         return None
     candidates = " or ".join(f"{row.label} ({row.id})" for row in tied[:5])
     gap = CoverageGap(
