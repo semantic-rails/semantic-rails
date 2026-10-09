@@ -245,35 +245,35 @@ ORDER BY d.mrr {direction}, a.account_id LIMIT {limit}
         (
             "Top 2 accounts by MRR on 2026-10-04",
             2,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0)],
         ),
         (
             "Top 2 accounts by MRR on 2026-10-04?",
             2,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0)],
         ),
         (
             "Which 2 accounts had the most MRR on 2026-10-04?",
             2,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0)],
         ),
         (
             "Top two accounts by MRR on 2026-10-04",
             2,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0)],
         ),
         (
             "Top three accounts by MRR on 2026-10-04",
             3,
-            "DESC",
+            "desc",
             [("a", "Acme Data Co", 500.0), ("d", "Initech", 99.0), ("b", "Globex", 0.0)],
         ),
-        ("Bottom 1 account by MRR on 2026-10-04", 1, "ASC", [("b", "Globex", 0.0)]),
-        ("Which account had the least MRR on 2026-10-04?", 1, "ASC", [("b", "Globex", 0.0)]),
+        ("Bottom 1 account by MRR on 2026-10-04", 1, "asc", [("b", "Globex", 0.0)]),
+        ("Which account had the least MRR on 2026-10-04?", 1, "asc", [("b", "Globex", 0.0)]),
     ],
 )
 def test_a_ranking_keeps_its_count_direction_and_entity(
@@ -288,7 +288,7 @@ def test_a_ranking_keeps_its_count_direction_and_entity(
     assert query["group_by"] == [ACCOUNT_ID, ACCOUNT_NAME]
     assert query["order_by"] == [{"field": "mrr", "direction": direction}]
     assert query["limit"] == limit
-    assert "metric_filters" not in query
+    assert "having" not in query and not any("entity" in row for row in query.get("where", []))
     rows = runtime.query(query)["rows"]
     actual = [(row[ACCOUNT_ID], row[ACCOUNT_NAME], row["mrr"]) for row in rows]
     # The internal QA Sandbox (99) is outside the metric, so no tie reaches the cut.

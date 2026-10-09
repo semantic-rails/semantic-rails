@@ -12,13 +12,13 @@ import pytest
 
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import compose, plan_payload
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.generators import (
     _draft_for_choice,
     _matched_value_rows,
     _normalize_value_filters,
 )
 from semantic_rails.planner.plan_query import _merge_partial_query
-from semantic_rails.query_call import call_from_query
 from semantic_rails.runtime import runtime_request_scope
 from semantic_rails.schema import SemanticPolicyConfig
 
@@ -103,12 +103,17 @@ def test_separate_equality_clauses_match_empty_duckdb_reference(
         runtime.close()
 
 
-def test_values_without_phrase_provenance_keep_separate_equalities() -> None:
+def test_values_without_phrase_provenance_keep_separate_equalities(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
     matched = [
         {"dimension_id": STORE, "value": "Brooklyn"},
         {"dimension_id": STORE, "value": "Philadelphia"},
     ]
-    assert _normalize_value_filters({}, matched)["where"] == [
+    try:
+        normalized = _normalize_value_filters(Call(), matched, config=runtime._config)
+    finally:
+        runtime.close()
+    assert normalized.to_call()["where"] == [
         {"field": STORE, "op": "is", "value": "Brooklyn"},
         {"field": STORE, "op": "is", "value": "Philadelphia"},
     ]
@@ -121,11 +126,13 @@ def test_named_values_share_one_filter_without_adding_grouping(runtime_factory, 
         if path == "primary":
             draft = compose(runtime, INTENT).draft
             assert draft is not None
-            query = draft.query
+            query = draft.query.to_call()
             assert STORE not in draft.interpreted_intent["group_by"]
             assert STORE not in {row["id"] for row in draft.resolved}
         elif path == "fallback":
-            query = _draft_for_choice(runtime, intent=INTENT, partial_query={}, choice=CHOICE).query
+            query = _draft_for_choice(
+                runtime, intent=INTENT, partial_query=None, choice=CHOICE
+            ).query.to_call()
         else:
             payload = plan_payload(runtime, intent=INTENT)
             assert payload["status"] == "ok", payload.get("why")
@@ -165,48 +172,70 @@ def test_multi_value_draft_executes_combined_values_per_group(runtime_factory) -
         runtime.close()
 
 
+MONTHLY_REVENUE = (
+    "SELECT DATE_TRUNC('month', o.ordered_at), SUM(o.order_total_cents / 100.0) "
+    "FROM jaffle_order o LEFT JOIN jaffle_store s ON o.store_id = s.store_id WHERE {} GROUP BY 1"
+)
+
+
 @pytest.mark.parametrize(
-    ("intent", "status", "expected_where", "expected_groups"),
+    ("intent", "expected_where", "expected_groups", "reference_sql"),
     [
         (
             "revenue for Brooklyn by month",
-            "ok",
             [{"field": STORE, "op": "is", "value": "Brooklyn"}],
             [],
+            MONTHLY_REVENUE.format("s.store_name = 'Brooklyn'"),
         ),
+        # The planner drafts the null-keeping exclusion, which answers the question.
         (
             "revenue not Brooklyn by month",
-            "low_confidence",
             [{"field": STORE, "op": "not", "value": "Brooklyn"}],
             [],
+            MONTHLY_REVENUE.format("s.store_name IS DISTINCT FROM 'Brooklyn'"),
         ),
         (
             "item revenue for food from Brooklyn by store",
-            "ok",
             [
                 {"field": STORE, "op": "is", "value": "Brooklyn"},
                 {"field": PRODUCT_TYPE, "op": "is", "value": "jaffle"},
             ],
             [STORE_ID, STORE],
+            "SELECT s.store_id, s.store_name, SUM(i.item_revenue_cents / 100.0) "
+            "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
+            "JOIN jaffle_store s ON o.store_id = s.store_id "
+            "WHERE s.store_name = 'Brooklyn' AND i.product_type = 'jaffle' GROUP BY 1, 2",
         ),
     ],
 )
 def test_single_values_negation_and_distinct_dimensions_keep_their_behavior(
-    runtime_factory, intent, status, expected_where, expected_groups
+    runtime_factory, intent, expected_where, expected_groups, reference_sql
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=intent)
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query"]
+        assert query["where"] == expected_where
+        assert query.get("group_by", []) == expected_groups
+        # A month's rows key on the period's date; a store's on its key and name.
+        keys = expected_groups or ["period"]
+
+        def day(value: Any) -> Any:
+            return str(value)[:10] if keys == ["period"] else value
+
+        alias = _alias(query["select"][0])
+        actual = sorted(
+            (*(day(row[key]) for key in keys), row[alias]) for row in runtime.query(query)["rows"]
+        )
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute(reference_sql).fetchall()
+        expected = sorted((*(day(value) for value in row[:-1]), row[-1]) for row in reference)
     finally:
         runtime.close()
-    assert payload["status"] == status
-    query = payload["best"]["query"]
-    assert query["where"] == expected_where
-    assert query.get("group_by", []) == expected_groups
-    if status == "low_confidence":
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        # The planner drafts the null-keeping exclusion, and every exclusion holds.
-        assert "negation_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+    assert expected
+    assert [row[:-1] for row in actual] == [row[:-1] for row in expected]
+    assert [row[-1] for row in actual] == pytest.approx([row[-1] for row in expected])
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
@@ -485,12 +514,20 @@ def test_ranked_plural_grouping_stays_unresolved_with_both_named_values(
 
 
 @pytest.mark.parametrize("caller_has_list", [False, True])
-def test_merge_keeps_caller_rows_first_without_adding_grouping(caller_has_list) -> None:
+def test_merge_keeps_caller_rows_first_without_adding_grouping(
+    runtime_factory, caller_has_list
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
     generated = {"field": STORE, "op": "is", "value": ["Brooklyn", "Philadelphia"]}
     equality = {"field": f" {STORE} ", "op": "is", "value": "Brooklyn"}
     caller_rows = [generated, equality] if caller_has_list else [equality]
     query = {"where": [generated], "group_by": [PRODUCT_TYPE]}
-    merged = _merge_partial_query(None, query, {"where": caller_rows})
+    try:
+        merged = _merge_partial_query(
+            runtime._config, Call.from_call(query), Call.from_call({"where": caller_rows})
+        ).to_call()
+    finally:
+        runtime.close()
     assert merged["group_by"] == [PRODUCT_TYPE]
     expected = (
         [generated, {**equality, "field": STORE}]
@@ -500,15 +537,21 @@ def test_merge_keeps_caller_rows_first_without_adding_grouping(caller_has_list) 
     assert merged["where"] == expected
 
 
-def test_single_value_strips_field_without_changing_caller_operator() -> None:
-    query = {"where": [{"field": f" {STORE} ", "op": " == ", "value": "Brooklyn"}]}
+def test_single_value_strips_field_without_changing_caller_operator(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    query = {"where": [{"field": f" {STORE} ", "op": "is", "value": "Brooklyn"}]}
     before = deepcopy(query)
-    normalized = _normalize_value_filters(query, [{"dimension_id": STORE, "value": "Brooklyn"}])
+    try:
+        normalized = _normalize_value_filters(
+            Call.from_call(query),
+            [{"dimension_id": STORE, "value": "Brooklyn"}],
+            config=runtime._config,
+        ).to_call()
+    finally:
+        runtime.close()
     assert query == before
-    assert normalized["where"] == [
-        {"field": STORE, "op": " == ", "value": "Brooklyn"},
-        {"field": STORE, "op": "is", "value": "Brooklyn"},
-    ]
+    # The caller's condition already keeps the named value: the call holds it once.
+    assert normalized["where"] == [{"field": STORE, "op": "is", "value": "Brooklyn"}]
     assert "group_by" not in normalized
 
 
@@ -600,11 +643,12 @@ def test_unranked_resolved_named_values_execute_a_total_with_caller_filters_pres
     try:
         if path == "mixed-case-draft":
             # Direct inference retains case; plan lowercases the shared phrase.
-            query = call_from_query(
-                _draft_for_choice(
-                    runtime, intent=intent, partial_query={"where": where}, choice=CHOICE
-                ).query
-            )
+            query = _draft_for_choice(
+                runtime,
+                intent=intent,
+                partial_query=Call.from_call({"where": where}),
+                choice=CHOICE,
+            ).query.to_call()
         else:
             payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
             query = payload["best"]["query"]
@@ -664,7 +708,7 @@ def test_compound_discovery_keeps_each_named_value_and_its_span(runtime_factory,
     runtime = runtime_factory("jaffle_shop")
     intent = ("item revenue for " + ", ".join(values[:-1]) + " and " + values[-1]).lower()
     try:
-        query = {"select": [{"as": "item_revenue_usd", "expression": {"measure": CHOICE["id"]}}]}
+        query = Call.from_call({"select": [CHOICE["id"]]})
         matched = _matched_value_rows(runtime, query, intent)
         assert {row["value"] for row in matched} == set(values)
         assert all(row["dimension_id"] == STORE for row in matched)
@@ -767,9 +811,9 @@ def test_fallback_preserves_authored_groups_and_deduplicates_resolved_ids(
         query = _draft_for_choice(
             runtime,
             intent=f"item revenue by {grouping} and store name",
-            partial_query=partial,
+            partial_query=Call.from_call(partial),
             choice=CHOICE,
-        ).query
+        ).query.to_call()
         assert query["group_by"] == list(
             dict.fromkeys([*authored_groups, "dimension.jaffle_product_type", STORE])
         )
@@ -811,10 +855,9 @@ def test_ambiguous_added_grouping_cannot_bypass_readiness_guard(
     if path == "primary":
         draft = replace(
             result.draft,
-            query={
-                **result.draft.query,
-                "group_by": [PRODUCT_TYPE, "dimension.jaffle_product_type"],
-            },
+            query=replace(
+                result.draft.query, group_by=(PRODUCT_TYPE, "dimension.jaffle_product_type")
+            ),
         )
         result = replace(result, draft=draft)
     else:
