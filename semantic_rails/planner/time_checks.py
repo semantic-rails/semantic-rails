@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from ..clock import parse_now
 from ..compiler import bind_query
 from ..compiler_parts.sql_lowering import _snapshot_series_columns
+from ..config_parts.measure_governance import _reachable_entities
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
 from ..query_call import REFERENCE_PREFIXES
@@ -316,6 +317,29 @@ def _multi_series_stocks(config: Any, query: Call) -> dict[str, bool]:
     return stocks
 
 
+def _reached_entities(config: Any, query: Call) -> set[str]:
+    """The entities the draft's measures (directly, or through its metrics) reach."""
+    measures = {row.id: row for row in config.measures}
+    metrics = {row.id: row for row in config.metric_recipes}
+    ids = set(_referenced_ids(query))
+    for metric_id in ids & set(metrics):
+        ids |= {ref for ref in _strings(expr_to_dict(metrics[metric_id].expression))}
+    reached: set[str] = set()
+    for measure_id in ids & set(measures):
+        reached |= _reachable_entities(config, measures[measure_id].entity)
+    return reached
+
+
+def _strings(node: Any) -> set[str]:
+    if isinstance(node, str):
+        return {node}
+    if isinstance(node, dict):
+        return set().union(*(_strings(value) for value in node.values()))
+    if isinstance(node, list):
+        return set().union(*(_strings(value) for value in node))
+    return set()
+
+
 def _fiscal_calendar_gaps(config: Any, text: str, query: Call) -> list[CoverageGap]:
     """The question counts time in fiscal periods, which this release's calls don't bucket on.
 
@@ -334,14 +358,16 @@ def _fiscal_calendar_gaps(config: Any, text: str, query: Call) -> list[CoverageG
     time = _time_block(query)
     rolling = _TO_DATE_OR_ROLLING_RE.search(lowered) is not None
     scoped = not _FISCAL_RE.search(_FISCAL_BUCKET_RE.sub(" ", lowered)) or bool(time.window)
+    # A fiscal-period column the draft's measures reach (not a calendar they can't join).
+    reached = _reached_entities(config, query)
     named = {
         row.id
         for row in visible_dimensions(config)
-        if "fiscal" in _tokens(f"{row.id} {row.name} {row.label}")
+        if "fiscal" in _tokens(f"{row.id} {row.name} {row.label}") and row.entity in reached
     }
     bucketed = (
         # A day is a day on any calendar, unless the question asks for fiscal buckets.
-        (time.grain == "day" and not _FISCAL_BUCKET_RE.search(lowered))
+        (_one_day_read(time) and not _FISCAL_BUCKET_RE.search(lowered))
         or bool(named & set(query.group_by))
     )
     filtered = not time.grain and bool(named & set(_referenced_ids(query)))
