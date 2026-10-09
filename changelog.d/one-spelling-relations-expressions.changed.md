@@ -23,6 +23,9 @@
     `attributed_relation:`, or a key's `left:` and `right:`), and `lookback` `value:` (not
     `max:`). `{source: <relation>}`, `{where: [...]}` and `{union_all: [...]}` stay as short
     forms, and a key starting with `_` beside a step's kind is an annotation.
+  - A predicate row (a row with `field:`) in a `where` step, or in the `where:` of a
+    `semi_join`, `anti_join` or `exclude` step, takes `field`, `op` and `value` only; any
+    other key, such as `operator:`, is refused instead of filtering with `op` defaulted to `=`.
   - `semantic-rails project upgrade` (rule `expression-arithmetic`) also rewrites the retired
     expression spellings in a measure's `expr:` and in relation steps.
   - A graph relationship's `cardinality:` is `many_to_one`, `one_to_many`, `one_to_one` or

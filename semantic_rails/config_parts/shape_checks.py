@@ -242,6 +242,8 @@ _RELATION_BLOCK_KEYS: dict[str, frozenset[str]] = {
     "attribution key": frozenset({"base", "attributed", "transform"}),
     "lookback": frozenset({"unit", "value"}),
     "union branch": frozenset({"relation", "columns"}),
+    # A `where` row with `field` is a predicate; any other row is an expression.
+    "predicate": frozenset({"field", "op", "value"}),
 }
 _CAVEAT_KEYS: frozenset[str] = frozenset(
     {
@@ -1005,11 +1007,20 @@ def _check_relation_body(kind: str, body: Any, *, label: str, errors: list[str])
         for alias, spec in raw.items() if isinstance(raw, dict) else ():
             check(spec, "aggregate", f"{where} aggregate {alias!r}")
 
+    def check_predicates(raw: Any, where: str) -> None:
+        for index, row in enumerate(_listed(raw)):
+            if isinstance(row, dict) and "field" in row:
+                check(row, "predicate", f"{where} predicate {index}")
+
     mapping = body if isinstance(body, dict) else {}
     named = RELATION_STEP_KEYS[kind] | set(_RELATION_RENAMED_KEYS.get(kind, {}))
     direct = kind in {"select", "window"} and not named & set(mapping)
     if not direct:
         check(body, kind, label)
+    if kind == "where":
+        check_predicates(mapping.get("predicates") if isinstance(body, dict) else body, label)
+    if kind in {"semi_join", "anti_join", "exclude"}:
+        check_predicates(mapping.get("where"), f"{label} where")
     if kind == "group_by":
         check_aggregates(mapping.get("aggregates"), label)
     if kind == "join":

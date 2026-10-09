@@ -352,6 +352,46 @@ def test_an_annotation_beside_a_step_kind_changes_nothing(tmp_path):
     assert "FROM shop_order AS src" in _relation_sql(plain)
 
 
+ROW = {"field": "status", "operator": "!=", "value": "cancelled"}
+
+
+# A predicate row is read as `field`, `op` and `value` only, so a row the lowering would read
+# as `status = 'cancelled'` refuses instead.
+@pytest.mark.parametrize(
+    ("step", "where"),
+    [
+        ({"where": [ROW]}, "step 1 where predicate 0"),
+        ({"where": {"predicates": [ROW]}}, "step 1 where predicate 0"),
+        ({"where": {"predicates": ROW}}, "step 1 where predicate 0"),
+        *(
+            ({kind: {**JOIN, "where": [ROW]}}, f"step 1 {kind} where predicate 0")
+            for kind in ("semi_join", "anti_join", "exclude")
+        ),
+    ],
+    ids=["where-list", "where-predicates", "where-single-row", "semi_join", "anti_join", "exclude"],
+)
+def test_an_unread_predicate_row_key_is_refused(tmp_path, step, where):
+    with pytest.raises(SemanticLayerError) as exc:
+        _load_with(tmp_path, relations={"recent": {"steps": [SOURCE, step]}})
+    assert exc.value.code == "INVALID_CONFIG"
+    assert f"{where} has unknown key 'operator'" in str(exc.value)
+    assert "Allowed keys: field, op, value" in str(exc.value)
+
+
+def test_predicate_and_expression_rows_still_load_and_filter(tmp_path):
+    def sql(name: str, row: object) -> str:
+        source = {"source": {"relation": "shop_order", "columns": ["customer_id", "status"]}}
+        steps = [source, {"where": [row]}, {"semi_join": {**JOIN, "where": [row]}}]
+        return _relation_sql(_load_with(tmp_path / name, relations={"recent": {"steps": steps}}))
+
+    predicate = sql("predicate", {"field": "status", "op": "!=", "value": "cancelled"})
+    assert "WHERE\n  src.status != 'cancelled'\n" in predicate
+    assert "AND \"right\".status != 'cancelled'\n" in predicate
+    expression = sql("expression", "status != 'cancelled'")
+    assert "WHERE\n  (src.status <> 'cancelled')\n" in expression
+    assert "AND (\"right\".status <> 'cancelled')\n" in expression
+
+
 @pytest.mark.parametrize("step", [{}, {"_note": "x"}], ids=["empty", "annotation-only"])
 def test_a_step_naming_no_kind_is_refused(tmp_path, step):
     with pytest.raises(SemanticLayerError) as exc:
