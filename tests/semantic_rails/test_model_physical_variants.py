@@ -1061,8 +1061,10 @@ def test_noncanonical_rollups_are_refused(tmp_path: Path, single_file, location,
         _write_yaml(source, raw)
     else:
         source = package
+        # graph.yml keeps the graph; package.yml declaring it too would be refused.
         _write_yaml(
-            package / "package.yml", {key: value for key, value in raw.items() if key != "models"}
+            package / "package.yml",
+            {key: value for key, value in raw.items() if key not in ("models", "graph")},
         )
         _write_yaml(package / "models" / "orders.yml", {"model": raw["models"]["orders"]})
     with pytest.raises(SemanticLayerError, match=re.escape(error)) as exc:

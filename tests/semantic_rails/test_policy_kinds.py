@@ -258,6 +258,8 @@ def test_directory_package_rejects_invalid_policy(tmp_path, starter, strict, kin
     raw = yaml.safe_load(package_file.read_text(encoding="utf-8"))
     graph = raw.pop("graph")
     models = raw.pop("models")
+    # policies.yml holds the policies below; package.yml declaring them too would be refused.
+    raw.pop("semantic_policies")
     for spec in graph["entities"].values():
         spec["model"] = next(
             key for key, model in models.items() if model["grain"] == [spec["key"]]
