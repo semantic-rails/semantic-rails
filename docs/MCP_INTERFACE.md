@@ -277,8 +277,9 @@ A draft that validates can still leave out part of the question. `plan` returns
   the metric is one aggregate of the measure through a filter, bare or inside
   `COALESCE(<aggregate>, 0)`, and the draft has no time block (the metric is read over all
   time) or one on the metric's clock; never to a caller's `select`. A part of a compound
-  question and a semi-additive measure swap only to the bare form, and a compound part only
-  on the metric's clock. Without
+  question and a semi-additive measure swap only to the bare form (for a semi-additive
+  measure, a plain aggregate with a `filter`, not a `scoped_aggregate`), and a compound part
+  only on the metric's clock. Without
   `schema_strict`, the flag also suppresses auto-publishing a metric of the measure's own name.
   When the question names no governing metric, a published measure is
   still held while a visible metric narrows its rows: an aggregate in that metric, over this

@@ -1769,7 +1769,9 @@ or the catalog fallback, before validation and readiness, and only when the call
 filter reads, and the draft has no time block (the metric is then read over all time) or one
 on the metric's own clock. Readiness then decides the swapped draft like any other. A part of
 a compound question ("calls and callers") and a semi-additive measure swap only to the bare
-governed form, and a compound part only on the metric's own clock.
+governed form, and a compound part only on the metric's own clock. For a semi-additive measure
+that form is a plain aggregate with a `filter` (not a `scoped_aggregate`), the one form its
+read day is shaped for.
 
 ### Long-tail kind — `derived` (expression AST)
 
