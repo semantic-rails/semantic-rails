@@ -32,7 +32,6 @@ from .compiler_parts.sql_lowering import _stock_clock_key_gap, _stock_snapshot_r
 from .compiler_parts.temporal import _expr_leaf_temporal_role_sets
 from .config import (
     SEED_KIND_EXTERNAL,
-    _merge_package_dir,
     get_package_path,
     load_package_config,
     package_root_for_source,
@@ -41,8 +40,6 @@ from .config_parts.shape_checks import (
     _METRIC_KEYS,
     _SEGMENT_KEYS,
     _VALID_COMPILED_DIMENSION_KINDS,
-    _check_package_shapes,
-    _check_typed_field_enums,
     add_error,
 )
 from .diagnostics import (
@@ -215,22 +212,20 @@ def _validate_runtime_package_file(source_path: Path) -> list[str]:
     raw = _load_yaml_safe(source_path, errors)
     if expect_mapping(raw, source_path.as_posix(), errors) is None:
         return errors
-    # Single-file parity: run the same raw-YAML authoring checks the
-    # directory validator runs (unknown keys, list-typed fields, enum
-    # values) before attempting the full load, so shape mistakes surface
-    # with targeted messages even when the load itself fails.
-    _check_package_shapes(raw, path_label=source_path.as_posix(), errors=errors)
-    raw_models = raw.get("models")
-    if isinstance(raw_models, dict):
-        _check_typed_field_enums(source_path.as_posix(), raw_models, errors)
     try:
         config = load_package_config(str(source_path))
     except Exception as exc:
-        if errors and isinstance(exc, SemanticLayerError) and exc.details.get("unknown_keys"):
-            return errors
-        add_error(errors, f"{source_path}: failed to load package config: {exc}")
-        return errors
+        return _load_failure(errors, source_path, exc)
     errors.extend(_compiled_package_errors(config, source_path))
+    return errors
+
+
+def _load_failure(errors: list[str], path: Path, exc: Exception) -> list[str]:
+    """The authoring errors loading refused the package for, one per line, or the failure."""
+    if isinstance(exc, SemanticLayerError) and exc.details.get("errors"):
+        errors.extend(exc.details["errors"])
+    else:
+        add_error(errors, f"{path}: failed to load package config: {exc}")
     return errors
 
 
@@ -276,10 +271,7 @@ def _validate_runtime_package_dir(path: Path) -> list[str]:
     try:
         config = load_package_config(str(path))
     except Exception as exc:
-        if errors and isinstance(exc, SemanticLayerError) and exc.details.get("unknown_keys"):
-            return errors
-        add_error(errors, f"{path}: failed to load package config: {exc}")
-        return errors
+        return _load_failure(errors, path, exc)
 
     if schema_version == 1 and config.package.package_id != path.name:
         add_error(
@@ -535,29 +527,6 @@ def _validate_split_package(
     if any("aliases" in doc for doc in alias_docs if isinstance(doc, dict)):
         add_error(errors, f"{path}: package authoring should not use a top-level aliases registry")
 
-    # Always-on enum checks for typed fields. A typo in `kind:` (e.g.
-    # `catagorical` for `categorical`) would otherwise be silently stored
-    # and yield a broken-but-loadable package — the worst class of
-    # authoring bug. Reject unknown values with a clear list of options.
-    _check_typed_field_enums(str(path), models, errors)
-
-    # Authoring-shape checks (unknown keys, wrong-typed fields) on the
-    # assembled blocks. Metric/segment specs come from the package's
-    # metrics/ and segments/ trees.
-    metrics_raw = _load_metric_files(path, errors)
-    segments_raw = _load_segment_files(path, errors)
-    _check_package_shapes(
-        {
-            "package": package_root.get("package"),
-            "graph": graph_root.get("graph"),
-            "models": models,
-            **_loader_metrics_and_segments(path, errors),
-        },
-        path_label=str(path),
-        errors=errors,
-        top_level=False,
-    )
-
     # Strict-mode raw-YAML checks (gated behind package.schema_strict: true).
     if bool(package.get("schema_strict", False)):
         _check_strict_raw_yaml(
@@ -566,39 +535,11 @@ def _validate_split_package(
             graph_root,
             models,
             errors,
-            metrics=metrics_raw,
-            segments=segments_raw,
+            metrics=_load_metric_files(path, errors),
+            segments=_load_segment_files(path, errors),
         )
 
     return errors
-
-
-def _loader_metrics_and_segments(path: Path, errors: list[str]) -> dict[str, Any]:
-    """The metric and segment specs the loader reads from a package directory.
-
-    Uses the loader's own source capture and merge, so the shape checks see every
-    supported layout (specs in package.yml, root metrics.yml and segments.yml, and
-    files under metrics/ and segments/: a mapping, a `metric:`/`segment:` wrapper or
-    a bare spec), skip the directories the loader skips, and check the copy the
-    loader keeps when a key is defined twice. If the merge fails, that is an error:
-    the checks can't run, even when a later load succeeds.
-    """
-    try:
-        source = capture_package_source(path)
-        merged = _merge_package_dir(source.source_path, captured=source)
-    except (
-        SemanticLayerError,
-        yaml.YAMLError,
-        OSError,
-        TypeError,
-        ValueError,
-        AttributeError,
-    ) as exc:
-        add_error(
-            errors, f"{path}: can't read the metric and segment specs to check their keys: {exc}"
-        )
-        return {"metrics": {}, "segments": {}}
-    return {"metrics": merged.get("metrics"), "segments": merged.get("segments")}
 
 
 def _load_metric_files(

@@ -75,7 +75,7 @@ def package(tmp_path):
   relation: numbers
   entities: {row: {}}
   dimensions:
-    text_value: {column: text_value, kind: string}
+    text_value: {column: text_value, kind: categorical}
     amount: {column: amount, kind: number}
   measures:
     amount: {kind: aggregate, expr: amount, accumulation: {kind: flow}}
@@ -351,6 +351,7 @@ def test_package_cast_and_call_preserve_other_check_errors(package):
     model["model"]["measures"]["amount"]["expr"] = call(
         "ROUND", {"kind": "column", "column": "text_value"}, literal(1)
     )
+    model["model"]["dimensions"]["text_value"]["kind"] = "string"
     path.write_text(yaml.safe_dump(model))
     errors = validate_runtime_package(package)
     assert errors and all(isinstance(error, str) for error in errors)

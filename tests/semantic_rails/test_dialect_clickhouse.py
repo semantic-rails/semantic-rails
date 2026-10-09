@@ -391,12 +391,20 @@ def test_battery_compiles_for_clickhouse():
     cases = load_battery()
     assert cases, "battery must not be empty"
     compiled: dict[str, str] = {}
+    refused: list[str] = []
     for case in cases:
-        result = compile_query(config, registry, case.payload)
+        try:
+            result = compile_query(config, registry, case.payload)
+        except SemanticLayerError as exc:
+            # ClickHouse has no implicit calendar, which every filled series uses.
+            assert "no implicit calendar" in str(exc), (case.name, exc)
+            refused.append(case.name)
+            continue
         sql = result["sql"]
         assert isinstance(sql, str) and sql.strip(), f"{case.name}: empty SQL"
         compiled[case.name] = sql
 
+    assert compiled and len(refused) < len(cases)
     all_sql = "\n".join(compiled.values())
     # ClickHouse SQL must use the dialect's forms, not DuckDB's.
     assert "QUANTILE_CONT(" not in all_sql

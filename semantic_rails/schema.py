@@ -353,7 +353,6 @@ class SemanticCaveatConfig:
     severity: str = "warning"
     owner: str = ""
     references: list[dict[str, Any]] = field(default_factory=list)
-    config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
