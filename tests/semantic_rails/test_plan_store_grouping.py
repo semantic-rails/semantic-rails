@@ -309,19 +309,33 @@ def test_store_ranking_with_shared_name_matches_reference_sql_or_withholds_execu
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
-def test_preferred_store_draft_is_never_execute_ready(runtime_factory, monkeypatch, path) -> None:
+def test_store_answers_by_its_key_and_name_on_both_paths(
+    runtime_factory, monkeypatch, path
+) -> None:
+    # "store" names the Store entity: never a customer's preferred store, found by its words.
     runtime = runtime_factory("jaffle_shop")
     try:
         _force_fallback(runtime, monkeypatch, "revenue by store", path)
         payload = plan_payload(runtime, intent="revenue by store")
-        assert payload["best"]["query_ir"]["group_by"] == [
-            "dimension.jaffle_customer_history_preferred_store_id"
-        ]
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
-        assert "execute" not in payload["next"].get("ready_for", [])
+        query = payload["best"]["query_ir"]
+        assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
+        assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"]["ready_for"]
+        alias = query["select"][0]["as"]
+        actual = sorted(
+            (row["dimension.jaffle_store_id"], row["dimension.jaffle_store_name"], row[alias])
+            for row in typed_rows(runtime.query(query))
+        )
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = connection.execute(
+                "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0) "
+                "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
+                "GROUP BY 1, 2 ORDER BY 1, 2"
+            ).fetchall()
     finally:
         runtime.close()
+    assert [row[:2] for row in actual] == [row[:2] for row in expected]
+    assert [float(row[2]) for row in actual] == pytest.approx([float(row[2]) for row in expected])
 
 
 @pytest.mark.parametrize(
