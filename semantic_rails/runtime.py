@@ -651,6 +651,21 @@ def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
     return collect_object_references(query.to_dict())
 
 
+# A seed call's keys in the engine's names (``having`` and entity filters read as
+# ``metric_filters``, ``routes`` as ``route_decisions``).
+_SEED_KEYS = {
+    "select": "select",
+    "group_by": "group_by",
+    "where": "where",
+    "having": "metric_filters",
+    "time": "time",
+    "order_by": "order_by",
+    "limit": "limit",
+    "routes": "route_decisions",
+    "observation_scope": "observation_scope",
+}
+
+
 def _context_mapping(context: Any) -> dict[str, Any]:
     """A request's identity as the engine's policy mapping (empty for a local caller)."""
     if context is None:
@@ -1776,15 +1791,14 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
     for item in filters:
         field, raw = str(item["field"]), item.get("value")
         literals = [v for v in (raw if isinstance(raw, list) else [raw]) if isinstance(v, str)]
-        op = str(item.get("op", "=")).upper()
-        if not literals or field not in dimensions or op not in {"=", "IN"}:
+        if not literals or field not in dimensions or item.get("op", "is") != "is":
             continue
         for literal in literals:
             if (field, literal) in checked:
                 continue
             checked.add((field, literal))
             found = (
-                values(field, [{"field": field, "op": "=", "value": literal}], 1)
+                values(field, [{"field": field, "op": "is", "value": literal}], 1)
                 if dimensions[field].groupable
                 else None
             )
@@ -2788,6 +2802,22 @@ class Runtime:
         if notes:
             payload["_call_notes"] = notes
         return payload
+
+    def engine_seed(self, seed: Any, *, now: Any = None) -> dict[str, Any]:
+        """A caller's seed call (plan, discover, inspect, build-options, valid-values) in the
+        engine's form: only the keys the caller set, with the request's identity and ``now``."""
+        call = dict(seed or {})
+        context = dict(call.pop("policy_context", None) or {})
+        instant = now if now not in (None, "") else context.pop("now", None)
+        internal = self.engine_payload(call, now=instant, context=context or None, partial=True)
+        kept = {_SEED_KEYS[key] for key in call if key in _SEED_KEYS}
+        if any(isinstance(item, dict) and "having" in item for item in call.get("where") or []):
+            kept.add("metric_filters")
+        return {
+            key: value
+            for key, value in internal.items()
+            if key in kept or key in {"policy_context", "verbosity", "sql_profile"}
+        }
 
     def _default_clock(self, object_id: str) -> str:
         try:

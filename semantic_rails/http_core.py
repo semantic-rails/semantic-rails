@@ -547,7 +547,7 @@ class SemanticHTTPService:
                     self.runtime,
                     terms=str(payload.get("terms", "")),
                     kinds=coerce_string_list(payload.get("kinds"), field="kinds"),
-                    partial_query=query_payload(payload)
+                    partial_query=self.runtime.engine_seed(query_payload(payload))
                     if payload.get("query") or payload.get("policy_context")
                     else None,
                     stage=str(payload.get("stage", "")),
@@ -562,7 +562,7 @@ class SemanticHTTPService:
                 **inspect_payload(
                     self.runtime,
                     object_id=str(payload.get("object_id", "")),
-                    partial_query=query_payload(payload)
+                    partial_query=self.runtime.engine_seed(query_payload(payload))
                     if payload.get("query") or payload.get("policy_context")
                     else None,
                     verbosity=str(payload.get("verbosity", "compact")),
@@ -573,7 +573,7 @@ class SemanticHTTPService:
                 "ok": True,
                 **build_options_payload(
                     self.runtime,
-                    partial_query=query_payload(payload),
+                    partial_query=self.runtime.engine_seed(query_payload(payload)),
                     focus_terms=str(payload.get("focus_terms", "")),
                     focus_object_id=str(payload.get("focus_object_id", "")),
                     step=str(payload.get("step", "")),
@@ -632,7 +632,7 @@ class SemanticHTTPService:
                 **valid_values_payload(
                     self.runtime,
                     dimension_id=str(payload.get("dimension_id", "")),
-                    query=query_payload(payload)
+                    query=self.runtime.engine_seed(query_payload(payload))
                     if payload.get("query") or payload.get("policy_context")
                     else None,
                     search=str(payload.get("search", "")),
