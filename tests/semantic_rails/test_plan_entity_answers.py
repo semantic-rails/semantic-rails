@@ -357,6 +357,22 @@ def test_each_groups_by_the_name_it_names(
     )
 
 
+# A question listing accounts and one ranking them: its reference SQL, and its value's alias.
+_ACCOUNT_ROWS = {
+    "Which accounts closed last week?": (_EVENTS_LAST_WEEK.format(kind="close"), "closures"),
+    "Top 2 accounts by MRR on 2026-10-04": (_MRR_ON.format(direction="DESC", limit=2), "mrr"),
+}
+
+
+def _account_rows(runtime: Runtime, query: dict[str, Any], question: str) -> None:
+    sql, alias = _ACCOUNT_ROWS[question]
+    rows = runtime.query(query)["rows"]
+    assert [(row[ACCOUNT_ID], row[alias]) for row in rows] == [
+        (key, value) for key, _name, value in _reference(runtime, sql)
+    ]
+
+
+@pytest.mark.parametrize("question", list(_ACCOUNT_ROWS))
 @pytest.mark.parametrize(
     ("extra", "group_by", "assumed"),
     [
@@ -381,18 +397,15 @@ def test_without_a_display_the_key_stands_alone_with_an_assumption(
     extra: dict[str, Any],
     group_by: list[str],
     assumed: bool,
+    question: str,
 ) -> None:
     runtime = subscriptions(display=None, account_dimensions=extra)
-    payload = _plan(runtime, "Which accounts closed last week?")
+    payload = _plan(runtime, question)
     query = _ready(payload)
     assert query["group_by"] == group_by
     line = "Account has no display name, so its rows show its key, Account Id."
     assert (line in payload.get("assumptions", [])) is assumed
-    rows = runtime.query(query)["rows"]
-    assert [(row[ACCOUNT_ID], row["closures"]) for row in rows] == [
-        (key, count)
-        for key, _name, count in _reference(runtime, _EVENTS_LAST_WEEK.format(kind="close"))
-    ]
+    _account_rows(runtime, query, question)
 
 
 def test_who_reaching_two_entities_with_a_display_asks_which(
@@ -434,8 +447,9 @@ def test_a_list_or_ranking_plan_cannot_read_is_held(
     assert "execute" not in payload["next"].get("ready_for", [])
 
 
+@pytest.mark.parametrize("question", list(_ACCOUNT_ROWS))
 def test_a_hidden_display_is_blank_and_the_entity_stays(
-    subscriptions: Callable[..., Runtime],
+    subscriptions: Callable[..., Runtime], question: str
 ) -> None:
     runtime = subscriptions()
     hidden = SemanticPolicyConfig(
@@ -448,13 +462,11 @@ def test_a_hidden_display_is_blank_and_the_entity_stays(
     account = next(row for row in view.entities if row.id == "entity.subscriptions_account")
     assert account.display == ""
     assert ACCOUNT_ID in {row.id for row in view.dimensions}
-    payload = _plan(runtime, "Which accounts closed last week?")
+    payload = _plan(runtime, question)
     query = _ready(payload)
     assert query["group_by"] == [ACCOUNT_ID]
     assert ACCOUNT_NAME not in json.dumps(payload)
-    assert [(row[ACCOUNT_ID], row["closures"]) for row in runtime.query(query)["rows"]] == [
-        ("b", 1)
-    ]
+    _account_rows(runtime, query, question)
 
 
 def test_a_draft_by_another_entitys_column_is_held(
