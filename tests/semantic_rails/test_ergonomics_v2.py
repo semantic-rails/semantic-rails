@@ -132,7 +132,7 @@ INSERT INTO orders VALUES
     )
 
 
-def test_schema_normalizes_to_package_config_and_auto_publishes_primitive(tmp_path: Path):
+def test_schema_normalizes_to_package_config_and_answers_its_metric(tmp_path: Path):
     package_dir = tmp_path / "demo"
     _write_demo_package(package_dir)
 

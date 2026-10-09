@@ -1557,20 +1557,14 @@ def test_enter_keeps_a_saved_choice_the_menu_does_not_list(
         assert spec()[1] == {**before, **written}
 
 
-@pytest.mark.parametrize(("strict", "aggregation"), [(True, None), (True, "Sum"), (False, "Sum")])
+@pytest.mark.parametrize("aggregation", [None, "Sum"])
 def test_a_new_default_aggregation_names_the_metrics_it_changes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], strict: bool, aggregation: str | None
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], aggregation: str | None
 ) -> None:
     project = _starter(tmp_path)
     events = yaml.safe_load((project / EVENTS).read_text("utf-8"))
     events["model"]["measures"]["total_amount"]["default_agg"] = "median"
     _write_yaml(project / EVENTS, events)
-    if not strict:
-        # The loader publishes metric.shop.total_amount itself, spelling out the median.
-        package = yaml.safe_load((project / "package.yml").read_text("utf-8"))
-        package["package"]["schema_strict"] = False
-        _write_yaml(project / "package.yml", package)
-        (project / "metrics" / "core.yml").unlink()
     ratio = {"numerator": "metric.shop.total_amount", "denominator": "measure.shop.event_count"}
     _write_metric(project, "per_event", {"kind": "ratio", **ratio, "value_type": "ratio"})
     ratio = {"numerator": "metric.shop.per_event", "denominator": "measure.shop.event_count"}

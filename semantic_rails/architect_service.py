@@ -1419,14 +1419,6 @@ class ArchitectProject:
             documents = self._load_documents(model_row.source_path, graph_path)
             model_doc = documents[model_row.source_path]
             model, wrapper = self._model_for_update(model_doc, model_row, model_slug=model_row.key)
-            foreign = dict(dict(model.get("keys") or {}).get("foreign") or {})
-            if target in dict(model.get("joins") or {}) or target in foreign:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"Model {model_row.key!r} relates {target} in a legacy joins: or keys.foreign: "
-                    "block, which overrides the entities block; edit or remove that entry instead",
-                    details={"model": model_row.key},
-                )
             entities = dict(model.get("entities", {}) or {})
             # Keep the source first for readability; the loader resolves its primary identity.
             model["entities"] = {

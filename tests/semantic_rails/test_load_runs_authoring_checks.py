@@ -118,7 +118,7 @@ REFUSED = {
     # A rollup binding is checked whatever its name resolves to; the loader reads it either way.
     "measure-id-binding-key": (
         _all(
-            _set("models", "orders", "measures", "revenue_usd", id="rev_total"),
+            _set("models", "orders", "measures", "revenue_usd", **{"as": "rev_total"}),
             _rollup(rev_total={"column": "rev", "agregation": "max"}),
         ),
         "variant 'monthly' column 'rev_total' has unknown key 'agregation'",
@@ -133,7 +133,7 @@ REFUSED = {
     ),
     "dimension-id-binding-key": (
         _all(
-            _set("models", "orders", "dimensions", "channel", id="order_channel"),
+            _set("models", "orders", "dimensions", "channel", **{"as": "order_channel"}),
             _rollup(order_channel={"column": "channel", "pth": [_ORDER_CUSTOMER]}),
         ),
         "variant 'monthly' column 'order_channel' has unknown key 'pth'",
@@ -149,31 +149,17 @@ REFUSED = {
         "model — it is ignored by the loader, so this would silently change behavior; did you "
         "mean 'revenue_usd'?",
     ),
-    # `as:` replaces the `id:`, so the loader reads a binding by the `as:` value only.
+    # The loader reads a binding by the `as:` value only.
     "measure-id-binding-overridden-by-as": (
         _all(
-            _set(
-                "models",
-                "orders",
-                "measures",
-                "revenue_usd",
-                id="measure.shop.rev_a",
-                **{"as": "measure.shop.rev_b"},
-            ),
+            _set("models", "orders", "measures", "revenue_usd", **{"as": "measure.shop.rev_b"}),
             _rollup(**{"measure.shop.rev_a": {"column": "rev", "aggregation": "max"}}),
         ),
         "variant 'monthly' column 'measure.shop.rev_a' names no measure, dimension or key column",
     ),
     "dimension-id-binding-overridden-by-as": (
         _all(
-            _set(
-                "models",
-                "orders",
-                "dimensions",
-                "channel",
-                id="order_channel_a",
-                **{"as": "order_channel_b"},
-            ),
+            _set("models", "orders", "dimensions", "channel", **{"as": "order_channel_b"}),
             _rollup(order_channel_a={"column": "channel"}),
         ),
         "variant 'monthly' column 'order_channel_a' names no measure, dimension or key column",
@@ -207,8 +193,14 @@ CONSOLIDATED = {
         "defaults.time has unknown key 'timezon'",
     ),
     "model-join-key": (
-        _set("models", "orders", "joins", "customer", to="customer", path_preference=1),
-        "model 'orders' join 'customer' has unknown key 'path_preference'",
+        _set(
+            "graph",
+            "relationships",
+            "orders_customer",
+            entities=["order", "customer"],
+            path_preference=1,
+        ),
+        "graph relationship 'orders_customer' has unknown key 'path_preference'",
     ),
     "path-policy-key": (
         _add("path_policy", {"max_hop": 3}),
@@ -637,7 +629,7 @@ def test_rollup_binding_answers_the_reference_once_its_name_resolves(tmp_path):
 
 
 def test_rollup_binding_by_an_id_that_as_replaces_is_refused(tmp_path):
-    ids = {"id": "measure.rollups.rev_a", "as": "measure.rollups.rev_b"}
+    ids = {"as": "measure.rollups.rev_b"}
     by_id = _rollup_package(tmp_path / "by_id", ids, **{"measure.rollups.rev_a": _MAX_REV})
     with pytest.raises(SemanticLayerError) as refused:
         Runtime.from_path(str(by_id))

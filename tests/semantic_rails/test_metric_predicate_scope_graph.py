@@ -398,7 +398,6 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                         "label": f"{fact.title()}s",
                         "kind": "entity_count",
                         "time": time_column,
-                        "publish": {"id": f"metric.{namespace}.{fact}s"},
                     }
                 },
             }
@@ -667,7 +666,6 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                         "label": "Orders",
                         "kind": "entity_count",
                         "time": "ordered_at",
-                        "publish": {"id": "metric.sales.orders"},
                     }
                 },
             }

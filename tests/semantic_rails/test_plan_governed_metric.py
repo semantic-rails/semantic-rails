@@ -58,7 +58,7 @@ def _package(
     publish: bool,
     label: str = "Active stores",
     domain: bool = True,
-    schema_strict: bool = True,
+    plain_metric: bool = False,
 ) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -67,8 +67,7 @@ def _package(
     put("package.yml", {
         "schema_version": 1,
         "package": {"id": "shop", "namespace": "shop", "name": "shop", "description": "Stores",
-                    "warehouse": "duckdb", "default_db": "shop.duckdb", "seed": {"kind": "external"},
-                    "schema_strict": schema_strict},
+                    "warehouse": "duckdb", "default_db": "shop.duckdb", "seed": {"kind": "external"}},
         "defaults": {"time": {"timezone": "UTC"}},
     })  # fmt: skip
     put("graph.yml", {"graph": {"entities": {
@@ -84,6 +83,12 @@ def _package(
             "value_type": "count", **({} if publish else {"publish": False}),
         }},
     }})  # fmt: skip
+    # The plain metric of the measure, beside the governing one.
+    plain = {"active_stores_all_kinds": {
+        "label": "Active stores (all kinds)", "description": "Active stores (all kinds)",
+        "kind": "aggregate", "measure": MEASURE, "aggregation": "count_distinct",
+        "value_type": "count", "temporal_role": "temporal_role.shop_visit_day",
+    }}  # fmt: skip
     put("metrics/stores.yml", {"metrics": {"active_stores": {
         "label": label, "description": "Retail stores with a visit.",
         "kind": "aggregate", "value_type": "count", "temporal_role": "temporal_role.shop_visit_day",
@@ -93,7 +98,7 @@ def _package(
                 {"field": "dimension.shop_visit_channel", "op": "=", "value": "retail"},
             ]},
         },
-    }}})  # fmt: skip
+    }, **(plain if plain_metric else {})}})  # fmt: skip
     with duckdb.connect(str(root / "shop.duckdb")) as connection:
         connection.execute(SEED)
     return root
@@ -257,9 +262,9 @@ def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
 
 
 @pytest.mark.parametrize(
-    ("schema_strict", "plain_draft"),
-    [(True, False), (False, False), (False, True)],
-    ids=["strict", "non_strict", "plain_metric"],
+    ("plain_metric", "plain_draft"),
+    [(False, False), (True, False), (True, True)],
+    ids=["governing_only", "plain_metric", "plain_draft"],
 )
 @pytest.mark.parametrize(
     ("intent", "status", "value"),
@@ -272,17 +277,17 @@ def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
 def test_the_whole_question_is_checked_against_reference_sql(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    schema_strict: bool,
+    plain_metric: bool,
     plain_draft: bool,
     intent: str,
     status: str,
     value: int,
 ) -> None:
-    root = _package(tmp_path / "shop", publish=True, schema_strict=schema_strict)
+    root = _package(tmp_path / "shop", publish=True, plain_metric=plain_metric)
     engine = Runtime.from_path(str(root))
     try:
         if plain_draft:
-            # Exercise a draft selecting the non-strict package's auto-published plain metric.
+            # Exercise a draft selecting the plain metric.
             plain = next(metric for metric in engine._config.metric_recipes if metric.id != METRIC)
             monkeypatch.setattr(metric_by_dimension_rollup, "_preferred_measure", lambda *_: None)
             monkeypatch.setattr(metric_by_dimension_rollup, "_preferred_metric", lambda *_: plain)
@@ -443,7 +448,6 @@ def _teams_package(
     shape: str,
     synonyms: bool,
     publish: bool = True,
-    schema_strict: bool = True,
     filter_class: bool = True,
 ) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
@@ -454,8 +458,7 @@ def _teams_package(
     put("package.yml", {
         "schema_version": 1,
         "package": {"id": "org", "namespace": "org", "name": "org", "description": "Teams",
-                    "warehouse": "duckdb", "default_db": "org.duckdb", "seed": {"kind": "external"},
-                    "schema_strict": schema_strict},
+                    "warehouse": "duckdb", "default_db": "org.duckdb", "seed": {"kind": "external"}},
         "defaults": {"time": {"timezone": "UTC"}},
     })  # fmt: skip
     put("graph.yml", {"graph": {"entities": {
@@ -537,33 +540,29 @@ def _teams_gold(where: str) -> int:
 
 
 @pytest.fixture(scope="module")
-def unpublished_teams(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[bool, Runtime]]:
-    engines = {}
+def unpublished_teams(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    root = _teams_package(
+        tmp_path_factory.mktemp("unpublished_teams") / "org",
+        shape="event",
+        synonyms=False,
+        publish=False,
+        filter_class=False,
+    )
+    engine = Runtime.from_path(str(root))
     try:
-        for strict in (True, False):
-            root = _teams_package(
-                tmp_path_factory.mktemp("unpublished_teams") / "org",
-                shape="event",
-                synonyms=False,
-                publish=False,
-                schema_strict=strict,
-                filter_class=False,
-            )
-            engine = engines[strict] = Runtime.from_path(str(root))
-            engine._get_adapter()
-        yield engines
+        engine._get_adapter()
+        yield engine
     finally:
-        for engine in engines.values():
-            engine.close()
+        engine.close()
 
 
 @pytest.mark.parametrize("intent", ["How many teams were created last week?", "teams last week"])
 @pytest.mark.parametrize("detail", ["best", "full"])
-def test_strict_unpublished_measure_without_a_governor_is_held(
-    unpublished_teams: dict[bool, Runtime], intent: str, detail: str
+def test_unpublished_measure_without_a_governor_is_held(
+    unpublished_teams: Runtime, intent: str, detail: str
 ) -> None:
     plan = plan_payload(
-        unpublished_teams[True], intent=intent, partial_query={"policy_context": NOW}, detail=detail
+        unpublished_teams, intent=intent, partial_query={"policy_context": NOW}, detail=detail
     )
     _assert_unoffered_hold(plan)
 
@@ -593,10 +592,10 @@ def _assert_unoffered_hold(plan: dict[str, Any]) -> None:
     ids=["policy_context", "request_context", "request_id", "unknown"],
 )
 def test_request_metadata_cannot_name_an_unpublished_measure(
-    unpublished_teams: dict[bool, Runtime], metadata: dict[str, Any]
+    unpublished_teams: Runtime, metadata: dict[str, Any]
 ) -> None:
     plan = plan_payload(
-        unpublished_teams[True],
+        unpublished_teams,
         intent="teams last week",
         partial_query={"policy_context": NOW, **metadata},
         detail="best",
@@ -623,17 +622,17 @@ def _unreadable_offer(*_: Any) -> Any:
 
 @pytest.mark.parametrize("transport", ["mcp", "http"])
 def test_transport_plan_holds_a_measure_named_only_in_policy_metadata(
-    unpublished_teams: dict[bool, Runtime], transport: str
+    unpublished_teams: Runtime, transport: str
 ) -> None:
     query = {"policy_context": {**NOW, "measure": TEAMS}}
-    _assert_unoffered_hold(_transport_plan(unpublished_teams[True], transport, query))
+    _assert_unoffered_hold(_transport_plan(unpublished_teams, transport, query))
 
 
 @pytest.mark.parametrize("offer", ["readable", "unreadable"])
 @pytest.mark.parametrize("transport", ["direct", "mcp", "http"])
 @pytest.mark.parametrize("option", ["debug", "explain", "export"])
 def test_a_response_option_cannot_name_an_unpublished_measure(
-    unpublished_teams: dict[bool, Runtime],
+    unpublished_teams: Runtime,
     monkeypatch: pytest.MonkeyPatch,
     option: str,
     transport: str,
@@ -644,7 +643,7 @@ def test_a_response_option_cannot_name_an_unpublished_measure(
     if offer == "unreadable":
         monkeypatch.setattr(faithfulness, "unoffered_measures", _unreadable_offer)
     query = {"policy_context": NOW, option: {"measure": TEAMS}}
-    _assert_unoffered_hold(_transport_plan(unpublished_teams[True], transport, query))
+    _assert_unoffered_hold(_transport_plan(unpublished_teams, transport, query))
 
 
 @pytest.mark.parametrize(
@@ -691,9 +690,9 @@ def test_request_fields_outside_select_do_not_exempt_a_draft_over_a_governed_mea
     ids=["order_by", "where_value", "metric_filters"],
 )
 def test_a_measure_named_only_outside_select_is_never_executable(
-    unpublished_teams: dict[bool, Runtime], outside: dict[str, Any], code: str
+    unpublished_teams: Runtime, outside: dict[str, Any], code: str
 ) -> None:
-    plan = _plan(unpublished_teams[True], "teams last week", **outside)
+    plan = _plan(unpublished_teams, "teams last week", **outside)
     assert plan["status"] == "low_confidence", plan.get("why")
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
     assert plan["why"]["code"] == code
@@ -702,31 +701,28 @@ def test_a_measure_named_only_outside_select_is_never_executable(
 
 
 def test_mcp_plan_holds_a_strict_unpublished_measure(
-    unpublished_teams: dict[bool, Runtime],
+    unpublished_teams: Runtime,
 ) -> None:
-    plan = SemanticLayerMCPAdapter(unpublished_teams[True]).call_tool(
+    plan = SemanticLayerMCPAdapter(unpublished_teams).call_tool(
         "plan",
         {"intent": "How many teams were created last week?", "query": {"policy_context": NOW}},
     )
     _assert_unoffered_hold(plan)
 
 
-@pytest.mark.parametrize("strict", [True, False], ids=["strict", "non_strict"])
-def test_only_strict_unpublished_measures_are_removed_from_discover(
-    unpublished_teams: dict[bool, Runtime], strict: bool
-) -> None:
-    found = discover_payload(unpublished_teams[strict], terms="teams, created")
-    assert (TEAMS in [row["id"] for row in found["measures"]]) is not strict
+def test_unpublished_measures_are_removed_from_discover(unpublished_teams: Runtime) -> None:
+    found = discover_payload(unpublished_teams, terms="teams, created")
+    assert TEAMS not in [row["id"] for row in found["measures"]]
     assert NEW_TEAMS in [row["id"] for row in found["metrics"]]
 
 
 @pytest.mark.parametrize("explicit", [True, False], ids=["explicit_measure", "named_metric"])
 def test_explicit_unpublished_measure_and_named_event_metric_keep_their_reference_numbers(
-    unpublished_teams: dict[bool, Runtime], explicit: bool
+    unpublished_teams: Runtime, explicit: bool
 ) -> None:
     partial = {"select": [{"as": "teams", "expression": {"measure": TEAMS}}]} if explicit else {}
     plan = _plan(
-        unpublished_teams[True],
+        unpublished_teams,
         "teams last week" if explicit else "new teams last week",
         **partial,
     )
@@ -744,32 +740,19 @@ def test_explicit_unpublished_measure_and_named_event_metric_keep_their_referenc
             "AND event_time >= TIMESTAMP '2026-09-28' AND event_time < TIMESTAMP '2026-10-05'"
         )
         reference = connection.execute(sql).fetchone()[0]
-    assert _value(unpublished_teams[True], query) == reference == 4
-
-
-@pytest.mark.parametrize("intent", ["How many teams were created last week?", "teams last week"])
-def test_non_strict_publish_false_only_suppresses_auto_publishing_and_keeps_plans_ok(
-    unpublished_teams: dict[bool, Runtime], intent: str
-) -> None:
-    engine = unpublished_teams[False]
-    plan = _plan(engine, intent)
-    assert plan["status"] == "ok", plan.get("why")
-    assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
-    assert query["select"][0]["expression"]["measure"] == TEAMS
-    assert _value(engine, query) == _teams_gold(WEEK) == 4
+    assert _value(unpublished_teams, query) == reference == 4
 
 
 @pytest.mark.parametrize("metadata_reference", [False, True], ids=["no_reference", "metadata"])
 def test_a_failing_unoffered_measure_check_holds_the_draft(
-    unpublished_teams: dict[bool, Runtime],
+    unpublished_teams: Runtime,
     monkeypatch: pytest.MonkeyPatch,
     metadata_reference: bool,
 ) -> None:
     monkeypatch.setattr(faithfulness, "unoffered_measures", _unreadable_offer)
     _assert_unoffered_hold(
         _plan(
-            unpublished_teams[True],
+            unpublished_teams,
             "teams last week",
             policy_context={**NOW, **({"measure": TEAMS} if metadata_reference else {})},
         )

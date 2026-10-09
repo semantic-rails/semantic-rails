@@ -126,7 +126,6 @@ def _write_package(
                         "kind": "entity_count",
                         "time": "ordered_at",
                         "meta": dict(measure_meta or {}),
-                        "publish": {"id": "metric.sales.orders"},
                     },
                     **dict(extra_measures or {}),
                 },

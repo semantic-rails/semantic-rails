@@ -1370,7 +1370,9 @@ def test_a_hidden_default_metric_is_never_generated(package, action):
 
 
 @pytest.mark.parametrize("authored", [False, True])
-def test_a_default_metric_id_names_only_an_existing_metric(package, authored):
+def test_a_measure_card_names_no_metric_of_its_own(package, authored):
+    """A measure publishes no metric of its own name, so its card points at none, authored or
+    not; an unauthored one is never named."""
     from semantic_rails.expressions import AggregateExpr
 
     root, config = package
@@ -1388,11 +1390,9 @@ def test_a_default_metric_id_names_only_an_existing_metric(package, authored):
         inspected = http_call(runtime, "/inspect", {"object_id": ORDERS, "policy_context": CALLER})
         catalog = http_call(runtime, "/catalog", {"verbosity": "full", "policy_context": CALLER})
         row = next(row for row in catalog["catalog"]["measures"] if row["id"] == ORDERS)
-        expected = target if authored else ""
-        # Minimal drops empty fields, so an absent default reads as "".
-        assert minimal["card"].get("default_metric_id", "") == expected, minimal
-        assert inspected["card"]["default_metric_id"] == expected, inspected
-        assert row["payload"]["default_metric_id"] == expected, row
+        assert "default_metric_id" not in minimal["card"], minimal
+        assert "default_metric_id" not in inspected["card"], inspected
+        assert "default_metric_id" not in row["payload"], row
         if not authored:
             for response in (minimal, inspected, catalog):
                 assert target not in json.dumps(response)
