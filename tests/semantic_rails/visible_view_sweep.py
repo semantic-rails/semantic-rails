@@ -29,6 +29,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr
 from semantic_rails.fanout import package_route
+from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig, PackageConfig
 from tests.semantic_rails.hidden_absent import (
@@ -46,6 +47,8 @@ from tests.semantic_rails.hidden_absent import (
 )
 
 TERMS = ("", "orders", "revenue", "customers", "store", "time", "spend")
+# Every call is asked at one instant, so the hidden and absent answers compare whole.
+NOW = "2026-10-05T06:00:00Z"
 INTENTS = (
     "revenue by store",
     "how many orders last month",
@@ -118,13 +121,13 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
                 )
             body = {"segment_id": segment.id}
             out.append((f"http /segment-{action}", http(f"/segment-{action}", body), segment.id))
-    for kind, rows in (("metric", config.metric_recipes), ("measure", config.measures)):
+    for rows in (config.metric_recipes, config.measures):
         for row in rows:
             if row.id not in visible:
                 continue
-            query = {"select": [{"expression": {kind: row.id}, "as": "value"}]}
+            query = {"select": [{"expression": row.id, "as": "value"}]}
             for mode in ("validate", "sql"):
-                arguments = {"query": query, "mode": mode}
+                arguments = {"query": query, "mode": mode, "now": NOW}
                 out.append((f"mcp execute {mode} {row.id}", mcp("execute", arguments), query))
             if row.id in near:
                 body = {"focus_object_id": row.id}
@@ -132,7 +135,7 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
     for row in config.metric_recipes:
         if row.id not in visible:
             continue
-        base = {"select": [{"expression": {"metric": row.id}, "as": "value"}]}
+        base = {"select": [{"expression": row.id, "as": "value"}]}
         broken = {
             "unknown time role": {
                 **base,
@@ -140,11 +143,11 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
             },
             "unknown group_by": {**base, "group_by": ["dimension.nope"]},
             "far group_by": {**base, "group_by": ["dimension.jaffle_supply_name"]},
-            "unknown where": {**base, "where": [{"field": "nope", "op": "=", "value": "x"}]},
+            "unknown where": {**base, "where": [{"field": "nope", "op": "is", "value": "x"}]},
             "bad grain": {**base, "time": {"temporal_role": "", "grain": "fortnight"}},
         }
         for name, query in broken.items():
-            arguments = {"query": query, "mode": "validate"}
+            arguments = {"query": query, "mode": "validate", "now": NOW}
             out.append((f"mcp execute validate {name} {row.id}", mcp("execute", arguments), query))
     for row in config.dimensions:
         if row.id in visible:
@@ -220,7 +223,7 @@ def _reads_hidden_graph(base: PackageConfig, request: Any, hidden: set[str]) -> 
         return False
     graph = {row.id for name in GRAPH for row in getattr(base, name)} & hidden
     try:
-        return bool(bind_query(base, None, request).object_ids & graph)
+        return bool(bind_query(base, None, read_call(request, config=base)[0]).object_ids & graph)
     except SemanticLayerError as exc:
         details = json.dumps(exc.details, default=str)
         return any(json.dumps(object_id) in details for object_id in graph)
