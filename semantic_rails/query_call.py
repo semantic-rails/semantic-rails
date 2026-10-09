@@ -12,14 +12,15 @@ options (``max_rows``, ``verbosity``, ...) are arguments beside the call.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from difflib import get_close_matches
 from typing import Any
 
 from . import operators
-from .clock import UNITS, parse_now, resolve_window
+from .clock import UNITS, check_calendar, floor_period, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
 from .schema import OBSERVATION_SCOPES, PackageConfig
 
@@ -620,6 +621,10 @@ def _where(
     )
     for index, item in enumerate(raw):
         path = f"where[{index}]"
+        if isinstance(item, Mapping) and (
+            _CHILD_GROUP_KEYS & set(item) or {"entity", "where"} <= set(item)
+        ):
+            raise _child_group_refusal(item, path)
         if isinstance(item, Mapping) and "entity" in item:
             group, having = _entity_filter(item, path, grain)
             rows.extend(group)
@@ -639,6 +644,29 @@ def _where(
             )
         rows.append(_condition(item, path))
     return rows, entity_having
+
+
+# Keys of the retired child group, ``{child, match, where}`` (or ``child_group``); an entity
+# with a ``where`` list is read as one too.
+_CHILD_GROUP_KEYS = frozenset({"child", "child_group", "match"})
+
+
+def _child_group_refusal(item: Mapping[str, Any], path: str) -> SemanticLayerError:
+    """A child group is an entity filter now: the same conditions under ``any`` or ``none``."""
+    entity = item.get("child") or item.get("entity")
+    word = item.get("match") if item.get("match") in {"any", "none"} else "any"
+    conditions = item.get("where")
+    shape = {
+        "entity": entity if isinstance(entity, str) else "entity.<id>",
+        word: conditions
+        if isinstance(conditions, list) and conditions
+        else [{"field": "dimension.<id>", "op": "is", "value": "<value>"}],
+    }
+    return refusal(
+        path,
+        "a child group is an entity filter: the entity, then any or none of its rows",
+        fix=f"Write {json.dumps(shape)}.",
+    )
 
 
 def _entity_filter(
@@ -833,7 +861,11 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
         )
     role = (role or "").strip() or _default_role(select, context)
     timezone = _role_timezone(role, context.config)
-    window = resolve_window(dict(raw), now=context.now, timezone=timezone)
+    try:
+        window = resolve_window(dict(raw), now=context.now, timezone=timezone)
+        check_calendar(window, [unit for unit in (grain, raw.get("this")) if unit])
+    except (ValueError, OverflowError) as exc:
+        raise _off_calendar(raw, grain, context.now, timezone) from exc
     time: dict[str, Any] = {"temporal_role": role}
     if grain:
         time["grain"] = grain
@@ -849,6 +881,31 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
     if "this" in raw:
         time["this"] = raw["this"]
     return time
+
+
+def _off_calendar(
+    raw: Mapping[str, Any], grain: Any, now: datetime, timezone: str
+) -> SemanticLayerError:
+    """The refusal of a window that leaves the calendar (0001-01-01 to 9999-12-31)."""
+    if "last" in raw:
+        most = largest_last(raw["last"]["unit"], now, timezone)
+        return refusal(
+            "time.last.value",
+            "reaches back before the calendar's first day, 0001-01-01",
+            fix=(f"Use at most {most}, or " if most > 0 else "Use ")
+            + "a dated window with start and end.",
+        )
+    if "this" in raw:
+        return refusal(
+            "time.this",
+            "is a period that ends after the calendar's last day, 9999-12-31",
+            fix="Use a dated window with start and end.",
+        )
+    return refusal(
+        "time.end",
+        f"leaves a {grain} that ends after the calendar's last day, 9999-12-31",
+        fix=f"End the window on or before {floor_period(date.max, str(grain))}.",
+    )
 
 
 def _default_role(select: list[dict[str, Any]], context: CallContext) -> str:

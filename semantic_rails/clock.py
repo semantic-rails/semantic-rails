@@ -8,7 +8,7 @@ bounds that the compiler reads; the answer reports the same window back.
 from __future__ import annotations
 
 from calendar import monthrange
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -211,6 +211,28 @@ def resolve_window(spec: dict[str, Any], *, now: datetime, timezone: str = "UTC"
         named=start_value is not None and end_value is not None,
         partial=partial,
     )
+
+
+def largest_last(unit: str, now: datetime, timezone: str = "UTC") -> int:
+    """The most whole ``unit`` periods a ``last`` window reaches back from ``now``, inside the
+    calendar (from 0001-01-01, a Monday, so every unit's periods start on it)."""
+    end = floor_period(local_now(now, timezone).date(), unit)
+    if unit in {"day", "week"}:
+        return (end - date.min).days // (7 if unit == "week" else 1)
+    months = (end.year - 1) * 12 + end.month - 1
+    return months // {"month": 1, "quarter": 3, "year": 12}[unit]
+
+
+def check_calendar(window: Window, units: Iterable[str]) -> None:
+    """Raise ``ValueError`` when a period of ``units`` holding the window's last instant ends
+    after the calendar's last day (9999-12-31)."""
+    try:
+        end = datetime.fromisoformat(str(window.end).replace("Z", "+00:00"))
+    except ValueError:
+        return  # no end, or not a date: nothing past the calendar
+    last = end.date() if end.time() != datetime.min.time() else end.date() - timedelta(days=1)
+    for unit in units:
+        period_end(last, unit)
 
 
 def engine_window(time: Mapping[str, Any], *, now: datetime, timezone: str = "UTC") -> Window:
