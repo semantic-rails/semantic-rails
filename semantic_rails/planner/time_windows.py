@@ -5,12 +5,12 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date
 from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..ast import _parse_now, _relative_range_bounds
+from ..clock import parse_now, range_bounds
 from ..errors import SemanticLayerError
 from ._base import _tokens
 from .exclusions import excluded_time_spans
@@ -240,16 +240,8 @@ def _time_window(
         return _TimeWindow()
     lowered = text.lower()
     context = time_policy_context(policy_context)
-    now = (
-        _parse_now(context)
-        if context and context.get("now") not in (None, "")
-        else datetime.now(UTC)
-    )
-    if isinstance(now, datetime):
-        if now.tzinfo is not None:
-            now = now.astimezone(ZoneInfo(timezone or time_timezone()))
-        now = now.date()
-    today = now
+    instant = parse_now((context or {}).get("now"))
+    today = instant.astimezone(ZoneInfo(timezone or time_timezone())).date()
     return copy.deepcopy(_resolved_time_window(lowered, today))
 
 
@@ -289,7 +281,7 @@ def _as_of_cues(lowered: str, today: date) -> tuple[_AsOfCue, ...]:
         span, bounds = max(candidates, key=lambda row: row[0][1])
         if bounds.get("range"):
             try:
-                bounds = _relative_range_bounds(bounds["range"], policy_context={"now": today})
+                bounds = range_bounds(bounds["range"], now=today)
             except (SemanticLayerError, ValueError, OverflowError):
                 bounds = {}
         cues.append(_AsOfCue("closing_day", (lead.start(), lead.end() + span[1]), bounds))

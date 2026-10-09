@@ -425,28 +425,25 @@ def _allows_coarse_snapshot_alignment(
 def _validate_calendar_id(
     query: NormalizedQuery, config: PackageConfig, expressions: Sequence[SemanticExpr]
 ) -> None:
-    """Resolve the query's calendar: only the default (Gregorian) one is supported.
+    """Bucket only clocks on the default (Gregorian) calendar.
 
     Every bucket uses ``DATE_TRUNC``; no authored calendar table is read for
-    bucketing. A non-default ``calendar_id``, or a grain on a clock bound to a
-    non-default calendar, would otherwise return Gregorian buckets labelled as
-    another calendar's periods, so it refuses here, for every leaf path.
+    bucketing. A grain on a clock bound to a non-default calendar would otherwise
+    return Gregorian buckets labelled as another calendar's periods, so it refuses
+    here, for every leaf path.
     """
     assert query.time is not None  # caller guarantees query.time is set
     clocks = {query.time.temporal_role}
     for expr in expressions:
         if not isinstance(expr, MetricPredicateExpr):
             clocks |= _expr_compatible_temporal_roles(expr, config, query)
-    refuse_authored_calendar(query.time.calendar_id, query.time.grain, clocks, config)
+    refuse_authored_calendar(query.time.grain, clocks, config)
 
 
-def refuse_authored_calendar(
-    calendar_id: Any, grain: Any, clocks: Iterable[str], config: PackageConfig
-) -> None:
-    """Refuse a non-default calendar, or bucketing a clock bound to one."""
-    requested = str(calendar_id or "").strip().lower() or "default"
-    details: dict[str, Any] = {"reason": "calendar_not_supported_yet", "calendar_id": requested}
-    if requested == "default" and str(grain or "").strip():
+def refuse_authored_calendar(grain: Any, clocks: Iterable[str], config: PackageConfig) -> None:
+    """Refuse bucketing a clock bound to a non-default calendar."""
+    details: dict[str, Any] = {"reason": "calendar_not_supported_yet", "calendar_id": "default"}
+    if str(grain or "").strip():
         roles = _temporal_role_index(config)
         dimensions = _dimension_index(config)
         entities = {row.id: row for row in config.entities}

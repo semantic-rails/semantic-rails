@@ -27,7 +27,6 @@ from .ast import (
     ChildGroup,
     Filter,
     NormalizedQuery,
-    _time_output_alias,
     child_groups,
     every_filter,
     normalize_query,
@@ -35,6 +34,7 @@ from .ast import (
     refuse_child_groups,
     rewrite_select_shorthand,
     route_decisions_from_payload,
+    time_output_alias,
 )
 from .compiler_parts.bind import (
     _aggregation_expr,
@@ -230,7 +230,6 @@ from .sql_ast import (
     SqlWithinGroup,
     _compact_token,
     build_filter_condition,
-    validate_single_value_filter_shape,
 )
 from .sql_preparation import ParameterSlot, finalize_parameters
 from .temporal_support import _date_key, validate_temporal_support
@@ -562,14 +561,13 @@ def _validate_non_additive_sums(
         if window is not None and window.aggregate == "sum":
             _summing_window_parts(window.input, config, construct=window.kind)
             if window.kind == "period_to_date" and query.time is not None:
-                calendar = (query.time.calendar_id or "default").strip().lower()
                 role = _temporal_role_index(config).get(query.time.temporal_role)
                 dim = _dimension_index(config).get(role.dimension) if role else None
                 entity = _entity_index(config).get(dim.entity) if dim else None
                 role_calendar = (
                     (entity.calendar_id or "default").strip().lower() if entity else "default"
                 )
-                if calendar != "default" or role_calendar != "default":
+                if role_calendar != "default":
                     raise SemanticLayerError(
                         "REWRITE_NOT_SUPPORTED",
                         "period_to_date requires the default calendar; authored non-default "
@@ -577,7 +575,7 @@ def _validate_non_additive_sums(
                         "as exact start/end dates without a period_to_date window.",
                         details={
                             "unsupported_construct": "non_default_calendar_period_to_date",
-                            "calendar_id": calendar if calendar != "default" else role_calendar,
+                            "calendar_id": role_calendar,
                         },
                     )
         if is_dataclass(expr):
@@ -1685,7 +1683,7 @@ def _semantic_dag_for_query(query: NormalizedQuery, config: PackageConfig) -> Se
                 id="multi_fact_align",
                 kind="MultiFactAlign",
                 inputs=list(outputs.values()),
-                details={"keys": [*query.group_by, _time_output_alias(query.time)]},
+                details={"keys": [*query.group_by, time_output_alias(query.time)]},
             )
         )
     nodes.append(
@@ -1723,10 +1721,8 @@ def _validate_where_value_type(dim, item) -> None:
 
     Skip dimensions without a classified catalog data type.
     """
-    # Report an invalid scalar-op/list shape before any element type mismatch.
-    validate_single_value_filter_shape(item.op, item.value)
-    # NULL tests ignore value, including a supplied list, during lowering.
-    if " ".join(str(item.op or "").upper().split()) in {"IS NULL", "IS NOT NULL"}:
+    # ``missing`` takes a boolean, not a value of the dimension; ``contains`` takes text.
+    if item.op in {"missing", "contains"}:
         return
     values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
@@ -2017,7 +2013,7 @@ def _inline_threshold_cte_and_where(
 
 
 def _predicate_time_alias(temporal_role: str, grain: str) -> str:
-    return temporal_role if not grain else f"{temporal_role}__{grain}"
+    return time_output_alias({"temporal_role": temporal_role, "grain": grain})
 
 
 def _deterministic_ancestor_grain(outer_grain: str, predicate_grain: str) -> bool:
@@ -2337,7 +2333,6 @@ def _predicate_time_spec(
                 "grain": "",
                 "start": query.time.start,
                 "end": query.time.end,
-                "calendar_id": query.time.calendar_id,
                 "entity_only_window": True,
                 "time_alignment": predicate.time_alignment,
                 "window": {"unit": predicate.window_unit, "value": predicate.window_value}
@@ -2389,7 +2384,6 @@ def _predicate_time_spec(
         "grain": predicate_grain,
         "start": start,
         "end": end,
-        "calendar_id": query.time.calendar_id,
     }
 
 
@@ -2397,7 +2391,7 @@ def _public_time_spec(time_spec: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in dict(time_spec or {}).items()
-        if key in {"temporal_role", "grain", "start", "end", "fill", "calendar_id"}
+        if key in {"temporal_role", "grain", "start", "end", "fill"}
     }
 
 
@@ -4043,11 +4037,7 @@ def _conversion_leaf_cte(
             )
         _refuse_converted_role(query_role, "conversion_metric")
         raw_expr = _column_ref(entities[query_dim.entity].table, query_dim.column)
-        group_time_alias = (
-            str(plan.time["temporal_role"])
-            if not plan.time.get("grain")
-            else f"{plan.time['temporal_role']}__{plan.time['grain']}"
-        )
+        group_time_alias = time_output_alias(plan.time)
         group_time_expr = (
             dialect.date_trunc(plan.time["grain"], raw_expr) if plan.time.get("grain") else raw_expr
         )
@@ -4661,11 +4651,7 @@ def _plan_query(
             )
             grain_keys = [*query.group_by]
             if query.time is not None:
-                grain_keys.append(
-                    query.time.temporal_role
-                    if not query.time.grain
-                    else f"{query.time.temporal_role}__{query.time.grain}"
-                )
+                grain_keys.append(time_output_alias(query.time))
             rewrite_strategy = (
                 "leaf_preaggregate_join"
                 if any(step.measure_id == bound.measure_id for step in rewrite_steps)

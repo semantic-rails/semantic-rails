@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import operators
 from .errors import SemanticLayerError
 from .sql_preparation import ParameterSlot
 
@@ -328,8 +329,16 @@ class SqlBinary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "op", normalize_sql_binary_operator(self.op))
-        if self.op in {"IS", "IS NOT"} and isinstance(self.right, SqlLiteral):
-            validate_single_value_filter_shape(self.op, self.right.value, path="expression")
+        if (
+            self.op in {"IS", "IS NOT"}
+            and isinstance(self.right, SqlLiteral)
+            and not (self.right.value is None or isinstance(self.right.value, bool))
+        ):
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"expression: op '{self.op}' accepts only NULL, TRUE or FALSE",
+                details={"path": "expression", "op": self.op},
+            )
         if self.op in _NULL_LITERAL_GUARDED_OPS and (
             is_null_literal(self.left) or is_null_literal(self.right)
         ):
@@ -337,6 +346,14 @@ class SqlBinary:
                 "INVALID_EXPRESSION_AST",
                 "Comparisons with a null literal must use build_comparison_condition",
             )
+
+
+@dataclass(frozen=True)
+class SqlLike:
+    """``expr LIKE pattern``; ``\\`` escapes ``%``, ``_`` and itself in ``pattern``."""
+
+    expr: SqlExpr
+    pattern: str
 
 
 @dataclass(frozen=True)
@@ -491,6 +508,7 @@ SqlExpr = (
     | SqlStar
     | SqlCall
     | SqlBinary
+    | SqlLike
     | SqlIn
     | SqlDatePart
     | SqlInterval
@@ -602,105 +620,44 @@ _NULL_LITERAL_GUARDED_OPS = (
 
 
 def filter_rejects_null(op: Any, value: Any) -> bool:
-    """Classify NULL-excluding filter forms using the lowering's operator classes."""
-    op_normalized = _compact_token(str(op or "=")).upper()
-    if op_normalized in {"IS NOT NULL", "IN", "NOT IN"}:
-        return True
+    """Whether a filter drops the rows whose value is unknown."""
     try:
-        op_normalized = normalize_sql_binary_operator(op_normalized)
+        word, value = operators.normalize_condition(op, value, path="where", internal=True)
     except SemanticLayerError:
         return False
-    if value is None:
-        return op_normalized in _NULL_TEST_INEQUALITY_OPS
-    return op_normalized in _NULL_LITERAL_GUARDED_OPS
+    return operators.rejects_unknown(word, value)
+
+
+_RANGE_SQL = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
 
 
 def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "where") -> SqlExpr:
-    """Build the SQL condition for a ``{field, op, value}``-style filter.
+    """The SQL condition for a ``{field, op, value}`` filter, read from the operator table.
 
-    The single home for the op/value → condition mapping used by every
-    filter lowering site (query ``where[]``, measure-bound filters,
-    metric_filter envelopes, predicate sources). Centralizing it keeps
-    NULL semantics consistent everywhere:
-
-    - ``IN`` / ``NOT IN`` take a list of scalars; a bare scalar is
-      treated as a one-element list (never character-split); an empty
-      list compiles to constant FALSE / TRUE (vacuous membership)
-      instead of erroring.
-    - ``IS NULL`` / ``IS NOT NULL`` ignore ``value`` entirely.
-    - ``IS`` / ``IS NOT`` accept only null or boolean values.
-    - ``value: null`` with any other op follows
-      :func:`build_comparison_condition`, like every comparison with a
-      null literal.
+    The single home for the op/value → condition mapping used by every filter lowering
+    site. ``not`` keeps rows whose value is unknown: ``(x <> v OR x IS NULL)``, the
+    portable form on every dialect. ``contains`` is a case-insensitive literal match.
     """
-    op_normalized = _compact_token(str(op or "=")).upper()
-    if op_normalized in {"IN", "NOT IN"}:
-        negated = op_normalized == "NOT IN"
-        if value is None:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                f"{path}: op '{op_normalized}' requires a list value, got null",
-                details={
-                    "path": path,
-                    "op": op_normalized,
-                    "received_value": None,
-                    "recovery_hints": [
-                        {
-                            "code": "USE_LIST_VALUE_OR_NULL_TEST",
-                            "message": (
-                                f"'{op_normalized}' compares against a list of scalar "
-                                "values — pass value: [..]. To test for NULL, use "
-                                "op 'IS NULL' / 'IS NOT NULL' instead."
-                            ),
-                        }
-                    ],
-                },
-            )
-        values = list(value) if isinstance(value, (list, tuple)) else [value]
+    word, value = operators.normalize_condition(op, value, path=path, internal=True)
+    if word == "missing":
+        return SqlIsNull(expr=expr) if value else SqlBinary(expr, "IS NOT", SqlLiteral(None))
+    if word in {"is", "not"}:
+        values = operators.values_of(word, value)
         if not values:
-            # `x IN ()` is invalid SQL; an empty membership list is
-            # vacuously false (and NOT IN vacuously true). Compile to a
-            # constant so the query stays runnable.
-            return SqlLiteral(bool(negated))
-        return SqlIn(expr=expr, values=[SqlLiteral(item) for item in values], negated=negated)
-    if op_normalized == "IS NULL":
-        return build_comparison_condition(expr, "IS", SqlLiteral(None), path=path)
-    if op_normalized == "IS NOT NULL":
-        return build_comparison_condition(expr, "IS NOT", SqlLiteral(None), path=path)
-    validate_single_value_filter_shape(op, value, path=path)
-    try:
-        return build_comparison_condition(expr, str(op or "="), SqlLiteral(value), path=path)
-    except SemanticLayerError as exc:
-        if (
-            not path.startswith("where")
-            or exc.code != "INVALID_EXPRESSION_AST"
-            or exc.details.get("token_kind") != "operator"
-        ):
-            raise
-        raise SemanticLayerError(
-            exc.code,
-            f"Unsupported filter operator: {op!r}",
-            details={
-                **exc.details,
-                "path": path,
-                "expression_position": "where",
-                "op": str(op),
-                "allowed": [
-                    "=",
-                    "!=",
-                    "<",
-                    "<=",
-                    ">",
-                    ">=",
-                    "IN",
-                    "NOT IN",
-                    "LIKE",
-                    "NOT LIKE",
-                    "IS NULL",
-                    "IS NOT NULL",
-                ],
-            },
-        ) from None
+            # Membership in no values: vacuously false (is) or true (not).
+            return SqlLiteral(word == "not")
+        literal: list[SqlExpr] = [SqlLiteral(item) for item in values]
+        if word == "is":
+            return SqlBinary(expr, "=", literal[0]) if len(literal) == 1 else SqlIn(expr, literal)
+        differs = (
+            SqlBinary(expr, "<>", literal[0])
+            if len(literal) == 1
+            else SqlIn(expr, literal, negated=True)
+        )
+        return SqlBinary(differs, "OR", SqlIsNull(expr=expr))
+    if word in _RANGE_SQL:
+        return SqlBinary(expr, _RANGE_SQL[word], SqlLiteral(value))
+    return SqlLike(SqlCall("LOWER", [expr]), operators.contains_pattern(str(value)))
 
 
 def is_null_literal(expr: object) -> bool:
@@ -755,52 +712,3 @@ def build_negation(arg: SqlExpr) -> SqlExpr:
     if is_null_literal(arg):
         return SqlCast(SqlLiteral(None), "BOOLEAN")
     return SqlBinary(SqlLiteral(False), "=", arg)
-
-
-def validate_single_value_filter_shape(op: Any, value: Any, *, path: str = "where") -> None:
-    """Check scalar operands before dimension type checks and SQL construction."""
-    op_normalized = _compact_token(str(op or "=")).upper()
-    if op_normalized in {"IS", "IS NOT"} and value is not None and not isinstance(value, bool):
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"{path}: op '{op_normalized}' accepts only NULL, TRUE or FALSE",
-            details={
-                "path": path,
-                "op": op_normalized,
-                "recovery_hints": [
-                    {
-                        "code": "USE_EQUALITY_FOR_SCALAR",
-                        "message": (
-                            "Use '=' / '!=' to compare other values; "
-                            "'IS' / 'IS NOT' accept only NULL, TRUE or FALSE."
-                        ),
-                    }
-                ],
-            },
-        )
-    if op_normalized in {"IN", "NOT IN", "IS NULL", "IS NOT NULL"} or not isinstance(
-        value, (list, tuple)
-    ):
-        return
-    raise SemanticLayerError(
-        "INVALID_QUERY",
-        f"{path}: op '{op_normalized}' compares against one value, got a list",
-        details={
-            "path": path,
-            "op": op_normalized,
-            "received_value": list(value),
-            "why_invalid": (
-                f"'<expr> {op_normalized} <list>' would compare against the list as one "
-                "string and silently match no rows."
-            ),
-            "recovery_hints": [
-                {
-                    "code": "USE_IN_FOR_LIST_VALUE",
-                    "message": (
-                        "To match any of several values use op 'IN' (or 'NOT IN' to "
-                        f"exclude them); otherwise pass a single value for '{op_normalized}'."
-                    ),
-                }
-            ],
-        },
-    )

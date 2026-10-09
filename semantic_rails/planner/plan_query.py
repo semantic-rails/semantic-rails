@@ -6,6 +6,7 @@ from typing import Any
 
 from ..ast import is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
+from ..query_call import call_from_query
 
 
 def _merge_partial_query(
@@ -251,11 +252,18 @@ def _validate_query(
             "recovery_hints": [],
         }
 
-    payload = dict(query)
-    if partial_query and partial_query.get("policy_context"):
-        payload["policy_context"] = partial_query["policy_context"]
+    context = dict((partial_query or {}).get("policy_context") or {})
+    now = context.pop("now", None)
     try:
-        report = runtime.validate(payload)
+        # The draft validates as the call the plan hands back, read by the same front door.
+        payload = runtime.engine_payload(call_from_query(query), now=now, context=context or None)
+        report = runtime.validate_internal(payload)
+    except SemanticLayerError as exc:
+        return {
+            "ok": False,
+            "errors": [{"code": exc.code, "message": str(exc), "details": exc.details}],
+            "recovery_hints": [],
+        }
     except Exception as exc:  # noqa: BLE001 — surface any unexpected failure as a validation error
         return {
             "ok": False,

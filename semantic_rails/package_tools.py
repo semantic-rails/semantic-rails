@@ -1064,7 +1064,14 @@ def promote_package_report(
     }
 
 
-def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _call_arguments(spec: dict[str, Any], now: Any = None) -> dict[str, Any]:
+    """An entry's ``now`` (or the run's) and its ``context``, the arguments beside its query."""
+    return {"now": spec.get("now", now), "context": spec.get("context")}
+
+
+def _run_example(
+    runtime: Runtime, example_id: str, spec: dict[str, Any], now: Any = None
+) -> dict[str, Any]:
     query = dict(spec.get("query", {}) or {})
     if not query:
         return {
@@ -1077,7 +1084,7 @@ def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dic
             },
         }
     try:
-        result = runtime.query({**query, "verbosity": "compact"})
+        result = runtime.query(query, verbosity="compact", **_call_arguments(spec, now))
     except SemanticLayerError as exc:
         return {
             "id": example_id,
@@ -1133,11 +1140,14 @@ def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dic
     }
 
 
-def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _run_test(
+    runtime: Runtime, test_id: str, spec: dict[str, Any], now: Any = None
+) -> dict[str, Any]:
     kind = str(spec.get("kind", "") or "").strip()
     query = dict(spec.get("query", {}) or {})
+    call = _call_arguments(spec, now)
     if kind == "query_returns_columns":
-        result = runtime.query(query)
+        result = runtime.query(query, **call)
         expected = list(spec.get("columns", []) or [])
         actual = list(result["rows"][0].keys()) if result["rows"] else []
         ok = actual[: len(expected)] == expected
@@ -1149,7 +1159,7 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
             {"expected": expected, "actual": actual},
         )
     if kind == "query_row_count_bounds":
-        result = runtime.query(query)
+        result = runtime.query(query, **call)
         row_count = int(result["row_count"])
         min_rows = spec.get("min_rows")
         max_rows = spec.get("max_rows")
@@ -1164,7 +1174,7 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
             {"row_count": row_count, "min_rows": min_rows, "max_rows": max_rows},
         )
     if kind == "validate_fails_with_code":
-        result = runtime.validate(query)
+        result = runtime.validate(query, **call)
         code = str(spec.get("code", "") or "")
         actual_code = str((result.get("errors") or [{}])[0].get("code", "") or "")
         ok = (not result["ok"]) and actual_code == code
@@ -1176,7 +1186,7 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
             {"expected": code, "actual": actual_code},
         )
     if kind == "explain_contains":
-        result = runtime.compile(query)
+        result = runtime.compile(query, **call)
         needle = str(spec.get("text", "") or "")
         blob = json.dumps(result, sort_keys=True, default=str)
         ok = needle in blob
@@ -1188,9 +1198,9 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
             {"needle": needle},
         )
     if kind == "query_matches_snapshot":
-        result = runtime.query(query)
+        result = runtime.query(query, **call)
         expected_rows = list(spec.get("expected_rows", []) or [])
-        compiled = runtime._compile(query, policy_context={})
+        compiled = runtime._compile(runtime.engine_payload(query, **call), policy_context={})
         columns = output_columns(runtime._config, compiled)
         encoded_expected = result_rows(
             expected_rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
@@ -1207,8 +1217,8 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
     if kind == "metric_equals_query":
         metric_query = dict(spec.get("metric_query", query) or {})
         expected_query = dict(spec.get("expected_query", {}) or {})
-        metric_rows = _typed_rows(runtime.query(metric_query))
-        expected_rows = _typed_rows(runtime.query(expected_query))
+        metric_rows = _typed_rows(runtime.query(metric_query, **call))
+        expected_rows = _typed_rows(runtime.query(expected_query, **call))
         ok = metric_rows == expected_rows
         return _test_result(
             test_id,

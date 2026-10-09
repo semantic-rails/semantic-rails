@@ -21,7 +21,7 @@ from ..common import (
     _parse_json,
     _policy_context_from_args,
     _print,
-    _query_payload_from_args,
+    _query_call_from_args,
     _query_with_policy_context,
     _ref_from_args,
     _runtime_from_package_or_path,
@@ -92,7 +92,8 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 def cmd_validate(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        _print(runtime.validate(_query_payload_from_args(args)))
+        query, arguments = _query_call_from_args(args)
+        _print(runtime.validate(query, **arguments))
     finally:
         runtime.close()
 
@@ -100,7 +101,8 @@ def cmd_validate(args: argparse.Namespace) -> None:
 def cmd_compile(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        _print(runtime.compile(_query_payload_from_args(args)))
+        query, arguments = _query_call_from_args(args)
+        _print(runtime.compile(query, **arguments))
     finally:
         runtime.close()
 
@@ -108,7 +110,8 @@ def cmd_compile(args: argparse.Namespace) -> None:
 def cmd_query(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        _print(runtime.query(_query_payload_from_args(args)))
+        query, arguments = _query_call_from_args(args)
+        _print(runtime.query(query, **arguments))
     finally:
         runtime.close()
 

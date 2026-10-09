@@ -281,7 +281,7 @@ def valid_values_payload(
         query_payload["route_decisions"] = decisions
     query_payload["order_by"] = [{"field": dimension_id, "direction": "ASC"}]
     query_payload["limit"] = max(limit + offset, 100)
-    result = runtime.query(query_payload)
+    result = runtime.query_internal(query_payload)
     values = []
     for row in result["rows"]:
         if row.get(dimension_id) is None:

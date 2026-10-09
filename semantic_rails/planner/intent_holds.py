@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..ast import _time_spec_from_payload
+from ..clock import range_bounds
 from ..errors import SemanticLayerError
 from ._base import _runtime_composition_terms
 from .groupings import _requested_grouping_terms
@@ -276,14 +276,17 @@ def _with_query_clock(
         and time.get("range")
     ):
         return query
+    role = next(
+        (row for row in config.temporal_roles if row.id == time.get("temporal_role")), None
+    )
     try:
-        spec = _time_spec_from_payload(time, policy_context=context, config=config)
+        bounds = range_bounds(
+            time["range"], now=context["now"], timezone=getattr(role, "timezone", "") or "UTC"
+        )
     except (SemanticLayerError, ValueError, OverflowError):
         return None
-    if spec is None or not spec.start or not spec.end:
-        return None
     bounded = {key: value for key, value in time.items() if key != "range"}
-    return {**query, "time": {**bounded, "start": spec.start, "end": spec.end}}
+    return {**query, "time": {**bounded, **bounds}}
 
 
 def _unclocked_window_why(

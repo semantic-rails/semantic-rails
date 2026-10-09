@@ -1250,7 +1250,7 @@ def _run_probe(
         # At most two repairs: required policy grouping and a non-additive stored grain.
         for attempt in range(3):
             try:
-                runtime.query(query)
+                runtime.query_internal(query)
                 break
             except SemanticLayerError as exc:
                 if not repair:
@@ -1305,7 +1305,7 @@ def _run_probe(
             # Package-owner diagnostics use the normal compile surface on the
             # same runtime generation. Never change process-wide debug-SQL
             # authorization or inject roles while other requests may be running.
-            result["rendered_sql"] = runtime.compile(query)["rendered_sql"]
+            result["rendered_sql"] = runtime.compile_internal(query)["rendered_sql"]
         return result
 
 

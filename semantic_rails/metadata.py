@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from typing import Any
 
-from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query
+from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query, time_output_alias
 from .catalog_search import (
     CatalogSearchDocument,
     SearchTerms,
@@ -608,11 +608,7 @@ def _result_shape_preview(query_patch: dict[str, Any]) -> dict[str, Any]:
     time = dict(query_patch.get("time", {}) or {})
     time_alias = ""
     if time.get("temporal_role"):
-        time_alias = (
-            str(time["temporal_role"])
-            if not time.get("grain")
-            else f"{time['temporal_role']}__{time['grain']}"
-        )
+        time_alias = time_output_alias(time)
     columns = [*group_by, *([time_alias] if time_alias else []), *select_aliases]
     return {
         "columns": columns,

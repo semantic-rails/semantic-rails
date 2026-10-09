@@ -93,6 +93,9 @@ def _day_rows(day: Any, source: str, series: SqlTableFunction | None = None) -> 
 @dataclass(frozen=True)
 class SqlDialect:
     name: str
+    # Whether LIKE needs an explicit ``ESCAPE '\\'`` (BigQuery and ClickHouse escape with a
+    # backslash by default and have no ESCAPE clause).
+    like_escape_clause = True
 
     def scalar_call(self, name: str, args: list[Any], *, distinct: bool = False) -> Any:
         """Central lowering guard for every query, package and relation call."""
@@ -692,6 +695,8 @@ class BigQueryDialect(SqlDialect):
     arithmetic).
     """
 
+    like_escape_clause = False
+
     name: str = "bigquery"
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
@@ -1121,6 +1126,8 @@ class ClickHouseDialect(SqlDialect):
     - Conditional aggregates keep the portable ``CASE`` default —
       ClickHouse ``COUNT``/``SUM`` skip NULLs correctly.
     """
+
+    like_escape_clause = False
 
     name: str = "clickhouse"
 

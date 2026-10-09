@@ -52,13 +52,13 @@ from .commands.query import (
     cmd_validate,
 )
 from .common import (
+    _add_now_arg,
     _add_optional_reference_args,
     _add_package_or_path_args,
     _add_policy_context_args,
     _add_response_detail_args,
     _policy_context_from_args,
     _print_stderr,
-    _query_payload_from_args,
     _ref_from_args,
 )
 from .output import _print_error_envelope
@@ -223,6 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_policy_context_args(p_validate)
     _add_response_detail_args(p_validate)
+    _add_now_arg(p_validate)
     p_validate.set_defaults(func=cmd_validate)
 
     p_compile = sub.add_parser(
@@ -237,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_policy_context_args(p_compile)
     _add_response_detail_args(p_compile)
+    _add_now_arg(p_compile)
     p_compile.set_defaults(func=cmd_compile)
 
     p_parse_config = sub.add_parser(
@@ -443,6 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_policy_context_args(p_query)
     _add_response_detail_args(p_query)
+    _add_now_arg(p_query)
     p_query.set_defaults(func=cmd_query)
 
     p_segment_validate = sub.add_parser(
@@ -864,12 +867,7 @@ def main() -> None:
         if config is not None:
             try:
                 # Suggestions come from the caller's view; without one, none are offered.
-                config = view_of(
-                    config,
-                    _query_payload_from_args(args).get("policy_context", {})
-                    if getattr(args, "query_json", None)
-                    else _policy_context_from_args(args),
-                )
+                config = view_of(config, _policy_context_from_args(args))
             except Exception:  # noqa: BLE001 — uncertain visibility suggests nothing
                 config = None
         if config is not None:

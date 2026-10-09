@@ -34,7 +34,12 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .ast import every_filter, normalize_query, plain_filters, rewrite_select_shorthand
+from .ast import (
+    every_filter,
+    normalize_query,
+    plain_filters,
+    time_output_alias,
+)
 from .cache import (
     CachedCompilation,
     CompiledSqlCache,
@@ -44,7 +49,15 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .compiler import BoundQuery, NonAdditiveRefusal, bind_query, compile_query, read_routes
+from .clock import format_now, parse_now
+from .compiler import (
+    BoundQuery,
+    NonAdditiveRefusal,
+    _object_default_query_temporal_role,
+    bind_query,
+    compile_query,
+    read_routes,
+)
 from .compiler_parts.empty_groups import (
     GUARDED_BASE,
     base_reads,
@@ -109,10 +122,12 @@ from .policies import (
     row_filters_for_context,
     withheld_rank_order,
 )
+from .query_call import read_call
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_select_for_profile
 from .request_context import (
+    RequestContext,
     context_from_policy_context,
     request_context_payload,
     without_trusted_attributes,
@@ -636,6 +651,15 @@ def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
     return collect_object_references(query.to_dict())
 
 
+def _context_mapping(context: Any) -> dict[str, Any]:
+    """A request's identity as the engine's policy mapping (empty for a local caller)."""
+    if context is None:
+        return {}
+    if isinstance(context, RequestContext):
+        return context.to_policy_context()
+    return context_from_policy_context(dict(context)).to_policy_context()
+
+
 def _policy_context(payload: dict[str, Any]) -> dict[str, Any]:
     context = dict(payload.get("policy_context", {}) or {})
     normalized = context_from_policy_context(context).to_policy_context()
@@ -1030,7 +1054,7 @@ def _compiled_warnings(
     ]
     if payload is not None:
         # Every check reads the canonical query the compiler saw, not the caller's shorthand.
-        canonical, notes = rewrite_select_shorthand(payload)
+        canonical, notes = payload, list(payload.get("_call_notes") or [])
         warnings.extend(caveat_warnings(config, compiled, canonical))
         warnings.extend(_expression_normalized_away_warnings(canonical, compiled))
         if not compiled["logical_plan"].time.get("window_total"):
@@ -1556,7 +1580,7 @@ def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=
     aliases = AliasRegistry.for_plan(
         compiled["logical_plan"], measure_aliases=[b.alias for b in bound]
     )
-    time_key = f"{time.get('temporal_role', '')}__{time.get('grain', '')}"
+    time_key = time_output_alias(time)
     affected: list[str] = []
     measures: list[dict[str, Any]] = []
     for output, item in outputs.items():
@@ -1739,7 +1763,9 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
 
     def values(field: str, where: list[dict[str, Any]], limit: int) -> list[str] | None:
         try:
-            result = runtime.query({**probe, "group_by": [field], "where": where, "limit": limit})
+            result = runtime.query_internal(
+                {**probe, "group_by": [field], "where": where, "limit": limit}
+            )
         except SemanticLayerError:
             return None
         return [str(row[field]) for row in result["rows"] if row.get(field) is not None]
@@ -2024,30 +2050,6 @@ def _methodology_hints(config, payload: dict[str, Any], compiled) -> list[dict[s
                             },
                         }
                     )
-    if payload.get("export"):
-        object_ids = _query_object_ids(payload, config)
-        protected = []
-        for measure in config.measures:
-            if measure.id in object_ids and (
-                measure.meta.get("mnpi") or measure.operational.get("mnpi")
-            ):
-                protected.append(measure.id)
-        for recipe in config.metric_recipes:
-            if recipe.id in object_ids and (
-                recipe.meta.get("mnpi") or recipe.operational.get("mnpi")
-            ):
-                protected.append(recipe.id)
-        if protected:
-            hints.append(
-                {
-                    "kind": "methodology_error",
-                    "code": "MNPI_BULK_EXPORT_DISCOURAGED",
-                    "message": "The query references MNPI-tagged semantic objects and was marked for export.",
-                    "severity": "warning",
-                    "query_patch": {"export": False},
-                    "object_ids": protected,
-                }
-            )
     return hints
 
 
@@ -2745,8 +2747,84 @@ class Runtime:
             self._compile_cache.put(key, CachedCompilation(compiled=compiled))
         return compiled
 
+    def engine_payload(
+        self,
+        query: Any,
+        *,
+        now: Any = None,
+        context: Any = None,
+        verbosity: str | None = None,
+        sql_profile: str | None = None,
+        limits: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        debug: bool = False,
+        partial: bool = False,
+    ) -> dict[str, Any]:
+        """The engine's form of a caller's call, with the request's identity and options.
+
+        The call is read once, by :func:`semantic_rails.query_call.read_call`; identity comes
+        only from ``context`` (a :class:`RequestContext`, or its mapping for a trusted local
+        caller) and ``now`` only from the argument.
+        """
+        instant = parse_now(now)
+        internal, notes = read_call(
+            query,
+            config=self._config,
+            now=instant,
+            default_clock=self._default_clock,
+            partial=partial,
+        )
+        payload: dict[str, Any] = {**internal, "policy_context": _context_mapping(context)}
+        payload["policy_context"]["now"] = format_now(instant)
+        options = {
+            "verbosity": verbosity,
+            "sql_profile": sql_profile,
+            "limits": limits,
+            "request_id": request_id,
+        }
+        payload.update({key: value for key, value in options.items() if value is not None})
+        if debug:
+            payload["debug"] = True
+        if notes:
+            payload["_call_notes"] = notes
+        return payload
+
+    def _default_clock(self, object_id: str) -> str:
+        try:
+            return _object_default_query_temporal_role(self._config, object_id)
+        except SemanticLayerError:
+            return ""
+
+    def validate(
+        self, query: Any, *, now: Any = None, context: Any = None, **options: Any
+    ) -> dict[str, Any]:
+        """Check a call without running it: the answer's shape, policies and SQL plan."""
+        try:
+            payload = self.engine_payload(query, now=now, context=context, **options)
+        except SemanticLayerError as exc:
+            return {
+                "ok": False,
+                "status": "error",
+                "errors": [{"code": exc.code, "message": str(exc), "details": exc.details}],
+            }
+        return self.validate_internal(payload)
+
+    def compile(
+        self, query: Any, *, now: Any = None, context: Any = None, **options: Any
+    ) -> dict[str, Any]:
+        """The SQL and plan a call compiles to."""
+        return self.compile_internal(
+            self.engine_payload(query, now=now, context=context, **options)
+        )
+
+    def query(
+        self, query: Any, *, now: Any = None, context: Any = None, **options: Any
+    ) -> dict[str, Any]:
+        """Answer a call."""
+        return self.query_internal(self.engine_payload(query, now=now, context=context, **options))
+
     @runtime_request_scope
-    def validate(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def validate_internal(self, payload: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
@@ -2852,7 +2930,7 @@ class Runtime:
             )
 
     @runtime_request_scope
-    def compile(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def compile_internal(self, payload: dict[str, Any]) -> dict[str, Any]:
         refusal = _scope_refusal(payload)
         if refusal is not None:
             raise refusal
@@ -2907,7 +2985,7 @@ class Runtime:
         )
 
     @runtime_request_scope
-    def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def query_internal(self, payload: dict[str, Any]) -> dict[str, Any]:
         refusal = _scope_refusal(payload)
         if refusal is not None:
             raise refusal
@@ -3249,7 +3327,7 @@ class Runtime:
             derived_query = build_segment_query(normalized, include_preview_dimensions=True)
             if context:
                 derived_query["policy_context"] = context
-            validation = self.validate(derived_query)
+            validation = self.validate_internal(derived_query)
             validation.update(
                 {
                     "segment": {
@@ -3317,7 +3395,7 @@ class Runtime:
         derived_query = build_segment_query(normalized, include_preview_dimensions=True)
         if context:
             derived_query["policy_context"] = context
-        explained = self.compile(derived_query)
+        explained = self.compile_internal(derived_query)
         explained.update(
             {
                 "segment": {

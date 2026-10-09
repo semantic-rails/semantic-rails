@@ -27,6 +27,7 @@ from ..sql_ast import (
     SqlInterval,
     SqlIsNull,
     SqlJoin,
+    SqlLike,
     SqlLiteral,
     SqlNamedArg,
     SqlOrder,
@@ -76,6 +77,8 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
             return SqlExists(query=_select(expr.query), negated=expr.negated)
         if isinstance(expr, SqlIsNull):
             return SqlIsNull(expr=_expr(expr.expr))
+        if isinstance(expr, SqlLike):
+            return SqlLike(expr=_expr(expr.expr), pattern=expr.pattern)
         if isinstance(expr, SqlCaseWhen):
             return SqlCaseWhen(condition=_expr(expr.condition), result=_expr(expr.result))
         if isinstance(expr, SqlCase):

@@ -197,8 +197,7 @@ class ResourceAccess:
             "sql_profile",
             "limits",
             "debug",
-            "explain",
-            "export",
+            "_call_notes",
         }
         if set(payload) - allowed_keys:
             raise access_denied()
@@ -231,8 +230,6 @@ class ResourceAccess:
             raise access_denied()
         references.update(requested_dimensions)
         if query.time is not None:
-            if "calendar_id" in dict(payload.get("time") or {}):
-                raise access_denied()
             role = query.time.temporal_role
             if role not in dimensions or role not in {row.id for row in self.config.temporal_roles}:
                 raise access_denied()
@@ -243,6 +240,19 @@ class ResourceAccess:
         if any(row.field not in output_names for row in query.order_by):
             raise access_denied()
         self._check_policies(references, payload)
+
+
+# The runtime's query operations run on the engine's form of a call (``Runtime.query`` reads
+# the caller's call and runs ``query_internal``); the gate names them by their public name.
+_OPERATION_NAMES = {
+    "validate_internal": "validate",
+    "compile_internal": "compile",
+    "query_internal": "query",
+}
+
+
+def _operation_name(operation: Callable[..., Any]) -> str:
+    return _OPERATION_NAMES.get(operation.__name__, operation.__name__)
 
 
 def _context_payload(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -416,7 +426,9 @@ def _restricted_plan(
             or selected[0].expression.metric_recipe != row["id"]
         ):
             raise access_denied()
-    validation = runtime.validate({**query, "policy_context": access.context.to_policy_context()})
+    validation = runtime.validate_internal(
+        {**query, "policy_context": access.context.to_policy_context()}
+    )
     if not validation.get("ok"):
         return {
             **base,
@@ -490,7 +502,7 @@ def run_authorized_operation(
 ) -> Any:
     """The existing runtime request boundary calls this for shared operations. It pins the
     caller's visible view (``visible_view.request_view``) for the whole operation."""
-    name = operation.__name__
+    name = _operation_name(operation)
     payload = _context_payload(name, args, kwargs)
     try:
         check_request_environment(
@@ -519,7 +531,7 @@ def run_authorized_operation(
 def _run_in_view(
     operation: Callable[..., Any], runtime: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> Any:
-    name = operation.__name__
+    name = _operation_name(operation)
     payload = _context_payload(name, args, kwargs)
     if (payload.get("policy_context") or {}).get("metric_allowlist") is None:
         return operation(runtime, *args, **kwargs)

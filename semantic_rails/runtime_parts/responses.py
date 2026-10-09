@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from ..ast import is_child_group
+from ..ast import is_child_group, time_output_alias
 from ..dialects import dialect_for_warehouse
 from ..expressions import collect_object_references, expr_to_dict
 
@@ -173,7 +173,7 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
     plan = compiled.get("logical_plan")
     if time.get("temporal_role") and not (plan is not None and plan.time.get("window_total")):
         role_id = str(time["temporal_role"])
-        field = role_id if not time.get("grain") else f"{role_id}__{time['grain']}"
+        field = time_output_alias(time)
         meta = labels.get(role_id, {})
         columns.append(
             {

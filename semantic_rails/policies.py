@@ -15,7 +15,7 @@ from dataclasses import fields, is_dataclass, replace
 from functools import cache
 from typing import Any
 
-from .ast import NormalizedQuery, every_filter, normalize_query, plain_filters
+from .ast import NormalizedQuery, every_filter, normalize_query, plain_filters, time_output_alias
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .compiler_parts.bind import measure_column_ref
 from .errors import SemanticLayerError
@@ -327,8 +327,6 @@ def withheld_shape(
     if binding is None:
         return refuse("withheld_unbound", "only a query can rank by them.")
     query = binding.plan.query
-    if query.get("export"):
-        return refuse("withheld_export", "a query that reads them cannot be exported.")
     order = list(query.get("order_by") or [])
     ranked = next(
         (item for item in query["select"] if order and item["as"] == order[0]["field"]), None
@@ -383,7 +381,7 @@ def withheld_shape(
 def rank_keys(query: Mapping[str, Any]) -> list[str]:
     """A normalized query's output group keys: its group_by, then a time bucket."""
     time = query.get("time") or {}
-    bucket = [f"{time['temporal_role']}__{time['grain']}"] if time.get("grain") else []
+    bucket = [time_output_alias(time)] if time.get("grain") else []
     return [*query.get("group_by", []), *bucket]
 
 

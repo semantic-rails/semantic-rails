@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..ast import _relative_range_bounds
+from ..clock import range_bounds
 from ..compiler import bind_query
 from ..compiler_parts.sql_lowering import _snapshot_series_columns
 from ..errors import SemanticLayerError
@@ -452,9 +452,9 @@ def _window_days(
     role = str(bounds.get("temporal_role") or "")
     if bounds.get("range"):
         try:
-            bounds = _relative_range_bounds(
+            bounds = range_bounds(
                 bounds["range"],
-                policy_context=time_policy_context(policy_context),
+                now=(time_policy_context(policy_context) or {}).get("now"),
                 timezone=timezone or time_timezone(),
             )
         except (SemanticLayerError, ValueError, OverflowError):

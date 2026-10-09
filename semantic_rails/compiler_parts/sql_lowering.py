@@ -19,6 +19,7 @@ from ..ast import (
     normalize_query,
     plain_filters,
     refuse_child_groups,
+    time_output_alias,
 )
 from ..config_parts.lookup_measures import lookup_links
 from ..dialects import dialect_for_warehouse
@@ -799,11 +800,7 @@ def _metric_filter_alias(index: int) -> str:
 def _query_key_aliases(plan: LogicalPlan) -> list[str]:
     aliases = list(plan.group_by)
     if plan.time:
-        aliases.append(
-            plan.time["temporal_role"]
-            if not plan.time.get("grain")
-            else f"{plan.time['temporal_role']}__{plan.time['grain']}"
-        )
+        aliases.append(time_output_alias(plan.time))
     return aliases
 
 
@@ -1133,11 +1130,7 @@ def _source_local_filter_conditions(
 def _time_alias_for_plan(plan: LogicalPlan) -> str:
     if not plan.time:
         return ""
-    return (
-        plan.time["temporal_role"]
-        if not plan.time.get("grain")
-        else f"{plan.time['temporal_role']}__{plan.time['grain']}"
-    )
+    return time_output_alias(plan.time)
 
 
 def _measure_time_components(
@@ -1298,11 +1291,7 @@ def _aggregate_relation_time_expr(
     time_expr = (
         _dialect(config).date_trunc(time["grain"], raw_expr) if time.get("grain") else raw_expr
     )
-    time_alias = (
-        time["temporal_role"]
-        if not time.get("grain")
-        else f"{time['temporal_role']}__{time['grain']}"
-    )
+    time_alias = time_output_alias(time)
     return raw_expr, time_expr, time_alias
 
 
@@ -2325,11 +2314,7 @@ def _entity_in_terms_of_leaf_select(
         )
         raw_expr = _apply_role_timezone(raw_expr, role, config)
         time_expr = _time_bucket_expr(time, raw_expr, config)
-        time_alias = (
-            time["temporal_role"]
-            if not time.get("grain")
-            else f"{time['temporal_role']}__{time['grain']}"
-        )
+        time_alias = time_output_alias(time)
         select_fields.append(SqlField(time_expr, time_alias))
         group_fields.append(time_expr)
         where_clauses.extend(_source_time_window(raw_expr, time, config, role_id=role.id))
@@ -3043,11 +3028,7 @@ def _measure_leaf_select(
         coverage_time = raw_expr
         raw_expr = _apply_role_timezone(raw_expr, role, config)
         time_expr = _time_bucket_expr(time, raw_expr, config)
-        time_alias = (
-            time["temporal_role"]
-            if not time.get("grain")
-            else f"{time['temporal_role']}__{time['grain']}"
-        )
+        time_alias = time_output_alias(time)
         select_fields.append(SqlField(time_expr, time_alias))
         group_fields.append(time_expr)
 
@@ -3877,11 +3858,7 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
         time_expr = (
             _dialect(config).date_trunc(time["grain"], raw_expr) if time.get("grain") else raw_expr
         )
-        time_alias = (
-            time["temporal_role"]
-            if not time.get("grain")
-            else f"{time['temporal_role']}__{time['grain']}"
-        )
+        time_alias = time_output_alias(time)
         select_fields.append(SqlField(time_expr, time_alias))
         group_fields.append(time_expr)
 
@@ -5103,11 +5080,7 @@ def _measure_group_leaf_select(
         coverage_time = raw_expr
         raw_expr = _apply_role_timezone(raw_expr, role, config)
         time_expr = _time_bucket_expr(time, raw_expr, config)
-        time_alias = (
-            time["temporal_role"]
-            if not time.get("grain")
-            else f"{time['temporal_role']}__{time['grain']}"
-        )
+        time_alias = time_output_alias(time)
         select_fields.append(SqlField(time_expr, time_alias))
         group_fields.append(time_expr)
 
@@ -5607,7 +5580,6 @@ def lower_to_sql(
     if plan.time:
         # Validation resolves the calendar; a plan that bypassed it refuses the same way.
         refuse_authored_calendar(
-            plan.time.get("calendar_id"),
             plan.time.get("grain"),
             [str(plan.time.get("temporal_role") or "")]
             + [row.bound_measure.temporal_role for row in plan.measure_plans],

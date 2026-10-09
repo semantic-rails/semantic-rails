@@ -98,8 +98,6 @@ def _leaf_rollup_blocker(
         isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
     ):
         return "metric_predicate_filter"
-    if query.time and (query.time.calendar_id or "default").strip().lower() != "default":
-        return "calendar_mismatch"
     role = _temporal_role_index(config).get(leaf_time_role)
     column_tz = str(getattr(role, "column_timezone", "") or "").strip()
     target_tz = str(getattr(role, "timezone", "") or "").strip()

@@ -31,7 +31,7 @@ from .diagnostics import (
     semantic_issue,
 )
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
-from .mcp_query import normalize_arguments, normalize_query_spellings, normalize_routes
+from .mcp_query import normalize_arguments, normalize_routes
 from .mcp_session import MCPQuerySession
 from .metadata import (
     _slim_discover_minimal,
@@ -623,6 +623,13 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             {
                 "intent": {"type": "string"},
                 "query": QUERY_SCHEMA_SLIM,
+                "now": {
+                    "type": "string",
+                    "description": (
+                        "ISO date or date-time that relative windows (time.last, time.this) "
+                        "resolve against; default: the current time."
+                    ),
+                },
                 "detail": {
                     "type": "string",
                     "enum": ["query", "best", "full", "debug"],
@@ -661,6 +668,13 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         input_schema=_schema(
             {
                 "query": QUERY_SCHEMA,
+                "now": {
+                    "type": "string",
+                    "description": (
+                        "ISO date or date-time that relative windows (time.last, time.this) "
+                        "resolve against; default: the current time."
+                    ),
+                },
                 "mode": {
                     "type": "string",
                     "enum": list(_EXECUTE_MODES),
@@ -869,6 +883,10 @@ _TOOL_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
     definition.name: dict(definition.input_schema or {}) for definition in TOOL_DEFINITIONS
 }
 _TRANSPORT_ARGS = ("request_id", "policy_context")
+# The execute tool's own arguments; the other keys of a flat call are the query.
+_EXECUTE_ARGUMENTS = frozenset(
+    {"mode", "max_rows", "row_format", "verbosity", "sql_profile", "now", *_TRANSPORT_ARGS}
+)
 _KNOWN_ARGS: Mapping[str, frozenset[str]] = {
     name: frozenset(schema.get("properties") or {})
     | frozenset(_TRANSPORT_ARGS)
@@ -2035,9 +2053,7 @@ class SemanticLayerMCPAdapter:
         def dispatch(args: dict[str, Any]) -> dict[str, Any]:
             nested_query = isinstance(args.get("query"), dict)
             if nested_query or (name == "execute" and "query" not in args):
-                query = normalize_query_spellings(
-                    args["query"] if nested_query else args, normalized
-                )
+                query = args["query"] if nested_query else args
                 if nested_query:
                     args["query"] = query
                 else:
@@ -2597,23 +2613,47 @@ class SemanticLayerMCPAdapter:
                 self.runtime,
                 intent=str(args.get("intent", "")),
                 partial_query=_partial_query_payload(args),
+                now=args.get("now"),
                 detail=_plan_detail(args.get("detail")),
                 limit=_coerce_int(args.get("limit"), 3, field="limit", minimum=1),
             ),
         )
 
+    def _engine_query(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The engine's form of the tool's ``query``, with ``now``, identity and options."""
+        call = (
+            args["query"]
+            if isinstance(args.get("query"), Mapping)
+            else {key: value for key, value in args.items() if key not in _EXECUTE_ARGUMENTS}
+        )
+        verbosity = str(args.get("verbosity") or "").strip() or MCP_DEFAULT_QUERY_VERBOSITY
+        return self.runtime.engine_payload(
+            call,
+            now=args.get("now"),
+            context=_policy_context_payload(args) or None,
+            verbosity=verbosity,
+            sql_profile=str(args.get("sql_profile") or "").strip() or None,
+        )
+
     def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            query = _query_payload_with_mcp_default_verbosity(args)
-            result = self.runtime.validate(query)
+            try:
+                query = self._engine_query(args)
+            except SemanticLayerError as exc:
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "errors": [{"code": exc.code, "message": str(exc), "details": exc.details}],
+                }
+            result = self.runtime.validate_internal(query)
             return _with_warning(result, _grouped_ungrained_time_warning(query, result))
 
         return self._guarded(arguments, _run)
 
     def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            query = _query_payload_with_mcp_default_verbosity(args)
-            result = self.runtime.compile(query)
+            query = self._engine_query(args)
+            result = self.runtime.compile_internal(query)
             return _with_warning(result, _grouped_ungrained_time_warning(query, result))
 
         return self._guarded(arguments, _run)
@@ -2622,16 +2662,14 @@ class SemanticLayerMCPAdapter:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             row_format = _row_format_arg(args)
             requested_cap = _max_rows_arg(args.get("max_rows")) or MCP_DEFAULT_MAX_ROWS
-            query_payload = _query_payload_with_mcp_default_verbosity(
-                _strip_execute_transport_args(args)
-            )
+            query_payload = self._engine_query(_strip_execute_transport_args(args))
             cap, fetch, fence_binds = _execute_row_limits(query_payload, requested_cap)
             limits = query_payload.get("limits")
             query_payload["limits"] = {
                 **(dict(limits) if isinstance(limits, Mapping) else {}),
                 "max_rows": fetch,
             }
-            result = _echo_caller_limits(self.runtime.query(query_payload), limits)
+            result = _echo_caller_limits(self.runtime.query_internal(query_payload), limits)
             if bool(result.get("ok", True)):
                 result = _truncate_rows(
                     result, cap=cap, query=query_payload, fence_binds=fence_binds

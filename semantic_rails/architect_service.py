@@ -1802,7 +1802,11 @@ class ArchitectProject:
                 for field_name in ("query", "metric_query", "expected_query"):
                     if field_name not in fields:
                         continue
-                    result = runtime.validate(deepcopy(fields[field_name]))
+                    result = runtime.validate(
+                        deepcopy(fields[field_name]),
+                        now=spec.get("now"),
+                        context=spec.get("context"),
+                    )
                     error = dict((result.get("errors") or [{}])[0])
                     code = str(error.get("code", "") or "")
                     if must_fail and (result.get("ok") or code != spec["code"]):

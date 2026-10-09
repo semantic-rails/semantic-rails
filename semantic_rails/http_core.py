@@ -160,6 +160,43 @@ def cors_origin_header(request_origin: str | None) -> str:
     return ""
 
 
+# Options a REST call may set beside its query (``{"query": ..., "options": {...}}``).
+CALL_OPTIONS = ("now", "verbosity", "sql_profile")
+
+
+def call_arguments(
+    payload: Mapping[str, Any], policy_context: Mapping[str, Any]
+) -> tuple[Any, dict[str, Any]]:
+    """The call in a REST body and the arguments beside it; identity is the resolved context."""
+    if "query" in payload:
+        call = payload["query"]
+        options = payload.get("options") or {}
+        if not isinstance(options, Mapping):
+            raise SemanticLayerError(
+                "INVALID_QUERY", "options must be an object", details={"path": "options"}
+            )
+        unknown = sorted(set(options) - set(CALL_OPTIONS))
+        if unknown:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"options.{unknown[0]} is not a call option",
+                details={"path": f"options.{unknown[0]}", "supported_keys": list(CALL_OPTIONS)},
+            )
+        extra = sorted(set(payload) - {"query", "options", "policy_context", "request_id"})
+        if extra:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{extra[0]} belongs in options or in the query",
+                details={"path": extra[0], "supported_keys": ["query", "options"]},
+            )
+    else:
+        call = {key: value for key, value in payload.items() if key not in {"policy_context", "request_id"}}
+        options = {}
+    arguments: dict[str, Any] = {key: options[key] for key in CALL_OPTIONS if key in options}
+    arguments["context"] = dict(policy_context) or None
+    return call, arguments
+
+
 class SemanticHTTPService:
     def __init__(self, runtime: Runtime, package_id: str | None = None) -> None:
         self.runtime = runtime
@@ -551,16 +588,15 @@ class SemanticHTTPService:
                     # Plan is an intent envelope, never a flat Query IR.
                     # Keep trusted context even when no query seed was supplied.
                     partial_query=query_payload({**payload, "query": payload.get("query")}),
+                    now=(payload.get("options") or {}).get("now") or payload.get("now"),
                     detail=str(payload.get("detail", "best") or "best"),
                     limit=coerce_int(payload.get("limit"), 3, field="limit", minimum=1),
                 ),
             }, 200
-        if route == "/validate":
-            return {"ok": True, **self.runtime.validate(query_payload(payload))}, 200
-        if route == "/compile":
-            return {"ok": True, **self.runtime.compile(query_payload(payload))}, 200
-        if route == "/query":
-            return {"ok": True, **self.runtime.query(query_payload(payload))}, 200
+        if route in {"/validate", "/compile", "/query"}:
+            call, arguments = call_arguments(payload, policy_context)
+            operation = getattr(self.runtime, route.lstrip("/"))
+            return {"ok": True, **operation(call, **arguments)}, 200
         if route == "/segment-validate":
             return {
                 "ok": True,
