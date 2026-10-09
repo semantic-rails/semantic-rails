@@ -927,11 +927,10 @@ def test_a_hidden_narrowing_dimension_still_holds_and_is_not_named(
     assert plan["status"] == "low_confidence", plan.get("why")
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
     # "New teams" reads the hidden class, so it is hidden too: the hold still stands, naming
-    # neither of them.
-    gaps = _gaps(plan)
-    assert [gap["expected"] for gap in gaps] == [{"metrics": [], "narrowed_by": []}]
-    assert [gap["message"] for gap in gaps] == [HIDDEN_GOVERNOR]
-    serialized = json.dumps(plan)
+    # neither of them, and the engine never answers the raw count for this caller.
+    [refused] = engine.validate({"select": [TEAMS]}, context={"audience": "external"})["errors"]
+    assert refused["code"] == "POLICY_DENIED"
+    serialized = json.dumps([plan, refused])
     for name in (TEAM_CLASS, "Team class", NEW_TEAMS, "New teams", "Customer teams created"):
         assert name not in serialized
     # The control: for a caller who sees the class, the hold names the metric and the class.

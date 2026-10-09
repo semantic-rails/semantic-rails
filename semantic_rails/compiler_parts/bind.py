@@ -415,29 +415,34 @@ def _expression_alias(expr: SemanticExpr, config: PackageConfig | None = None) -
 _MEASURE_KINDS = frozenset({"measure", "aggregate", "semi_additive", "scoped_aggregate"})
 
 
+def select_measure_reads(select: Any) -> Iterator[dict[str, Any]]:
+    """Each measure node a query's ``select`` reads itself; a metric's reads are its own."""
+
+    def walk(node: Any) -> Iterator[dict[str, Any]]:
+        if isinstance(node, list):
+            for item in node:
+                yield from walk(item)
+        elif isinstance(node, dict):
+            if node.get("kind") in _MEASURE_KINDS and node.get("measure"):
+                yield node
+                return
+            for value in node.values():
+                yield from walk(value)
+
+    yield from walk([row.get("expression") for row in select or []])
+
+
 def aggregation_overrides(select: Any, config: PackageConfig) -> dict[str, tuple[str, str]]:
     """Each measure a query's ``select`` reads with a statistic other than its package default,
     by leaf alias: ``(measure id, aggregation)``. An override equal to the default is none, and
     a metric's own aggregation is the package's definition, never the call's override."""
     found: dict[str, tuple[str, str]] = {}
-
-    def walk(node: Any) -> None:
-        if isinstance(node, list):
-            for item in node:
-                walk(item)
-        if not isinstance(node, dict):
-            return
-        measure = _measure_index(config).get(str(node.get("measure") or ""))
-        if node.get("kind") in _MEASURE_KINDS and measure is not None:
-            aggregation = str(node.get("aggregation") or "")
-            if aggregation and aggregation != measure.default_aggregation:
-                expr = parse_semantic_expression(node, context="select")
-                found[_expression_alias(expr, config)] = (measure.id, aggregation)
-            return
-        for value in node.values():
-            walk(value)
-
-    walk([row.get("expression") for row in select or []])
+    for node in select_measure_reads(select):
+        measure = _measure_index(config).get(str(node["measure"]))
+        aggregation = str(node.get("aggregation") or "")
+        if measure is not None and aggregation and aggregation != measure.default_aggregation:
+            expr = parse_semantic_expression(node, context="select")
+            found[_expression_alias(expr, config)] = (measure.id, aggregation)
     return found
 
 

@@ -133,7 +133,7 @@ from .request_context import (
     without_trusted_attributes,
 )
 from .result_values import result_rows
-from .runtime_parts.assumptions import call_assumptions, split_hidden
+from .runtime_parts.assumptions import call_assumptions, refuse_hidden_governors, split_hidden
 from .runtime_parts.disclosures import mixed_time_role_warnings
 from .runtime_parts.filtered_series import filtered_series_warnings
 from .runtime_parts.responses import (
@@ -3346,6 +3346,7 @@ class Runtime:
             )
 
         binding = bind(payload)
+        refuse_hidden_governors(self._config, binding.plan.query)
         # A rank by a withheld value breaks its ties by the group keys, in the same direction.
         return withheld_rank_order(
             self.package_config,

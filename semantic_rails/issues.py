@@ -72,7 +72,7 @@ CODES: dict[str, str] = {
         """,
     ),
     **_codes(NOTE, "ROUTE_CHOSEN_BY_QUERY SEMANTIC_CAVEATS_TRUNCATED VALUES_WITHHELD"),
-    **_codes(ASSUMPTION, "AGGREGATION_OVERRIDE"),
+    **_codes(ASSUMPTION, "AGGREGATION_OVERRIDE GOVERNED_METRIC_EXISTS"),
     **_codes(
         HOLD,
         """
