@@ -19,7 +19,7 @@ from difflib import get_close_matches
 from typing import Any
 
 from . import operators
-from .clock import UNITS, format_now, parse_now, resolve_window
+from .clock import UNITS, parse_now, resolve_window
 from .errors import SemanticLayerError
 from .schema import OBSERVATION_SCOPES, PackageConfig
 
@@ -440,7 +440,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             for index, item in enumerate(list(node.get("predicates") or []))
         ]
         node["where"] = [
-            _inline_condition(item, f"{path}.where[{index}]")
+            _inline_condition(item, f"{path}.where[{index}]", context)
             for index, item in enumerate(list(node.get("where") or []))
         ]
         over = node.pop("over", None)
@@ -453,7 +453,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
     if kind in {"aggregate", "semi_additive"} and isinstance(node.get("filter"), Mapping):
         node["filter"] = {
             key: [
-                _inline_condition(item, f"{path}.filter.{key}[{index}]")
+                _inline_condition(item, f"{path}.filter.{key}[{index}]", context)
                 for index, item in enumerate(list(value or []))
             ]
             if isinstance(value, list)
@@ -463,8 +463,13 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
     return node
 
 
-def _inline_condition(item: Any, path: str) -> Any:
+def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
     """A condition inside an inline kind: the same words as ``where``."""
+    if isinstance(item, Mapping) and "expression" in item:
+        return {
+            **item,
+            "expression": _expression(item["expression"], f"{path}.expression", context),
+        }
     if not isinstance(item, Mapping) or "field" not in item and "dimension" not in item:
         return item
     word, value = operators.normalize_condition(item.get("op", "is"), item.get("value"), path=path)
@@ -774,7 +779,6 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
         time["last_value"] = int(raw["last"]["value"])
     if "this" in raw:
         time["this"] = raw["this"]
-    time["now"] = format_now(context.now)
     return time
 
 
@@ -954,22 +958,11 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
         call["select"] = select
     if query.get("group_by"):
         call["group_by"] = list(query["group_by"])
-    where: list[Any] = []
-    for item in list(query.get("where") or []):
-        if "child" in item:
-            where.append(
-                {
-                    "entity": item["child"],
-                    item["match"]: [_call_condition(row) for row in item.get("where") or []],
-                }
-            )
-        else:
-            where.append(_call_condition(item))
+    where = call_where(query.get("where") or [], query.get("metric_filters") or [])
     having: list[Any] = []
     for item in list(query.get("metric_filters") or []):
         expression = item.get("expression") or {}
         if expression.get("kind") == "metric_predicate":
-            where.append(_call_entity_having(expression))
             continue
         matched = next((name for name, expr in aliases.items() if expr == expression), None)
         refs = _call_expression(expression)
@@ -1013,6 +1006,22 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
     if query.get("observation_scope"):
         call["observation_scope"] = query["observation_scope"]
     return call
+
+
+def call_where(where: Any, metric_filters: Any = ()) -> list[dict[str, Any]]:
+    """A call's ``where``: the engine's row filters and child groups, then its entity filters."""
+    out: list[dict[str, Any]] = []
+    for item in list(where or []):
+        if "child" in item:
+            conditions = [_call_condition(row) for row in item.get("where") or []]
+            out.append({"entity": item["child"], item["match"]: conditions})
+        else:
+            out.append(_call_condition(item))
+    for item in list(metric_filters or []):
+        expression = item.get("expression") or {}
+        if expression.get("kind") == "metric_predicate":
+            out.append(_call_entity_having(expression))
+    return out
 
 
 def _legacy_axis(time: Mapping[str, Any]) -> str:

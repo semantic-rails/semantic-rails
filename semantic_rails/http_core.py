@@ -490,7 +490,7 @@ class SemanticHTTPService:
         seed = _seed_call(payload)
         if not seed and not policy_context:
             return None
-        return self.runtime.seed_payload(seed, context=policy_context)
+        return self.runtime.engine_seed({**seed, "policy_context": policy_context})
 
     def _handle_get(
         self,
@@ -574,8 +574,8 @@ class SemanticHTTPService:
                 "ok": True,
                 **build_options_payload(
                     self.runtime,
-                    partial_query=self.runtime.seed_payload(
-                        _seed_call(payload), context=policy_context
+                    partial_query=self.runtime.engine_seed(
+                        {**_seed_call(payload), "policy_context": policy_context}
                     ),
                     focus_terms=str(payload.get("focus_terms", "")),
                     focus_object_id=str(payload.get("focus_object_id", "")),

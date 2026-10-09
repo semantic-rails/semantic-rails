@@ -170,7 +170,7 @@ def _call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
 
     The definitions move to the tool schema's root so its ``#/$defs/...`` references resolve.
     """
-    from .contracts.generation import query_call_schema_document
+    from .contracts.query_schema import query_call_schema_document
 
     document = query_call_schema_document()
     definitions = document.pop("$defs")
@@ -2286,7 +2286,9 @@ class SemanticLayerMCPAdapter:
         seed, context = args.get("query"), _policy_context_payload()
         if not seed and not context:
             return None
-        return self.runtime.seed_payload(_object_argument(seed, field="query"), context=context)
+        return self.runtime.engine_seed(
+            {**_object_argument(seed, field="query"), "policy_context": context}
+        )
 
     def _call_options(self, args: Mapping[str, Any]) -> dict[str, Any]:
         """The service entry's arguments beside the tool's ``query``."""

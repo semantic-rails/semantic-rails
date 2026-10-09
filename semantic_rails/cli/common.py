@@ -16,6 +16,7 @@ from ..config import list_package_paths, package_root_for_source
 from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
 from ..local_config import resolve_local_package_path
+from ..request_payload import refuse_identity_claims
 from ..runtime import Runtime
 from ..yaml_loader import safe_load as yaml_safe_load
 
@@ -343,13 +344,21 @@ def _policy_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _seed_call_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    """The ``--query-json`` seed call with the operator's identity beside it.
+
+    The seed never says who is asking: identity comes from --environment/--audience.
+    """
+    seed = _parse_json(args.query_json) if args.query_json else {}
+    refuse_identity_claims({"query": seed}, remote=False)
+    return {**seed, "policy_context": _policy_context_from_args(args)}
+
+
 def _seed_from_args(runtime: Runtime, args: argparse.Namespace) -> dict[str, Any] | None:
-    """A metadata command's ``--query-json`` seed in the engine's form, as the operator."""
-    seed = _parse_json(args.query_json) if args.query_json else None
-    context = _policy_context_from_args(args)
-    if seed is None and not context:
+    """A metadata command's seed in the engine's form, or None when it has none."""
+    if not args.query_json and not _policy_context_from_args(args):
         return None
-    return runtime.seed_payload(seed, context=context)
+    return runtime.engine_seed(_seed_call_from_args(args))
 
 
 def _query_call_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:

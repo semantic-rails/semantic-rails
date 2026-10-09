@@ -18,12 +18,12 @@ from ...metadata import (
 from ...planner import plan_payload
 from ...request_payload import checked_string_list
 from ..common import (
-    _parse_json,
     _policy_context_from_args,
     _print,
     _query_call_from_args,
     _ref_from_args,
     _runtime_from_package_or_path,
+    _seed_call_from_args,
     _seed_from_args,
 )
 
@@ -187,9 +187,7 @@ def cmd_build_options(args: argparse.Namespace) -> None:
         _print(
             build_options_payload(
                 runtime,
-                partial_query=runtime.seed_payload(
-                    _parse_json(args.query_json), context=_policy_context_from_args(args)
-                ),
+                partial_query=runtime.engine_seed(_seed_call_from_args(args)),
                 focus_terms=args.focus_terms,
                 focus_object_id=args.focus_object_id,
                 step=args.step,
@@ -206,12 +204,11 @@ def cmd_build_options(args: argparse.Namespace) -> None:
 def cmd_plan(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        seed = _parse_json(args.query_json) if args.query_json else {}
         _print(
             plan_payload(
                 runtime,
                 intent=args.intent,
-                partial_query={**seed, "policy_context": _policy_context_from_args(args)},
+                partial_query=_seed_call_from_args(args),
                 now=args.now or None,
                 limit=args.limit,
                 detail=args.detail,

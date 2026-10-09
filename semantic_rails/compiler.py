@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from typing import Any
 
+from . import operators
 from .acceleration.routing import aggregate_routing, recording_rollup_scans
 from .acceleration.selection import _select_aggregate_relation
 from .ast import (
@@ -194,6 +195,7 @@ from .ir import (
 )
 from .naming import semantic_token as _semantic_token
 from .naming import slug as _slug
+from .query_call import call_where
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
 from .renderer import render_select_for_profile
@@ -228,7 +230,6 @@ from .sql_ast import (
     SqlTableRef,
     SqlWindow,
     SqlWithinGroup,
-    _compact_token,
     build_filter_condition,
 )
 from .sql_preparation import ParameterSlot, finalize_parameters
@@ -463,7 +464,7 @@ def _single_valued_columns(
 
     A column counts only when the query groups by its dimension, or by the key
     dimension of the model a direct many-to-one relationship reaches through it, or
-    pins that dimension with a top-level ``=`` filter or a one-value ``in``; and the
+    pins that dimension with a top-level ``is`` filter of one value; and the
     measure's own ``date`` clock at ``grain: day``. Metric, measure and segment
     filters never count: they don't split the output rows.
     """
@@ -480,10 +481,7 @@ def _single_valued_columns(
     dimensions = _dimension_index(config)
     pinned = set(query.group_by)
     for item in plain_filters(query.where):  # a child group pins no output row's value
-        op = str(item.op or "=").strip().lower()
-        if (op in {"=", "=="} and not isinstance(item.value, (list, tuple, set))) or (
-            op == "in" and isinstance(item.value, (list, tuple)) and len(item.value) == 1
-        ):
+        if operators.pinned_value(item.op, item.value)[0]:
             pinned.add(str(item.field))
     columns: set[str] = set()
     for dimension_id in pinned:
@@ -833,24 +831,22 @@ _FANOUT_DEDUP_AGGREGATIONS = frozenset(
     {"sum", "count", "count_distinct", "avg", "min", "max", "median", "percentile"}
 )
 _FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
-_NEGATED_FILTER_OPS = frozenset(
-    {"!=", "<>", "IS NOT", "IS DISTINCT FROM", "NOT IN", "NOT LIKE", "NOT ILIKE"}
-)
 
 
 def _negated_filter(item: dict[str, Any], dim: Any) -> bool:
     """A filter whose EXISTS reading ("has a row that is not X") differs from "has no row that
-    is X": a negated operator, a null test, or on a boolean dimension anything but ``= true``."""
-    op = _compact_token(str(item.get("op") or "=")).upper()
-    value = item.get("value")
-    values = value if isinstance(value, (list, tuple)) else [value]
+    is X": ``not``, ``missing: true``, or on a boolean dimension anything but ``is true``."""
+    op, value = operators.normalize_condition(
+        item.get("op", "is"), item.get("value"), path="where", internal=True
+    )
     if dim.data_type == "boolean":
-        return op not in {"=", "==", "IS", "IN"} or not all(
-            value is True or str(value).lower() == "true" for value in values
+        return op != "is" or not all(
+            value is True or str(value).lower() == "true"
+            for value in operators.values_of(op, value)
         )
-    if op == "IS NOT NULL" or (value is None and op in {"!=", "<>", "IS NOT"}):
-        return False  # "has a row with a value" reads one way
-    return op in _NEGATED_FILTER_OPS or op == "IS NULL" or value is None
+    if op == "missing":
+        return bool(value)  # "has a row with a value" reads one way
+    return op == "not"
 
 
 def _fanout_dedup_refusal(
@@ -1062,26 +1058,6 @@ def _clickhouse_child_group_reason(
     return ""
 
 
-# The complement of each comparison a clarification restates: what a 'none' group reads for
-# a negated flat filter. A filter with any other operator is never asked about.
-_COMPLEMENT_OPS = {
-    "=": "!=",
-    "==": "!=",
-    "!=": "=",
-    "<>": "=",
-    "<": ">=",
-    ">=": "<",
-    ">": "<=",
-    "<=": ">",
-    "IN": "NOT IN",
-    "NOT IN": "IN",
-    "LIKE": "NOT LIKE",
-    "NOT LIKE": "LIKE",
-    "IS NULL": "IS NOT NULL",
-    "IS NOT NULL": "IS NULL",
-}
-
-
 def _child_scope(start_entity: str, selection: PathSelection) -> tuple[str, tuple[str, ...]]:
     """The child a flat filter's path reaches across its last one-to-many hop, and the route
     there; lookups after that hop read one row of that child."""
@@ -1109,11 +1085,10 @@ def _ambiguous_child_scope(
     with the path of the first; None leaves the query to the refusals it always had.
 
     Called for a query with no child group whose only conditions across a one-to-many hop are
-    flat filters. They must all reach one child by one route, each with an operator in
-    ``_COMPLEMENT_OPS``, in one of two shapes: two or more filters, none negated ("an item
-    that is a beverage and costs over 5": ``same_row`` or ``separate_rows``), or one negated
-    filter ("an item that is not a beverage": ``any_not`` or ``none``). Each option is the
-    query's whole rewritten ``where``. When a group would not follow a filter's own route, the
+    flat filters. They must all reach one child by one route, in one of two shapes: two or
+    more filters, none negated ("an item that is a beverage and costs over 5": ``same_row`` or
+    ``separate_rows``), or one negated filter with an exact complement ("an item that is not a
+    beverage": ``any_not`` or ``none``). Each option is the call's whole rewritten ``where``. When a group would not follow a filter's own route, the
     reason (``_route_change``) comes back instead of a question.
     """
     dimensions = _dimension_index(config)
@@ -1131,7 +1106,7 @@ def _ambiguous_child_scope(
     if (
         not shaped
         or len({row[3] for row in flat}) > 1
-        or any(_compact_token(str(row[1].op or "=")).upper() not in _COMPLEMENT_OPS for row in flat)
+        or (negated and operators.exact_complement(flat[0][1].op, flat[0][1].value) is None)
     ):
         return None
     scope, hop = flat[0][3], flat[0][4]
@@ -1188,11 +1163,15 @@ def _route_change(
 def _rewritten_where(
     query: NormalizedQuery, replace_at: dict[int, dict[str, Any]], drop: set[int]
 ) -> list[dict[str, Any]]:
-    return [
-        replace_at.get(index, asdict(item))
-        for index, item in enumerate(query.where)
-        if index not in drop
-    ]
+    """The call's whole ``where`` with groups in place of flat filters: ready to send."""
+    return call_where(
+        [
+            replace_at.get(index, asdict(item))
+            for index, item in enumerate(query.where)
+            if index not in drop
+        ],
+        query.to_dict()["metric_filters"],
+    )
 
 
 def _group_payload(child: str, match: str, conditions: list[Filter]) -> dict[str, Any]:
@@ -1200,11 +1179,7 @@ def _group_payload(child: str, match: str, conditions: list[Filter]) -> dict[str
 
 
 def _condition_text(item: Filter, dim: Any) -> str:
-    op = _compact_token(str(item.op or "=")).upper()
-    label = dim.label or dim.id
-    if op in {"IS NULL", "IS NOT NULL"}:
-        return f"{label} {op}"
-    return f"{label} {op} {json.dumps(item.value, default=str)}"
+    return operators.describe(dim.label or dim.id, item.op, item.value)
 
 
 def _scope_error(
@@ -1270,8 +1245,9 @@ def _child_scope_clarification(
         )
     else:
         [(index, item, dim, *_)] = flat
-        op = _COMPLEMENT_OPS[_compact_token(str(item.op or "=")).upper()]
-        positive = Filter(field=item.field, op=op, value=item.value)
+        complement = operators.exact_complement(item.op, item.value)
+        assert complement is not None  # _ambiguous_child_scope asks only with one
+        positive = Filter(field=item.field, op=complement[0], value=complement[1])
         options = [
             {"id": "any_not", "meaning": f"Has a {label} where {texts[0]}.", "where": separate},
             {
@@ -3963,6 +3939,12 @@ def _conversion_leaf_cte(
         entities.get(match_entity)
         # A binding dimension decides how the metric answers grouped by it: the metric reads it.
         for dimension_id in [*(expr.constant_properties or []), *(expr.dimension_bindings or {})]:
+            if dimension_id not in dimensions:
+                raise SemanticLayerError(
+                    "OBJECT_NOT_FOUND",
+                    f"Unknown dimension '{dimension_id}'",
+                    details={"object_id": dimension_id},
+                )
             dimensions.get(dimension_id)
     if match_entity not in entities:
         raise SemanticLayerError(
@@ -5077,10 +5059,10 @@ def _bind_with_row_filters(
         if (start, target) not in read:
             raise SemanticLayerError(
                 "INVALID_QUERY",
-                f"route_decisions[{index}] decides the route from '{start}' to '{target}', "
+                f"routes[{index}] decides the route from '{start}' to '{target}', "
                 "which this query never walks",
                 details={
-                    "path": f"route_decisions[{index}]",
+                    "path": f"routes[{index}]",
                     "reason": "route_decision_unused",
                     "source_entity": start,
                     "target_entity": target,
@@ -5137,7 +5119,7 @@ def query_route_rows(
     base = base_of(config)
     decided: dict[tuple[str, str], tuple[int, PathPreferenceConfig]] = {}
     for index, raw in enumerate(rows):
-        where = f"route_decisions[{index}]"
+        where = f"routes[{index}]"
         try:
             row = check_route_row(
                 asdict(raw), entities=entities, relationships=config.relationships
@@ -5153,7 +5135,7 @@ def query_route_rows(
             raise SemanticLayerError(
                 "INVALID_QUERY",
                 f"{where} decides the route from '{pair[0]}' to '{pair[1]}' again "
-                f"(route_decisions[{decided[pair][0]}]); send one row per pair",
+                f"(routes[{decided[pair][0]}]); send one row per pair",
                 details={"path": where, "reason": "duplicate_route_decision"},
             )
         routes = pair_routes(config, *pair)
