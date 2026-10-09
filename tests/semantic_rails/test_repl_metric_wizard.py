@@ -535,8 +535,8 @@ def test_an_interruption_after_any_commit_restores_every_file(
 def _growth(measure: str, aggregation: str, unit: str, value: int = 1) -> dict[str, Any]:
     now = {"kind": "aggregate", "measure": measure, "aggregation": aggregation}
     prior = {"kind": "prior_period", "input": now, "offset": {"unit": unit, "value": value}}
-    left = {"kind": "binary", "op": "subtract", "left": now, "right": prior}
-    return {"kind": "binary", "op": "divide", "left": left, "right": prior}
+    left = {"kind": "arithmetic", "op": "subtract", "left": now, "right": prior}
+    return {"kind": "arithmetic", "op": "divide", "left": left, "right": prior}
 
 
 def _one_filter(field: str, op: str, values: list[Any]) -> dict[str, Any]:
@@ -1052,11 +1052,11 @@ TWO_FILTERS = {
 PRIOR_DAY = {"kind": "prior_period", "input": FILTERED_AVG, "offset": {"unit": "day", "value": 1}}
 GROWTH_OVER_A_FILTER = {
     **_growth("revenue", "avg", "day"),
-    "left": {"kind": "binary", "op": "subtract", "left": FILTERED_AVG, "right": PRIOR_DAY},
+    "left": {"kind": "arithmetic", "op": "subtract", "left": FILTERED_AVG, "right": PRIOR_DAY},
     "right": PRIOR_DAY,
 }
 KEPT = [
-    pytest.param("derived", {"kind": "binary", "op": "multiply", "left": AVG, "right": {"kind": "literal", "value": 2}}, id="derived"),
+    pytest.param("derived", {"kind": "arithmetic", "op": "multiply", "left": AVG, "right": {"kind": "literal", "value": 2}}, id="derived"),
     pytest.param("aggregate", {**FILTERED_AVG, "filter": TWO_FILTERS}, id="two-filter-clauses"),
     pytest.param("rolling", {"kind": "rolling", "input": AVG, "window": {"unit": "day", "value": 2}}, id="rolling"),
     pytest.param("prior_period", PRIOR_DAY, id="prior-period-over-a-filter"),

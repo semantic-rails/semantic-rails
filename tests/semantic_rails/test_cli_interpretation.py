@@ -234,9 +234,9 @@ def _ratio(numerator: dict[str, Any], denominator: dict[str, Any]) -> dict[str, 
         ),
         (
             {
-                "kind": "binary",
+                "kind": "arithmetic",
                 "op": "subtract",
-                "left": {"kind": "measure_ref", "measure": "measure.revenue"},
+                "left": {"kind": "measure", "measure": "measure.revenue"},
                 "right": {"kind": "metric", "metric": "metric.aov"},
             },
             "(Revenue - AOV)",

@@ -247,7 +247,7 @@ def test_scoped_aggregate_recipe_resolves_short_measure_and_dimension_keys(
         ),
         pytest.param(
             {
-                "kind": "binary",
+                "kind": "arithmetic",
                 "op": "divide",
                 "left": {"kind": "metric", "metric": "metric.jaffle.x"},
                 "right": {"kind": "sliding_total", "measure": REVENUE},
@@ -256,7 +256,7 @@ def test_scoped_aggregate_recipe_resolves_short_measure_and_dimension_keys(
             id="nested-unknown-kind",
         ),
         pytest.param(
-            {"kind": "binary", "op": "divide", "left": {"kind": "metric", "metric": "m"}},
+            {"kind": "arithmetic", "op": "divide", "left": {"kind": "metric", "metric": "m"}},
             ["expression must be an object"],
             id="missing-operand",
         ),
@@ -729,7 +729,7 @@ def test_the_central_translation_refuses_the_mix_whoever_calls_it() -> None:
 MEASURE_INPUT = {"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum"}
 NOT_A_DIMENSION = "dimension.jaffle_item_not_a_column"
 INPUT_NOT_ONE_MEASURE = {
-    "kind": "binary",
+    "kind": "arithmetic",
     "op": "divide",
     "left": {"kind": "metric", "metric": "metric.jaffle.revenue_usd"},
     "right": {"kind": "metric", "metric": "metric.jaffle.order_count"},
@@ -833,7 +833,7 @@ def test_partition_by_short_key_resolves_to_the_dimension_id(tmp_path: Path) -> 
             {
                 "kind": "derived",
                 "expression": {
-                    "kind": "binary",
+                    "kind": "arithmetic",
                     "op": "add",
                     "left": {"kind": "metric", "metric": "metric.jaffle.order_count"},
                     "right": _authored_window("period_to_date", [NOT_A_DIMENSION], period="month")[

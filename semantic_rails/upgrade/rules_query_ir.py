@@ -74,5 +74,6 @@ RULES: tuple[Rule, ...] = (
         "Write one spelling per expression node: kind arithmetic (not binary), measure (not "
         "measure_ref), conversion matching_mode (not matching), in/not_in expr (not left).",
         _arithmetic,
+        refused=True,
     ),
 )

@@ -226,12 +226,6 @@ NARROWER = [
         "comparison_unrealized",
         '"compared"',
     ),
-    (
-        COMPARED,
-        _selects(ORDERS, {"kind": "measure_ref", **ORDERS}),
-        "comparison_unrealized",
-        '"compared"',
-    ),
     (COMPARED, _selects(ORDERS, REVENUE), "comparison_unrealized", '"compared"'),
     ("Food revenue vs drink revenue last month", {}, "comparison_unrealized", '"vs"'),
     ("food vs drink revenue share by month", {}, "comparison_unrealized", '"vs"'),

@@ -1162,7 +1162,7 @@ def test_runtime_binary_expression_can_compose_mixed_clock_metric_primitives(
         "select": [
             {
                 "expression": {
-                    "kind": "binary",
+                    "kind": "arithmetic",
                     "op": "plus",
                     "left": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
                     "right": {

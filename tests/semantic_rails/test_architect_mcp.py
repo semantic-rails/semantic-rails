@@ -281,7 +281,7 @@ def test_upsert_metric_updates_project_and_revalidates_parse(tmp_path: Path):
                 "currency": "USD",
                 "examples": ["How does double amount trend over time?"],
                 "expression": {
-                    "kind": "binary",
+                    "kind": "arithmetic",
                     "op": "multiply",
                     "left": {"kind": "metric", "metric": "metric.metric_core.total_amount"},
                     "right": {"kind": "literal", "value": 2},

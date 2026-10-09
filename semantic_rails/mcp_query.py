@@ -84,11 +84,11 @@ def normalize_query_spellings(query: dict[str, Any], notes: list[str]) -> dict[s
         op = row.get("op")
         kind = row.get("kind")
         if isinstance(op, str):
-            aliases = _ARITHMETIC if kind in ("arithmetic", "binary") else _COMPARISONS
+            aliases = _ARITHMETIC if kind == "arithmetic" else _COMPARISONS
             if op in aliases and op != aliases[op]:
                 row["op"] = aliases[op]
                 notes.append(f"{path}.op: {op} -> {aliases[op]}")
-        if kind in ("arithmetic", "binary") and ("operands" in row or "terms" in row):
+        if kind == "arithmetic" and ("operands" in row or "terms" in row):
             keys = set(row) & {"operands", "terms", "left", "right"}
             if len(keys) != 1:
                 raise _invalid("Arithmetic needs one operand shape.", path, ["left", "right"])

@@ -2628,7 +2628,7 @@ class Runtime:
                         "warehouse_capabilities": dialect.capabilities(),
                         "runtime_expression_kinds": [
                             "metric_ref",
-                            "measure_ref",
+                            "measure",
                             "scoped_aggregate",
                             "ratio",
                             "arithmetic",

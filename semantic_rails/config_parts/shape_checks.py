@@ -86,14 +86,13 @@ _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "relations",
         "semantic_policies",
         "semantic_caveats",
-        "path_policy",
-        "path_preferences",
         "examples",
         "tests",
     }
 )
 _UPGRADE = "(`semantic-rails project upgrade` rewrites it)"
 _AS = f"the key derives the id; write `as:` only to keep a public id {_UPGRADE}"
+_ONE_KIND = "write each step as one key naming its kind, such as `{where: [...]}`"
 # A key a release retired from a block, and where its meaning is authored now: the one hint
 # the unknown-key error adds, by (block, key).
 _REPLACED_KEYS: dict[tuple[str, str], str] = {
@@ -105,6 +104,15 @@ _REPLACED_KEYS: dict[tuple[str, str], str] = {
     ("model", "grain"): "the entity's key keys the model's rows; key finer rows as their "
     f"own entity, related to it {_UPGRADE}",
     ("model", "joins"): f"write each join as a `graph.relationships` row {_UPGRADE}",
+    ("document", "path_policy"): "write it under `graph:`",
+    ("document", "path_preferences"): "write it under `graph:`",
+    ("relation", "source"): "write it as the first step: `steps: [{source: <relation>}, ...]`",
+    ("relation", "date_spine"): "write it as a step: `steps: [{date_spine: {...}}]`",
+    ("relation", "cte"): "write `output_name:`",
+    ("relation", "output_columns"): "write `columns:`",
+    ("relation step", "unnest"): "write `explode:`",
+    ("relation step", "kind"): _ONE_KIND,
+    ("relation step", "config"): _ONE_KIND,
 }
 _PACKAGE_KEYS: frozenset[str] = frozenset(
     {
@@ -161,6 +169,33 @@ _GRAPH_RELATIONSHIP_KEYS: frozenset[str] = frozenset(_RELATIONSHIP_PASSTHROUGH) 
     "rollup_safe",
 }
 _ROLLUP_SAFE_KEYS: frozenset[str] = frozenset({"reverse"})
+# What the loader reads from a relation spec (config.py `_parse_relations`).
+_RELATION_KEYS: frozenset[str] = frozenset(
+    {"id", "name", "label", "description", "meta", "steps", "output_name", "columns"}
+)
+# A relation step is one key naming its kind; its mapping holds what that kind's lowering
+# reads (relation_pipelines.py). `select` and `window` also take their columns directly.
+_SEMI_JOIN_KEYS = frozenset({"relation", "table", "on", "where"})
+RELATION_STEP_KEYS: dict[str, frozenset[str]] = {
+    "source": frozenset({"relation", "table", "name", "value", "columns"}),
+    "select": frozenset({"columns", "value"}),
+    "where": frozenset({"predicates", "where", "value"}),
+    "group_by": frozenset({"dimensions", "group_by", "aggregates", "measures"}),
+    "join": frozenset({"relation", "table", "on", "type", "select", "pre_aggregate"})
+    | {"require_pre_aggregate", "require_preaggregated"},
+    "semi_join": _SEMI_JOIN_KEYS,
+    "anti_join": _SEMI_JOIN_KEYS,
+    "exclude": _SEMI_JOIN_KEYS,
+    "union_all": frozenset({"branches", "value"}),
+    "explode": frozenset({"column", "as", "alias", "delimiter"}),
+    "json_extract": frozenset({"column", "as", "alias", "path", "as_text"}),
+    "date_spine": frozenset({"column", "date_column", "start", "end", "max_days"}),
+    "state_as_of": frozenset({"spine", "date_spine", "date_column", "valid_from", "valid_to"})
+    | {"keys", "select"},
+    "window": frozenset({"windows", "columns"}),
+    "attribution_join": frozenset({"base", "base_relation", "attributed", "attributed_relation"})
+    | {"base_time", "attributed_time", "keys", "lookback", "select", "type"},
+}
 _CAVEAT_KEYS: frozenset[str] = frozenset(
     {
         "id",
@@ -837,6 +872,24 @@ def _membership_fix(key: str) -> str:
     )
 
 
+def _check_relation_step(step: Any, *, label: str, errors: list[str]) -> None:
+    if not isinstance(step, dict):
+        add_error(errors, f"{label} must be one key naming its kind, such as `{{source: {step}}}`")
+        return
+    kinds = [key for key in step if key in RELATION_STEP_KEYS]
+    _unknown_key_errors(
+        step, frozenset(RELATION_STEP_KEYS), label=label, errors=errors, block="relation step"
+    )
+    if len(kinds) > 1:
+        add_error(
+            errors, f"{label} names {len(kinds)} kinds ({', '.join(kinds)}); write one per step"
+        )
+    for kind in kinds:
+        allowed, value = RELATION_STEP_KEYS[kind], step[kind]
+        if isinstance(value, dict) and (kind not in {"select", "window"} or allowed & set(value)):
+            _unknown_key_errors(value, allowed, label=f"{label} {kind}", errors=errors)
+
+
 def authoring_errors(raw: dict[str, Any], *, path_label: str) -> list[str]:
     """Every authoring error in a package as authored, in any layout. Loading refuses a package
     with any, so a key the loader would ignore never changes what it serves."""
@@ -930,12 +983,21 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
                         label=f"{label} rollup_safe",
                         errors=errors,
                     )
-    for block, label in ((raw, "path_policy"), (graph, "graph path_policy")):
-        policy = block.get("path_policy") if isinstance(block, dict) else None
-        if isinstance(policy, dict):
-            _unknown_key_errors(
-                policy, _PATH_POLICY_KEYS, label=f"{path_label}: {label}", errors=errors
-            )
+        if isinstance(graph.get("path_policy"), dict):
+            label = f"{path_label}: graph path_policy"
+            _unknown_key_errors(graph["path_policy"], _PATH_POLICY_KEYS, label=label, errors=errors)
+    relations = raw.get("relations")
+    if isinstance(relations, list):
+        add_error(
+            errors, f"{path_label}: relations must be a mapping keyed by relation, not a list"
+        )
+    for key, spec in relations.items() if isinstance(relations, dict) else ():
+        if isinstance(spec, dict):
+            label = f"{path_label}: relation '{key}'"
+            _unknown_key_errors(spec, _RELATION_KEYS, label=label, errors=errors, block="relation")
+            steps = spec.get("steps")
+            for index, step in enumerate(steps if isinstance(steps, list) else ()):
+                _check_relation_step(step, label=f"{label} step {index}", errors=errors)
 
     models = raw.get("models")
     if isinstance(models, dict):

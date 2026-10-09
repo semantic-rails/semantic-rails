@@ -1301,9 +1301,9 @@ def _time_recipe(
     now = {"kind": "aggregate", "measure": measure_id, "aggregation": aggregation}
     then = {"kind": "prior_period", "input": dict(now), "offset": step}
     growth = {
-        "kind": "binary",
+        "kind": "arithmetic",
         "op": "divide",
-        "left": {"kind": "binary", "op": "subtract", "left": now, "right": then},
+        "left": {"kind": "arithmetic", "op": "subtract", "left": now, "right": then},
         "right": dict(then),
     }
     return {"expression": growth}, f"What is {name} by {unit}?"

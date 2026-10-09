@@ -662,7 +662,7 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
                     "value_type": "number",
                     "temporal_role": "temporal_role.tpch_order_date",
                     "expression": {
-                        "kind": "binary",
+                        "kind": "arithmetic",
                         "op": "divide",
                         "left": {"kind": "metric", "metric": "metric.sales.revenue"},
                         "right": {"kind": "metric", "metric": "metric.sales.orders"},
@@ -3209,7 +3209,7 @@ def test_validation_times_a_conversion_metric_by_its_base_operand(package_config
 
 
 def _add(left: dict, right: dict) -> dict:
-    return {"kind": "binary", "op": "add", "left": left, "right": right}
+    return {"kind": "arithmetic", "op": "add", "left": left, "right": right}
 
 
 _SESSIONS = {"kind": "aggregate", "measure": "measure.jaffle.session_starts"}

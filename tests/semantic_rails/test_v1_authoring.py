@@ -1469,7 +1469,7 @@ def test_metric_derived_ast_resolves_top_level_metric_ref(tmp_path: Path) -> Non
                 "description": "Derived metric referencing another metric.",
                 "kind": "derived",
                 "expression": {
-                    "kind": "binary",
+                    "kind": "arithmetic",
                     "op": "multiply",
                     "left": {"kind": "metric", "metric": "premium_metric"},
                     "right": {"kind": "metric", "metric": "premium_metric"},
