@@ -4,7 +4,7 @@
   governed measure must use a field in
   `allowed_where`; otherwise the query is refused with `POLICY_DENIED` and a
   `disallowed_where` violation carrying `"source": "inline_expression"`. Such a filter
-  nested under a predicate, `metric_filters` or a conversion operand counts for
+  nested under a predicate, an entity filter, `having` or a conversion operand counts for
   every governed object in the query. Inline filters never satisfy `required_where`,
   and always count as metric filters for
   `allow_metric_filters: false`. A package-wide constraint with `allowed_where`

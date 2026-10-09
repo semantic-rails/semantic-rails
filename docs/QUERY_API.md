@@ -1023,8 +1023,8 @@ Response keys:
 - `disabled_options`
 - `logical_plan`
 - `explain`
-- `query`
-- `normalized_query`
+- `query` (the call it answered, in the call's spelling, with the clock it read)
+- `normalized_query` (the engine's own form of it)
 - `timing_ms`
 
 `validate` returns structured diagnostics. It does not need to throw on semantic failure.
@@ -1046,8 +1046,8 @@ Response keys:
 - `logical_plan`
 - `sql_plan`
 - `explain`
-- `query`
-- `normalized_query`
+- `query` (the call it answered, in the call's spelling, with the clock it read)
+- `normalized_query` (the engine's own form of it)
 - `warnings`
 - `errors`
 - `recovery_hints`
