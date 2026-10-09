@@ -5,9 +5,11 @@ import yaml
 
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.upgrade.model import PackageFiles, plan
-from semantic_rails.upgrade.rules_strict import RULES
+from semantic_rails.upgrade.rules_strict import RULES as STRICT_RULES
 from semantic_rails.yaml_loader import safe_load
 from tests.semantic_rails.conftest import write_single_file_package
+
+RULES = tuple(rule for rule in STRICT_RULES if rule.id == "ignored-key")
 
 
 def _scope(package=None, defaults=None, block=True):
@@ -101,3 +103,224 @@ def test_ignored_key_edit_preserves_comments(tmp_path):
     assert result.files[source.name].decode() == source.read_text().replace(
         "  observation_scope: query  # ignored\n", ""
     )
+
+
+def _current(doc):
+    """The starter as current authoring writes it: graph-bound models and no grain."""
+    for entity, model in (
+        ("customer", "customers"),
+        ("order", "orders"),
+        ("order_item", "order_items"),
+        ("product", "products"),
+    ):
+        doc["models"][model].pop("grain", None)
+        doc["graph"]["entities"][entity]["model"] = model
+
+
+def _model(name, **keys):
+    def edit(doc):
+        doc["models"][name].update(keys)
+
+    return edit
+
+
+def _unbind(entity, model, **keys):
+    def edit(doc):
+        del doc["graph"]["entities"][entity]["model"]
+        doc["models"][model].update(keys)
+
+    return edit
+
+
+def _entity(name, **keys):
+    def edit(doc):
+        doc["graph"]["entities"][name].update(keys)
+
+    return edit
+
+
+def _row(model, block, key, **keys):
+    def edit(doc):
+        doc["models"][model][block][key].update(keys)
+
+    return edit
+
+
+def _singular(doc):
+    del doc["models"]["products"]["entities"]
+    doc["models"]["products"].update(entity="product", keys={"primary": ["product_id"]})
+
+
+def _relationship(doc):
+    doc["graph"]["relationships"] = {
+        "orders_customer": {
+            "entities": ["order", "customer"],
+            "cardinality": "many_to_one",
+            "label": "Buyer",
+        }
+    }
+
+
+def _unpublished(publish):
+    """A package of the default profile whose revenue measure alone publishes a metric."""
+
+    def edit(doc):
+        doc["package"].pop("schema_strict", None)
+        doc["metrics"] = {}
+        doc["models"]["orders"]["measures"]["order_count"]["publish"] = False
+        doc["models"]["order_items"]["measures"]["line_revenue_usd"]["publish"] = False
+        doc["models"]["orders"]["measures"]["revenue_usd"]["publish"] = publish
+
+    return edit
+
+
+def _authored(doc):
+    _unpublished(False)(doc)
+    doc["metrics"] = {
+        "revenue_usd": {
+            "kind": "aggregate",
+            "measure": "measure.shop.revenue_usd",
+            "aggregation": "sum",
+            "label": "Gross revenue",
+            "description": "Gross order revenue.",
+            "value_type": "currency",
+            "temporal_role": "temporal_role.shop_order_ordered_at",
+            "meta": {
+                "owner_team": "finance_analytics",
+                "review_priority": "high",
+                "change_risk": "medium",
+            },
+        }
+    }
+
+
+def _strict(edit):
+    def wrapped(doc):
+        edit(doc)
+        doc["package"]["schema_strict"] = True
+
+    return wrapped
+
+
+GROSS = {"label": "Gross revenue", "description": "Gross order revenue."}
+# rule, legacy edit, current edit (None: the rule stops and names the current form)
+REWRITES = {
+    "grain-equals-bound-key": ("model-grain", _model("orders", grain=["order_id"]), _current),
+    "grain-picks-unbound-entity": (
+        "model-grain",
+        _unbind("order", "orders", grain=["order_id"]),
+        _current,
+    ),
+    "grain-finer-than-entity": (
+        "model-grain",
+        _model("orders", grain=["order_id", "channel"]),
+        None,
+    ),
+    "keys-primary-beside-entities": (
+        "model-primary-key",
+        _model("orders", keys={"primary": ["order_id"]}),
+        _current,
+    ),
+    "keys-foreign-beside-entities": (
+        "model-primary-key",
+        _model("orders", keys={"foreign": {"customer": "customer_id"}}),
+        _current,
+    ),
+    "singular-entity": (
+        "model-primary-key",
+        _singular,
+        _model("products", entity="product"),
+    ),
+    "keys-primary-finer": (
+        "model-primary-key",
+        _model("orders", keys={"primary": ["order_id", "channel"]}),
+        None,
+    ),
+    "join-to-relationship": (
+        "model-joins",
+        _model(
+            "orders",
+            joins={"customer": {"to": "customer", "cardinality": "N:1", "label": "Buyer"}},
+        ),
+        _relationship,
+    ),
+    "join-key-names-no-column": (
+        "model-joins",
+        _model("orders", joins={"buyer": {"to": "customer"}}),
+        None,
+    ),
+    "entity-id-derived": ("object-as", _entity("order", id="entity.shop_order"), _current),
+    "entity-id-public": (
+        "object-as",
+        _entity("order", id="entity.public_order"),
+        _entity("order", **{"as": "entity.public_order"}),
+    ),
+    "dimension-id-derived": (
+        "object-as",
+        _row("orders", "dimensions", "channel", id="dimension.shop_order_channel"),
+        _current,
+    ),
+    "measure-id-derived": (
+        "object-as",
+        _row("orders", "measures", "revenue_usd", id="measure.shop.revenue_usd"),
+        _current,
+    ),
+    "dimension-id-public": (
+        "object-as",
+        _row("orders", "dimensions", "channel", id="dimension.public_channel"),
+        _row("orders", "dimensions", "channel", **{"as": "dimension.public_channel"}),
+    ),
+    "id-beside-as": (
+        "object-as",
+        _row(
+            "orders",
+            "measures",
+            "order_count",
+            id="measure.x",
+            **{"as": "measure.shop.order_count"},
+        ),
+        _row("orders", "measures", "order_count", **{"as": "measure.shop.order_count"}),
+    ),
+    "join-cardinality-never-read": (
+        "model-joins",
+        _model("orders", joins={"customer": {"to": "customer", "cardinality": "many_to_one"}}),
+        None,
+    ),
+    "publish-ignored-by-strict": (
+        "measure-auto-publish",
+        _strict(_row("orders", "measures", "revenue_usd", publish=GROSS)),
+        _strict(_current),
+    ),
+    "publish-authors-metric": ("measure-auto-publish", _unpublished(GROSS), _authored),
+    "publish-topics": (
+        "measure-auto-publish",
+        _unpublished({**GROSS, "topics": ["sales"]}),
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize(("rule", "legacy", "current"), REWRITES.values(), ids=REWRITES)
+def test_strict_rule_golden_rewrite(tmp_path, rule, legacy, current):
+    rules = [row for row in STRICT_RULES if row.id == rule]
+
+    def write(root, edit):
+        source = write_single_file_package(root / "project")
+        doc = safe_load(source.read_bytes())
+        _current(doc)
+        edit(doc)
+        source.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+        return source
+
+    source = write(tmp_path / "legacy", legacy)
+    files = PackageFiles(source)
+    result = plan(files, rules, {})
+    if current is None:
+        (stop,) = result.pending
+        assert not stop.edits and not stop.options and not result.files
+        return
+    assert not result.pending and result.findings
+    expected = write(tmp_path / "current", current)
+    assert safe_load(result.files[source.name]) == safe_load(expected.read_bytes())
+    upgraded = PackageFiles(source, contents={**files.contents, **result.files})
+    assert not plan(upgraded, rules, {}).findings
