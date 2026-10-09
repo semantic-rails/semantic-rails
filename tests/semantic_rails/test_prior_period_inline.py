@@ -23,7 +23,9 @@ import pathlib
 from collections.abc import Iterator
 from typing import Any
 
+import duckdb
 import pytest
+import yaml
 
 from semantic_rails.ast import OffsetWindowExpr
 from semantic_rails.expressions import parse_semantic_expression
@@ -32,7 +34,7 @@ from semantic_rails.runtime import (
     Runtime,
     _expression_normalized_away_warnings,
 )
-from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.conftest import copy_package_config, opened
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
@@ -99,6 +101,160 @@ def test_shorthand_rejects_invalid_options(options, message) -> None:
             context="query",
         )
     assert message in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# (A) The shorthand aggregates like the long form: the measure's default
+# unless the caller names an aggregation
+# ---------------------------------------------------------------------------
+
+# The package copy adds flow measures whose authored default is not ``sum``.
+_AUTHORED_DEFAULTS = {"avg_order_total_usd": "avg", "max_order_total_usd": "max"}
+_ORDER_MONTHS = (
+    "SELECT date_trunc('month', ordered_at) AS m, {agg} AS v FROM jaffle_order GROUP BY 1"
+)
+_SNAPSHOT_MONTHS = """
+SELECT m, SUM(inventory_on_hand) AS v FROM (
+  SELECT date_trunc('month', date_day) AS m, store_id, inventory_on_hand,
+         date_day = MAX(date_day) OVER (PARTITION BY date_trunc('month', date_day), store_id) AS last
+  FROM jaffle_store_inventory_snapshot
+) WHERE last GROUP BY 1
+"""
+_ORDER_TIME = "temporal_role.jaffle_order_time"
+
+
+@pytest.fixture(scope="module")
+def authored(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Runtime, pathlib.Path]]:
+    package = copy_package_config(
+        tmp_path_factory.mktemp("prior_agg"), "jaffle_shop", preseed_db=True
+    )
+    orders = package / "models" / "core" / "orders.yml"
+    raw = yaml.safe_load(orders.read_text(encoding="utf-8"))
+    for name, aggregation in _AUTHORED_DEFAULTS.items():
+        raw["model"]["measures"][name] = {
+            "kind": "aggregate",
+            "label": name,
+            "expr": "order_total_cents / 100.0",
+            "accumulation": {"kind": "flow"},
+            "default_agg": aggregation,
+            "value_type": "currency",
+            "currency": "USD",
+        }
+    orders.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    rt = Runtime.from_path(str(package))
+    try:
+        yield opened(rt), package / "jaffle_shop.duckdb"
+    finally:
+        rt.close()
+
+
+def _month(value: Any) -> tuple[int, int]:
+    text = str(value)  # a date, a timestamp or its ISO text
+    return (int(text[:4]), int(text[5:7]))
+
+
+@pytest.mark.parametrize(
+    "measure",
+    [
+        pytest.param("measure.jaffle.order_count", id="count_distinct"),
+        pytest.param("measure.jaffle.avg_order_total_usd", id="avg"),
+        pytest.param("measure.jaffle.max_order_total_usd", id="max"),
+        pytest.param("measure.jaffle.inventory_on_hand_eop", id="last_value"),
+    ],
+)
+@pytest.mark.parametrize("aggregation", [None, "sum"], ids=["default", "explicit"])
+def test_shorthand_parses_like_the_long_form(measure: str, aggregation: str | None) -> None:
+    named = {} if aggregation is None else {"aggregation": aggregation}
+    short = {"kind": "prior_period", "measure": measure, "offset": -2, "grain": "month", **named}
+    long = {
+        "kind": "prior_period",
+        "input": {"measure": measure, **named},
+        "offset": {"unit": "month", "value": 2},
+    }
+    assert parse_semantic_expression(short, context="query") == parse_semantic_expression(
+        long, context="query"
+    )
+
+
+@pytest.mark.parametrize(
+    ("measure", "role", "aggregation", "reference"),
+    [
+        pytest.param(
+            "measure.jaffle.order_count",
+            _ORDER_TIME,
+            None,
+            _ORDER_MONTHS.format(agg="COUNT(DISTINCT order_id)"),
+            id="count_distinct",
+        ),
+        pytest.param(
+            "measure.jaffle.avg_order_total_usd",
+            _ORDER_TIME,
+            None,
+            _ORDER_MONTHS.format(agg="AVG(order_total_cents / 100.0)"),
+            id="avg",
+        ),
+        pytest.param(
+            "measure.jaffle.max_order_total_usd",
+            _ORDER_TIME,
+            None,
+            _ORDER_MONTHS.format(agg="MAX(order_total_cents / 100.0)"),
+            id="max",
+        ),
+        pytest.param(
+            "measure.jaffle.inventory_on_hand_eop",
+            "temporal_role.jaffle_inventory_day",
+            None,
+            _SNAPSHOT_MONTHS,
+            id="last_value",
+        ),
+        pytest.param(
+            "measure.jaffle.avg_order_total_usd",
+            _ORDER_TIME,
+            "sum",
+            _ORDER_MONTHS.format(agg="SUM(order_total_cents / 100.0)"),
+            id="explicit-sum-on-avg",
+        ),
+    ],
+)
+def test_shorthand_prior_month_matches_reference_sql(
+    authored: tuple[Runtime, pathlib.Path],
+    measure: str,
+    role: str,
+    aggregation: str | None,
+    reference: str,
+) -> None:
+    runtime, database = authored
+    named = {} if aggregation is None else {"aggregation": aggregation}
+    result = runtime.query(
+        {
+            "version": 1,
+            "select": [
+                {
+                    "expression": {
+                        "kind": "prior_period",
+                        "measure": measure,
+                        "offset": -1,
+                        "grain": "month",
+                        **named,
+                    },
+                    "as": "prior",
+                }
+            ],
+            "time": {"temporal_role": role, "grain": "month"},
+        }
+    )
+    assert result.get("ok") is True, result.get("errors")
+    with duckdb.connect(str(database), read_only=True) as con:
+        expected = {_month(month): value for month, value in con.execute(reference).fetchall()}
+    rows = result["rows"]
+    checked = 0
+    for row in rows:
+        year, month = _month(row[f"{role}__month"])
+        previous = (year, month - 1) if month > 1 else (year - 1, 12)
+        want = expected.get(previous)
+        assert row["prior"] == (None if want is None else pytest.approx(want, rel=1e-9)), row
+        checked += want is not None
+    assert checked >= 2, rows
 
 
 # ---------------------------------------------------------------------------

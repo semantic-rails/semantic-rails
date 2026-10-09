@@ -24,7 +24,8 @@ _SOURCE_SUFFIXES = (".yml", ".yaml", ".json", ".toml")
 _SOURCE_EXCLUDED_DIRS = {".git", ".pytest_cache", ".uv-cache", "__pycache__", ".compiled"}
 
 
-def _source_files(path: str) -> list[str]:
+def _source_files(path: str, links: list[str] | None = None) -> list[str]:
+    """The source files under ``path``; directory symlinks the walk skips go into ``links``."""
     if os.path.isfile(path):
         # Single-file packages execute sibling examples/tests just like directory
         # packages. Bind those inputs too, without absorbing unrelated packages.
@@ -43,6 +44,12 @@ def _source_files(path: str) -> list[str]:
     files: list[str] = []
     for root, dirs, names in os.walk(path):
         dirs[:] = sorted(name for name in dirs if name not in _SOURCE_EXCLUDED_DIRS)
+        if links is not None:
+            links.extend(
+                os.path.join(root, name)
+                for name in dirs
+                if os.path.islink(os.path.join(root, name))
+            )
         files.extend(os.path.join(root, name) for name in names if name.endswith(_SOURCE_SUFFIXES))
     return sorted(files)
 
@@ -52,6 +59,8 @@ class CapturedSource:
     source_path: str
     is_directory: bool
     files: tuple[tuple[str, bytes], ...] = field(repr=False)
+    # Directory symlinks inside a directory package, relative to it; the walk never follows them.
+    directory_links: tuple[str, ...] = ()
 
     @property
     def fingerprint(self) -> str:
@@ -62,6 +71,8 @@ class CapturedSource:
             digest.update(encoded_name)
             digest.update(len(data).to_bytes(8, "big"))
             digest.update(data)
+        for name in self.directory_links:
+            digest.update(b"directory-link\0" + name.encode("utf-8") + b"\0")
         return digest.hexdigest()
 
     @property
@@ -87,17 +98,19 @@ def capture_package_source(path: str | Path) -> CapturedSource:
         raise SemanticLayerError("INVALID_CONFIG", f"Package source '{source}' does not exist")
     root = source if directory else os.path.dirname(source)
 
-    def read() -> tuple[tuple[str, bytes], ...]:
-        return tuple(
+    def read() -> tuple[tuple[tuple[str, bytes], ...], tuple[str, ...]]:
+        links: list[str] = []
+        files = tuple(
             (Path(name).relative_to(root).as_posix(), Path(name).read_bytes())
-            for name in _source_files(source)
+            for name in _source_files(source, links if directory else None)
         )
+        return files, tuple(sorted(Path(name).relative_to(root).as_posix() for name in links))
 
     for _ in range(3):
         try:
             first = read()
             if first == read():
-                return CapturedSource(source, directory, first)
+                return CapturedSource(source, directory, *first)
         except FileNotFoundError:
             continue
     raise SemanticLayerError(

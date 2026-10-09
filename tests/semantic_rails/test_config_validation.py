@@ -3011,8 +3011,8 @@ def test_key_checks_cover_every_layout_the_loader_reads(
 def _jaffle_with_duplicate_metric(package_config_factory, *, typo_in: str) -> Path:
     """Define sales.aov_usd again in metrics/zz_extra.yml, with a typo in one copy.
 
-    The loader merges files in sorted path order, so metrics/zz_extra.yml wins
-    over metrics/core/core_metrics.yml.
+    The loader merges files in sorted path order, so metrics/zz_extra.yml would replace
+    metrics/core/core_metrics.yml's copy.
     """
     _, package_dir = package_config_factory("jaffle_shop")
     package_dir = Path(package_dir)
@@ -3026,15 +3026,18 @@ def _jaffle_with_duplicate_metric(package_config_factory, *, typo_in: str) -> Pa
     return package_dir
 
 
-@pytest.mark.parametrize(("typo_in", "expected_errors"), [("kept", 1), ("discarded", 0)])
-def test_key_checks_follow_the_copy_the_loader_keeps(
-    package_config_factory, typo_in, expected_errors
-):
+@pytest.mark.parametrize("typo_in", ["kept", "discarded"])
+def test_a_metric_defined_twice_is_refused_whichever_copy_is_kept(package_config_factory, typo_in):
     package_dir = _jaffle_with_duplicate_metric(package_config_factory, typo_in=typo_in)
 
     errors = validate_runtime_package(package_dir)
 
-    assert len(errors) == expected_errors, errors
+    assert len(errors) == 1, errors
+    assert "zz_extra.yml defines metric 'sales.aov_usd', which " in errors[0]
+    assert errors[0].endswith(
+        "core_metrics.yml is ignored by the loader, so this would "
+        "silently change behavior; keep one definition"
+    )
 
 
 def test_key_checks_skip_the_directories_the_loader_skips(package_config_factory):

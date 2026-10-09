@@ -211,8 +211,6 @@ def test_entries_merge_in_the_file_the_runner_reads_them_from(workspace: Path) -
     bounds = {"kind": "query_row_count_bounds", "query": ORDERS, "min_rows": 1}
     (package / "tests").mkdir()
     (package / "tests" / "single.yml").write_text(yaml.safe_dump({"test": bounds}))
-    # The runner doesn't read a tests.yml beside package.yml.
-    (package / "tests.yml").write_text(yaml.safe_dump({"tests": {"unread": bounds}}))
 
     project.upsert_check(
         kind="example",
@@ -222,7 +220,7 @@ def test_entries_merge_in_the_file_the_runner_reads_them_from(workspace: Path) -
     )
     project.upsert_check(kind="example", key="orders", spec={"question": "Orders by country?"})
     project.upsert_check(kind="test", key="single", spec={"max_rows": 3})
-    project.upsert_check(kind="test", key="unread", spec=bounds)
+    project.upsert_check(kind="test", key="bounds", spec=bounds)
     with pytest.raises(SemanticLayerError, match="holds a single test"):
         project.upsert_check(kind="test", key="other", spec=bounds, file_name="single.yml")
 
@@ -231,8 +229,17 @@ def test_entries_merge_in_the_file_the_runner_reads_them_from(workspace: Path) -
     assert example["expected_shape"] == {"min_rows": 1}
     assert not (package / "examples" / "core.yml").exists()
     assert _yaml(package / "tests" / "single.yml") == {"test": {**bounds, "max_rows": 3}}
-    assert list(_yaml(package / "tests" / "core.yml")["tests"]) == ["unread"]
-    assert _yaml(package / "tests.yml") == {"tests": {"unread": bounds}}
+    assert list(_yaml(package / "tests" / "core.yml")["tests"]) == ["bounds"]
+
+    # Nothing reads a tests.yml beside package.yml, so the package no longer loads with one.
+    (package / "tests.yml").write_text(yaml.safe_dump({"tests": {"unread": bounds}}))
+    with pytest.raises(SemanticLayerError) as refused:
+        project.upsert_check(kind="test", key="unread", spec=bounds)
+    assert (
+        f"{package / 'tests.yml'} is not a package file — its YAML is ignored by the loader, so "
+        "this would silently change behavior; write these entries under tests/"
+    ) in str(refused.value)
+    assert "unread" not in _yaml(package / "tests" / "core.yml")["tests"]
 
 
 def test_dry_run_apply_replay_and_undo(workspace: Path) -> None:
