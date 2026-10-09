@@ -153,7 +153,9 @@ MCP_SERVER_INSTRUCTIONS = (
     "2. plan(intent) drafts Query IR; draft with plan rather than writing Query IR from "
     'scratch. Run best.query_ir only when status is "ok" and there are no warnings; '
     "otherwise why and warnings name what the draft misses, so fix the Query IR or ask the "
-    "user. out_of_scope or unrealizable means the package can't answer.\n"
+    "user. out_of_scope or unrealizable means the package can't answer. A question asking "
+    'several things returns parts: execute each part\'s best.query_ir, as status is "ok" '
+    "only when every part is.\n"
     "3. execute(query) validates, compiles and runs the Query IR and returns at most "
     f"max_rows rows (default {MCP_DEFAULT_MAX_ROWS}); a capped result reports truncated and "
     'total_row_count. mode "validate" only checks the query; mode "sql" also returns its '
@@ -386,6 +388,30 @@ MCP_RESULT_SCHEMA_SLIM: dict[str, Any] = {
     "additionalProperties": True,
 }
 
+# plan's result: a question asking several things comes back as parts, each its own plan.
+MCP_PLAN_RESULT_SCHEMA: dict[str, Any] = {
+    **MCP_RESULT_SCHEMA_SLIM,
+    "properties": {
+        **MCP_RESULT_SCHEMA_SLIM["properties"],
+        "parts": {
+            "type": "array",
+            "description": "One plan per part of a question asking several things.",
+            "items": {
+                "type": "object",
+                "required": ["text", "spans"],
+                "properties": {
+                    "text": {"type": "string"},
+                    "spans": {"type": "array", "items": {"type": "array"}},
+                    "status": {"type": "string"},
+                    "best": {"type": ["object", "null"]},
+                    "why": {"type": "object"},
+                },
+                "additionalProperties": True,
+            },
+        },
+    },
+}
+
 
 def _tool_annotations(name: str) -> dict[str, Any]:
     """Return MCP-standard behavioral hints for a query tool.
@@ -613,6 +639,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             required=["intent"],
             additional_properties=True,
         ),
+        output_schema=MCP_PLAN_RESULT_SCHEMA,
     ),
     ToolDefinition(
         name="execute",

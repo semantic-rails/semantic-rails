@@ -55,7 +55,8 @@ def split_question(question: str) -> QuestionSplit | None:
     wh-word or "how many") and a bare comma ends it. A split is held when it has more than
     ``MAX_PARTS`` parts, when a part after the first points back at another ("those", "them"),
     when a part names nothing to measure ("and how many?"), or when some parts state a time
-    window and others don't, so a trailing window can't silently apply to one part only.
+    window or a grouping ("by plan") and others don't: a trailing "last week" or "by plan" may
+    be meant for every part, and plan never guesses which.
     """
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
@@ -90,7 +91,7 @@ def split_question(question: str) -> QuestionSplit | None:
     if len(parts) > MAX_PARTS:
         return QuestionSplit(tuple(parts), "too_many_parts", tuple(range(1, len(parts) + 1)))
     framing = _INTENT_STOPWORDS | _FRAMING_WORDS
-    windowed = []
+    windowed, grouped = [], []
     for number, part in enumerate(parts, start=1):
         own = part.text[len(prefix) :]
         windows = _time_window(own).spans
@@ -104,7 +105,12 @@ def split_question(question: str) -> QuestionSplit | None:
         if all(word in framing or word.isdigit() for word in words):
             return QuestionSplit(tuple(parts), "part_without_subject", (number,))
         windowed.append(bool(windows))
-    if any(windowed) and not all(windowed) and not _time_window(prefix).spans:
-        unwindowed = tuple(number for number, has in enumerate(windowed, 1) if not has)
-        return QuestionSplit(tuple(parts), "part_without_window", unwindowed)
+        grouped.append(bool(_requested_grouping_spans(own.lower())))
+    for stated, in_prefix, hold in (
+        (windowed, bool(_time_window(prefix).spans), "part_without_window"),
+        (grouped, bool(_requested_grouping_spans(prefix.lower())), "part_without_grouping"),
+    ):
+        if any(stated) and not all(stated) and not in_prefix:
+            missing = tuple(number for number, has in enumerate(stated, start=1) if not has)
+            return QuestionSplit(tuple(parts), hold, missing)
     return QuestionSplit(tuple(parts))

@@ -790,7 +790,7 @@ def _codes(validation: dict[str, Any]) -> set[str]:
     }
 
 
-def _query_key(query: dict[str, Any]) -> str:
+def _query_key(query: Any) -> str:
     import json
 
     return json.dumps(query, sort_keys=True, default=str)
@@ -863,6 +863,14 @@ _PART_HOLDS = {
         "Part {parts} states no time window while another part states one, so plan can't tell "
         "which window it asks for."
     ),
+    "part_without_grouping": (
+        "Part {parts} asks for no breakdown while another part asks for one, so plan can't tell "
+        "whether the breakdown is meant for every part."
+    ),
+    "part_filters_differ": (
+        "Parts {parts} filter their rows differently, so plan can't tell whether a filter one "
+        "part states is meant for every part."
+    ),
 }
 
 
@@ -893,31 +901,43 @@ def _parts_payload(
     listed = [
         {"text": part.text, "spans": [list(span) for span in part.spans]} for part in split.parts
     ]
-    if split.hold:
-        named = ", ".join(str(number) for number in split.held)
+
+    def held(reason: str, numbers: tuple[int, ...]) -> dict[str, Any]:
+        named = ", ".join(str(number) for number in numbers)
         return {
             **whole,
             "status": "low_confidence",
             "why": {
                 "code": "PLAN_PARTS_HELD",
-                "message": _PART_HOLDS[split.hold].format(max=MAX_PARTS, parts=named)
-                + " Ask each part on its own, naming what it measures and its window.",
+                "message": _PART_HOLDS[reason].format(max=MAX_PARTS, parts=named)
+                + " Ask each part on its own, naming what it measures, its filters and window.",
                 "details": {
-                    "reason": split.hold,
-                    "parts": [{"part": number, **listed[number - 1]} for number in split.held],
+                    "reason": reason,
+                    "parts": [{"part": number, **listed[number - 1]} for number in numbers],
                     **({"question_why": whole["why"]} if whole.get("why") else {}),
                 },
             },
             "next": {key: value for key, value in whole["next"].items() if key != "action"},
             "parts": listed,
         }
+
+    if split.hold:
+        return held(split.hold, split.held)
     planned = [plan_question(part.text) for part in split.parts]
     status = max((row["status"] for row in planned), key=_STATUS_ORDER.index)
+    if (
+        status == "ok"
+        and len({_query_key(row["best"]["query_ir"].get("where")) for row in planned}) > 1
+    ):
+        # A filter one part states ("for Acme") may be meant for every part.
+        return held("part_filters_differ", tuple(range(1, len(planned) + 1)))
     parts = []
     for entry, row in zip(listed, planned, strict=True):
         shown = _query_detail_payload(row) if detail_level == "query" else row
         omitted = ("plan_version", "intent", "intent_ir")
-        parts.append({**entry, **{key: value for key, value in shown.items() if key not in omitted}})
+        parts.append(
+            {**entry, **{key: value for key, value in shown.items() if key not in omitted}}
+        )
     payload: dict[str, Any] = {
         "plan_version": _VERSION,
         "intent": whole["intent"],

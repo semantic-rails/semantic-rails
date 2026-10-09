@@ -264,6 +264,43 @@ query detail keeps them self-contained because it omits the trace.
 Other exact repeats use `{"$ref": "best.resolved.0"}` or a `best.query_ir` field path;
 follow the dot-separated path from the response root (numbers index arrays).
 
+#### Questions that ask several things
+
+When one draft can't answer a question that asks several things ("Last week, how many accounts
+signed up, and what was the MRR?" needs two clocks), `plan` splits it at a top-level clause
+boundary: ", and", "," or "and" immediately before a wh-word or "how many" / "how much". A
+leading phrase that asks nothing ("Last week, …") belongs to every part; nothing else is shared.
+A grouping list ("by plan and region") and quoted text are never split, and a question one
+draft answers, such as subjects the conjoined pattern selects in one query ("New accounts and
+closures last week"), keeps its one draft. `plan` splits only when the caller's `query` carries
+nothing but request context.
+
+The payload then carries `parts: [{text, spans, status, best, why, assumptions, warnings}]`:
+each part is planned on its own words exactly like a question of its own, and `spans` are the
+offsets in `intent` of the shared phrase and the part's clause. The top-level `status` is `ok`
+only when every part is `ok`. Otherwise it is the weakest part's status (`needs_clarification`,
+then `low_confidence`, `unrealizable`, `out_of_scope`), and `why.code="PLAN_PARTS_NOT_READY"`
+lists the parts not ready in `why.details.parts`. Every part's warnings are top-level warnings
+too. `best` and `intent_ir` are the first part's, for clients that read only `best`;
+`detail="query"` returns every part's `best.query_ir`. Execute each part's query and report
+each answer.
+
+`plan` doesn't plan the parts when it can't read each one alone. It keeps the whole question's
+draft, `low_confidence`, with `why.code="PLAN_PARTS_HELD"`, the parts listed as `{text, spans}`,
+the whole question's own hold (such as `multiple_questions_unrealized`) in
+`why.details.question_why`, and the parts concerned in `why.details.parts`. `why.details.reason`
+is one of:
+
+- `too_many_parts`: more than four parts;
+- `dependent_part`: a part points back at another ("…, and what share of those closed?");
+- `part_without_subject`: a part names nothing to measure ("…, and how many?");
+- `part_without_window` or `part_without_grouping`: some parts state a time window or a "by"
+  grouping and others don't, so a trailing "last week" or "by plan" may be meant for every part;
+- `part_filters_differ`: the planned parts filter their rows differently, so a filter one part
+  states may be meant for every part.
+
+Ask such parts one at a time, each naming what it measures, its filters and its window.
+
 A draft that validates can still leave out part of the question. `plan` returns
 `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
 
