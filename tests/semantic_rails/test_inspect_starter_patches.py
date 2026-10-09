@@ -36,7 +36,7 @@ def test_inspect_measure_ships_order_by_and_where_patches(runtime_factory) -> No
         assert "order_by" in patches, f"order_by patch missing; got {list(patches)}"
         order_patch = patches["order_by"]["query_patch"]
         assert order_patch.get("order_by"), "order_by patch has no order_by clause"
-        assert order_patch["order_by"][0]["field"] == "time"
+        assert order_patch["order_by"][0]["field"] == "period"
         # `where` patch should now fire for revenue_usd because the
         # broadened candidate search finds a non-ID dimension with a
         # declared value_domain.
