@@ -6,6 +6,7 @@ import contextlib
 from typing import Any
 
 from ..ast import normalize_query
+from ..catalog_search import search_pattern
 from ..compiler import (
     _extend_config_with_synthetic_measures,
     compile_query,
@@ -281,6 +282,14 @@ def valid_values_payload(
         query_payload["route_decisions"] = decisions
     query_payload["order_by"] = [{"field": dimension_id, "direction": "ASC"}]
     query_payload["limit"] = max(limit + offset, 100)
+    # A text search runs in the warehouse, as plan's name lookup does, so a value past the
+    # first rows is found. Another type's values are read as text only after the fetch.
+    pattern = search_pattern(search) if dim.data_type == "string" else ""
+    if pattern:
+        query_payload["where"] = [
+            *(query_payload.get("where") or []),
+            {"field": dimension_id, "op": "ILIKE", "value": pattern},
+        ]
     result = runtime.query(query_payload)
     values = []
     for row in result["rows"]:
@@ -291,7 +300,7 @@ def valid_values_payload(
             value_row["count"] = row.get("anchor")
         values.append(value_row)
     values, total_count, has_more = _filter_value_rows(
-        values, search=search, offset=offset, limit=limit
+        values, search="" if pattern else search, offset=offset, limit=limit
     )
     return {
         "dimension": dimension_id,

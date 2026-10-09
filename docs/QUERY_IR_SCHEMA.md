@@ -545,7 +545,12 @@ with `REWRITE_NOT_SUPPORTED`; select the distribution separately.
 
 Supported `op` values (all compile end-to-end):
 `=`, `!=`, `<`, `<=`, `>`, `>=`, `IN`, `NOT IN`, `LIKE`, `NOT LIKE`,
-`IS NULL`, `IS NOT NULL`, `IS DISTINCT FROM`.
+`ILIKE`, `NOT ILIKE`, `IS NULL`, `IS NOT NULL`, `IS DISTINCT FROM`.
+
+`ILIKE` and `NOT ILIKE` match a text dimension's pattern in any case: they compile to `LIKE`
+and `NOT LIKE` on `LOWER(<column>)` with the pattern lowercased, the same on every warehouse,
+including those without their own `ILIKE`. `{"field": "dimension.jaffle_store_name", "op":
+"ILIKE", "value": "%brook%"}` keeps Brooklyn.
 
 `IS DISTINCT FROM` with a scalar excludes one value and keeps rows with no
 value: "signups excluding web" is `{"field": "dimension.shop_customer_channel",

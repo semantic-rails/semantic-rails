@@ -28,6 +28,14 @@ def normalize_search_value(value: str) -> str:
     return "".join(ch for ch in str(value).lower() if ch.isalnum())
 
 
+def search_pattern(text: str) -> str:
+    """The ``ILIKE`` pattern a search reads values with in the warehouse: its words in order,
+    anything between them ("acme data" finds "Acme Data Co"); empty when it has no words."""
+
+    words = re.findall(r"[^\W_]+", str(text or "").lower())
+    return f"%{'%'.join(words)}%" if words else ""
+
+
 def tokenize_search_value(value: str) -> list[str]:
     """Tokenize with the historical ASCII boundaries used by discover."""
 

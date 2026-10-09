@@ -24,6 +24,9 @@ from ..expressions import AggregateExpr, collect_object_references
 from ..naming import last_token as _last_token
 from .visibility import visible_dimensions, visible_object_ids
 
+# Quoted text, which is never split and keeps its spelling.
+QUOTED = r"\"[^\"]*\"|“[^”]*”|(?<!\w)['‘].*?['’](?!\w)"
+
 
 @dataclass(frozen=True)
 class RuntimeCompositionDraft:

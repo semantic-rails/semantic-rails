@@ -599,6 +599,8 @@ _NULL_REFUSED_OPS = frozenset({"<", "<=", ">", ">=", "LIKE", "NOT LIKE"})
 _NULL_LITERAL_GUARDED_OPS = (
     _NULL_TEST_EQUALITY_OPS | _NULL_TEST_INEQUALITY_OPS | _NULL_REFUSED_OPS
 ) - {"IS", "IS NOT"}
+# A case-insensitive LIKE is the LIKE of both sides lowercased, on every warehouse.
+_CASE_INSENSITIVE_OPS = {"ILIKE": "LIKE", "NOT ILIKE": "NOT LIKE"}
 
 
 def filter_rejects_null(op: Any, value: Any) -> bool:
@@ -606,6 +608,7 @@ def filter_rejects_null(op: Any, value: Any) -> bool:
     op_normalized = _compact_token(str(op or "=")).upper()
     if op_normalized in {"IS NOT NULL", "IN", "NOT IN"}:
         return True
+    op_normalized = _CASE_INSENSITIVE_OPS.get(op_normalized, op_normalized)
     try:
         op_normalized = normalize_sql_binary_operator(op_normalized)
     except SemanticLayerError:
@@ -629,11 +632,20 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
       instead of erroring.
     - ``IS NULL`` / ``IS NOT NULL`` ignore ``value`` entirely.
     - ``IS`` / ``IS NOT`` accept only null or boolean values.
+    - ``ILIKE`` / ``NOT ILIKE`` are ``LIKE`` / ``NOT LIKE`` on
+      ``LOWER(expr)`` and the lowercased pattern, so every warehouse reads
+      them the same, with or without its own ``ILIKE``.
     - ``value: null`` with any other op follows
       :func:`build_comparison_condition`, like every comparison with a
       null literal.
     """
     op_normalized = _compact_token(str(op or "=")).upper()
+    if op_normalized in _CASE_INSENSITIVE_OPS:
+        validate_single_value_filter_shape(op, value, path=path)
+        pattern = SqlLiteral(value.lower() if isinstance(value, str) else value)
+        return build_comparison_condition(
+            SqlCall("LOWER", [expr]), _CASE_INSENSITIVE_OPS[op_normalized], pattern, path=path
+        )
     if op_normalized in {"IN", "NOT IN"}:
         negated = op_normalized == "NOT IN"
         if value is None:
@@ -696,6 +708,8 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
                     "NOT IN",
                     "LIKE",
                     "NOT LIKE",
+                    "ILIKE",
+                    "NOT ILIKE",
                     "IS NULL",
                     "IS NOT NULL",
                 ],
