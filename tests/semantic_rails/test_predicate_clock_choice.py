@@ -255,12 +255,12 @@ def _query(input_=None, alignment="query_window"):
 def _reference(conn, clock):
     assert clock in {"ordered_at", "shipped_at"}
     return conn.execute(
-        "SELECT c.customer_id, c.signed_up_at, COUNT(*) FROM customers c "
+        "SELECT c.customer_id, COUNT(*) FROM customers c "
         "WHERE c.signed_up_at >= TIMESTAMP '2025-01-01' "
         "AND c.signed_up_at < TIMESTAMP '2025-02-01' "
         "AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id "
         f"AND o.{clock} >= TIMESTAMP '2025-01-01' "
-        f"AND o.{clock} < TIMESTAMP '2025-02-01') GROUP BY 1, 2 ORDER BY 1"
+        f"AND o.{clock} < TIMESTAMP '2025-02-01') GROUP BY 1 ORDER BY 1"
     ).fetchall()
 
 
@@ -268,13 +268,13 @@ def _order_reference(conn, clock, predicate_clock):
     assert clock in {"ordered_at", "shipped_at"}
     assert predicate_clock in {"ordered_at", "shipped_at"}
     return conn.execute(
-        f"SELECT o.customer_id, o.{clock}, COUNT(*) FROM orders o "
+        f"SELECT o.customer_id, COUNT(*) FROM orders o "
         f"WHERE o.{clock} >= TIMESTAMP '2025-01-01' "
         f"AND o.{clock} < TIMESTAMP '2025-02-01' "
         "AND EXISTS (SELECT 1 FROM orders p WHERE p.customer_id = o.customer_id "
         f"AND p.{predicate_clock} >= TIMESTAMP '2025-01-01' "
         f"AND p.{predicate_clock} < TIMESTAMP '2025-02-01') "
-        "GROUP BY 1, 2 ORDER BY 1"
+        "GROUP BY 1 ORDER BY 1"
     ).fetchall()
 
 
@@ -305,12 +305,12 @@ def _mixed_reference(conn, combined, threshold):
         for clock in ["ordered", "shipped"]
     }
     return conn.execute(
-        "SELECT o.customer_id, o.ordered_at, COUNT(*) FROM orders o "
+        "SELECT o.customer_id, COUNT(*) FROM orders o "
         "WHERE o.ordered_at >= TIMESTAMP '2025-01-01' "
         "AND o.ordered_at < TIMESTAMP '2025-02-01' "
         "AND o.customer_id IN (SELECT p.customer_id FROM orders p GROUP BY 1 "
         f"HAVING {combined.format(**counts)} >= {threshold}) "
-        "GROUP BY 1, 2 ORDER BY 1"
+        "GROUP BY 1 ORDER BY 1"
     ).fetchall()
 
 
@@ -321,7 +321,7 @@ MIXED_CASES = [
         "mixed_difference",
         1,
         "{ordered} - {shipped}",
-        [(1, datetime(2025, 1, 10), 1)],
+        [(1, 1)],
         id="difference",
     ),
     pytest.param("mixed_ratio", 1, "{ordered} / NULLIF({shipped}, 0)", [], id="ratio"),
@@ -563,6 +563,14 @@ def _conversion_query(alignment, override):
     return query
 
 
+def _assert_asks_for_a_grain(config, query):
+    """A predicate tested per output period has no total over a window with no grain."""
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, None, query)
+    assert raised.value.code == "WINDOW_TOTAL_UNSUPPORTED"
+    assert raised.value.details["path"] == "time.grain"
+
+
 def _converted_customers(clock):
     """Customers whose 7-day signup-to-order rate, with orders on ``clock``, is above 0.5."""
     assert clock in {"ordered_at", "shipped_at"}
@@ -576,10 +584,10 @@ def _converted_customers(clock):
 
 def _conversion_reference(conn, clock):
     return conn.execute(
-        "SELECT c.customer_id, c.signed_up_at, COUNT(*) FROM customers c "
+        "SELECT c.customer_id, COUNT(*) FROM customers c "
         "WHERE c.signed_up_at >= TIMESTAMP '2025-01-01' "
         "AND c.signed_up_at < TIMESTAMP '2025-02-01' "
-        f"AND c.customer_id IN ({_converted_customers(clock)}) GROUP BY 1, 2 ORDER BY 1"
+        f"AND c.customer_id IN ({_converted_customers(clock)}) GROUP BY 1 ORDER BY 1"
     ).fetchall()
 
 
@@ -629,15 +637,17 @@ def test_conversion_input_without_override_matches_reference(warehouse, tmp_path
     expected = _conversion_reference(conn, "shipped_at")
     assert [row[0] for row in expected] == [2]
     query = _conversion_query(alignment, override=False)
+    if alignment == "same_query_period":
+        _assert_asks_for_a_grain(config, query)
+        return
     assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
     runtime = _runtime(tmp_path, conn)
     try:
         result = runtime.query_internal(query)
     finally:
         runtime.close()
-    assert [tuple(row.values()) for row in result["rows"]] == [
-        (customer, signed_up.isoformat(), n) for customer, signed_up, n in expected
-    ]
+    # No grain: one total per customer over the window.
+    assert [tuple(row.values()) for row in result["rows"]] == expected
 
 
 def test_direct_lowering_cannot_bypass_override_refusal(warehouse):
@@ -672,7 +682,13 @@ def _share_query(override):
                 "as": "share",
             }
         ],
-        "time": {"temporal_role": SIGNED_UP, "start": "2025-01-01", "end": "2025-02-01"},
+        # The predicate is tested per output period, so the share is asked by day.
+        "time": {
+            "temporal_role": SIGNED_UP,
+            "grain": "day",
+            "start": "2025-01-01",
+            "end": "2025-02-01",
+        },
     }
     if override:
         query["temporal_role_overrides"] = {"measure.clocks.orders": ORDERED}
@@ -681,7 +697,7 @@ def _share_query(override):
 
 def _share_reference(conn, clock):
     return conn.execute(
-        "SELECT c.signed_up_at, AVG(CASE WHEN c.customer_id IN "
+        "SELECT date_trunc('day', c.signed_up_at), AVG(CASE WHEN c.customer_id IN "
         f"({_converted_customers(clock)}) THEN 1.0 ELSE 0.0 END) FROM customers c "
         "WHERE c.signed_up_at >= TIMESTAMP '2025-01-01' "
         "AND c.signed_up_at < TIMESTAMP '2025-02-01' GROUP BY 1 ORDER BY 1"
@@ -882,15 +898,17 @@ def test_nested_scoped_predicate_without_override_matches_reference(
     config, conn = warehouse
     expected = _conversion_reference(conn, "shipped_at")
     query = _nested_query(alignment, override=False, depth=depth)
+    if alignment == "same_query_period":
+        _assert_asks_for_a_grain(config, query)
+        return
     assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
     runtime = _runtime(tmp_path, conn)
     try:
         result = runtime.query_internal(query)
     finally:
         runtime.close()
-    assert [tuple(row.values()) for row in result["rows"]] == [
-        (customer, signed_up.isoformat(), n) for customer, signed_up, n in expected
-    ]
+    # No grain: one total per customer over the window.
+    assert [tuple(row.values()) for row in result["rows"]] == expected
 
 
 def test_direct_lowering_cannot_bypass_nested_override_refusal(warehouse):
@@ -960,8 +978,8 @@ def test_aggregate_filter_predicates_refuse_an_override_their_input_would_drop(
     warehouse, tmp_path, nesting, entrypoint
 ):
     config, conn = warehouse
-    assert _conversion_reference(conn, "ordered_at") == [(1, datetime(2025, 1, 5), 1)]
-    assert _conversion_reference(conn, "shipped_at") == [(2, datetime(2025, 1, 6), 1)]
+    assert _conversion_reference(conn, "ordered_at") == [(1, 1)]
+    assert _conversion_reference(conn, "shipped_at") == [(2, 1)]
     query = _aggregate_nested_query(nesting, override=True)
     if entrypoint == "lower":
         plan = plan_query(config, None, _aggregate_nested_query(nesting, override=False))

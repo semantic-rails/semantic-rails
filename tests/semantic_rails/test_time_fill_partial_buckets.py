@@ -15,6 +15,7 @@ from datetime import date, datetime
 import duckdb
 import pytest
 
+from semantic_rails.clock import period_end
 from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
@@ -46,15 +47,15 @@ def _as_date(value) -> date:
     return value.date() if isinstance(value, datetime) else value
 
 
-# A call's named window (``start`` and ``end``) implies its fill, so the fill and no-fill
-# readings of one window are compared in the engine's own form.
+# A call's named window (``start`` and ``end``) answers every bucket it touches; the open
+# window from the same start (no ``end``) keeps only the buckets with rows.
 ORDERS = {
     "expression": {"kind": "measure", "measure": "measure.jaffle.order_count"},
     "as": "orders",
 }
 
 
-def _series(runtime, grain: str, start: str, end: str, *, fill: bool, **time) -> dict[date, int]:
+def _series(runtime, grain: str, start: str, end: str | None, **time) -> dict[date, int]:
     rows = runtime.query_internal(
         {
             "select": [ORDERS],
@@ -62,8 +63,7 @@ def _series(runtime, grain: str, start: str, end: str, *, fill: bool, **time) ->
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": grain,
                 "start": start,
-                "end": end,
-                "fill": fill,
+                **({"end": end} if end else {}),
                 **time,
             },
         }
@@ -83,14 +83,20 @@ def test_fill_keeps_the_bucket_that_starts_before_the_window(
 ):
     runtime = runtime_factory("jaffle_shop")
     try:
-        filled = _series(runtime, grain, start, end, fill=True)
-        unfilled = _series(runtime, grain, start, end, fill=False)
+        filled = _series(runtime, grain, start, end)
+        open_ended = _series(runtime, grain, start, None)
     finally:
         runtime.close()
 
     assert min(filled) == first_bucket
-    # Filling only adds empty buckets: every bucket with rows keeps its count.
-    assert {bucket: orders for bucket, orders in filled.items() if orders} == unfilled
+
+    # Filling only adds empty buckets: every bucket with rows that ends inside the window
+    # keeps the count the open window reads (the last bucket may be cut by the end).
+    def inside(series):
+        last = date.fromisoformat(end)
+        return {b: n for b, n in series.items() if n and period_end(b, grain) <= last}
+
+    assert inside(filled) == inside(open_ended)
 
 
 _JULY_BY_WEEK = {

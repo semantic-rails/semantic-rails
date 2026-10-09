@@ -163,6 +163,12 @@ ANSWER_CASES = [
 ]
 
 
+def _column(query):
+    """The first output's column: its alias, or a plain reference's last segment."""
+    item = query["select"][0]
+    return item["as"] if isinstance(item, dict) else item.split(".")[-1]
+
+
 @pytest.mark.parametrize(("phrase", "start", "end", "expected"), ANSWER_CASES)
 def test_named_reading_matches_reference_sql(subscriptions, phrase, start, end, expected):
     intent = f"How many new accounts {phrase}?"

@@ -194,9 +194,9 @@ def _ctx(audience="customer", **attributes):
     return RequestContext(actor="end-user", audience=audience, attributes=attributes)
 
 
-def _as(method, query=BY_STORE, audience="customer", **attributes):
+def _as(method, query=BY_STORE, audience="customer", now=None, **attributes):
     """``method(query)`` asked by a caller of ``audience`` with ``attributes``."""
-    return method(query, context=_ctx(audience, **attributes))
+    return method(query, context=_ctx(audience, **attributes), now=now)
 
 
 def _denied(call):
@@ -266,16 +266,8 @@ def test_the_filter_stays_outside_an_or_in_existing_conditions():
     [
         {**BY_STORE, "group_by": ["dimension.rf_store_store_name"], "order_by": []},  # join
         {**BY_STORE, "where": [BIG_STORES]},  # a second scan of the filtered relation
-        {  # nested dependency: the prior period comes from another scan over a calendar spine
-            "select": [{"expression": "metric.rf.revenue_change", "as": "change"}],
-            "time": MONTH,
-        },
-        {  # spine: calendar fill joins the calendar relation
-            "select": [{"expression": REVENUE, "as": "revenue"}],
-            "time": {**MONTH, "grain": "day", "start": "2026-01-01", "fill": True},
-        },
     ],
-    ids=["join", "metric_filter", "dependency", "spine"],
+    ids=["join", "metric_filter"],
 )
 def test_unqualified_shapes_are_denied_not_answered_unfiltered(runtime, query):
     internal = _as(runtime.compile, query, audience="internal")
@@ -283,6 +275,39 @@ def test_unqualified_shapes_are_denied_not_answered_unfiltered(runtime, query):
     assert _denied(lambda: _as(runtime.compile, query, customer_id=A)) == (
         "row_filter_unsupported_query"
     )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {  # a prior period over the series' calendar spine
+            "select": [{"expression": "metric.rf.revenue_change", "as": "change"}],
+            "time": MONTH,
+        },
+        {  # a filled series over the calendar spine
+            "select": [{"expression": REVENUE, "as": "revenue"}],
+            "time": {**MONTH, "grain": "day", "start": "2026-01-01", "fill": True},
+        },
+        {  # a named window answers every period over the same spine
+            "select": [{"expression": REVENUE, "as": "revenue"}],
+            "time": {**MONTH, "start": "2026-01-01", "end": "2026-04-01"},
+        },
+    ],
+    ids=["dependency", "spine", "named_window"],
+)
+def test_a_calendar_spine_reads_no_relation_so_each_caller_gets_its_own_series(runtime, query):
+    """The engine's day series generates dates from its bounds and reads no relation: every
+    scan of the filtered relation still carries the caller's filter."""
+    for customer in (A, B):
+        own = {
+            **query,
+            "where": [{"field": "dimension.rf_order_customer_id", "op": "is", "value": customer}],
+        }
+        expected = _as(runtime.query, own, audience="internal", now="2026-06-01")["rows"]
+        result = _as(runtime.query, query, customer_id=customer, now="2026-06-01")
+        assert result["rows"] == expected
+        sql = result["rendered_sql"]
+        assert sql.count("FROM order_fact") == sql.count("order_fact.customer_id = ?") > 0
 
 
 def test_segment_preview_and_count_bind_the_filter(runtime):
@@ -322,8 +347,9 @@ def test_zero_rows_skip_the_whole_relation_coverage_probe(runtime, monkeypatch):
     monkeypatch.setattr(
         runtime_module, "_data_coverage_probe", lambda *a, **k: probes.append(1) or {}
     )
+    # An open window after the data: no row (a named one would answer its periods, NULL).
     window = {"select": [{"expression": REVENUE, "as": "revenue"}],
-              "time": {**MONTH, "start": "2025-01-01", "end": "2025-02-01"}}  # fmt: skip
+              "time": {**MONTH, "start": "2027-01-01"}}  # fmt: skip
     filtered = _as(runtime.query, window, customer_id=A)
     assert filtered["row_count"] == 0 and probes == []
     assert filtered["data_diagnostics"]["actual_data_coverage"] == {}
@@ -619,10 +645,9 @@ def test_observation_and_coverage_never_see_another_customers_rows(runtime, tena
     if window_total:
         query["time"].pop("grain")
     result = _as(runtime.query, query, customer_id=tenant)
-    # Both callers have source rows: in the total, whose bucket the loaded-bucket check
-    # gates, B's never-matched condition also counts zero. The month bucket of one leaf
-    # gets no such check, so B's is held at NULL. An empty caller has no group, preserving
-    # the empty-total behavior.
+    # A named window answers its month, or its total, for every caller. Both A and B have
+    # source rows, and the loaded-bucket check gates the window's bucket, so B's
+    # never-matched condition counts zero; an empty caller reads NULL (nothing in its scope).
     gold = (
         runtime._get_adapter()
         ._db.conn.execute(
@@ -633,11 +658,10 @@ def test_observation_and_coverage_never_see_another_customers_rows(runtime, tena
         )
         .fetchall()
     )
-    held = tenant == B and not window_total
-    assert [r["v"] for r in result["rows"]] == ([None] if held else [row[0] for row in gold])
+    assert [r["v"] for r in result["rows"]] == ([0] if tenant in {A, B} else [None])
     assert gold == ([(0,)] if tenant in {A, B} else [])
-    # The total probes both measures outside its bounds, plus its leaf and coverage scan.
-    assert result["rendered_sql"].count("customer_id = ?") == (4 if window_total else 3)
+    # Both measures are probed outside the bounds, plus the leaf and its coverage scan.
+    assert result["rendered_sql"].count("customer_id = ?") == 4
     assert tenant not in result["rendered_sql"]
 
 
@@ -681,8 +705,9 @@ def test_every_tagged_probe_gets_both_policy_filters(runtime):
     context = replace(_ctx(customer_id=A, store_id="s1"), roles=("store_scoped",))
     result = runtime.query(query, context=context)
     assert result["rows"][0]["v"] == 10
-    assert result["rendered_sql"].count("customer_id = ?") == 2
-    assert result["rendered_sql"].count("store_id = ?") == 2
+    # The leaf, its observation outside the window and the named window's loaded coverage.
+    assert result["rendered_sql"].count("customer_id = ?") == 3
+    assert result["rendered_sql"].count("store_id = ?") == 3
 
 
 def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
@@ -711,7 +736,6 @@ def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
         value,
         bucket=bucket,
         raw_time=stamp,
-        now=dialect.now(),
         bounded=True,
     )
     statement = SqlSelect(

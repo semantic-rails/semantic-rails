@@ -464,9 +464,8 @@ def test_measure_bound_child_filter_does_not_change_unfiltered_sibling(package: 
 
 
 @pytest.mark.parametrize("bound_filter", [False, True], ids=["query", "measure"])
-@pytest.mark.parametrize("fill", [False, True], ids=["bounded", "filled"])
 def test_time_bounded_child_filter_keeps_window_observation(
-    package: Path, bound_filter: bool, fill: bool
+    package: Path, bound_filter: bool
 ) -> None:
     expression: dict[str, Any] = {"kind": "measure", "measure": "measure.hop.revenue"}
     if bound_filter:
@@ -490,15 +489,14 @@ def test_time_bounded_child_filter_keeps_window_observation(
                       WHERE i.order_id = o.order_id AND i.product_type = 'beverage')
         GROUP BY month
     """
-    reference = matching
-    if fill:
-        reference = f"""
-            WITH matching AS ({matching})
-            SELECT months.month, COALESCE(matching.revenue, 0)
-            FROM GENERATE_SERIES(TIMESTAMP '2016-10-01', TIMESTAMP '2017-03-01',
-                                 INTERVAL '1 month') AS months(month)
-            LEFT JOIN matching USING (month)
-        """
+    # The named window answers each of its months: 0 where none matched.
+    reference = f"""
+        WITH matching AS ({matching})
+        SELECT months.month, COALESCE(matching.revenue, 0)
+        FROM GENERATE_SERIES(TIMESTAMP '2016-10-01', TIMESTAMP '2017-03-01',
+                             INTERVAL '1 month') AS months(month)
+        LEFT JOIN matching USING (month)
+    """
     result = _run(package, query)
     assert _normal(tuple(row.values()) for row in typed_rows(result)) == _reference(
         package, reference
@@ -510,10 +508,7 @@ def test_time_bounded_child_filter_keeps_window_observation(
 
 
 @pytest.mark.parametrize("match", ["any", "none"])
-@pytest.mark.parametrize("fill", [False, True], ids=["bounded", "filled"])
-def test_time_bounded_child_groups_keep_window_observation(
-    package: Path, match: str, fill: bool
-) -> None:
+def test_time_bounded_child_groups_keep_window_observation(package: Path, match: str) -> None:
     """A child group lowers in the same semi-join leaf as a flat child filter."""
     query = {
         "select": ["measure.hop.revenue"],
@@ -535,15 +530,13 @@ def test_time_bounded_child_groups_keep_window_observation(
                                 AND i.product_type = 'beverage' AND i.is_hot)
         GROUP BY month
     """
-    reference = matching
-    if fill:
-        reference = f"""
-            WITH matching AS ({matching})
-            SELECT months.month, COALESCE(matching.revenue, 0)
-            FROM GENERATE_SERIES(TIMESTAMP '2016-10-01', TIMESTAMP '2017-03-01',
-                                 INTERVAL '1 month') AS months(month)
-            LEFT JOIN matching USING (month)
-        """
+    reference = f"""
+        WITH matching AS ({matching})
+        SELECT months.month, COALESCE(matching.revenue, 0)
+        FROM GENERATE_SERIES(TIMESTAMP '2016-10-01', TIMESTAMP '2017-03-01',
+                             INTERVAL '1 month') AS months(month)
+        LEFT JOIN matching USING (month)
+    """
     result = _run(package, query)
     assert _normal(tuple(row.values()) for row in typed_rows(result)) == _reference(
         package, reference

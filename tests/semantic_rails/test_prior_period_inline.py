@@ -116,10 +116,11 @@ _AUTHORED_DEFAULTS = {"avg_order_total_usd": "avg", "max_order_total_usd": "max"
 _ORDER_MONTHS = (
     "SELECT date_trunc('month', ordered_at) AS m, {agg} AS v FROM jaffle_order GROUP BY 1"
 )
+# A balance reads each month's closing day, its last day with any store's snapshot.
 _SNAPSHOT_MONTHS = """
 SELECT m, SUM(inventory_on_hand) AS v FROM (
   SELECT date_trunc('month', date_day) AS m, store_id, inventory_on_hand,
-         date_day = MAX(date_day) OVER (PARTITION BY date_trunc('month', date_day), store_id) AS last
+         date_day = MAX(date_day) OVER (PARTITION BY date_trunc('month', date_day)) AS last
   FROM jaffle_store_inventory_snapshot
 ) WHERE last GROUP BY 1
 """

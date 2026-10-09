@@ -18,6 +18,7 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.ast import PERIOD_PARTIAL
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.dialects import DuckDbDialect
@@ -129,9 +130,10 @@ def _query(
             result = engine.query(query)
     finally:
         engine.close()
+    rows = [{k: v for k, v in row.items() if k != PERIOD_PARTIAL} for row in result["rows"]]
     return _sorted(
         _normal(tuple(row.values()), [result["column_types"][key]["type"] for key in row])
-        for row in result["rows"]
+        for row in rows
     ), str(result["rendered_sql"])
 
 
@@ -504,7 +506,8 @@ MEDIAN_LARGE = _distribution("median", LARGE_REVENUE)
 
 
 # Regression: fill densified the per-order grain, so every order entered every month as a 0
-# (p80 read 3.0, 0, 0 for 9, 7, 20). A filled distribution is refused; a named window fills.
+# (p80 read 3.0, 0, 0 for 9, 7, 20). A filled distribution is refused; a named window fills
+# the distribution's answer instead, and refuses it beside a sum.
 @pytest.mark.parametrize(
     ("package", "select", "time", "internal"),
     [
@@ -539,8 +542,12 @@ def test_a_filled_distribution_refuses(
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     if package == "fiscal_only":
         assert refused.value.details["reason"] == "calendar_not_supported_yet"
-    else:
+    elif "fill" in time:
         assert "time.fill isn't supported for distributions" in str(refused.value)
+    else:
+        # A named window fills the combined answer, where a sum's empty period can't tell 0
+        # from no data yet: a distribution beside one is asked for separately.
+        assert refused.value.details["reason"] == "distribution_beside_additive_in_named_window"
 
 
 @pytest.mark.parametrize(
@@ -570,6 +577,19 @@ def test_an_unfilled_distribution_matches_the_key(
             packages[package],
             _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
         )
+
+
+def test_a_named_window_answers_every_period_of_a_distribution(packages: dict[str, Path]) -> None:
+    """February has no order: the window still answers it, and its median reads NULL, not 0."""
+    select = {**_distribution("median", REVENUE), "as": "value"}
+    rows, _ = _query(
+        packages["authored"], _ask("month", select, start="2023-12-01", end="2024-04-01")
+    )
+    months = "range(TIMESTAMP '2023-12-01', TIMESTAMP '2024-04-01', INTERVAL 1 MONTH) AS s(bucket)"
+    key = f"SELECT s.bucket, {_per_order('median(amount)')} FROM {months}"
+
+    assert rows == _key(packages["authored"], key)
+    assert (date(2024, 2, 1), None) in rows
 
 
 PRIOR_REVENUE = _prior("month")["expression"]

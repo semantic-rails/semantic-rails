@@ -20,8 +20,10 @@ from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, fields, is_dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
+from ..clock import current_time
 from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
@@ -172,7 +174,6 @@ class LeafScope:
     bucket: Any = None
     raw_time: Any | None = None
     storage_zone: str = "UTC"
-    now: Any = None
     bounded: bool = False
 
 
@@ -422,20 +423,52 @@ def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
 
 
 def coverage_select(scope: LeafScope, dialect: Any) -> SqlSelect:
+    """The base's loaded buckets: from its first row's bucket to the bucket of its last row
+    at or before the request's ``now`` (the data-through edge, never the warehouse clock), and
+    that last row's instant in UTC."""
     known = dialect.utc_timestamp(scope.raw_time, scope.storage_zone)
-    now = scope.now
-    last_bucket = SqlCase([SqlCaseWhen(SqlBinary(known, "<=", now), scope.bucket)])
+    loaded = SqlBinary(known, "<=", _now_literal(dialect))
     return SqlSelect(
         select=[
-            SqlField(
-                SqlCall("MIN", [scope.bucket]),
-                "loaded_from",
-            ),
-            SqlField(SqlCall("MAX", [last_bucket]), "loaded_to"),
+            SqlField(SqlCall("MIN", [scope.bucket]), "loaded_from"),
+            SqlField(SqlCall("MAX", [SqlCase([SqlCaseWhen(loaded, scope.bucket)])]), "loaded_to"),
+            SqlField(SqlCall("MAX", [SqlCase([SqlCaseWhen(loaded, known)])]), "data_through"),
         ],
         from_table=replace(scope.from_table),
         observation_scan=True,
     )
+
+
+@dataclass
+class CoverageClock:
+    """The request's ``now``, which loaded coverage caps at; ``read`` once SQL embeds it."""
+
+    now: datetime
+    read: bool = False
+
+    @property
+    def literal(self) -> str:
+        return self.now.astimezone(UTC).replace(tzinfo=None).isoformat(sep=" ")
+
+
+_coverage_clock: ContextVar[CoverageClock | None] = ContextVar("coverage_clock", default=None)
+
+
+@contextmanager
+def capping_at(now: datetime) -> Iterator[CoverageClock]:
+    """While a request lowers, its coverage counts rows at or before its ``now``."""
+    clock = CoverageClock(now)
+    token = _coverage_clock.set(clock)
+    try:
+        yield clock
+    finally:
+        _coverage_clock.reset(token)
+
+
+def _now_literal(dialect: Any) -> Any:
+    clock = _coverage_clock.get() or CoverageClock(current_time())
+    clock.read = True
+    return dialect.timestamp_cast(SqlLiteral(clock.literal))
 
 
 def require_time_scopes(aliases: Iterable[str], scopes: Mapping[str, LeafScope]) -> None:

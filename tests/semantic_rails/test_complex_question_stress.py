@@ -13,10 +13,17 @@ from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def _wire_oracle(rows):
-    return [
-        {key: value.isoformat() if isinstance(value, date) else value for key, value in row.items()}
-        for row in rows
-    ]
+    """Oracle rows as answered: ISO dates, and each series row's period_partial (the fixture's
+    periods all ended long ago)."""
+    wire = []
+    for row in rows:
+        out = {}
+        for key, value in row.items():
+            out[key] = value.isoformat() if isinstance(value, date) else value
+            if key == "period":
+                out["period_partial"] = False
+        wire.append(out)
+    return wire
 
 
 # Stores whose same-store session-to-order rate is over 90% in the month.

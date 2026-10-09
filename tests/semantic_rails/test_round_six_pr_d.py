@@ -101,11 +101,10 @@ def test_dimension_in_select_points_at_group_by():
     assert "group_by" in hint and "dimension.jaffle_store_name" in hint, hint
 
 
-def test_empty_result_with_relative_window_echoes_its_bounds(runtime_factory):
-    """When `time.last` produces a zero-row result (a relative window
-    against historical fixture data), the EMPTY_RESULT_WINDOW warning
-    echoes the resolved absolute bounds, never empty strings, so the
-    agent can tell where the filter actually landed."""
+def test_a_relative_window_after_the_data_echoes_its_bounds(runtime_factory):
+    """`time.last` against historical fixture data: the window still answers its month, NULL
+    with NO_DATA_YET, and the answer echoes the resolved absolute bounds and the data's edge,
+    so the agent can tell where the window landed."""
     runtime = runtime_factory("jaffle_shop")
     try:
         result = runtime.query(
@@ -130,14 +129,12 @@ def test_empty_result_with_relative_window_echoes_its_bounds(runtime_factory):
             sql_profile="off",
         )
         # Data ends in 2017; the window is the month before `now`.
-        assert len(result.get("rows", [])) == 0
-        warnings = result.get("warnings", [])
-        empty = next(
-            (w for w in warnings if w.get("code") == "EMPTY_RESULT_WINDOW"),
-            None,
-        )
-        assert empty is not None, f"expected EMPTY_RESULT_WINDOW warning; got {warnings!r}"
-        assert empty["details"]["requested_window"] == {"start": "2026-09-01", "end": "2026-10-01"}
+        assert [(row["period"], row["rev"]) for row in result["rows"]] == [("2026-09-01", None)]
+        assert result["window"]["start"] == "2026-09-01"
+        assert result["window"]["end"] == "2026-10-01"
+        assert result["window"]["data_through"].startswith("2017-")
+        codes = [w.get("code") for w in result.get("warnings", [])]
+        assert "NO_DATA_YET" in codes and "EMPTY_RESULT_WINDOW" not in codes
     finally:
         runtime.close()
 

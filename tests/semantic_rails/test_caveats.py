@@ -127,11 +127,11 @@ def test_caveats_do_not_change_sql_or_rows(tmp_path: Path) -> None:
     (without_caveat_dir / "caveats.yml").unlink()
     without_caveat = Runtime.from_path(str(without_caveat_dir))
     try:
-        query = _revenue_query()
-        with_compiled = with_caveat.compile(query)
-        without_compiled = without_caveat.compile(query)
-        with_queried = with_caveat.query(query)
-        without_queried = without_caveat.query(query)
+        query, now = _revenue_query(), "2026-10-01T00:00:00Z"
+        with_compiled = with_caveat.compile(query, now=now)
+        without_compiled = without_caveat.compile(query, now=now)
+        with_queried = with_caveat.query(query, now=now)
+        without_queried = without_caveat.query(query, now=now)
 
         assert with_compiled["rendered_sql"] == without_compiled["rendered_sql"]
         assert _rounded_rows(with_queried["rows"]) == _rounded_rows(without_queried["rows"])

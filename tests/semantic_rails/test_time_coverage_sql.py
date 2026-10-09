@@ -28,6 +28,7 @@ ITEMS = {"measure": "measure.jaffle.item_count"}
 BOUNDS = {"start": "2017-04-01", "end": "2017-05-01"}
 WAREHOUSES = ("duckdb", "postgres", "snowflake", "bigquery", "databricks", "clickhouse", "athena")
 COVERED = {"duckdb", "postgres"}  # the warehouses whose coverage SQL CI executes
+NOW = "2026-10-01T00:00:00Z"
 
 
 def _config(factory, warehouse="duckdb", zone="UTC", storage=""):
@@ -50,6 +51,7 @@ def _compile(config, time, expressions=(REVENUE, ORDERS)):
         {
             "select": [{"expression": expr, "as": f"v{i}"} for i, expr in enumerate(expressions)],
             "time": {"temporal_role": ROLE, "grain": "month", **time},
+            "policy_context": {"now": NOW},
         },
     )
 
@@ -96,12 +98,17 @@ def test_coverage_renders_only_where_ci_executes_it(
         assert all(isinstance(m, SqlCase) for m in counts)
         return
     coverage = _cte(compiled, "coverage_1")
-    lowest, highest = (field.expression for field in coverage.select)
+    lowest, highest, through = (field.expression for field in coverage.select)
     bucket = lowest.args[0]
     assert f"{render_expr(bucket)} AS t" in leaf  # MIN/MAX of the leaf's own bucket
     cutoff = highest.args[0].whens[0]
     assert cutoff.result == bucket
-    assert "PG_TYPEOF" in render_expr(cutoff.condition) and "NOW()" in render_expr(cutoff.condition)
+    # The cutoff is the request's now, never the warehouse clock; the last row's instant
+    # under it is the data-through edge.
+    condition = render_expr(cutoff.condition)
+    assert "PG_TYPEOF" in condition and "NOW()" not in condition
+    assert "CAST('2026-10-01 00:00:00' AS TIMESTAMP)" in condition
+    assert through.args[0].whens[0].condition == cutoff.condition
     assert all(isinstance(m, SqlCall) and m.name == "COALESCE" for m in measures)
 
 
@@ -171,11 +178,11 @@ def test_coverage_cutoff_compares_instants_in_a_different_session_zone(
     with duckdb.connect() as db:
         db.execute("SET TimeZone = 'America/Los_Angeles'")
         db.execute(f"CREATE TABLE jaffle_order (ordered_at {column_type})")
-        stamp = f"CURRENT_TIMESTAMP + INTERVAL '{hours} hour'"
+        stamp = f"TIMESTAMPTZ '{NOW}' + INTERVAL '{hours} hour'"
         if column_type == "TIMESTAMP":
             stamp = f"({stamp}) AT TIME ZONE '{storage_zone}'"
         db.execute(f"INSERT INTO jaffle_order VALUES ({stamp})")
-        lo, hi = db.execute(render_select(coverage)).fetchone()
+        lo, hi, _ = db.execute(render_select(coverage)).fetchone()
         assert lo is not None
         assert (hi is not None) is (hours < 0)
 

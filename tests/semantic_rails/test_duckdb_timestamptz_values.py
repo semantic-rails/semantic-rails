@@ -49,8 +49,8 @@ def test_time_axis_buckets_timestamptz_by_day(timestamp_package: Path) -> None:
     try:
         result = runtime.query({**ORDER_COUNT_QUERY, "time": time})
         assert sorted(result["rows"], key=lambda row: row["period"]) == [
-            {"period": "2024-01-01", "orders": 2},
-            {"period": "2024-01-02", "orders": 1},
+            {"period": "2024-01-01", "period_partial": False, "orders": 2},
+            {"period": "2024-01-02", "period_partial": False, "orders": 1},
         ]
         assert result["column_types"]["period"] == {"type": "date"}
     finally:

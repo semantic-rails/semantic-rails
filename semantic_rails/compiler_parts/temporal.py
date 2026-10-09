@@ -1060,6 +1060,23 @@ def _validate_restrictive_time_semantics(
                 f"function depends on, producing silently wrong values. {remedy.capitalize()}"
                 + ending
             )
+            comparison = str((lookback or {}).get("kind", "")) in {
+                "PriorPeriodExpr",
+                "OffsetWindowExpr[prior_period]",
+            }
+            if comparison and query.time.named and "where_path" not in details:
+                # Period comparisons beside a named window ship later; the series answers now.
+                spelled = "last" if query.time.last_unit else "this" if query.time.this else "start"
+                details["path"] = f"time.{spelled}"
+                details["comparison_beside_window"] = True
+                details["time"] = {
+                    "temporal_role": query.time.temporal_role,
+                    "grain": query.time.grain,
+                }
+                message = (
+                    "A comparison beside a named window is not supported yet; ask for a series "
+                    "with a grain and read the periods you need from it."
+                )
         error = SemanticLayerError(
             f"{'CUMULATIVE' if cumulative else 'WINDOWED'}_TIME_FILTER_UNSUPPORTED",
             message,

@@ -35,6 +35,7 @@ from .ast import (
     route_decisions_from_payload,
     time_output_alias,
 )
+from .clock import UNITS, known_zone, parse_now
 from .compiler_parts.bind import (
     _aggregation_expr,
     _bind_measure,
@@ -70,6 +71,7 @@ from .compiler_parts.dependencies import (
 from .compiler_parts.empty_groups import (
     ZERO_MEASURE_CLASSES,
     absent_entities_gate,
+    capping_at,
     expr_resolves_to_zero,
     observing,
     recording_zero_outputs,
@@ -392,6 +394,9 @@ _TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, PriorPeriodExpr, ConversionExpr)
 
 
 def _uses_time_axis(expr: Any, config: PackageConfig) -> bool:
+    # An entity's aggregate over all its rows, or over the query window, reads no output time.
+    if isinstance(expr, MetricPredicateExpr) and expr.scope_mode == "entity_only":
+        return False
     if isinstance(expr, _TIME_AXIS_EXPRS):
         return True
     if isinstance(expr, MetricRecipeRefExpr):
@@ -409,19 +414,47 @@ def _uses_time_axis(expr: Any, config: PackageConfig) -> bool:
     return False
 
 
+def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool:
+    """A named window under a grain answers one row per period it holds, like ``fill``.
+
+    Only where the warehouse bounds an empty period's 0 by the data's loaded edge, and the
+    clock's zone names its days; elsewhere the series keeps the periods that have rows, so no
+    period after the edge reads 0.
+    """
+    time = query.time
+    if not (
+        time is not None
+        and time.named
+        and time.grain in UNITS
+        and query.select
+        and dialect_for_warehouse(config.package.warehouse).has_time_coverage
+    ):
+        return False
+    role = _temporal_role_index(config).get(time.temporal_role)
+    return known_zone(str(getattr(role, "timezone", "") or "UTC"))
+
+
 def _is_window_total(
     query: NormalizedQuery, config: PackageConfig, bound_measures: Iterable[BoundMeasure]
 ) -> bool:
-    """A time window with no grain, over plain measures: one total, not a row per timestamp."""
+    """A time window with no grain answers one total per group, never a row per timestamp.
+
+    A predicate taken over each entity's own rows (all time, or the query window) reads no
+    output time, so the total takes it. One tested per output row (a package metric's
+    contextual predicate) has no total over the window: the request is refused, asking for a
+    grain, once lowering has raised any refusal of its own.
+    """
     time = query.time
     if time is None or not time.temporal_role or time.grain or time.fill:
         return False
     if time.start is None and time.end is None:
         return False
-    # A predicate (in an aggregate's filter or a metric recipe) is tested per raw timestamp
-    # here, so its threshold would not mean "over the window". Keep today's behaviour.
-    if any(_bound_metric_predicates(bound) for bound in bound_measures):
-        return False
+    if any(
+        predicate.scope_mode != "entity_only"
+        for bound in bound_measures
+        for predicate in _bound_metric_predicates(bound)
+    ):
+        return False  # lowering refuses it (``refuse_per_period_total``)
     expressions = [item.expression for item in query.select] + [
         item.expression for item in query.metric_filters
     ]
@@ -4611,6 +4644,8 @@ def _plan_query(
     # ``attach_relation_ctes``.
     query, synthetic_measures = lift_conditional_aggregates(raw_query, config)
     config = _extend_config_with_synthetic_measures(config, synthetic_measures)
+    if collapse_window and query.time is not None and _answers_every_period(query, config):
+        query = replace(query, time=replace(query.time, fill=True))
 
     measures = _measure_index(config)
 
@@ -4975,6 +5010,8 @@ class BoundQuery:
     route_choices: tuple[RouteChoice, ...] = ()
     # Each query route_decisions row the SQL reads, with the basis it replaced.
     route_decisions: tuple[dict[str, Any], ...] = ()
+    # The request's ``now`` the SQL's loaded coverage caps at ("" when it reads none).
+    coverage_now: str = ""
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``."""
@@ -5298,6 +5335,7 @@ def _bind_query(
         recording_zero_outputs() as zero_outputs,
         recording_route_choices() as route_choices,
         observing(plan.query, config),
+        capping_at(parse_now((payload.get("policy_context") or {}).get("now"))) as clock,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
         sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
@@ -5323,6 +5361,7 @@ def _bind_query(
         zero_outputs=tuple(zero_outputs),
         retained_filtered_series=tuple(sorted(leaves.retained_filtered_series)),
         route_choices=tuple(route_choices),
+        coverage_now=clock.literal if clock.read else "",
     )
 
 
@@ -5425,4 +5464,5 @@ def compile_query(
         "retained_filtered_series": list(bound.retained_filtered_series),
         "route_choices": list(bound.route_choices),
         "route_decisions": list(bound.route_decisions),
+        "coverage_now": bound.coverage_now,
     }
