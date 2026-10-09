@@ -296,7 +296,11 @@ HELD = [
         "dependent_part",
         [2],
     ),
-    ("Last week, what was the MRR, and how much of that came from new accounts?", "dependent_part", [2]),
+    (
+        "Last week, what was the MRR, and how much of that came from new accounts?",
+        "dependent_part",
+        [2],
+    ),
     ("How many new accounts last week, and how many?", "part_without_subject", [2]),
     (
         "How many new accounts, how many closures, how many upgrades, what was the MRR, and "
@@ -309,7 +313,13 @@ HELD = [
     ("How many new accounts, and how many closures by segment?", "part_without_grouping", [1]),
     # Every grouping form plan reads, not only "by".
     ("How many new accounts, and how many closures per segment?", "part_without_grouping", [1]),
-    ("How many new accounts, and how many closures for each segment?", "part_without_grouping", [1]),
+    (
+        "How many new accounts, and how many closures for each segment?",
+        "part_without_grouping",
+        [1],
+    ),
+    ("How many new accounts, and how many closures per month?", "part_without_grouping", [1]),
+    ("How many new accounts, and how many closures for each month?", "part_without_grouping", [1]),
     ("How many new accounts, and how many closures monthly?", "part_without_grouping", [1]),
     ("How many new accounts, and how many closures over time?", "part_without_grouping", [1]),
     (
@@ -334,6 +344,23 @@ def test_parts_plan_cant_read_alone_are_held(
     assert [part["part"] for part in payload["why"]["details"]["parts"]] == numbers
     # The parts are listed, unplanned.
     assert payload["parts"] and all(set(part) == {"text", "spans"} for part in payload["parts"])
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How many new accounts monthly, and how many closures monthly?",
+        "How many new accounts per month, and how many closures per month?",
+    ],
+)
+def test_parts_that_each_state_the_grouping_are_not_held_for_it(
+    runtime: Runtime, question: str
+) -> None:
+    payload = _plan(runtime, question, detail="best")
+
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+    assert [part["status"] for part in payload["parts"]] == ["ok", "ok"]
 
 
 def test_a_part_not_ready_holds_the_whole_with_its_status(runtime: Runtime) -> None:
