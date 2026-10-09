@@ -2,9 +2,10 @@
 
 ``answer_fields`` reads from the compiled call (and, for a query, its rows and loaded
 coverage) what every answer states: ``window``, ``clock``, ``observation_scope`` (always, since
-it decides 0 or NULL), ``routes`` (only when a route was chosen) and the assumptions the call's time and entity filters imply. ``finish`` completes a response: a
-warning whose code the registry lists as an assumption is stated under ``assumptions``, the
-echoed query is the call, and empty fields go. Verbosity trims only afterwards
+it decides 0 or NULL), ``routes`` (only when a route was chosen) and the assumptions the
+call's time and entity filters imply. ``finish`` completes a response: a warning whose code
+the registry lists as an assumption is stated under ``assumptions``, the echoed query is the
+call, and empty fields go. Verbosity trims only afterwards
 (``runtime_parts.responses.apply_response_verbosity``) and never removes a warning, an
 assumption or a route.
 """
