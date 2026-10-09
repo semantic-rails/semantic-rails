@@ -204,8 +204,12 @@ _EXTRA_QUALIFIER_TERMS = (
 
 
 def _specificity_penalty(row: Any, terms: Iterable[str]) -> int:
+    """Two points per qualifier the row carries and the terms do not. A label's parenthetical
+    notes what the row covers ("Revenue (new and repeat types)") and qualifies nothing."""
+
     term_set = set(terms)
-    text = _object_text(row)
+    label = str(getattr(row, "label", "") or "")
+    text = _object_text(row).replace(label.lower(), re.sub(r"\s*\(.*?\)", "", label).lower())
     return sum(2 for item in _EXTRA_QUALIFIER_TERMS if item in text and item not in term_set)
 
 
@@ -243,7 +247,7 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     Cents, "item revenue" the reverse. A name missing only its "count" is
     nearly whole: "number of customers" names Customer count over Ordering
     customers. "revenue before tax" names neither Revenue nor Tax paid, so
-    the first by label stays a guess.
+    the first by label stays a guess. A label's parenthetical is no part of its name.
     """
 
     matched = [(_score(row, terms), row) for row in rows]
@@ -257,7 +261,8 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     )
     fit = {}
     for row in tied:
-        names = [row.label, _last_token(row.id), *(getattr(row, "aliases", None) or [])]
+        bare = re.sub(r"\s*\(.*?\)", "", row.label)
+        names = [row.label, bare, _last_token(row.id), *(getattr(row, "aliases", None) or [])]
         sets = [set(_tokens(name)) for name in names if _tokens(name)]
         whole = 2 if any(name <= words for name in sets) else 0
         if not whole and any(len(name) > 1 and name - {"count"} <= words for name in sets):

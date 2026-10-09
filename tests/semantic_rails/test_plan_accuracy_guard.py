@@ -1266,15 +1266,18 @@ def test_an_entity_in_a_predicate_accounts_for_its_word(adapter: SemanticLayerMC
 
 
 def _draft_plan(monkeypatch: pytest.MonkeyPatch, query: dict[str, Any] | None) -> None:
-    """Make plan draft exactly ``query`` (or nothing), whatever the planner would do."""
+    """Make plan draft exactly the call ``query`` (or nothing), whatever the planner would do."""
 
     from semantic_rails.planner import plan as plan_module
     from semantic_rails.planner._base import RuntimeCompositionDraft
+    from semantic_rails.planner.call import Call
     from semantic_rails.planner.orchestrator import CompositionResult
 
     def compose(runtime: Any, intent: str) -> CompositionResult:
         draft = (
-            RuntimeCompositionDraft(query=query, resolved=[], rationale=[], interpreted_intent={})
+            RuntimeCompositionDraft(
+                query=Call.from_call(query), resolved=[], rationale=[], interpreted_intent={}
+            )
             if query is not None
             else None
         )

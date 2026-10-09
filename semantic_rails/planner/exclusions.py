@@ -16,10 +16,11 @@ is an ``unknown`` item, and a clause with no item gets one. A marker or "includi
 quoted string or a declared name ("Including Top"), or a marker inside a grouping phrase ("by
 store excluding Brooklyn"), leaves the whole question unread.
 
-A clause is answered when each item is a declared value of one dimension that a top-level
-``not`` filter leaves out, and no filter keeps it: ``not`` keeps rows with no recorded value,
-as an exclusion does. ``unrealized`` holds every other clause: a time phrase (a window has no
-complement), an unread item, or a value the draft doesn't leave out.
+A clause is answered when each item is a declared value of one dimension, and the draft's
+top-level ``not`` filters on that dimension leave out exactly the values the question excludes
+there, with no ``is`` filter narrowing it: ``not`` keeps rows with no recorded value, as an
+exclusion does. ``unrealized`` holds every other clause: a time phrase (a window has no
+complement), an unread item, or values the draft leaves out differently.
 """
 
 from __future__ import annotations
@@ -518,17 +519,6 @@ def _keeps(row: Any, field_id: str, canonical: Any) -> bool:
     )
 
 
-def _drops(row: Any, field_id: str, canonical: Any) -> bool:
-    """A top-level ``not`` filter on ``field_id`` that leaves ``canonical`` out."""
-
-    return (
-        isinstance(row, Condition)
-        and row.field == field_id
-        and row.op == "not"
-        and _contains_literal(row.values, canonical)
-    )
-
-
 def exclusion_gaps(config: Any, text: str, query: Call, window: Any) -> list[CoverageGap]:
     """One gap for each exclusion clause of the question the draft doesn't answer."""
 
@@ -542,18 +532,34 @@ def unrealized(clauses: list[ExclusionClause], query: Call) -> list[CoverageGap]
     excludes, otherwise ``negation_unrealized``.
     """
 
-    where = list(query.where)
-    gaps = []
+    # Per dimension, the values every clause excludes and the values the draft leaves out: the
+    # two must be the same, and no ``is`` filter may narrow the dimension beside them.
+    excluded: dict[str, list[Any]] = {}
     for clause in clauses:
-        answered = all(
-            item.binding is not None
-            and any(_drops(row, *item.binding) for row in where)
-            and not any(_keeps(row, *item.binding) for row in where)
-            for item in clause.items
+        for item in clause.items:
+            if item.binding is not None:
+                excluded.setdefault(item.binding[0], []).append(item.binding[1])
+    left_out: dict[str, list[Any]] = {}
+    narrowed: set[str] = set()
+    for row in query.conditions:
+        if row.op == "not":
+            left_out.setdefault(row.field, []).extend(row.values)
+        elif row.op == "is":
+            narrowed.add(row.field)
+
+    def exact(field_id: str) -> bool:
+        wanted, dropped = excluded.get(field_id, []), left_out.get(field_id, [])
+        return (
+            field_id not in narrowed
+            and all(_contains_literal(dropped, value) for value in wanted)
+            and all(_contains_literal(wanted, value) for value in dropped)
         )
-        if not answered:
-            gaps.append(_clause_gap(clause, query))
-    return gaps
+
+    return [
+        _clause_gap(clause, query)
+        for clause in clauses
+        if not all(item.binding is not None and exact(item.binding[0]) for item in clause.items)
+    ]
 
 
 def _clause_gap(clause: ExclusionClause, query: Call) -> CoverageGap:
