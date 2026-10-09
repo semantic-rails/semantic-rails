@@ -3266,6 +3266,33 @@ tests:
       - {dimension.shop_order_store_id: a, period: '2023-01-01', revenue: 17}
       - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 20}
       - {dimension.shop_order_store_id: b, period: '2024-01-01', revenue: 3}
+  shop/contains-is-case-insensitive:
+    kind: query_matches_snapshot
+    expect: answer
+    why: TOR is found in store whatever its case, so customers 102, 104 and 107 count; 105's unknown channel contains nothing.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [null-vs-zero]
+    query:
+      select: [measure.shop.signup_count]
+      group_by: [dimension.shop_customer_channel]
+      where: [{field: dimension.shop_customer_channel, op: contains, value: TOR}]
+    reference_sql: |
+      SELECT channel, COUNT(DISTINCT customer_id) FROM signups
+      WHERE LOWER(channel) LIKE '%tor%' GROUP BY 1
+    expected_rows:
+      - {dimension.shop_customer_channel: store, signup_count: 3}
+  shop/contains-reads-wildcards-literally:
+    kind: query_matches_snapshot
+    expect: answer
+    why: No channel holds an underscore; as a LIKE wildcard it would have matched every channel.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [empty-result]
+    query:
+      select: [measure.shop.signup_count]
+      group_by: [dimension.shop_customer_channel]
+      where: [{field: dimension.shop_customer_channel, op: contains, value: _}]
+    reference_sql: SELECT channel, COUNT(DISTINCT customer_id) FROM signups WHERE POSITION('_' IN channel) > 0 GROUP BY 1
+    expected_rows: []
   shop/lookup_by_channel:
     kind: query_matches_snapshot
     expect: answer
