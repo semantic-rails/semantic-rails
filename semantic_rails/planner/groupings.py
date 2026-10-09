@@ -182,30 +182,6 @@ def _entity_grouping(config: Any, term: str) -> tuple[Any, list[str]] | None:
     return (named[0], [*keys, *shown]) if len(keys) == 1 else None
 
 
-def _display_entities(config: Any, query: dict[str, Any]) -> list[Any]:
-    """The entities with a visible ``display`` dimension that the draft's subject reaches: whom
-    "who" may list when its clause names no entity."""
-
-    from ..errors import SemanticLayerError  # noqa: WPS433
-    from ..metadata import _availability_for_object, _selection_context  # noqa: WPS433
-
-    out: list[Any] = []
-    try:
-        root = _selection_context(config, query)["root_entity"]
-        for entity in config.entities:
-            keys, shown = _entity_stand_ins(config, entity)
-            if (
-                entity.display
-                and len(keys) == 1
-                and shown == [entity.display]
-                and _availability_for_object(config, root, entity.id, "entity")["available"]
-            ):
-                out.append(entity)
-    except SemanticLayerError:
-        return []
-    return out
-
-
 def _key_only_assumptions(
     config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None = None
 ) -> list[str]:

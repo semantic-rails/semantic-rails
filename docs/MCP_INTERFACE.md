@@ -379,10 +379,9 @@ A draft that validates can still leave out part of the question. `plan` returns
   grouped by Store name). Nor does any other dimension, whatever it declares: a time grain, a
   category, another dimension of the entity ("Customer order number") or another entity's
   dimension. "which" or "list" naming no entity is held. "who" naming no entity ("Who ordered
-  last week?") lists the one entity with a `display` that the draft's subject reaches; with
-  none or several, it leaves whose rows to the caller: only a caller's `query.group_by`
-  dimension that is no grouping the question lists ("Who ordered by store?") and is the key of
-  its own entity lists them. "each" or "every" needs a row per item, a `group_by` or a grain that
+  last week?") leaves whose rows to the caller: only a caller's `query.group_by` dimension
+  that is no grouping the question lists ("Who ordered by store?") and is the key of its own
+  entity lists them. "each" or "every" needs a row per item, a `group_by` or a grain that
   splits the rows (`each_unrealized`: "How many orders did each last week?"). "compare",
   "compared", "comparison", "versus", "vs", "against" or "up or down" needs a value to compare
   with: a prior-period select. A second select (which may spell the first again), a
@@ -542,8 +541,7 @@ The reverse also holds: every grouping the draft adds traces to the question, or
 naming each one (a dimension's label, or the grain's unit), `details.dimensions` and
 `details.grain`. A `group_by` dimension traces to a grouping the question asks for, read as
 above: one it lists ("by store"), the noun a ranking ranks ("which 5 stores had the most
-orders"), the words after "per", "each" or "every" ("revenue per store"), or what a clause
-opening with "which" or "who" lists (the entity it names, or the one "who" lists). It also traces to
+orders"), or the words after "per", "each" or "every" ("revenue per store"). It also traces to
 the caller's `partial_query` group_by, or to the draft's own `=` or `IN` filter, which keeps only
 values the question names. The time block's grain traces to the question's words outside its
 windows: its unit or "-ly" form ("by month", "monthly", "at month level", "daily"), a series
@@ -742,26 +740,19 @@ weeks are allowed), a stock on an event clock, a ratio, or a balance beside a fl
 holds above, and a window in `query.time` is used as passed: a day-grain balance window is read
 only when both bounds are whole days and it ends on or before the last complete day;
 otherwise `stock_as_of_unrealized`.
-**How plan answers which, who, top N and each.** A term that names an entity by its label or a
-synonym (plurals allowed, never its description), after "by", "each", "every", "for each", a
-ranking ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the most MRR") or a
-"which" or "who" opening a clause, groups by the entity's key dimension and the dimension that
-names a row: its [`display:`](PACKAGE_AUTHORING.md#display--the-name-of-one-row), else its one
-dimension whose own words name it, else the key alone with an assumption line saying so (none
-when the question names the key itself, "by store id"). A ranking keeps the count the question
-states (digits or "one" to "ten") and its direction ("bottom", "least", "lowest" sort
-ascending); ties at the cut follow `execute`'s ordering. A ranking whose subject only the ranked
-noun names ("top 5 customers", "the 3 stores that sold the most") has no value to rank by: it
-groups by nothing and stays held. A list
-("Which accounts closed last week?", "Who upgraded last week?") also keeps only rows whose value
-isn't 0 (`metric_filters: [{"expression": <the select>, "op": "!=", "value": 0}]`) and orders
-them by name. "who" naming no entity lists the one entity with a `display` that the subject
-reaches; when several do, `plan` returns `needs_clarification` with an option per entity in
-`why.details.clarification.options`, and when none does it is held. A superlative no ranking
-reads ("who had the most MRR"), "per" (it may be a ratio) and a "which" naming a dimension
-rather than an entity draft no list. A term after "each" or "every" ends at the first word that
-names nothing more ("each plan make" groups by plan). The readiness checks read the same
-stand-ins, so a draft grouped by another entity's column stays held.
+**How plan answers by, each and top N.** A term that names an entity by its label or a synonym
+(plurals allowed, never its description), after "by", "each", "every" or "for each", or the noun
+a ranking ranks ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the most
+MRR"), groups by the entity's key dimension and the dimension that names a row: its
+[`display:`](PACKAGE_AUTHORING.md#display--the-name-of-one-row), else its one dimension whose own
+words name it, else the key alone with an assumption line saying so (none when the question
+names the key itself, "by store id"). A ranking keeps the count the question states (digits or
+"one" to "ten") and its direction ("bottom", "least", "lowest" sort ascending); ties at the cut
+follow `execute`'s ordering. A ranking whose subject only the ranked noun names ("top 5
+customers", "the 3 stores that sold the most") has no value to rank by: it groups by nothing and
+stays held. A term after "each" or "every" ends at the first word that names nothing more
+("each plan make" groups by plan). The readiness checks read the same stand-ins, so a draft
+grouped by another entity's column stays held.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.

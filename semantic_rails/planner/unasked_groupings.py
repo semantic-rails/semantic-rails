@@ -98,14 +98,11 @@ _PER_GROUPING_RE = re.compile(
 )
 
 
-def _asked_grouping_terms(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+def _asked_grouping_terms(config: Any, question: str) -> list[str]:
     """What the question asks to group by: each grouping it lists (``_listed_grouping_terms``),
-    the noun a ranking ranks ("which 5 stores had the most orders"), the words after "per",
+    the noun a ranking ranks ("which 5 stores had the most orders"), and the words after "per",
     "each" or "every" ("revenue per store"; "each plan" in "did each plan make", where a name
-    ends), and what a clause opening with "which" or "who" lists (``_listed_entity_terms``).
-    Windows are not part of any of them."""
-
-    from .answer_shape import _listed_entity_terms  # noqa: WPS433 - answer_shape imports this
+    ends). Windows are not part of any of them."""
 
     request = _ranking_request(question, _dimension_nouns(config))
     lowered = _without_windows(question)
@@ -118,7 +115,6 @@ def _asked_grouping_terms(config: Any, question: str, query: dict[str, Any]) -> 
         *_listed_grouping_terms(question, config),
         *([str(request["noun"])] if request else []),
         *each,
-        *_listed_entity_terms(config, question, query),
     ]
 
 
@@ -154,7 +150,7 @@ def _unasked_grouping_why(
     grain_traced = not splits or (
         _time_of(caller).get("grain") == grain or _names_grain(config, question, query, grain)
     )
-    terms = _asked_grouping_terms(config, question, query)
+    terms = _asked_grouping_terms(config, question)
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
     # A dimension the draft filters to the values the question names splits the rows into
     # those values only; the filter-value check holds a filter that keeps any other.

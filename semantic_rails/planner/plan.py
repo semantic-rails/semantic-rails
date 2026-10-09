@@ -654,10 +654,7 @@ def _planned_row(
         merged_draft.resolved,
     )
     if merged_draft.blocked_reason:
-        why = dict(merged_draft.blocked_reason)
-        # A pattern that asks (whose rows "who" lists) blocks with the options to pick from.
-        clarify = bool((why.get("details") or {}).get("clarification"))
-        return _blocked_row(merged_draft, pattern, why, blocked, clarify=clarify)
+        return _blocked_row(merged_draft, pattern, dict(merged_draft.blocked_reason), blocked)
     merged_draft = _governed_draft(runtime._config, intent, merged_draft, partial_query)
     # A balance reads the one day the question names (planner/snapshot.py).
     shaped, ask = shape_snapshot(runtime, intent, merged_draft.query, partial_query)
