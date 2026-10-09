@@ -42,7 +42,7 @@ from .result_values import result_rows
 from .route_census import route_change_lines, route_changes
 from .runtime import Runtime, _time_zone
 from .runtime_parts.responses import output_columns
-from .yaml_loader import safe_load as yaml_safe_load
+from .yaml_loader import load_named_entries
 
 ARTIFACT_MANIFEST_NAME = "semantic-rails-manifest.json"
 ARTIFACT_SCHEMA_VERSION = 1
@@ -326,7 +326,7 @@ def run_examples_report(
     if runtime is None:
         runtime = Runtime(ref.package_id) if ref.package_id else Runtime.from_path(ref.source_path)
     try:
-        examples = _load_named_entries(
+        examples = load_named_entries(
             Path(package_root_for_source(ref.source_path)) / "examples",
             plural_key="examples",
             singular_key="example",
@@ -386,7 +386,7 @@ def run_package_tests_report(
     if runtime is None:
         runtime = Runtime(ref.package_id) if ref.package_id else Runtime.from_path(ref.source_path)
     try:
-        tests = _load_named_entries(
+        tests = load_named_entries(
             Path(package_root_for_source(ref.source_path)) / "tests",
             plural_key="tests",
             singular_key="test",
@@ -1239,25 +1239,6 @@ def _check_errors(report: dict[str, Any]) -> list[dict[str, Any]]:
         for error in list(check.get("errors", []) or []):
             errors.append({"check": name, **dict(error)})
     return errors
-
-
-def _load_named_entries(
-    root: Path, *, plural_key: str, singular_key: str
-) -> list[tuple[str, dict[str, Any]]]:
-    entries: list[tuple[str, dict[str, Any]]] = []
-    if not root.is_dir():
-        return entries
-    for file_path in sorted([*root.rglob("*.yml"), *root.rglob("*.yaml")]):
-        raw = dict(yaml_safe_load(file_path.read_text(encoding="utf-8")) or {})
-        mapping = raw.get(plural_key)
-        if isinstance(mapping, dict):
-            for entry_id, spec in mapping.items():
-                entries.append((str(entry_id), dict(spec or {})))
-            continue
-        single = raw.get(singular_key)
-        if isinstance(single, dict):
-            entries.append((str(single.get("id", file_path.stem)), dict(single)))
-    return entries
 
 
 def _package_snapshot(snapshot: LoadedPackageSnapshot) -> dict[str, Any]:

@@ -344,7 +344,8 @@ def test_plan_next_signals_ready_for_execute(runtime_factory) -> None:
     finally:
         runtime.close()
     next_block = payload["next"]
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert payload["status"] == "ok"
+    assert next_block["ready_for"] == ["execute"]
     assert "validate" not in next_block
     assert "compile" not in next_block
     assert "execute" not in next_block
@@ -370,9 +371,9 @@ def test_plan_compact_detail_skips_catalog_fallback_for_valid_primary(
         payload = plan_payload(runtime, intent="top stores by revenue", detail=detail)
     finally:
         runtime.close()
-    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-    assert calls
-    assert payload["best"]["pattern"] == "metric_by_dimension_rollup"
+    assert payload["status"] == "ok"
+    assert not calls
+    assert payload["best"]["pattern"] == "package_example"
 
 
 def test_plan_compact_detail_discovers_fallback_after_invalid_primary(
@@ -722,6 +723,7 @@ def test_plan_expanded_detail_returns_alternatives_and_blocked(
     runtime_factory, detail: str
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
+    runtime._package_examples = []  # Exercise generic planner alternatives.
     try:
         payload = plan_payload(runtime, intent="top stores by revenue", detail=detail, limit=3)
     finally:
@@ -988,7 +990,8 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
     finally:
         runtime.close()
     ranked_query = ranked["best"]["query_ir"]
-    assert_plan_held(ranked, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert ranked["status"] == "ok"
+    assert ranked["best"]["pattern"] == "package_example"
     assert_plan_held(bucketed, "PLAN_UNMATCHED_TERMS")
     assert "time" not in ranked_query
     assert ranked_query["limit"] == 5
