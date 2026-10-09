@@ -522,11 +522,7 @@ def test_unattachable_graph_relationship_is_refused(tmp_path: Path, relationship
     # An unbound model must not make an unknown graph entity attachable.
     _write_yaml(
         pkg / "models" / "orphan.yml",
-        {
-            "models": {
-                "orphan": {"relation": "orphan", "entities": {"orphan": {}}}
-            }
-        },
+        {"models": {"orphan": {"relation": "orphan", "entities": {"orphan": {}}}}},
     )
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))

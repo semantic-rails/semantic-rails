@@ -2713,18 +2713,18 @@ set: the document top level; `package:` and `package.seed`; `defaults:` and its 
 entries and their `rollup_safe`; both `path_policy` blocks; `semantic_caveats` rows and their
 `time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
 `dimensions`, `times`, `measures` (and each measure's `accumulation:`, which takes `kind` and
-`snapshot`, as does `defaults.measure.accumulation`), `joins` and `variants`, with each
+`snapshot`, as does `defaults.measure.accumulation`, and its `validity_windows` and
+`external_discontinuities` rows) and `variants`, with each
 variant's `grain`, `time`, `excludes`, `selection`, `equivalence` and every `columns:`
 binding; metrics; segments and their `membership`. A `columns:` binding takes the keys of what
 its name resolves to: a measure (by key or by the one id the loader gives it: `as:` when set,
-else `id:`, else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
-dimension (by key, by `as:` when set, else `id:`, or a `dimension.` id, which the loader
+else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
+dimension (by key, by `as:` when set, or a `dimension.` id, which the loader
 refuses when the package has no such dimension), or a key or foreign-key column the
 loader turns into a key dimension (including the key of a graph entity named after the model,
 which binds it by default). A name that resolves to none of them is refused, with the names it
 could mean: the loader would ignore it, and a measure it meant to bind would read the column
-named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
-`as:` value. `relations` entries are not closed yet. A key that starts
+named after the measure, summed. `relations` entries are not closed yet. A key that starts
 with `_` is an annotation.
 
 In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,

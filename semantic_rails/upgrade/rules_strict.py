@@ -10,7 +10,7 @@ from ..config import _ensure_list
 from ..config_parts.package_loader import _RELATIONSHIP_PASSTHROUGH, _column_list
 from ..naming import slug, title
 from ..schema import OBSERVATION_SCOPES
-from .model import Edit, Finding, Option, PackageFiles, Rule, YamlPath
+from .model import Edit, Finding, Option, PackageFiles, Rule, YamlPath, plan
 
 Graph = dict[str, tuple[str, YamlPath, dict[str, Any]]]
 
@@ -351,15 +351,15 @@ def _object_as(files: PackageFiles) -> Iterator[Finding]:
             key = str(path[-1] if path[-2:-1] == (section,) else row.get("name"))
             derived = f"{kind}.{namespace}.{slug(key)}" if namespace else ""
             rows.append((file, path, row, derived if keyed else None))
-    for file, path, row, derived in rows:
+    for file, path, row, derives in rows:
         if "id" not in row:
             continue
         key = (*path, "id")
-        if derived is None:
+        if derives is None:
             message = "This id keys the spec: author it under its file's map, keyed, by hand."
             yield Finding("object-as", file, files.line(file, key), key, message)
             continue
-        redundant = "as" in row or (bool(derived) and str(row["id"]) == derived)
+        redundant = "as" in row or (bool(derives) and str(row["id"]) == derives)
         yield Finding(
             "object-as",
             file,
@@ -393,29 +393,23 @@ def _measure_times(files: PackageFiles) -> Iterator[Finding]:
         yield Finding("measure-times", file, files.line(file, key), key, message, edits)
 
 
+_SPELLINGS = {"object-as", "measure-times"}
+
+
 def _loaded(files: PackageFiles) -> tuple[dict[tuple[str, str], Any], set[str]]:
     """Each measure as the loader reads it, by (model id, key), and the metric keys and ids
     authored beside it; nothing when the package won't load."""
     from ..config import _load_package_source, _parse_package, normalize_package
     from ..package_snapshot import CapturedSource
 
-    captured = CapturedSource(
-        str(files.source), files.directory, tuple(sorted(files.contents.items()))
-    )
     try:
-        authored = _load_package_source(str(files.source), captured=captured)
-        defaults = _mapping(authored.get("defaults"))
-        for row in (
-            _mapping(defaults.get("measure")),
-            *(
-                _mapping(measure)
-                for model in _mapping(authored.get("models")).values()
-                for measure in _mapping(_mapping(model).get("measures")).values()
-            ),
-        ):
-            if "time" in row and not row.get("times"):  # the clock a legacy measure read
-                row["times"] = row.pop("time")
-        normalized = normalize_package(authored)
+        # The ids and clocks a package written for an earlier release read, in current spelling.
+        spelled = plan(files, [rule for rule in RULES if rule.id in _SPELLINGS], {}).files
+        contents = {**files.contents, **{k: v for k, v in spelled.items() if v is not None}}
+        captured = CapturedSource(
+            str(files.source), files.directory, tuple(sorted(contents.items()))
+        )
+        normalized = normalize_package(_load_package_source(str(files.source), captured=captured))
         config = _parse_package(deepcopy(normalized), path=str(files.source))
     except Exception:  # noqa: BLE001 - each finding stops instead
         return {}, set()
