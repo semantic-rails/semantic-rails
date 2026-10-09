@@ -15,18 +15,22 @@ INVENTORY = {
     "measure": "measure.jaffle.inventory_on_hand_eop",
     "aggregation": "sum",
 }
-# Each lowering path that builds the final ORDER BY, by the source its requested term reads.
+# Each lowering path that builds the final ORDER BY: the requested field, its rendered
+# term, and the query parts that take that path. The anchored path orders by its time key,
+# a column its anchor source projects.
 SHAPES = {
-    "inlined": ("", {"select": [{"expression": ORDERS, "as": "ranked"}]}),
+    "inlined": ("ranked", "ranked", {"select": [{"expression": ORDERS, "as": "ranked"}]}),
     "metric-filter": (
-        "projected.",
+        "ranked",
+        "projected.ranked",
         {
             "select": [{"expression": ORDERS, "as": "ranked"}],
             "metric_filters": [{"expression": ORDERS, "op": ">", "value": 0}],
         },
     ),
     "anchored-ratio": (
-        "anchor.",
+        "time",
+        "anchor.t",
         {
             "select": [
                 {
@@ -53,7 +57,8 @@ SHAPES = {
         },
     ),
     "distribution": (
-        "agent_projected.",
+        "ranked",
+        "agent_projected.ranked",
         {
             "select": [
                 {
@@ -78,8 +83,8 @@ def _query(shape: str, direction: str) -> dict:
     return {
         "group_by": ["dimension.jaffle_store_name"],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-        "order_by": [{"field": "ranked", "direction": direction}],
-        **SHAPES[shape][1],
+        "order_by": [{"field": SHAPES[shape][0], "direction": direction}],
+        **SHAPES[shape][2],
     }
 
 
@@ -98,13 +103,11 @@ def test_requested_term_renders_nulls_last(package_config_factory, warehouse, di
         (direction, True)
     ]
     order_sql = compiled["sql"].rsplit("\nORDER BY\n", 1)[1].split("\n", 1)[0]
-    assert order_sql == f"  {SHAPES[shape][0]}ranked {direction} NULLS LAST"
+    assert order_sql == f"  {SHAPES[shape][1]} {direction} NULLS LAST"
 
 
 @pytest.mark.parametrize("shape", list(SHAPES))
-def test_a_requested_term_without_nulls_last_is_refused(
-    package_config_factory, monkeypatch, shape
-):
+def test_a_requested_term_without_nulls_last_is_refused(package_config_factory, monkeypatch, shape):
     config, _ = package_config_factory("jaffle_shop")
     requested_order = sql_lowering._requested_order
     monkeypatch.setattr(
