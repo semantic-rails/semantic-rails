@@ -238,6 +238,19 @@ def test_a_misspelled_filter_value(runtime: Runtime, scope: str) -> None:
     assert "'appel'" in typo["message"] and "did you mean 'apple'?" in typo["message"]
 
 
+def test_a_misspelled_value_in_a_not_is_named(runtime: Runtime) -> None:
+    """'not appel' leaves out nothing, so the answer names the value that matched no row."""
+    response = _ask(
+        runtime, "dataset", select=_select(qty=QTY), where=_where(PRODUCT, "appel", "not")
+    )
+    sql = "SELECT SUM(qty) FROM sales WHERE product <> 'appel' OR product IS NULL"
+    assert [tuple(row.values()) for row in response["rows"]] == _gold(sql)
+    (typo,) = [item for item in response["warnings"] if item["code"] == "FILTER_VALUE_NOT_FOUND"]
+    assert typo["details"]["filters"] == [
+        {"dimension": PRODUCT, "value": "appel", "suggestion": "apple"}
+    ]
+
+
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
 def test_a_granted_metric_keeps_the_unverified_filter_warning(
     runtime: Runtime, verbosity: str
