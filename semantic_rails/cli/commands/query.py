@@ -58,6 +58,7 @@ def cmd_discover(args: argparse.Namespace) -> None:
         query = _query_with_policy_context(
             _parse_json(args.query_json) if args.query_json else None, args
         )
+        query = runtime.engine_seed(query) if query is not None else None
         _print(
             discover_payload(
                 runtime,
@@ -80,6 +81,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         query = _query_with_policy_context(
             _parse_json(args.query_json) if args.query_json else None, args
         )
+        query = runtime.engine_seed(query) if query is not None else None
         _print(
             inspect_payload(
                 runtime, object_id=args.object_id, partial_query=query, verbosity=args.verbosity
@@ -172,6 +174,7 @@ def cmd_valid_values(args: argparse.Namespace) -> None:
         query = _query_with_policy_context(
             _parse_json(args.query_json) if args.query_json else None, args
         )
+        query = runtime.engine_seed(query) if query is not None else None
         _print(
             valid_values_payload(
                 runtime,
@@ -191,6 +194,7 @@ def cmd_build_options(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
         query = _query_with_policy_context(_parse_json(args.query_json), args) or {}
+        query = runtime.engine_seed(query)
         _print(
             build_options_payload(
                 runtime,
