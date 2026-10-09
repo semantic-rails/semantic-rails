@@ -965,7 +965,8 @@ def _clock_where_cuts(
     for index, item in enumerate(query.where):
         if isinstance(item, ChildGroup):
             conditions.extend(
-                (f"where[{index}].where[{inner}]", row) for inner, row in enumerate(item.where)
+                (f"where[{index}].{item.match}[{inner}]", row)
+                for inner, row in enumerate(item.where)
             )
         else:
             conditions.append((f"where[{index}]", item))

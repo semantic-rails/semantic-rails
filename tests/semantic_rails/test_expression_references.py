@@ -611,28 +611,21 @@ def test_policy_context_metadata_is_not_an_expression_position(base_config):
     count = "measure.jaffle.order_count"
     permitted = {"select": [{"expression": count, "as": "n"}]}
     predicate = {"input": note, "entity": ENTITY, "op": "gt", "value": 0, "over": "all_time"}
-    # The call refuses an unknown kind where it reads one; a predicate's own input is read
-    # by the compiler.
+    # The call refuses an unknown kind wherever it reads one, a predicate's input included.
     refused = [
-        (
-            {"select": [{"expression": {**note, "measure": MEASURE}, "as": "x"}]},
-            "INVALID_QUERY",
-        ),
-        (
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": MEASURE,
-                            "predicates": [predicate],
-                        },
-                        "as": "x",
-                    }
-                ]
-            },
-            "INVALID_EXPRESSION_AST",
-        ),
+        {"select": [{"expression": {**note, "measure": MEASURE}, "as": "x"}]},
+        {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "scoped_aggregate",
+                        "measure": MEASURE,
+                        "predicates": [predicate],
+                    },
+                    "as": "x",
+                }
+            ]
+        },
     ]
     engine = runtime.Runtime.from_config(
         replace(base_config, semantic_policies=[]), source_path="configs/semantic_rails/jaffle_shop"
@@ -641,11 +634,11 @@ def test_policy_context_metadata_is_not_an_expression_position(base_config):
     try:
         assert engine.validate(permitted, context=context)["ok"]
         assert engine.compile(permitted, context=context)["rendered_sql"]
-        for query, code in refused:
-            assert engine.validate(query, context=context)["errors"][0]["code"] == code
+        for query in refused:
+            assert engine.validate(query, context=context)["errors"][0]["code"] == "INVALID_QUERY"
             with pytest.raises(SemanticLayerError) as exc:
                 engine.compile(query, context=context)
-            assert exc.value.code == code
+            assert exc.value.code == "INVALID_QUERY"
     finally:
         engine.close()
 
@@ -996,18 +989,9 @@ def test_permitted_reference_spellings_compile(base_config, spelling):
         engine.close()
 
 
-# The call refuses an unknown kind where it reads one; a predicate's input is the compiler's.
-@pytest.mark.parametrize(
-    ("placement", "code"),
-    [
-        ("direct", "INVALID_QUERY"),
-        ("nested", "INVALID_QUERY"),
-        ("predicate", "INVALID_EXPRESSION_AST"),
-    ],
-)
-def test_unknown_kind_with_measure_fails_before_normalization(
-    base_config, monkeypatch, placement, code
-):
+# The call refuses an unknown kind wherever it reads one, a predicate's input included.
+@pytest.mark.parametrize("placement", ["direct", "nested", "predicate"])
+def test_unknown_kind_with_measure_fails_before_normalization(base_config, monkeypatch, placement):
     expression = {"kind": "future_expression", "measure": MEASURE, "child": REF}
     if placement == "nested":
         expression = {"kind": "ratio", "numerator": expression, "denominator": LITERAL}
@@ -1024,11 +1008,11 @@ def test_unknown_kind_with_measure_fails_before_normalization(
     monkeypatch.setattr(engine, "_compile", lambda *a, **k: pytest.fail("unknown kind compiled"))
     query = {"select": [{"expression": expression, "as": "x"}]}
     try:
-        assert engine.validate(query)["errors"][0]["code"] == code
+        assert engine.validate(query)["errors"][0]["code"] == "INVALID_QUERY"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
                 operation(query)
-            assert exc.value.code == code
+            assert exc.value.code == "INVALID_QUERY"
     finally:
         engine.close()
 

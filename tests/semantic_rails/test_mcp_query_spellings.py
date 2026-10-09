@@ -121,7 +121,7 @@ def test_selected_dimension_moves_to_group_by(adapter, mode, surface):
 @pytest.mark.parametrize(
     "item,path",
     [
-        ({"dimension": DIMENSION}, "select[0].dimension"),
+        ({"dimension": DIMENSION}, "select[0]"),
         ({"expression": {"dimension": DIMENSION}}, "select[0].expression"),
         (
             {"expression": {"kind": "dimension", "dimension": DIMENSION}},

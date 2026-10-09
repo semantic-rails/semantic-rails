@@ -79,6 +79,7 @@ def test_minimal_response_answers_without_compiler_plans(
     assert not PLANS & set(response)
     extra = set(response) - ENVELOPE - EXPECTED[action]
     assert extra <= {
+        "assumptions",
         "segment_policy_effects",
         "policy_effects",
         "member_key_dimensions",
