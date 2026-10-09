@@ -103,9 +103,9 @@ tests:
 
 Identity (environment, audience, roles) comes from credentials, never from the call. Over
 HTTP and the remote MCP endpoint, a `policy_context` in the body or in `query` is refused with
-`IDENTITY_CLAIM_REFUSED`; it is never stripped silently. A trusted local caller (Python, the
-CLI, stdio MCP, package tests) passes identity as `context` (`--environment`/`--audience` on the
-CLI, `context:` in a package test).
+`IDENTITY_CLAIM_REFUSED`; it is never stripped silently. A trusted local caller states it
+beside the call: `context=` in Python, `--environment`/`--audience` on the CLI, `context:` in a
+package example or test.
 
 ## `select`
 
@@ -487,8 +487,8 @@ is partial by definition and says how much of the period it covers:
  "assumptions": [{"code": "PARTIAL_PERIOD", "message": "the week of 2017-08-28 so far (3 of 7 days)"}]}
 ```
 
-`last` counts only complete periods, so it is never partial. An open window (`start` alone) is
-partial when its periods reach `now`.
+`last` counts only complete periods, so it is never partial. A window with only `start` runs to
+`now`, so it is partial.
 
 ### Balances
 
