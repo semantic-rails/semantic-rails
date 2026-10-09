@@ -770,33 +770,24 @@ def _governed_draft(config: Any, question: str, draft: Any, partial_query: Call 
     """The draft selecting the governed metric for its one measure.
 
     Every draft passes here before validation and readiness, so whichever path drafted the
-    measure, ``_governed_target`` swaps in the same metric, with its own clock unless the
-    caller's time names one. Never a caller's select.
+    measure, ``_governed_target`` swaps in the same metric. Never a caller's select, and never
+    onto another clock: a draft without a time block takes the metric all-time, and one on
+    another clock keeps the measure for readiness to hold.
     """
 
     query = draft.query
     if partial_query is not None and partial_query.select:
         return draft
     metric = _governed_target(config, _target_focus_text(question) or question, query)
-    if metric is None:
-        return draft
     time = query.time
-    role = str(getattr(metric, "temporal_role", "") or "")
-    if time is not None and role and time.temporal_role != role:
-        if (
-            partial_query is not None
-            and partial_query.time is not None
-            and (partial_query.time.temporal_role)
-        ):
-            return draft
-        time = replace(time, temporal_role=role)
+    if metric is None or (time is not None and time.temporal_role != metric.temporal_role):
+        return draft
     [item] = query.select
     alias = str(metric.id).split(".")[-1]
     swapped = (
         QueryBuilder(config, query)
         .selects([])
         .select(metric.id)
-        .time(time)
         .orders(
             Order(alias, row.direction) if row.field == item.alias else row
             for row in query.order_by

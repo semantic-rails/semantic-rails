@@ -247,7 +247,9 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     Cents, "item revenue" the reverse. A name missing only its "count" is
     nearly whole: "number of customers" names Customer count over Ordering
     customers. "revenue before tax" names neither Revenue nor Tax paid, so
-    the first by label stays a guess. A label's parenthetical is no part of its name.
+    the first by label stays a guess. A label said whole but for its parenthetical is nearly
+    whole too: "revenue" names Revenue (new and repeat types) over Rolling revenue, and Active
+    stores over Active stores (all kinds).
     """
 
     matched = [(_score(row, terms), row) for row in rows]
@@ -261,11 +263,13 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     )
     fit = {}
     for row in tied:
-        bare = re.sub(r"\s*\(.*?\)", "", row.label)
-        names = [row.label, bare, _last_token(row.id), *(getattr(row, "aliases", None) or [])]
+        names = [row.label, _last_token(row.id), *(getattr(row, "aliases", None) or [])]
         sets = [set(_tokens(name)) for name in names if _tokens(name)]
+        bare = set(_tokens(re.sub(r"\s*\(.*?\)", "", row.label)))
         whole = 2 if any(name <= words for name in sets) else 0
         if not whole and any(len(name) > 1 and name - {"count"} <= words for name in sets):
+            whole = 1
+        if not whole and bare and bare <= words:
             whole = 1
         fit[row.id] = (set().union(*sets) & words, whole)
 

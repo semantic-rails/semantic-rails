@@ -84,7 +84,9 @@ def _drops(*values: str, op: str = KEEPS) -> list[dict[str, Any]]:
 
 def _dropped(*values: str) -> list[dict[str, Any]]:
     """The planner's form: one ``not`` naming every excluded value."""
-    return [{"field": CHANNEL, "op": KEEPS, "value": list(values) if len(values) > 1 else values[0]}]
+    return [
+        {"field": CHANNEL, "op": KEEPS, "value": list(values) if len(values) > 1 else values[0]}
+    ]
 
 
 def _signups(where: list[dict[str, Any]]) -> dict[str, Any]:
@@ -657,9 +659,7 @@ def test_an_exclusion_after_a_grouping_holds(runtime_factory, question):
         ("revenue for all stores except New Orleans", "New Orleans", ""),
     ],
 )
-def test_a_store_exclusion_is_answered_as_reference_sql(
-    runtime_factory, question, excluded, grain
-):
+def test_a_store_exclusion_is_answered_as_reference_sql(runtime_factory, question, excluded, grain):
     # Held before. The answer leaves the store out with ``not``, which keeps orders whose store
     # has no name, and it matches reference SQL.
     runtime = runtime_factory("jaffle_shop")

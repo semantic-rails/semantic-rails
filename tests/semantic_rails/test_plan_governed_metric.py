@@ -9,8 +9,9 @@ names the measure by id still runs. Gold values come from plain SQL over the see
 
 A second package counts teams. ``Teams (all classes)`` counts every team; the governed
 ``New teams`` counts customer teams only, either by filtering that count (``same``) or by
-counting ``team_created`` events of customer teams (``event``). A draft that counts every
-team is held unless the question asks for the class or the caller selects the count.
+counting ``team_created`` events of customer teams (``event``). A question for teams drafts
+the metric that filters the count (``same``). A draft that counts every team is held unless
+the question asks for the class or the caller selects the count.
 """
 
 from __future__ import annotations
@@ -792,23 +793,42 @@ def test_the_team_count_counts_the_test_teams_new_teams_leaves_out() -> None:
     assert (_teams_gold(MONTH), _teams_gold(f"{MONTH} AND class = 'customer'")) == (5, 3)
 
 
-@pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize(
-    ("intent", "synonyms"),
-    [
-        ("How many teams were created last week?", False),
-        ("How many teams were created last week?", True),
-        ("How many teams were created last month?", False),
-        ("How many teams were created last month?", True),
-        ("teams created last week", False),
-        ("teams last week", False),
-        ("teams last week", True),
-    ],
-)
-def test_a_draft_counting_teams_new_teams_leaves_out_is_held(
-    teams: dict[tuple[str, bool], Runtime], shape: str, intent: str, synonyms: bool
+_TEAM_QUESTIONS = [
+    ("How many teams were created last week?", False),
+    ("How many teams were created last week?", True),
+    ("How many teams were created last month?", False),
+    ("How many teams were created last month?", True),
+    ("teams created last week", False),
+    ("teams last week", False),
+    ("teams last week", True),
+]
+
+
+@pytest.mark.parametrize(("intent", "synonyms"), _TEAM_QUESTIONS)
+def test_a_question_for_teams_drafts_the_metric_that_filters_the_count(
+    teams: dict[tuple[str, bool], Runtime], intent: str, synonyms: bool
 ) -> None:
-    engine = teams[shape, synonyms]
+    engine = teams["same", synonyms]
+    window = MONTH if "month" in intent else WEEK
+    plan = _plan(engine, intent)
+    assert plan["status"] == "ok", plan.get("why")
+    assert "execute" in plan["next"]["ready_for"]
+    query = plan["best"]["query"]
+    assert query["select"] == [NEW_TEAMS]
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(TEAMS_SEED)
+        reference = connection.execute(
+            f"SELECT COUNT(DISTINCT team_id) FROM teams WHERE {window} AND class = 'customer'"
+        ).fetchone()[0]
+    assert _value(engine, query) == reference == 3
+
+
+@pytest.mark.parametrize(("intent", "synonyms"), _TEAM_QUESTIONS)
+def test_a_draft_counting_teams_new_teams_leaves_out_is_held(
+    teams: dict[tuple[str, bool], Runtime], intent: str, synonyms: bool
+) -> None:
+    # New teams counts events here, so no metric filters the team count to draft instead.
+    engine = teams["event", synonyms]
     window = MONTH if "month" in intent else WEEK
     for detail in ("best", "full", "query", "debug"):
         plan = plan_payload(
