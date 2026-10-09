@@ -1,18 +1,14 @@
 {
-  "version": 1,
   "select": [
-    {
-      "expression": {
-        "measure": "measure.jaffle.revenue_usd"
-      },
-      "as": "revenue_usd"
-    },
+    "measure.jaffle.revenue_usd",
     {
       "expression": {
         "kind": "prior_period",
-        "measure": "measure.jaffle.revenue_usd",
-        "offset": -1,
-        "grain": "year"
+        "input": "measure.jaffle.revenue_usd",
+        "offset": {
+          "unit": "year",
+          "value": 1
+        }
       },
       "as": "revenue_prior_year"
     }

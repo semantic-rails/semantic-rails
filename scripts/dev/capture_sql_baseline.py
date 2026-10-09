@@ -31,12 +31,10 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.aov_usd",
         "payload": {
-            "select": [
-                {"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov_usd"},
-            ],
+            "select": ["metric.sales.aov_usd"],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "order_by": [{"field": "aov_usd", "direction": "DESC"}],
+            "order_by": [{"field": "aov_usd", "direction": "desc"}],
             "limit": 10000,
         },
     },
@@ -44,10 +42,7 @@ PAYLOADS: list[dict[str, Any]] = [
         "metric_id": "metric.sales.average_customer_lifetime_value",
         "payload": {
             "select": [
-                {
-                    "expression": {"metric": "metric.sales.average_customer_lifetime_value"},
-                    "as": "avg_clv",
-                },
+                {"expression": "metric.sales.average_customer_lifetime_value", "as": "avg_clv"}
             ],
             "group_by": ["dimension.jaffle_customer_type"],
             "limit": 10000,
@@ -56,12 +51,7 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.food_revenue_share",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.food_revenue_share"},
-                    "as": "food_revenue_share",
-                },
-            ],
+            "select": ["metric.sales.food_revenue_share"],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 10000,
@@ -70,12 +60,7 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.drink_revenue_share",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.drink_revenue_share"},
-                    "as": "drink_revenue_share",
-                },
-            ],
+            "select": ["metric.sales.drink_revenue_share"],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 10000,
@@ -84,9 +69,7 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.customer_count",
         "payload": {
-            "select": [
-                {"expression": {"metric": "metric.sales.customer_count"}, "as": "customer_count"},
-            ],
+            "select": ["metric.sales.customer_count"],
             "group_by": ["dimension.jaffle_customer_type"],
             "limit": 10000,
         },
@@ -94,68 +77,43 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.cumulative_revenue",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.cumulative_revenue"},
-                    "as": "cumulative_revenue",
-                },
-            ],
+            "select": ["metric.sales.cumulative_revenue"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
-            "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.rolling_28d_revenue",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.rolling_28d_revenue"},
-                    "as": "rolling_28d_revenue",
-                },
-            ],
+            "select": ["metric.sales.rolling_28d_revenue"],
             "time": {"temporal_role": "temporal_role.jaffle_daily_metric_day", "grain": "day"},
-            "order_by": [
-                {"field": "temporal_role.jaffle_daily_metric_day__day", "direction": "ASC"}
-            ],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.revenue_qtd",
         "payload": {
-            "select": [
-                {"expression": {"metric": "metric.sales.revenue_qtd"}, "as": "revenue_qtd"},
-            ],
+            "select": ["metric.sales.revenue_qtd"],
             "time": {"temporal_role": "temporal_role.jaffle_daily_metric_day", "grain": "day"},
-            "order_by": [
-                {"field": "temporal_role.jaffle_daily_metric_day__day", "direction": "ASC"}
-            ],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.revenue_ytd",
         "payload": {
-            "select": [
-                {"expression": {"metric": "metric.sales.revenue_ytd"}, "as": "revenue_ytd"},
-            ],
+            "select": ["metric.sales.revenue_ytd"],
             "time": {"temporal_role": "temporal_role.jaffle_daily_metric_day", "grain": "day"},
-            "order_by": [
-                {"field": "temporal_role.jaffle_daily_metric_day__day", "direction": "ASC"}
-            ],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.median_item_revenue",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.median_item_revenue"},
-                    "as": "median_item_revenue",
-                },
-            ],
+            "select": ["metric.sales.median_item_revenue"],
             "time": {"temporal_role": "temporal_role.jaffle_daily_metric_day", "grain": "day"},
             "limit": 10000,
         },
@@ -163,26 +121,16 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.month_over_month_revenue_growth",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.month_over_month_revenue_growth"},
-                    "as": "month_over_month_revenue_growth",
-                },
-            ],
+            "select": ["metric.sales.month_over_month_revenue_growth"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "order_by": [{"field": "temporal_role.jaffle_order_time__month", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.gross_margin_pct",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.gross_margin_pct"},
-                    "as": "gross_margin_pct",
-                },
-            ],
+            "select": ["metric.sales.gross_margin_pct"],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
             "limit": 10000,
@@ -191,66 +139,46 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.rolling_7d_revenue_direct",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.rolling_7d_revenue_direct"},
-                    "as": "rolling_7d_revenue_direct",
-                },
-            ],
+            "select": ["metric.sales.rolling_7d_revenue_direct"],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": "day",
                 "end": "2017-01-08",
             },
-            "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.prior_week_revenue_direct",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.prior_week_revenue_direct"},
-                    "as": "prior_week_revenue_direct",
-                },
-            ],
+            "select": ["metric.sales.prior_week_revenue_direct"],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": "day",
                 "end": "2017-01-15",
             },
-            "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.revenue_mtd_direct",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.revenue_mtd_direct"},
-                    "as": "revenue_mtd_direct",
-                },
-            ],
+            "select": ["metric.sales.revenue_mtd_direct"],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": "day",
                 "end": "2017-01-08",
             },
-            "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.repeat_customer_orders",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.repeat_customer_orders"},
-                    "as": "repeat_customer_orders",
-                },
-            ],
+            "select": ["metric.sales.repeat_customer_orders"],
             "group_by": ["dimension.jaffle_store_name"],
             "limit": 10000,
         },
@@ -258,12 +186,7 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.high_value_customer_orders",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.high_value_customer_orders"},
-                    "as": "high_value_customer_orders",
-                },
-            ],
+            "select": ["metric.sales.high_value_customer_orders"],
             "group_by": ["dimension.jaffle_store_name"],
             "limit": 10000,
         },
@@ -273,9 +196,9 @@ PAYLOADS: list[dict[str, Any]] = [
         "payload": {
             "select": [
                 {
-                    "expression": {"metric": "metric.sales.session_to_order_conversion_rate_7d"},
+                    "expression": "metric.sales.session_to_order_conversion_rate_7d",
                     "as": "conversion_rate",
-                },
+                }
             ],
             "time": {"temporal_role": "temporal_role.jaffle_session_started_at", "grain": "day"},
             "limit": 10000,
@@ -286,11 +209,9 @@ PAYLOADS: list[dict[str, Any]] = [
         "payload": {
             "select": [
                 {
-                    "expression": {
-                        "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-                    },
+                    "expression": "metric.sales.session_to_order_conversion_rate_7d_same_store",
                     "as": "same_store_conversion_rate",
-                },
+                }
             ],
             "time": {"temporal_role": "temporal_role.jaffle_session_started_at", "grain": "day"},
             "limit": 10000,
@@ -299,12 +220,7 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.adoption.signup_to_send_conversion_rate_28d",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.adoption.signup_to_send_conversion_rate_28d"},
-                    "as": "signup_to_send_conversion_rate_28d",
-                },
-            ],
+            "select": ["metric.adoption.signup_to_send_conversion_rate_28d"],
             "time": {"temporal_role": "temporal_role.jaffle_session_started_at", "grain": "day"},
             "limit": 10000,
         },
@@ -312,44 +228,25 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.inventory_on_hand_eop",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.inventory_on_hand_eop"},
-                    "as": "inventory_on_hand_eop",
-                },
-            ],
+            "select": ["metric.sales.inventory_on_hand_eop"],
             "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
-            "order_by": [
-                {"field": "temporal_role.jaffle_inventory_day__month", "direction": "ASC"}
-            ],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.inventory_on_hand_sop",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.inventory_on_hand_sop"},
-                    "as": "inventory_on_hand_sop",
-                },
-            ],
+            "select": ["metric.sales.inventory_on_hand_sop"],
             "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
-            "order_by": [
-                {"field": "temporal_role.jaffle_inventory_day__month", "direction": "ASC"}
-            ],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 10000,
         },
     },
     {
         "metric_id": "metric.sales.active_menu_count_eop",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.active_menu_count_eop"},
-                    "as": "active_menu_count_eop",
-                },
-            ],
+            "select": ["metric.sales.active_menu_count_eop"],
             "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
             "limit": 10000,
         },
@@ -357,12 +254,7 @@ PAYLOADS: list[dict[str, Any]] = [
     {
         "metric_id": "metric.sales.open_store_count_eop",
         "payload": {
-            "select": [
-                {
-                    "expression": {"metric": "metric.sales.open_store_count_eop"},
-                    "as": "open_store_count_eop",
-                },
-            ],
+            "select": ["metric.sales.open_store_count_eop"],
             "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
             "limit": 10000,
         },

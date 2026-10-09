@@ -27,6 +27,7 @@ from semantic_rails.dialects import (
     warehouse_connector,
 )
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.schema import ConnectionSpec, PackageMeta
@@ -394,7 +395,7 @@ def test_battery_compiles_for_clickhouse():
     refused: list[str] = []
     for case in cases:
         try:
-            result = compile_query(config, registry, case.payload)
+            result = compile_query(config, registry, read_call(case.payload, config=config)[0])
         except SemanticLayerError as exc:
             # ClickHouse has no implicit calendar, which every filled series uses.
             assert "no implicit calendar" in str(exc), (case.name, exc)

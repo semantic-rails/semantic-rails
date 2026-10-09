@@ -30,6 +30,7 @@ from semantic_rails.dialects import (
     warehouse_connector,
 )
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.schema import ConnectionSpec, PackageMeta, SeedSpec
@@ -383,10 +384,11 @@ def test_motherduck_compiles_entire_integration_battery():
     duck_registry = Registry(duck_config)
 
     for case in battery:
-        compiled = compile_query(config, registry, case.payload)
+        query, _ = read_call(case.payload, config=config)
+        compiled = compile_query(config, registry, query)
         sql = compiled["sql"]
         assert isinstance(sql, str) and sql.strip(), f"{case.name}: empty rendered SQL"
         # MotherDuck IS DuckDB SQL — the rendered text must match the
         # DuckDB reference compilation exactly.
-        duck_sql = compile_query(duck_config, duck_registry, case.payload)["sql"]
+        duck_sql = compile_query(duck_config, duck_registry, query)["sql"]
         assert sql == duck_sql, f"{case.name}: motherduck SQL diverges from duckdb"

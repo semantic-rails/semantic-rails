@@ -34,6 +34,7 @@ from semantic_rails.dialects import (
     warehouse_connector,
 )
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.schema import ConnectionSpec, PackageMeta
@@ -381,10 +382,11 @@ def test_ducklake_compiles_entire_conformance_battery():
     duckdb_registry = Registry(duckdb_config)
 
     for case in battery:
-        compiled = compile_query(config, registry, case.payload)
+        query, _ = read_call(case.payload, config=config)
+        compiled = compile_query(config, registry, query)
         sql = compiled["sql"]
         assert sql and sql.strip(), f"{case.name}: empty SQL for ducklake"
         # DuckLake is DuckDB SQL: the compiled text must be identical to
         # the DuckDB reference compilation for every battery case.
-        reference_sql = compile_query(duckdb_config, duckdb_registry, case.payload)["sql"]
+        reference_sql = compile_query(duckdb_config, duckdb_registry, query)["sql"]
         assert sql == reference_sql, f"{case.name}: ducklake SQL diverged from duckdb"
