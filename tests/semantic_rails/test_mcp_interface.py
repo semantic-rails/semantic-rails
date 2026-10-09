@@ -496,7 +496,7 @@ def test_mcp_execute_with_string_query_returns_wrap_query_hint(runtime_factory, 
     assert any(h.get("kind") == "wrap_query_as_object" for h in hints)
     wrap_hint = next(h for h in hints if h.get("kind") == "wrap_query_as_object")
     assert "object" in wrap_hint["message"].lower()
-    assert wrap_hint["closest_valid_query"]["version"] == 1
+    assert wrap_hint["closest_valid_query"] == {"select": ["<measure or metric id>"]}
 
 
 def test_mcp_discover_with_bad_limit_returns_integer_hint(runtime_factory):

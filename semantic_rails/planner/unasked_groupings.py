@@ -209,7 +209,7 @@ def _unasked_grouping_why(
                     "message": (
                         "Remove them from best.query_ir (a dimension from group_by; the grain "
                         "from time, or the whole time block and its order_by entry when it "
-                        "holds no start, end or range), then validate; or ask again naming "
+                        "holds no start, end, last or this), then validate; or ask again naming "
                         'the grouping you want ("by month", "monthly").'
                     ),
                 }

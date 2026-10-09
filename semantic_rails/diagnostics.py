@@ -194,48 +194,15 @@ def recovery_hints_for_error(
         missing = str(details.get("missing_key", "") or "")
         received = list(details.get("received_keys", []) or [])
         hints: list[dict[str, Any]] = []
-        # Cross-position key suggestion: the reviewer hit asymmetry —
-        # order_by uses ``field``, where uses ``dimension``, metric_filters
-        # uses ``expression``. When the agent's received_keys include the
-        # canonical key from a different position, tell them where it
-        # belongs before showing the generic fix-shape hint.
-        _POSITION_CANONICAL_KEY: dict[str, str] = {
-            "order_by": "field",
-            "where": "dimension",
-            "metric_filters": "expression",
-        }
-        canonical_here = _POSITION_CANONICAL_KEY.get(position, "")
-        cross_positions = [
-            (pos, key)
-            for pos, key in _POSITION_CANONICAL_KEY.items()
-            if pos != position and key in received and key != canonical_here
-        ]
-        if cross_positions:
-            other_pos, other_key = cross_positions[0]
-            hints.append(
-                {
-                    "kind": "use_canonical_key_for_position",
-                    "message": (
-                        f"{position!r} entries use the key {canonical_here!r}, "
-                        f"but you passed {other_key!r} which belongs in {other_pos!r}. "
-                        f"Move the value under {canonical_here!r} (or move the entry "
-                        f"to the {other_pos!r} clause if that's what you meant)."
-                    ),
-                    "expected_key_here": canonical_here,
-                    "received_canonical_key": other_key,
-                    "received_canonical_key_belongs_to": other_pos,
-                }
-            )
         if position == "order_by":
             hints.append(
                 {
                     "kind": "fix_order_by_shape",
                     "message": (
-                        'Each order_by entry must be {"field": "<select_alias_or_dimension_id_or_time>", '
-                        '"direction": "ASC"|"DESC"} — not a select-style expression. Use the alias '
-                        "you set on a select item, the group_by dimension id, or 'time'."
+                        'Each order_by entry is {"field": "<select alias, group_by id or period>", '
+                        '"direction": "asc"|"desc"} — not a select-style expression.'
                     ),
-                    "shape": {"field": "<alias>", "direction": "ASC"},
+                    "shape": {"field": "<alias>", "direction": "asc"},
                     "missing_key": missing,
                     "received_keys": received,
                 }
@@ -243,13 +210,13 @@ def recovery_hints_for_error(
         elif position == "metric_filters":
             hints.append(
                 {
-                    "kind": "fix_metric_filters_shape",
+                    "kind": "fix_having_shape",
                     "message": (
-                        "Each metric_filters entry must be "
-                        '{"expression": {...}, "op": "=|>|<|>=|<=|!=", "value": ...}. '
-                        "The 'expression' is typically a kind='metric_predicate' object."
+                        'Each having entry is {"field": "<select alias, measure or metric id>", '
+                        '"op": "gt", "value": ...}; to keep entities by an aggregate, write an '
+                        'entity filter in where: {"entity", "having", "over"}.'
                     ),
-                    "shape": {"expression": {"kind": "metric_predicate"}, "op": "=", "value": True},
+                    "shape": {"field": "<alias>", "op": "gt", "value": 0},
                     "missing_key": missing,
                     "received_keys": received,
                 }
@@ -260,7 +227,7 @@ def recovery_hints_for_error(
                     "kind": "fix_expression_shape",
                     "message": (
                         f"{position or 'expression'} entry is missing the required {missing!r} key. "
-                        "Send select items as {expression: {measure: '<id>'}, as: '<alias>'}, "
+                        "Send select items as a measure or metric id or {expression, as}, "
                         "group_by as dimension ids, and where entries as {field, op, value}."
                     ),
                     "missing_key": missing,
@@ -293,6 +260,7 @@ def recovery_hints_for_error(
             received_input = received_dict.get("input")
             received_measure = str(
                 received_dict.get("measure")
+                or (received_input if isinstance(received_input, str) else "")
                 or (received_input.get("measure") if isinstance(received_input, dict) else "")
                 or ""
             )
@@ -918,39 +886,17 @@ def recovery_hints_for_error(
         field = str(details.get("field", "") or "")
         argument_type = str(details.get("argument_type", "") or "")
         hints = []
-        # Most common mistake: passing a Query IR as a stringified JSON
-        # blob or a freeform sentence instead of a JSON object.
-        if field == "query" and argument_type in {"str", "string"}:
-            hints.append(
-                {
-                    "kind": "wrap_query_as_object",
-                    "message": 'Wrap the query in an object: {"query": {"select": [...], "version": 1}}.',
-                    "closest_valid_query": {
-                        "version": 1,
-                        "select": [{"object_id": "<measure_or_metric_id>"}],
-                    },
-                    "details": {"field": field, "argument_type": argument_type},
-                }
-            )
-        elif field == "query":
+        # Most common mistake: a sentence, or JSON that is not an object, in place of the
+        # query call.
+        if field == "query":
             hints.append(
                 {
                     "kind": "wrap_query_as_object",
                     "message": (
-                        "'query' must be a JSON object containing the Query IR — "
-                        'e.g. {"query": {"version": 1, "select": [...]}}.'
+                        "'query' is the query call, a JSON object: "
+                        '{"query": {"select": ["<measure or metric id>"]}}.'
                     ),
-                    "details": {"field": field, "argument_type": argument_type},
-                }
-            )
-        elif field == "policy_context":
-            hints.append(
-                {
-                    "kind": "wrap_policy_context_as_object",
-                    "message": (
-                        "'policy_context' must be a JSON object with optional "
-                        'keys like {"environment": "production", "audience": "internal"}.'
-                    ),
+                    "closest_valid_query": {"select": ["<measure or metric id>"]},
                     "details": {"field": field, "argument_type": argument_type},
                 }
             )
@@ -1459,10 +1405,25 @@ def _scrub_exception_details(details: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+# Details that echo an expression back to the caller, in the call's spelling.
+_EXPRESSION_DETAILS = ("expression", "received", "predicate")
+
+
+def _in_call_spelling(details: dict[str, Any]) -> dict[str, Any]:
+    from .query_call import _call_expression
+
+    return {
+        key: _call_expression(value)
+        if key in _EXPRESSION_DETAILS and isinstance(value, dict) and value.get("kind")
+        else value
+        for key, value in details.items()
+    }
+
+
 def exception_issue(
     exc: SemanticLayerError, *, stage: str, object_ids: Iterable[str] | None = None, path: str = ""
 ) -> dict[str, Any]:
-    details = _scrub_exception_details(exc.details)
+    details = _in_call_spelling(_scrub_exception_details(exc.details))
     return semantic_issue(
         code=exc.code,
         message=str(exc),

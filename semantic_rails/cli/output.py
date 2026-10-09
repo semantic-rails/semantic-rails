@@ -159,7 +159,7 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         print(compiled.get("sql", ""))
     query = report.get("query")
     if query:
-        print("Query IR:")
+        print("Query call:")
         print(json.dumps(query, indent=2, sort_keys=True, default=str))
     errors = list(report.get("errors", []) or [])
     if errors:

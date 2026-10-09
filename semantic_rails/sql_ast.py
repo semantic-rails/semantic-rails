@@ -692,8 +692,9 @@ def build_comparison_condition(
                     {
                         "code": "USE_NULL_TEST_OR_SCALAR",
                         "message": (
-                            "To test for NULL use op 'IS NULL' / 'IS NOT NULL'; "
-                            f"otherwise pass a non-null scalar value for '{op_normalized}'."
+                            "To test for no value, compare with = or != against null (a where "
+                            "filter says op 'missing'); otherwise pass a non-null scalar value "
+                            f"for '{op_normalized}'."
                         ),
                     }
                 ],

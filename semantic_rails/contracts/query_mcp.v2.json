@@ -36,12 +36,12 @@
     {
       "arguments": [
         {
-          "description": "Query IR JSON to review.",
+          "description": "Query call JSON to review.",
           "name": "query_json",
           "required": true
         }
       ],
-      "description": "Review existing Query IR with execute mode 'validate', then mode 'sql', before running it.",
+      "description": "Review an existing query call with execute mode 'validate', then mode 'sql', before running it.",
       "name": "semantic-rails-query-review"
     },
     {
@@ -2149,7 +2149,7 @@
         "readOnlyHint": true,
         "title": "Segment"
       },
-      "description": "Work with a package-authored segment, after discover finds its id: action='validate' checks it and the Query IR derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows and the total member count. Default verbosity='minimal' leaves out compiler plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like 'segment.high_value_customers' (discover with empty terms lists them); 'preview' queries the warehouse.",
+      "description": "Work with a package-authored segment, after discover finds its id: action='validate' checks it and the query derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows and the total member count. Default verbosity='minimal' leaves out compiler plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like 'segment.high_value_customers' (discover with empty terms lists them); 'preview' queries the warehouse.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

@@ -606,7 +606,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         name="segment",
         description=(
             "Work with a package-authored segment, after discover finds its id: "
-            "action='validate' checks it and the Query IR"
+            "action='validate' checks it and the query"
             " derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows"
             " and the total member count. Default verbosity='minimal' leaves out compiler "
             "plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like "
@@ -688,11 +688,11 @@ PROMPT_DEFINITIONS: tuple[PromptDefinition, ...] = (
     PromptDefinition(
         name="semantic-rails-query-review",
         description=(
-            "Review existing Query IR with execute mode 'validate', then mode 'sql', before "
-            "running it."
+            "Review an existing query call with execute mode 'validate', then mode 'sql', "
+            "before running it."
         ),
         arguments=(
-            {"name": "query_json", "description": "Query IR JSON to review.", "required": True},
+            {"name": "query_json", "description": "Query call JSON to review.", "required": True},
         ),
     ),
     PromptDefinition(
@@ -711,13 +711,13 @@ PROMPT_DEFINITIONS: tuple[PromptDefinition, ...] = (
 _PROMPT_TEXT = {
     "semantic-rails-query-builder": (
         "Use the Semantic Layer MCP tools against package '{package_id}' to answer: {intent}\n"
-        "Start with discover and inspect the best governed objects. Draft Query IR with plan, "
+        "Start with discover and inspect the best governed objects. Draft the call with plan, "
         "check filter values with valid-values, then run it with execute, which validates and "
         "compiles first. execute modes 'validate' and 'sql' are optional dry runs. "
         "The response includes diagnostics and any rendered SQL."
     ),
     "semantic-rails-query-review": (
-        "Review this Semantic Layer Query IR with execute mode 'validate', then mode 'sql'. "
+        "Review this Semantic Layer query call with execute mode 'validate', then mode 'sql'. "
         "Only run it with mode 'run' after "
         "validation succeeds and the user needs result rows.\n\n{query_json}"
     ),
@@ -1349,7 +1349,7 @@ def _bound_response(
     """Budget the final tool payload without cutting rows or changing its outcome.
 
     Both MCP representations serialize this same payload. Compiler detail and
-    echoes are optional; rows, SQL-mode text, Query IR drafts and diagnostics are not.
+    echoes are optional; rows, SQL-mode text, query drafts and diagnostics are not.
     If those required fields cannot fit, return a bounded, explicit refusal.
     """
     result = dict(payload)

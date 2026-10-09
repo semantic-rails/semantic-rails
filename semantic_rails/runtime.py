@@ -433,12 +433,12 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
                     message += (
                         "Other meanings (one-step switches): "
                         + "; ".join(alternative["label"] for alternative in alternatives[:shown])
-                        + ". Use a decision in route_decisions. "
+                        + ". Send one as routes: [{from, to, via}]. "
                     )
                 if len(alternatives) > shown:
                     details["more_alternatives"] = len(alternatives) - shown
                     message += (
-                        "Validate the query without route_decisions for every option; "
+                        "Validate the query without routes for every option; "
                         "no warehouse query runs. "
                     )
                 message += "A reviewed package default using details.row would remove the question."
@@ -1434,7 +1434,8 @@ def _expression_normalized_away_warnings(
                 semantic_issue(
                     code="EXPRESSION_NORMALIZED_AWAY",
                     message=(
-                        f"metric_filters[{index}] expression with kind={original_kind!r} was normalized to kind={compiled_kind!r}"
+                        f"A having or entity-filter expression with kind={original_kind!r} was "
+                        f"normalized to kind={compiled_kind!r}"
                     ),
                     severity="warning",
                     stage="compile",

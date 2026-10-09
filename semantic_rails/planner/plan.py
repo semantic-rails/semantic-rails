@@ -348,7 +348,7 @@ def _question_payload(
                 "code": "NO_PATTERN_MATCH",
                 "message": (
                     "No built-in pattern realized this intent. Use "
-                    "compose_hints to author a Query IR directly, "
+                    "compose_hints to author a query call directly, "
                     "then validate it (over MCP, execute with mode 'validate')."
                 ),
             },

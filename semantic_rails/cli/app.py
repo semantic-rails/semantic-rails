@@ -219,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_validate)
     _add_response_detail_args(p_validate)
@@ -234,7 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_compile.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_compile)
     _add_response_detail_args(p_compile)
@@ -445,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_query.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_query)
     _add_response_detail_args(p_query)
@@ -588,7 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_plan = sub.add_parser(
         "plan",
-        description="Plan one best Query IR from a free-text intent and optional partial query.",
+        description="Plan one best query call from a free-text intent and an optional partial call.",
     )
     _add_package_or_path_args(p_plan, package_choices)
     p_plan.add_argument(
