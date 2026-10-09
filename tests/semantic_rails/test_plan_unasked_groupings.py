@@ -142,7 +142,6 @@ def test_a_comparison_never_splits_by_a_month_the_question_never_asks_for(
     [
         "top 3 stores by revenue at month level",
         "top 1 store by revenue at month level",
-        "top 3 stores by monthly revenue",
         "top 3 stores by revenue by month",
     ],
 )
@@ -178,7 +177,7 @@ def test_a_ranking_split_by_a_period_asks_which_ranking_it_means(
 @pytest.mark.parametrize(
     ("intent", "grain"),
     [
-        ("which 3 stores have the highest monthly revenue by customer type", {"grain": "month"}),
+        ("which 3 stores have the highest revenue by customer type by month", {"grain": "month"}),
         ("which 3 stores have the highest revenue by customer type", {}),
     ],
 )
@@ -516,23 +515,26 @@ _CASES = [
     _Case("top stores by revenue", OK),
     _Case("which 5 stores had the most orders", OK),
     _Case("revenue per store", "PLAN_FALLBACK_SEMANTIC_DRIFT", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-    _Case("orders per store", "ok", "PLAN_UNMATCHED_TERMS"),
     _Case("revenue for each store", OK),
     _Case("revenue for Brooklyn store by month", OK),
     _Case("revenue for Brooklyn and Philadelphia stores by month", OK),
     _Case("revenue by store last month and customer type", OK),
     # Held before, for another reason.
     _Case("top 3 stores by revenue in each month", GAP, GAP),
+    # "store" names the rows, so it doesn't pick the same-store conversion rate for "orders".
+    _Case("orders per store", GAP, GAP),
+    # "monthly revenue" is no measure's or metric's name, so the ranked value isn't named.
+    _Case("top 3 stores by monthly revenue", GAP, GAP),
+    _Case("which 3 stores have the highest monthly revenue by customer type", GAP, GAP),
     _Case("revenue by store, last month and customer type", UNMATCHED, UNMATCHED),
     # A ranking split by a period the question names.
     _ranking("top 3 stores by revenue at month level"),
     _ranking("top 1 store by revenue at month level"),
-    _ranking("top 3 stores by monthly revenue"),
     _ranking("top 3 stores by revenue by month"),
     _ranking("top stores by revenue by month"),
     _ranking("top 3 stores by cumulative revenue by month"),
     # A ranking of more than the entity it ranks.
-    _ranking("which 3 stores have the highest monthly revenue by customer type"),
+    _ranking("which 3 stores have the highest revenue by customer type by month"),
     _ranking("which 3 stores have the highest revenue by customer type"),
     # A month plan picks for a comparison, a year-over-year shift or a qualified ranking.
     _moved("food revenue vs drink revenue by store and customer type", "month"),

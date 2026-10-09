@@ -199,7 +199,7 @@ NARROWER = [
     ("Who ordered last week?", {"group_by": [CUSTOMER_NAME]}, "list_unrealized", '"who"'),
     ("Who ordered last week?", {"group_by": [ORDER_NUMBER]}, "list_unrealized", '"who"'),
     (
-        "Which 3 stores had the most revenue last month?",
+        "Which 3 stores had the most revenue in July 2017?",
         {"group_by": [STORE_NAME]},
         "list_unrealized",
         '"which"',
@@ -309,7 +309,7 @@ def test_only_the_shape_check_holds_those(
         # The name may sit beside the key, but never stands for it.
         ("List customers", {"group_by": [CUSTOMER_NAME]}, [CUSTOMER_NAME], [CUSTOMER_ID]),
         (
-            "Which 3 stores had the most revenue last month?",
+            "Which 3 stores had the most revenue in July 2017?",
             {"group_by": [STORE_NAME]},
             [STORE_NAME],
             [STORE_ID],
@@ -487,7 +487,7 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
         ),
         # The stores' key lists the stores a ranking asks for.
         (
-            "Which 3 stores had the most revenue last month?",
+            "Which 3 stores had the most revenue in July 2017?",
             {"group_by": [STORE_ID, STORE_NAME]},
             "SELECT s.store_id, s.store_name, sum(o.order_total_cents) / 100.0 "
             "FROM jaffle_order o JOIN jaffle_store s USING (store_id) WHERE o.ordered_at >= "
@@ -507,7 +507,7 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
             for question in ("Revenue by store last month", "Revenue for each store last month")
         ),
         (
-            "Which 3 stores had the most revenue last month?",
+            "Which 3 stores had the most revenue in July 2017?",
             {},
             f"{STORE_REVENUE_LAST_MONTH} ORDER BY 3 DESC LIMIT 3",
         ),

@@ -338,7 +338,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   accounts right now") stays `TIME_WINDOW_UNRESOLVED`;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
-  including count-free requests such as "top stores by revenue";
+  including count-free requests such as "top stores by revenue". The ranked value must be
+  named: by one measure's or metric's whole name, label or alias in the question, or by the
+  caller's `partial_query.select`. A value the draft picked any other way ("which store had
+  the most customers", where no measure is named "customers") is `ranked_measure_uncertain`;
 - excludes a value requested positively, or cannot prove that its filter keeps or drops
   each named value with the requested polarity (`filter_values_unrealized`). Scalar `=`/`!=`
   and scalar or list `IN`/`NOT IN` can prove it; list-valued `=`/`!=`, empty membership
@@ -366,7 +369,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
   "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
-  Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first;
+  Gross Revenue and Net Revenue it names neither. The words of a grouping the question asks
+  for name its rows, not the subject: in "how many customers did each store have", "store"
+  doesn't pick a count of storefront sessions from the customer counts. `plan` reports every
+  other reason first;
 - returns a result without the part the question's shape asks for. "who", "whom", "whose",
   "which" or "list" opening a clause asks for the rows of the entity the clause names: its
   first word outside a time window and a "by" grouping that names an entity or, for "which"
@@ -752,7 +758,8 @@ names the key itself, "by store id"). A ranking keeps the count the question sta
 "one" to "ten") and its direction ("bottom", "least", "lowest" sort ascending); ties at the cut
 follow `execute`'s ordering. A ranking whose subject only the ranked noun names ("top 5
 customers", "the 3 stores that sold the most") has no value to rank by: it groups by nothing and
-stays held. A term after "each" or "every" ends at the first word that names nothing more
+stays held. Any other ranking is ready only when its value is named (see `ranking_unrealized`
+above). A term after "each" or "every" ends at the first word that names nothing more
 ("each plan make" groups by plan). The readiness checks read the same stand-ins, so a draft
 grouped by another entity's column stays held.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's

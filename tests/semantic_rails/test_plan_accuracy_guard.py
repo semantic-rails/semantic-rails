@@ -24,7 +24,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import _named_metric
 from semantic_rails.planner.exclusions import exclusion_gaps
-from semantic_rails.planner.faithfulness import intent_faithfulness_why
+from semantic_rails.planner.faithfulness import intent_faithfulness_why, intent_subject_why
 from semantic_rails.planner.filter_checks import _filter_value_gaps
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.ranking_checks import _ranking_request
@@ -44,6 +44,10 @@ PRODUCT_TYPE = "dimension.jaffle_item_product_type"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
 REVENUE = {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
 ORDERS = {"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}}
+VISITING_CUSTOMERS = {
+    "as": "visiting_customer_count",
+    "expression": {"measure": "measure.jaffle.visiting_customer_count"},
+}
 ITEM_REVENUE = {
     "as": "item_revenue_usd",
     "expression": {"measure": "measure.jaffle.item_revenue_usd"},
@@ -220,6 +224,67 @@ def test_ranking_uses_the_named_measure_when_two_are_selected(
     uncertain = _gaps(adapter, "top 5 stores", ranked)
     assert [gap["kind"] for gap in uncertain] == ["ranking_unrealized"]
     assert "ranked_measure_uncertain" in uncertain[0]["message"]
+
+
+@pytest.mark.parametrize(
+    ("text", "select", "limit"),
+    [
+        # No measure or metric is named "customers": the draft's count is its own pick.
+        ("which store had the most customers", VISITING_CUSTOMERS, 1),
+        ("top 1 store by customers", VISITING_CUSTOMERS, 1),
+        ("top 5 stores", REVENUE, 5),
+    ],
+)
+def test_a_ranking_by_a_value_nothing_names_is_a_gap(
+    adapter: SemanticLayerMCPAdapter, text: str, select: dict[str, Any], limit: int
+) -> None:
+    draft = _query(
+        select,
+        group_by=STORES,
+        limit=limit,
+        order_by=[{"field": select["as"], "direction": "DESC"}],
+    )
+    gaps = _gaps(adapter, text, draft)
+    assert [gap["kind"] for gap in gaps] == ["ranking_unrealized"]
+    assert "ranked_measure_uncertain" in gaps[0]["message"]
+    # The caller's own select names it.
+    assert _gap_kinds(adapter, text, draft, partial_query={"select": [select]}) == []
+
+
+def test_a_named_metric_names_the_ranked_value(adapter: SemanticLayerMCPAdapter) -> None:
+    aov = {"as": "aov_usd", "expression": {"metric": "metric.sales.aov_usd"}}
+    draft = _query(
+        aov, group_by=STORES, limit=1, order_by=[{"field": "aov_usd", "direction": "DESC"}]
+    )
+    assert _gap_kinds(adapter, "which store had the highest average order value", draft) == []
+
+
+def test_a_grouping_noun_never_names_the_value(adapter: SemanticLayerMCPAdapter) -> None:
+    # "store" matches the storefront sessions Visiting customers counts, but it names the
+    # rows: without it, the question's "customers" fits every customer count and names
+    # Customer count.
+    runtime = adapter.runtime
+
+    def why(text: str, **kwargs: Any) -> dict[str, Any] | None:
+        return intent_subject_why(
+            runtime,
+            question=text,
+            intent_ir=parse_intent(runtime, text),
+            query=_query(VISITING_CUSTOMERS, group_by=STORES),
+            **kwargs,
+        )
+
+    held = why("how many customers did each store have")
+    assert held is not None
+    assert [gap["kind"] for gap in held["details"]["gaps"]] == ["subject_ambiguous"]
+    assert why("how many visiting customers did each store have") is None
+    assert (
+        why(
+            "how many customers did each store have",
+            partial_query={"select": [VISITING_CUSTOMERS]},
+        )
+        is None
+    )
 
 
 def _count_free_ranked_draft(

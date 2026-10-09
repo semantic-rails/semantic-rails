@@ -536,6 +536,41 @@ tests:
       WHERE channel IS DISTINCT FROM 'web'
         AND signed_up_at >= TIMESTAMP '2024-06-01' AND signed_up_at < TIMESTAMP '2024-07-01'
       GROUP BY 1
+  shop/plan-revenue-by-order:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Order names the Order entity, so revenue groups by its key, one row per order; order 7's NULL amount sums to NULL.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/graph.yml#graph.entities.order]
+    tags: [planner]
+    intent: revenue by order
+    query: {select: *revenue, group_by: &order [dimension.shop_order_id]}
+    expected_rows:
+      - {dimension.shop_order_id: 1, revenue: 10}
+      - {dimension.shop_order_id: 2, revenue: 5}
+      - {dimension.shop_order_id: 3, revenue: 7}
+      - {dimension.shop_order_id: 4, revenue: 20}
+      - {dimension.shop_order_id: 5, revenue: 8}
+      - {dimension.shop_order_id: 6, revenue: 4}
+      - {dimension.shop_order_id: 7, revenue: null}
+      - {dimension.shop_order_id: 8, revenue: 6}
+      - {dimension.shop_order_id: 9, revenue: 3}
+      - {dimension.shop_order_id: 10, revenue: 9}
+      - {dimension.shop_order_id: 11, revenue: 2}
+    reference_sql: SELECT order_id, SUM(amount) FROM orders GROUP BY 1
+  shop/plan-top-3-orders-by-revenue:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The three largest order totals, largest first, are order 4's 20, order 1's 10 and order 10's 9; order 7's NULL total sorts last.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/graph.yml#graph.entities.order, docs/QUERY_IR_SCHEMA.md#orderby]
+    tags: [planner]
+    intent: top 3 orders by revenue
+    query:
+      select: *revenue
+      group_by: *order
+      order_by: [{field: revenue, direction: DESC}]
+      limit: 3
+    expected_rows: [{dimension.shop_order_id: 4, revenue: 20}, {dimension.shop_order_id: 1, revenue: 10}, {dimension.shop_order_id: 10, revenue: 9}]
+    reference_sql: SELECT order_id, SUM(amount) AS revenue FROM orders GROUP BY 1 ORDER BY revenue DESC NULLS LAST LIMIT 3
 
   shop/plan-refunds-must-say-same-refund-or-separate:
     kind: validate_fails_with_code

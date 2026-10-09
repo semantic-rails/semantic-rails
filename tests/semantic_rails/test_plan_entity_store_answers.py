@@ -45,7 +45,6 @@ ITEMS_FROM = (
     "jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
     "JOIN jaffle_store s ON o.store_id = s.store_id"
 )
-SESSIONS_FROM = "jaffle_storefront_session x JOIN jaffle_store s ON x.store_id = s.store_id"
 REVENUE = "SUM(o.order_total_cents / 100.0)"
 ORDERS = "COUNT(DISTINCT o.order_id)"
 AOV = f"{REVENUE} / {ORDERS}"
@@ -287,19 +286,6 @@ CASES = [
         window=YEAR_2017,
         limit=1,
     ),
-    _Case(
-        "Which 3 stores had the most revenue last month?",
-        grain="month",
-        window=JULY,
-        limit=3,
-        now=AUGUST,
-    ),
-    _Case(
-        "which store had the most customers",
-        ("COUNT(DISTINCT x.customer_id)",),
-        source=SESSIONS_FROM,
-        limit=1,
-    ),
     # "each" and "every" name a dimension outright.
     *(
         _Case(question, dims=(CUSTOMER_TYPE,))
@@ -395,5 +381,33 @@ def test_a_ranking_that_names_only_its_rows_is_held(jaffle: Runtime, question: s
     # The only word naming a subject is the ranked noun: ranking customers by their own count
     # ranks every row at one, so plan holds the ranking rather than answer it.
     payload = plan_payload(jaffle, intent=question)
+    assert payload["status"] != "ok"
+    assert "execute" not in payload["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        # A ranking's value must be named. No measure or metric is called "customers", and
+        # the package counts a store's customers through their orders, not their sessions.
+        _Case("which store had the most customers"),
+        _Case("top 1 store by customers"),
+        # The words after "most" run on into the window, so they name no value either.
+        _Case("Which 3 stores had the most revenue last month?", now=AUGUST),
+        _Case(
+            "Which 3 stores had the most revenue last month?",
+            now=AUGUST,
+            partial={"group_by": list(KEYED)},
+        ),
+        # Without a ranking, the grouping's noun ("store") doesn't pick among the customer
+        # counts: the question's "customers" fits them all.
+        _Case("customers by store"),
+        _Case("how many customers did each store have"),
+    ],
+    ids=str,
+)
+def test_an_unnamed_value_is_held(jaffle: Runtime, case: _Case) -> None:
+    partial = {**(case.partial or {}), **_context(case)}
+    payload = plan_payload(jaffle, intent=case.question, partial_query=partial or None)
     assert payload["status"] != "ok"
     assert "execute" not in payload["next"].get("ready_for", [])
