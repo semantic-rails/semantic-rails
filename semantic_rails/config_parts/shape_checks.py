@@ -481,22 +481,22 @@ def _binding_names(
     model_id: str, model: dict[str, Any], graph_entities: dict[str, Any], namespace: str
 ) -> tuple[set[str], set[str]]:
     """The measure and dimension names a rollup ``columns:`` entry can bind, as the loader reads
-    them: a measure by key, ``as:``, ``id:`` or the id the namespace gives it; a dimension by key,
-    ``as:`` or ``id:``, or a key or foreign-key column the loader turns into a key dimension."""
+    them: a row by its key or by the one id the loader gives it — ``as:`` when set, else ``id:``,
+    else (a measure) the id the namespace gives it — and a key or foreign-key column the loader
+    turns into a key dimension. An ``id:`` that ``as:`` replaces names nothing."""
     found = []
     for block in ("measures", "dimensions"):
         rows = model.get(block)
         rows = rows if isinstance(rows, dict) else {}
         names = {*map(str, rows)}
         for key, row in rows.items():
-            ids = [
-                str(row[field])
-                for field in ("as", "id")
-                if isinstance(row, dict) and row.get(field)
-            ]
-            if block == "measures" and not ids:
-                ids = [f"measure.{namespace}.{slug(str(key))}"]
-            names.update(ids)
+            spec = row if isinstance(row, dict) else {}
+            resolved = next(
+                (text for field in ("as", "id") if (text := str(spec.get(field) or "").strip())),
+                f"measure.{namespace}.{slug(str(key))}" if block == "measures" else "",
+            )
+            if resolved:
+                names.add(resolved)
         found.append(names)
     measures, dimensions = found
     return measures, dimensions | _key_columns(model_id, model, graph_entities)

@@ -12,9 +12,11 @@ import pytest
 import yaml
 
 from semantic_rails.architect_mcp import create_architect_mcp_server
+from semantic_rails.config import _merge_package_dir
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.package_snapshot import capture_package_source
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, write_single_file_package
 
@@ -146,6 +148,35 @@ REFUSED = {
         "variant 'monthly' column 'revenue_ud' names no measure, dimension or key column of the "
         "model — it is ignored by the loader, so this would silently change behavior; did you "
         "mean 'revenue_usd'?",
+    ),
+    # `as:` replaces the `id:`, so the loader reads a binding by the `as:` value only.
+    "measure-id-binding-overridden-by-as": (
+        _all(
+            _set(
+                "models",
+                "orders",
+                "measures",
+                "revenue_usd",
+                id="measure.shop.rev_a",
+                **{"as": "measure.shop.rev_b"},
+            ),
+            _rollup(**{"measure.shop.rev_a": {"column": "rev", "aggregation": "max"}}),
+        ),
+        "variant 'monthly' column 'measure.shop.rev_a' names no measure, dimension or key column",
+    ),
+    "dimension-id-binding-overridden-by-as": (
+        _all(
+            _set(
+                "models",
+                "orders",
+                "dimensions",
+                "channel",
+                id="order_channel_a",
+                **{"as": "order_channel_b"},
+            ),
+            _rollup(order_channel_a={"column": "channel"}),
+        ),
+        "variant 'monthly' column 'order_channel_a' names no measure, dimension or key column",
     ),
     "misspelled-binding-id": (
         _rollup(**{"measure.shop.revenue_ud": {"column": "rev", "aggregation": "max"}}),
@@ -414,6 +445,16 @@ DIRECTORY_SILENT_DROPS = {
         "defaults.yaml is not a package file — its YAML is ignored by the loader, so this would "
         "silently change behavior; rename it defaults.yml",
     ),
+    "root-tests-file": (
+        {"tests.yml": lambda _: {"tests": {"orders": {"kind": "query_row_count_bounds"}}}},
+        "tests.yml is not a package file — its YAML is ignored by the loader, so this would "
+        "silently change behavior; write these entries under tests/",
+    ),
+    "root-examples-file": (
+        {"examples.yml": lambda _: {"examples": {"orders": {"question": "Orders?"}}}},
+        "examples.yml is not a package file — its YAML is ignored by the loader, so this would "
+        "silently change behavior; write these entries under examples/",
+    ),
 }
 
 
@@ -440,10 +481,11 @@ def test_directory_lists_each_input_it_never_reads(tmp_path):
         "graph": {"path_policy": {"max_hops": 2}},
         "models": {"orders": {"relation": "jaffle_order"}},
     }
-    errors = [
-        row for row in validate_runtime_package(_directory(tmp_path, files)) if _DROPPED in row
-    ]
-    assert len(errors) == len(DIRECTORY_SILENT_DROPS), errors
+    package = _directory(tmp_path, files)
+    errors = [row for row in validate_runtime_package(package) if _DROPPED in row]
+    assert sorted(error.replace(f"{package}/", "") for error in errors) == sorted(
+        expected for _, expected in DIRECTORY_SILENT_DROPS.values()
+    )
 
 
 def test_directory_underscore_root_files_stay_ignored(tmp_path):
@@ -452,6 +494,58 @@ def test_directory_underscore_root_files_stay_ignored(tmp_path):
         "_drafts/policies.yml": lambda _: {"semantic_policies": [_POLICY]},
     }
     Runtime.from_path(str(_directory(tmp_path, files))).close()
+
+
+def _linked_directory(tmp_path: Path, link: str, files: dict) -> Path:
+    """The bundled directory package with ``link`` a symlink to a directory outside it holding
+    ``files``, plus whatever ``link`` held in the package."""
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    target = tmp_path / "outside" / link
+    if (package / link).is_dir():
+        target.parent.mkdir(parents=True)
+        (package / link).rename(target)
+    for name, doc in files.items():
+        (target / name).parent.mkdir(parents=True, exist_ok=True)
+        (target / name).write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    (package / link).symlink_to(target, target_is_directory=True)
+    return package
+
+
+_LINKED_POLICY = {"day.yml": {"semantic_policies": [_POLICY]}}
+
+
+@pytest.mark.parametrize(
+    ("link", "files"),
+    [
+        pytest.param("policies", _LINKED_POLICY, id="policies-directory"),
+        pytest.param("models", {}, id="models-directory"),
+        pytest.param("models/core", {}, id="model-subdirectory"),
+        pytest.param("examples", {"orders.yml": {"examples": {}}}, id="examples-directory"),
+    ],
+)
+def test_directory_symlink_is_refused_not_followed(tmp_path, link, files):
+    package = _linked_directory(tmp_path, link, files)
+    expected = (
+        f"{package / link} is a directory symlink — the loader does not follow it, so this "
+        "would silently change behavior; copy or link the files instead"
+    )
+    walked, captured = [], []
+    for errors, source in ((walked, None), (captured, capture_package_source(package))):
+        with pytest.raises(SemanticLayerError) as refused:
+            _merge_package_dir(str(package), captured=source)
+        assert refused.value.code == "INVALID_CONFIG"
+        errors.extend(refused.value.details["errors"])
+    assert walked == captured == [expected]
+    with pytest.raises(SemanticLayerError) as refused:
+        Runtime.from_path(str(package))
+    assert refused.value.details["errors"] == [expected]
+
+
+def test_directory_symlink_starting_with_underscore_stays_ignored(tmp_path):
+    package = _linked_directory(tmp_path, "_shared", _LINKED_POLICY)
+    _merge_package_dir(str(package))
+    _merge_package_dir(str(package), captured=capture_package_source(package))
+    Runtime.from_path(str(package)).close()
 
 
 _ROLLUPS = """
@@ -485,9 +579,11 @@ CREATE TABLE orders_monthly AS
 _MAX_REV = {"column": "rev", "aggregation": "max", "holds": "max"}
 
 
-def _rollup_package(root: Path, **columns) -> Path:
-    """Orders whose monthly rollup binds ``columns``, over a DuckDB file holding both tables."""
+def _rollup_package(root: Path, fields: dict | None = None, **columns) -> Path:
+    """Orders whose monthly rollup binds ``columns``, over a DuckDB file holding both tables;
+    ``fields`` are added to the revenue measure."""
     doc = yaml.safe_load(_ROLLUPS)
+    doc["models"]["orders"]["measures"]["revenue"].update(fields or {})
     doc["models"]["orders"]["variants"]["monthly"]["columns"] = columns
     root.mkdir(parents=True)
     source = root / "package.yml"
@@ -497,12 +593,8 @@ def _rollup_package(root: Path, **columns) -> Path:
     return source
 
 
-def test_rollup_binding_answers_the_reference_once_its_name_resolves(tmp_path):
-    misspelled = _rollup_package(tmp_path / "misspelled", revnue=_MAX_REV)
-    with pytest.raises(SemanticLayerError, match="column 'revnue' names no measure.*'revenue'"):
-        Runtime.from_path(str(misspelled))
-
-    source = _rollup_package(tmp_path / "fixed", revenue=_MAX_REV)
+def _assert_monthly_max_from_rollup(source: Path, measure: str) -> None:
+    """The monthly maximum of ``measure`` is read from the rollup and matches the reference."""
     runtime = Runtime.from_path(str(source))
     try:
         result = runtime.query(
@@ -512,7 +604,7 @@ def test_rollup_binding_answers_the_reference_once_its_name_resolves(tmp_path):
                     {
                         "expression": {
                             "kind": "aggregate",
-                            "measure": "measure.rollups.revenue",
+                            "measure": measure,
                             "aggregation": "max",
                         },
                         "as": "top",
@@ -533,6 +625,28 @@ def test_rollup_binding_answers_the_reference_once_its_name_resolves(tmp_path):
     assert reference == [(40,), (70,), (55,)]
     assert [(row["top"],) for row in result["rows"]] == reference
     assert "FROM orders_monthly" in result["rendered_sql"]
+
+
+def test_rollup_binding_answers_the_reference_once_its_name_resolves(tmp_path):
+    misspelled = _rollup_package(tmp_path / "misspelled", revnue=_MAX_REV)
+    with pytest.raises(SemanticLayerError, match="column 'revnue' names no measure.*'revenue'"):
+        Runtime.from_path(str(misspelled))
+
+    source = _rollup_package(tmp_path / "fixed", revenue=_MAX_REV)
+    _assert_monthly_max_from_rollup(source, "measure.rollups.revenue")
+
+
+def test_rollup_binding_by_an_id_that_as_replaces_is_refused(tmp_path):
+    ids = {"id": "measure.rollups.rev_a", "as": "measure.rollups.rev_b"}
+    by_id = _rollup_package(tmp_path / "by_id", ids, **{"measure.rollups.rev_a": _MAX_REV})
+    with pytest.raises(SemanticLayerError) as refused:
+        Runtime.from_path(str(by_id))
+    (error,) = refused.value.details["errors"]
+    assert "column 'measure.rollups.rev_a' names no measure, dimension or key column" in error
+    assert "did you mean 'measure.rollups.rev_b'" in error
+
+    by_as = _rollup_package(tmp_path / "by_as", ids, **{"measure.rollups.rev_b": _MAX_REV})
+    _assert_monthly_max_from_rollup(by_as, "measure.rollups.rev_b")
 
 
 @pytest.mark.parametrize(

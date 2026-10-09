@@ -233,8 +233,12 @@ def test_entries_merge_in_the_file_the_runner_reads_them_from(workspace: Path) -
 
     # Nothing reads a tests.yml beside package.yml, so the package no longer loads with one.
     (package / "tests.yml").write_text(yaml.safe_dump({"tests": {"unread": bounds}}))
-    with pytest.raises(SemanticLayerError, match="tests.yml is not a package file"):
+    with pytest.raises(SemanticLayerError) as refused:
         project.upsert_check(kind="test", key="unread", spec=bounds)
+    assert (
+        f"{package / 'tests.yml'} is not a package file — its YAML is ignored by the loader, so "
+        "this would silently change behavior; write these entries under tests/"
+    ) in str(refused.value)
     assert "unread" not in _yaml(package / "tests" / "core.yml")["tests"]
 
 

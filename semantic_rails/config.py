@@ -510,17 +510,33 @@ _OBJECT_DIRS = ("models", "relations", "metrics", "segments")
 _PACKAGE_ROOT_DIRS = frozenset({*_OBJECT_DIRS, "examples", "tests"})
 
 
-def _unread_root_errors(path: str, contents: dict[str, bytes] | None) -> list[str]:
-    """One error per root YAML file, and per root directory holding YAML, that nothing reads.
-    Names starting with ``_`` or ``.`` are left alone."""
+def _unread_root_errors(
+    path: str, contents: dict[str, bytes] | None, links: tuple[str, ...] = ()
+) -> list[str]:
+    """One error per root YAML file, and per root directory holding YAML, that nothing reads,
+    and per directory symlink, which nothing follows. Root names starting with ``_`` or ``.``
+    are left alone. ``links`` are the captured directory symlinks, relative to ``path``."""
     if contents is not None:
         sources = [os.path.relpath(name, path) for name in contents]
     else:
         sources = []
+        found: list[str] = []
         for root, dirnames, filenames in os.walk(path):
             if root == path:
                 dirnames[:] = [name for name in dirnames if not name.startswith(("_", "."))]
+            found.extend(
+                os.path.relpath(os.path.join(root, name), path)
+                for name in dirnames
+                if os.path.islink(os.path.join(root, name))
+            )
             sources.extend(os.path.relpath(os.path.join(root, name), path) for name in filenames)
+        links = tuple(found)
+    errors = [
+        f"{os.path.join(path, link)} is a directory symlink — the loader does not follow it, so "
+        "this would silently change behavior; copy or link the files instead"
+        for link in sorted(links)
+        if not Path(link).parts[0].startswith(("_", "."))
+    ]
     unread: set[tuple[str, bool]] = set()
     for source in sources:
         top, *rest = Path(source).parts
@@ -531,7 +547,6 @@ def _unread_root_errors(path: str, contents: dict[str, bytes] | None) -> list[st
             and top not in known
         ):
             unread.add((top, bool(rest)))
-    errors = []
     for name, is_dir in sorted(unread):
         if is_dir:
             what = f"{os.path.join(path, name)}{os.sep} is not a package directory"
@@ -543,13 +558,16 @@ def _unread_root_errors(path: str, contents: dict[str, bytes] | None) -> list[st
             )
         else:
             what = f"{os.path.join(path, name)} is not a package file"
-            yml = os.path.splitext(name)[0] + ".yml"
-            fix = (
-                f"rename it {yml}"
-                if yml in _PACKAGE_ROOT_FILES
-                else f"move its contents into {', '.join(sorted(_PACKAGE_ROOT_FILES))} or start "
-                "its name with '_'"
-            )
+            stem = os.path.splitext(name)[0]
+            if stem + ".yml" in _PACKAGE_ROOT_FILES:
+                fix = f"rename it {stem}.yml"
+            elif stem in ("examples", "tests"):
+                fix = f"write these entries under {stem}/"
+            else:
+                fix = (
+                    f"move its contents into {', '.join(sorted(_PACKAGE_ROOT_FILES))} or start "
+                    "its name with '_'"
+                )
         errors.append(
             f"{what} — its YAML is ignored by the loader, so this would silently change "
             f"behavior; {fix}"
@@ -753,7 +771,8 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                 segments[str(segment_key)] = dict(segment_raw or {})
         merged["segments"] = segments
 
-    errors.extend(_unread_root_errors(path, contents))
+    links = captured.directory_links if captured is not None else ()
+    errors.extend(_unread_root_errors(path, contents, links))
     if errors:
         raise SemanticLayerError("INVALID_CONFIG", "\n".join(errors), details={"errors": errors})
     return merged
