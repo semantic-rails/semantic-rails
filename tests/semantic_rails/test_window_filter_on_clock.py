@@ -31,6 +31,7 @@ from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.operators import normalize_condition
 from semantic_rails.runtime import Runtime
 
 DAY_ROLE = "temporal_role.fees_account_day_date_day"
@@ -343,7 +344,11 @@ def test_a_where_cut_of_the_clock_refuses(
     details = caught.value.details
     assert details["where_path"] == where_path
     cut = where[-1] if "field" in where[-1] else where[-1]["any"][0]
-    assert details["where"] == cut
+    # The condition as the call reads it: a one-value list is that value.
+    assert details["where"] == {
+        **cut,
+        "value": normalize_condition(cut["op"], cut["value"], path="where")[1],
+    }
     # A lower bound is where a widened start goes; a pin or an exclusion has none.
     assert details.get("start") == (cut["value"] if cut["op"] in {"gte", "gt"} else None)
     if expression is ROLLING:

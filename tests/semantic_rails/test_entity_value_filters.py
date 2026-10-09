@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
-from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.planner import plan_payload
 
 DIMENSION = "dimension.jaffle_order_customer_order_number"
@@ -152,8 +152,12 @@ def test_valid_value_filter_matches_reference_sql(engine, tagged, dimension_filt
 
 
 def test_published_schema_closes_value_filter_items():
-    validator = Draft202012Validator(load_contract("query.v2.json"))
-    valid = _query([{"kind": "value_filter", "op": "gt", "value": 1}])
-    validator.validate(valid)
-    invalid = _query([FIELD_FILTER])
-    assert list(validator.iter_errors(invalid))
+    execute = next(tool for tool in list_tool_definitions() if tool["name"] == "execute")
+    valid = _query([{"kind": "value_filter", "op": "gt", "value": 1}, {"op": ">", "value": 1}])
+    for validator, wrap in (
+        (Draft202012Validator(load_contract("query.v2.json")), lambda query: query),
+        (Draft202012Validator(execute["inputSchema"]), lambda query: {"query": query}),
+    ):
+        validator.validate(wrap(valid))
+        for item in (FIELD_FILTER, {"kind": "row_filter", "op": "gt", "value": 1}):
+            assert list(validator.iter_errors(wrap(_query([item])))), item
