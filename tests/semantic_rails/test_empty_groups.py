@@ -38,10 +38,10 @@ from tests.semantic_rails.test_rendered_sql_snapshots import SNAPSHOT_CASES
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
 ORDER_ID = "dimension.jaffle_order_id"
-REVENUE = {"measure": "measure.jaffle.revenue_usd"}
-ORDERS = {"measure": "measure.jaffle.order_count"}
-ITEMS = {"measure": "measure.jaffle.item_count"}
-NO_SUCH_STORE = [{"field": STORE, "op": "=", "value": "No such store"}]
+REVENUE = {"kind": "measure", "measure": "measure.jaffle.revenue_usd"}
+ORDERS = {"kind": "measure", "measure": "measure.jaffle.order_count"}
+ITEMS = {"kind": "measure", "measure": "measure.jaffle.item_count"}
+NO_SUCH_STORE = [{"field": STORE, "op": "is", "value": "No such store"}]
 
 
 def _select(**expressions: dict[str, Any]) -> list[dict[str, Any]]:
@@ -132,20 +132,19 @@ def test_a_count_beside_a_second_fact_reads_zero_in_its_empty_group(runtime: Run
     assert not _warnings(response)
 
 
-def test_a_limit_and_a_metric_filter_cannot_change_what_the_guard_sees(runtime: Runtime) -> None:
+def test_a_limit_and_a_result_filter_cannot_change_what_the_guard_sees(runtime: Runtime) -> None:
     """The orders with no items are all-zero once filtered, but the measure has items elsewhere."""
-    query = {
+    unlimited_query = {
         "select": _select(orders=ORDERS),
         "group_by": [ORDER_ID],
-        "metric_filters": [{"expression": ITEMS, "op": "=", "value": 0}],
-        "limit": 5,
+        "having": [{"field": ITEMS["measure"], "op": "is", "value": 0}],
     }
-    response = runtime.query(query)
+    response = runtime.query({**unlimited_query, "limit": 5})
     assert response["row_count"] == 5
     assert not _warnings(response)
     # The settled value, not a NULL turned into 0 after the filter: the same orders with no
     # limit are the gold orders that have no items, each with an order count of 1.
-    unlimited = runtime.query({**query, "limit": None})
+    unlimited = runtime.query(unlimited_query)
     gold = _gold(
         runtime,
         "SELECT o.order_id AS id FROM jaffle_order o "
@@ -217,7 +216,7 @@ def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(
                 filtered={
                     **REVENUE,
                     "kind": "aggregate",
-                    "filter": {"all": [{"field": STORE, "op": "=", "value": "Philadelphia"}]},
+                    "filter": {"all": [{"field": STORE, "op": "is", "value": "Philadelphia"}]},
                 },
             ),
             "observation_scope": scope,
@@ -279,12 +278,12 @@ def test_an_output_with_a_reason_of_its_own_to_be_null_never_gets_the_warning(
     assert not _warnings(response)
 
 
-def test_a_metric_filter_that_removes_every_group_is_not_missing_data(runtime: Runtime) -> None:
+def test_a_result_filter_that_removes_every_group_is_not_missing_data(runtime: Runtime) -> None:
     response = runtime.query(
         {
             "select": _select(revenue=REVENUE),
             "group_by": [STORE],
-            "metric_filters": [{"expression": ORDERS, "op": ">", "value": 100000}],
+            "having": [{"field": ORDERS["measure"], "op": "gt", "value": 100000}],
         }
     )
     assert response["rows"] == []
@@ -340,7 +339,7 @@ SHAPES = {
     "filtered_by_store": {
         "select": _select(revenue=REVENUE, orders=ORDERS, items=ITEMS),
         "group_by": [ORDER_ID],
-        "where": [{"field": STORE, "op": "=", "value": "Philadelphia"}],
+        "where": [{"field": STORE, "op": "is", "value": "Philadelphia"}],
         "time": {"temporal_role": ORDER_TIME, "start": "2017-04-01", "end": "2017-04-08"},
     },
     "window_total": {
@@ -371,7 +370,7 @@ SHAPES = {
                     "kind": "metric_predicate",
                     "entity": "entity.jaffle_customer",
                     "scope_mode": "entity_only",
-                    "input": {"measure": "measure.jaffle.large_order_count"},
+                    "input": {"kind": "measure", "measure": "measure.jaffle.large_order_count"},
                     "op": "=",
                     "value": 0,
                 },
@@ -491,10 +490,10 @@ def test_a_predicate_source_that_skips_the_guard_is_refused(
 SHOP_ORDER = "dimension.shop_order_id"
 SHOP_STORE = "dimension.shop_order_store_id"
 SHOP_MONTH = {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"}
-SHOP_REVENUE = {"measure": "measure.shop.revenue"}
-SHOP_ORDERS = {"measure": "measure.shop.order_count"}
-SHOP_GOODS = {"measure": "measure.shop.goods_refunded"}
-SHOP_SHIPPING = {"measure": "measure.shop.shipping_refunded"}
+SHOP_REVENUE = {"kind": "measure", "measure": "measure.shop.revenue"}
+SHOP_ORDERS = {"kind": "measure", "measure": "measure.shop.order_count"}
+SHOP_GOODS = {"kind": "measure", "measure": "measure.shop.goods_refunded"}
+SHOP_SHIPPING = {"kind": "measure", "measure": "measure.shop.shipping_refunded"}
 IN_STORE_A = {
     "kind": "comparison",
     "op": "=",
@@ -520,7 +519,7 @@ def shop(shop_package: Path) -> Iterator[Runtime]:
 
 @pytest.mark.parametrize("beside_amount", [False, True])
 def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amount: bool) -> None:
-    amount = {"measure": "measure.shop.store_a_amount"}
+    amount = {"kind": "measure", "measure": "measure.shop.store_a_amount"}
     distribution = {
         "kind": "distribution",
         "function": "sum",
@@ -552,10 +551,10 @@ def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amoun
 def test_a_window_total_observes_conditional_counts_outside_its_bounds(
     shop: Runtime, grain: str | None, relative: bool
 ) -> None:
-    a = {"measure": "measure.shop.store_a_orders"}
-    b = {"measure": "measure.shop.store_b_orders"}
+    a = {"kind": "measure", "measure": "measure.shop.store_a_orders"}
+    b = {"kind": "measure", "measure": "measure.shop.store_b_orders"}
     time = (
-        {"range": {"last": {"unit": "week", "value": 1}}}
+        {"last": {"unit": "week", "value": 1}}
         if relative
         else {"start": "2023-11-27", "end": "2023-12-04"}
     )
@@ -589,7 +588,7 @@ def test_a_window_total_refuses_a_missing_time_scope(
     with pytest.raises(SemanticLayerError) as raised:
         shop.query(
             {
-                "select": _select(b={"measure": "measure.shop.store_b_orders"}),
+                "select": _select(b={"kind": "measure", "measure": "measure.shop.store_b_orders"}),
                 "time": {
                     "temporal_role": SHOP_MONTH["temporal_role"],
                     "start": "2023-12-01",
@@ -608,7 +607,7 @@ def test_a_window_count_never_matched_reads_zero_where_its_bucket_is_checked(
     no fill, doesn't, so a count that never matched is held at NULL with the warning."""
     response = shop.query(
         {
-            "select": _select(huge={"measure": "measure.shop.huge_order_count"}),
+            "select": _select(huge={"kind": "measure", "measure": "measure.shop.huge_order_count"}),
             "time": {
                 "temporal_role": SHOP_MONTH["temporal_role"],
                 "start": "2023-11-27",
@@ -654,10 +653,10 @@ def only_a_shop(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
 def test_a_never_matched_count_preserves_the_window_difference(
     only_a_shop: Runtime, grain: str | None, relative: bool
 ) -> None:
-    a = {"measure": "measure.shop.store_a_orders"}
-    b = {"measure": "measure.shop.store_b_orders"}
+    a = {"kind": "measure", "measure": "measure.shop.store_a_orders"}
+    b = {"kind": "measure", "measure": "measure.shop.store_b_orders"}
     bounds = (
-        {"range": {"last": {"unit": "week", "value": 1}}}
+        {"last": {"unit": "week", "value": 1}}
         if relative
         else {"start": "2023-11-27", "end": "2023-12-04"}
     )
@@ -698,8 +697,8 @@ def test_a_window_total_without_its_loaded_bucket_check_never_settles_from_sourc
     """Force the bypass: lowering emits no loaded-bucket check for the total. The guard then
     can't settle the never-matched operand from source rows, so it holds NULL and warns."""
     monkeypatch.setattr(sql_lowering, "_emits_time_coverage", lambda plan, config: False)
-    a = {"measure": "measure.shop.store_a_orders"}
-    b = {"measure": "measure.shop.store_b_orders"}
+    a = {"kind": "measure", "measure": "measure.shop.store_a_orders"}
+    b = {"kind": "measure", "measure": "measure.shop.store_b_orders"}
     # A runtime of its own, so no compilation cached before the patch is reused.
     rt = Runtime.from_config(only_a_shop.config, source_path=only_a_shop.source_path)
     try:
@@ -764,7 +763,7 @@ def test_a_conditional_window_sum_distinguishes_no_match_from_unknown_amounts(
                 "end": "2023-12-04",
             }
         else:
-            query["where"] = [{"field": SHOP_STORE, "op": "=", "value": "a"}]
+            query["where"] = [{"field": SHOP_STORE, "op": "is", "value": "a"}]
         response = rt.query(query)
         store = "a" if matching else "b"
         gold = _gold(
@@ -834,7 +833,7 @@ def test_a_never_matched_count_respects_the_query_observation_scope(
 ) -> None:
     response = only_a_shop.query(
         {
-            "select": _select(b={"measure": "measure.shop.store_b_orders"}),
+            "select": _select(b={"kind": "measure", "measure": "measure.shop.store_b_orders"}),
             "where": [{"field": SHOP_STORE, "op": "is", "value": "missing"}],
             "observation_scope": scope,
         }
@@ -859,12 +858,14 @@ def test_a_never_matched_count_requires_a_loaded_relation(tmp_path: Path, popula
         seed.write_text(seed.read_text() + "\nDELETE FROM orders;\n")
     rt = Runtime.from_path(str(package))
     try:
-        query = {"select": _select(huge={"measure": "measure.shop.huge_order_count"})}
+        query = {
+            "select": _select(huge={"kind": "measure", "measure": "measure.shop.huge_order_count"})
+        }
         if population == "outside":
+            # A named window answers every period of its grain.
             query["time"] = {
                 "temporal_role": SHOP_MONTH["temporal_role"],
                 "grain": "month",
-                "fill": True,
                 "start": "2023-10-01",
                 "end": "2023-11-01",
             }
@@ -944,17 +945,21 @@ FUTURE_GOLD = (
 )
 
 
-@pytest.mark.parametrize("fill", [False, True])
 @pytest.mark.parametrize("shape", ["count", "sum"])
 def test_a_never_matched_operand_reads_null_beyond_the_loaded_range(
-    future_shop: Runtime, shape: str, fill: bool, monkeypatch: pytest.MonkeyPatch
+    future_shop: Runtime, shape: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _conditional_revenue(future_shop, IN_STORE_B) if shape == "sum" else future_shop
     try:
-        b = SHOP_REVENUE if shape == "sum" else {"measure": "measure.shop.store_b_orders"}
+        b = (
+            SHOP_REVENUE
+            if shape == "sum"
+            else {"kind": "measure", "measure": "measure.shop.store_b_orders"}
+        )
+        # A named window answers every period of its grain.
         query = {
             "select": _select(b=b),
-            "time": {**SHOP_MONTH, "start": "2098-01-01", "end": "2098-02-01", "fill": fill},
+            "time": {**SHOP_MONTH, "start": "2098-01-01", "end": "2098-02-01"},
         }
         response = rt.query(query)
         gold = _gold(rt, FUTURE_GOLD.format(value=FUTURE_B[shape], where=""))
@@ -968,10 +973,6 @@ def test_a_never_matched_operand_reads_null_beyond_the_loaded_range(
             undisclosed["rendered_sql"],
         )
         assert _warnings(undisclosed)[0]["details"]["outputs"] == ["b"]
-        if not fill:
-            # The unfilled leaf has no coverage guard: the NULL is store b's missing data.
-            assert response["warnings"] == undisclosed["warnings"]
-            return
         # The filled series and the coverage marker bucket the same timestamps the same
         # way, so the window's January 2098 is dated past the last loaded month.
         last = _gold(
@@ -999,7 +1000,11 @@ def test_a_never_matched_operand_reads_null_beyond_the_loaded_range_under_datase
     settles a bucket the loaded-bucket check doesn't gate."""
     rt = _conditional_revenue(future_shop, IN_STORE_B) if shape == "sum" else future_shop
     try:
-        b = SHOP_REVENUE if shape == "sum" else {"measure": "measure.shop.store_b_orders"}
+        b = (
+            SHOP_REVENUE
+            if shape == "sum"
+            else {"kind": "measure", "measure": "measure.shop.store_b_orders"}
+        )
         response = rt.query(
             {
                 "select": _select(b=b),
@@ -1055,8 +1060,8 @@ def test_a_window_total_operand_from_another_relation_needs_its_own_rows(
     )
     rt = Runtime.from_config(config, source_path=str(package))
     try:
-        a = {"measure": "measure.shop.store_a_orders"}
-        b = {"measure": "measure.shop.refund_count"}
+        a = {"kind": "measure", "measure": "measure.shop.store_a_orders"}
+        b = {"kind": "measure", "measure": "measure.shop.refund_count"}
         response = rt.query(
             {
                 "select": _select(
@@ -1094,7 +1099,9 @@ def test_a_window_total_operand_from_another_relation_needs_its_own_rows(
 
 
 def test_a_predicate_over_several_measures_keeps_explicit_else_zero(shop: Runtime) -> None:
-    response = shop.query(
+    # An entity filter names one measure or metric; the compiler's own form takes an inline
+    # combination of several.
+    response = shop.query_internal(
         {
             "select": _select(orders=SHOP_ORDERS),
             "time": {**SHOP_MONTH, "grain": "week", "start": "2023-11-20", "end": "2023-11-27"},
@@ -1108,7 +1115,7 @@ def test_a_predicate_over_several_measures_keeps_explicit_else_zero(shop: Runtim
                         "input": {
                             "kind": "arithmetic",
                             "op": "add",
-                            "left": {"measure": "measure.shop.store_a_amount"},
+                            "left": {"kind": "measure", "measure": "measure.shop.store_a_amount"},
                             "right": SHOP_ORDERS,
                         },
                         "op": "<=",
@@ -1145,7 +1152,7 @@ def test_an_exact_rollup_of_an_else_zero_sum_matches_the_base(
         "FROM orders GROUP BY 1, 2;\n"
     )
     config = load_package_config(str(shop_package))
-    amount = {"measure": "measure.shop.store_a_amount"}
+    amount = {"kind": "measure", "measure": "measure.shop.store_a_amount"}
     config = replace(
         config,
         aggregate_relations=[
@@ -1170,9 +1177,7 @@ def test_an_exact_rollup_of_an_else_zero_sum_matches_the_base(
             )
             results.append(
                 {
-                    (row[SHOP_STORE], str(row[f"{SHOP_MONTH['temporal_role']}__month"])[:7]): row[
-                        "amount"
-                    ]
+                    (row[SHOP_STORE], str(row["period"])[:7]): row["amount"]
                     for row in typed_rows(response)
                 }
             )
@@ -1221,7 +1226,7 @@ def test_branch_row_markers_never_shadow_projected_values(
             "time": SHOP_MONTH,
         }
     )
-    month = f"{SHOP_MONTH['temporal_role']}__month"
+    month = "period"
     got = {
         (row.get(SHOP_STORE), str(row[month])[:7]): (row[revenue_alias], row[median_alias])
         for row in typed_rows(response)
@@ -1245,7 +1250,6 @@ def test_branch_row_markers_never_shadow_projected_values(
 # Goods plus shipping refunds beside the median order, without order 7: each refunded order
 # has goods or shipping, never both, so every refund group reads one unknown operand.
 REFUNDS_BESIDE_A_MEDIAN = {
-    "version": 1,
     "select": _select(
         total={"kind": "arithmetic", "op": "add", "left": SHOP_GOODS, "right": SHOP_SHIPPING},
         median={
@@ -1256,7 +1260,7 @@ REFUNDS_BESIDE_A_MEDIAN = {
     ),
     "group_by": [SHOP_STORE],
     "time": SHOP_MONTH,
-    "where": [{"field": SHOP_ORDER, "op": "!=", "value": 7}],
+    "where": [{"field": SHOP_ORDER, "op": "not", "value": 7}],
     # Beside a distribution the dataset scope refuses a where filter (test_observation_scope).
     "observation_scope": "query",
 }
@@ -1267,7 +1271,7 @@ def test_arithmetic_beside_a_distribution_keeps_its_empty_groups_zero(shop: Runt
     amounts read 0 where its measure has data in scope, so a group with no refunds at all
     (store a's November) is 0, not NULL."""
     response = shop.query(REFUNDS_BESIDE_A_MEDIAN)
-    month = f"{SHOP_MONTH['temporal_role']}__month"
+    month = "period"
     got = {(row[SHOP_STORE], str(row[month])[:7]): row["total"] for row in typed_rows(response)}
     assert got[("a", "2023-11")] == 0
     # Orders 2 (goods 5 + 1), 4 (shipping 3) and 6 (goods 4); every other group has none.
@@ -1276,7 +1280,8 @@ def test_arithmetic_beside_a_distribution_keeps_its_empty_groups_zero(shop: Runt
     assert len(got) == 10
 
 
-# The same query's SQL at the commit before unknown amounts stayed NULL, unchanged.
+# The same query's SQL at the commit before unknown amounts stayed NULL, unchanged but for
+# the time axis, named period, and `not`, which keeps an unknown order id.
 REFUNDS_BESIDE_A_MEDIAN_SQL = """WITH agent_branch_1__leaf_1 AS (
 SELECT
   orders.store_id AS g1,
@@ -1286,7 +1291,7 @@ SELECT
 FROM refunds
 INNER JOIN orders ON refunds.order_id = orders.order_id
 WHERE
-  refunds.order_id != 7
+  (refunds.order_id <> 7) OR (refunds.order_id IS NULL)
 GROUP BY
   orders.store_id,
   DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))
@@ -1302,7 +1307,7 @@ FROM agent_branch_1__leaf_1 AS base
 agent_branch_1 AS (
 SELECT
   base.g1 AS "dimension.shop_order_store_id",
-  base.t AS "temporal_role.shop_order_ordered_at__month",
+  base.t AS period,
   base.m1 + base.m2 AS total
 FROM agent_branch_1__guarded_base AS base
 ),
@@ -1314,7 +1319,7 @@ SELECT
   SUM(orders.amount) AS m1
 FROM orders
 WHERE
-  orders.order_id != 7
+  (orders.order_id <> 7) OR (orders.order_id IS NULL)
 GROUP BY
   orders.store_id,
   orders.order_id,
@@ -1324,33 +1329,33 @@ agent_branch_2__median__entity_values AS (
 SELECT
   base.g1 AS "dimension.shop_order_store_id",
   base.g2 AS "dimension.shop_order_id",
-  base.t AS "temporal_role.shop_order_ordered_at__month",
+  base.t AS period,
   base.m1 AS __entity_value
 FROM agent_branch_2__median__entity_values__leaf_1 AS base
 ),
 agent_branch_2 AS (
 SELECT
   agent_branch_2__median__entity_values."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  agent_branch_2__median__entity_values."temporal_role.shop_order_ordered_at__month" AS "temporal_role.shop_order_ordered_at__month",
+  agent_branch_2__median__entity_values.period AS period,
   MEDIAN(agent_branch_2__median__entity_values.__entity_value) AS median
 FROM agent_branch_2__median__entity_values
 GROUP BY
   agent_branch_2__median__entity_values."dimension.shop_order_store_id",
-  agent_branch_2__median__entity_values."temporal_role.shop_order_ordered_at__month"
+  agent_branch_2__median__entity_values.period
 ),
 agent_combined_2 AS (
 SELECT
   COALESCE(left_side."dimension.shop_order_store_id", right_side."dimension.shop_order_store_id") AS "dimension.shop_order_store_id",
-  COALESCE(CAST(left_side."temporal_role.shop_order_ordered_at__month" AS TIMESTAMP), CAST(right_side."temporal_role.shop_order_ordered_at__month" AS TIMESTAMP)) AS "temporal_role.shop_order_ordered_at__month",
+  COALESCE(CAST(left_side.period AS TIMESTAMP), CAST(right_side.period AS TIMESTAMP)) AS period,
   left_side.total AS total,
   right_side.median AS median
 FROM agent_branch_1 AS left_side
-FULL OUTER JOIN agent_branch_2 AS right_side ON left_side."dimension.shop_order_store_id" IS NOT DISTINCT FROM right_side."dimension.shop_order_store_id" AND CAST(left_side."temporal_role.shop_order_ordered_at__month" AS TIMESTAMP) IS NOT DISTINCT FROM CAST(right_side."temporal_role.shop_order_ordered_at__month" AS TIMESTAMP)
+FULL OUTER JOIN agent_branch_2 AS right_side ON left_side."dimension.shop_order_store_id" IS NOT DISTINCT FROM right_side."dimension.shop_order_store_id" AND CAST(left_side.period AS TIMESTAMP) IS NOT DISTINCT FROM CAST(right_side.period AS TIMESTAMP)
 ),
 guarded_base AS (
 SELECT
   base."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  base."temporal_role.shop_order_ordered_at__month" AS "temporal_role.shop_order_ordered_at__month",
+  base.period AS period,
   CASE WHEN COUNT(base.total) OVER () > 0 THEN COALESCE(base.total, 0) END AS total,
   base.median AS median
 FROM agent_combined_2 AS base
@@ -1358,19 +1363,19 @@ FROM agent_combined_2 AS base
 agent_projected AS (
 SELECT
   base."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  base."temporal_role.shop_order_ordered_at__month" AS "temporal_role.shop_order_ordered_at__month",
+  base.period AS period,
   base.total AS total,
   base.median AS median
 FROM guarded_base AS base
 )
 SELECT
   agent_projected."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  agent_projected."temporal_role.shop_order_ordered_at__month" AS "temporal_role.shop_order_ordered_at__month",
+  agent_projected.period AS period,
   agent_projected.total AS total,
   agent_projected.median AS median
 FROM agent_projected
 ORDER BY
-  "temporal_role.shop_order_ordered_at__month" ASC,
+  period ASC,
   "dimension.shop_order_store_id" ASC"""
 
 
@@ -1499,7 +1504,7 @@ def test_case_sum_preserves_explicit_else_contributions(
                 "time": SHOP_MONTH,
             }
         )
-        month = f"{SHOP_MONTH['temporal_role']}__month"
+        month = "period"
         got = {
             (row.get(SHOP_STORE), str(row[month])[:7]): row["revenue"]
             for row in typed_rows(response)
@@ -1560,7 +1565,7 @@ def test_a_case_with_two_branches_is_zero_only_where_no_row_meets_either(
                 "time": SHOP_MONTH,
             }
         )
-        month = f"{SHOP_MONTH['temporal_role']}__month"
+        month = "period"
         got = {
             (row[SHOP_STORE], str(row[month])[:7]): row["revenue"] for row in typed_rows(response)
         }
@@ -1642,15 +1647,16 @@ def test_a_case_under_arithmetic_keeps_the_base_settlement(
     rt = Runtime.from_config(config, source_path=str(shop_package))
     try:
         query = {
-            "version": 1,
-            "select": _select(revenue=SHOP_REVENUE, raw={"measure": "measure.shop.raw_revenue"}),
+            "select": _select(
+                revenue=SHOP_REVENUE, raw={"kind": "measure", "measure": "measure.shop.raw_revenue"}
+            ),
             "group_by": [SHOP_STORE],
             "time": SHOP_MONTH,
             # A nested CASE can't tell unknown amounts from no rows, so the dataset scope
             # refuses its filtered query (test_observation_scope); the query scope is the base's.
             **(
                 {
-                    "where": [{"field": SHOP_ORDER, "op": "=", "value": 7}],
+                    "where": [{"field": SHOP_ORDER, "op": "is", "value": 7}],
                     "observation_scope": "query",
                 }
                 if unknown_only
@@ -1658,7 +1664,7 @@ def test_a_case_under_arithmetic_keeps_the_base_settlement(
             ),
         }
         response = rt.query(query)
-        month = f"{SHOP_MONTH['temporal_role']}__month"
+        month = "period"
         got = {
             (row[SHOP_STORE], str(row[month])[:7]): row["revenue"] for row in typed_rows(response)
         }
@@ -1886,10 +1892,7 @@ def test_a_summing_window_combines_each_operands_window(
     response = shop.query(
         {"select": _select(value=expression), "time": {**SHOP_MONTH, "fill": True}}
     )
-    got = {
-        row[f"{SHOP_MONTH['temporal_role']}__month"].strftime("%Y-%m"): row["value"]
-        for row in typed_rows(response)
-    }
+    got = {row["period"].strftime("%Y-%m"): row["value"] for row in typed_rows(response)}
     for month, values in expected.items():
         assert got[month] == values[op == "subtract"], month
 
@@ -1945,11 +1948,11 @@ def _summing_window_query(kind: str, input_expr: dict[str, Any]) -> dict[str, An
 @pytest.mark.parametrize(
     "input_expr",
     [
-        {"kind": "arithmetic", "op": "multiply", "left": {"metric": NET}, "right": TWO},
-        {"kind": "arithmetic", "op": "divide", "left": {"metric": NET}, "right": HUNDRED},
-        {"kind": "arithmetic", "op": "add", "left": {"metric": NET}, "right": SHOP_REVENUE},
-        {"kind": "ratio", "numerator": {"metric": NET}, "denominator": SHOP_REVENUE},
-        {"metric": NET_HUNDREDTHS},
+        {"kind": "arithmetic", "op": "multiply", "left": NET, "right": TWO},
+        {"kind": "arithmetic", "op": "divide", "left": NET, "right": HUNDRED},
+        {"kind": "arithmetic", "op": "add", "left": NET, "right": SHOP_REVENUE},
+        {"kind": "ratio", "numerator": NET, "denominator": SHOP_REVENUE},
+        NET_HUNDREDTHS,
     ],
     ids=["times_two", "over_hundred", "plus_revenue", "ratio", "metric_over_hundred"],
 )
@@ -1976,7 +1979,7 @@ def test_a_summing_window_refuses_a_metric_inside_its_input(
     ("input_expr", "factor", "expected"),
     [
         ({"kind": "arithmetic", "op": "multiply", "left": NET_INLINE, "right": TWO}, 2, 72),
-        ({"metric": NET}, 1, 36),
+        (NET, 1, 36),
     ],
     ids=["inline_times_two", "whole_input_metric"],
 )
@@ -1984,10 +1987,7 @@ def test_a_summing_window_answers_inline_operands_and_a_whole_input_metric(
     shop_with_net: Runtime, input_expr: dict[str, Any], factor: int, expected: int
 ) -> None:
     response = shop_with_net.query(_summing_window_query("rolling", input_expr))
-    got = {
-        row[f"{SHOP_MONTH['temporal_role']}__month"].strftime("%Y-%m"): row["value"]
-        for row in typed_rows(response)
-    }
+    got = {row["period"].strftime("%Y-%m"): row["value"] for row in typed_rows(response)}
     # November 2023 to January 2024, each part summed over the base rows on its own.
     window = "o.ordered_at >= TIMESTAMP '2023-11-01' AND o.ordered_at < TIMESTAMP '2024-02-01'"
     gold = _gold(
@@ -1999,11 +1999,9 @@ def test_a_summing_window_answers_inline_operands_and_a_whole_input_metric(
     assert got["2024-01"] == expected
 
 
-@pytest.mark.parametrize("fill", [False, True])
-def test_a_sum_whose_rows_all_lack_a_value_is_unknown_and_its_count_is_not(
-    shop: Runtime, fill: bool
-) -> None:
-    window = {"start": "2024-05-01", "end": "2024-07-01", "fill": fill}
+def test_a_sum_whose_rows_all_lack_a_value_is_unknown_and_its_count_is_not(shop: Runtime) -> None:
+    # A named window answers every period of its grain.
+    window = {"start": "2024-05-01", "end": "2024-07-01"}
     response = shop.query(
         {
             "select": _select(revenue=SHOP_REVENUE, orders=SHOP_ORDERS),
@@ -2011,36 +2009,28 @@ def test_a_sum_whose_rows_all_lack_a_value_is_unknown_and_its_count_is_not(
             "time": {**SHOP_MONTH, **window},
         }
     )
-    month = f"{SHOP_MONTH['temporal_role']}__month"
+    month = "period"
     got = {
         (row[SHOP_STORE], str(row[month])[:7]): (row["revenue"], row["orders"])
         for row in typed_rows(response)
     }
     expected = {("a", "2024-05"): (None, 1), (None, "2024-05"): (6, 1), ("b", "2024-06"): (3, 1)}
-    if fill:  # the groups with no rows, where both measures have data in scope
-        expected |= {key: (0, 0) for key in [("a", "2024-06"), ("b", "2024-05"), (None, "2024-06")]}
+    # The groups with no rows, where both measures have data in scope.
+    expected |= {key: (0, 0) for key in [("a", "2024-06"), ("b", "2024-05"), (None, "2024-06")]}
     assert got == expected
-    # Unfilled, whole months: the rollup answers, and its row for store a's May holds no amount.
-    assert ("FROM orders_monthly" in response["rendered_sql"]) is not fill
+    assert "FROM orders_monthly" not in response["rendered_sql"]
 
 
 def test_an_unknown_value_meets_no_threshold_not_even_one_zero_passes(shop: Runtime) -> None:
     """A threshold 0 passes keeps every order that doesn't fail it, the ones with no rows too;
     order 7's unknown revenue is not one of them."""
     below_5 = {
-        "kind": "metric_predicate",
         "entity": "entity.shop_order",
-        "scope_mode": "entity_only",
-        "input": SHOP_REVENUE,
-        "op": "<",
-        "value": 5,
+        "having": [{"field": SHOP_REVENUE["measure"], "op": "lt", "value": 5}],
+        "over": "all_time",
     }
     response = shop.query(
-        {
-            "select": _select(orders=SHOP_ORDERS),
-            "group_by": [SHOP_STORE],
-            "metric_filters": [{"expression": below_5, "op": "=", "value": True}],
-        }
+        {"select": _select(orders=SHOP_ORDERS), "group_by": [SHOP_STORE], "where": [below_5]}
     )
     got = {row[SHOP_STORE]: row["orders"] for row in typed_rows(response)}
     gold = _gold(
@@ -2063,7 +2053,9 @@ def test_a_threshold_zero_passes_on_a_sum_of_measures_keeps_entities_without_row
         "op": "=",
         "value": 0,
     }
-    response = shop.query(
+    # An entity filter names one measure or metric; the compiler's own form takes an inline
+    # combination of several.
+    response = shop.query_internal(
         {
             "select": _select(orders=SHOP_ORDERS),
             "group_by": [SHOP_ORDER],
