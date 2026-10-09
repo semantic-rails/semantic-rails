@@ -1443,6 +1443,10 @@ in `graph.entities.<entity>.key` (e.g. `order_id`), not the entity name
 `accumulation:` is always object form: `{ kind: flow }`, `{ kind: event }`,
 `{ kind: population }`, or `{ kind: stock, snapshot: end_of_period }`. The strict
 enum is `{flow, stock, event, population}` — anything else is rejected.
+`snapshot:` is `start_of_period` or `end_of_period` with `kind: stock` beside it, on a
+measure or under `defaults.measure`, and because a measure's own `accumulation:` replaces
+`defaults.measure.accumulation` whole, under such a default it names its own `kind:`, and a
+stock its own `snapshot:` when the default sets one; anything else is refused at load.
 
 A `stock` measure answers with each series' last snapshot in each period (its first,
 with `snapshot: start_of_period`), then adds up the series. A series is the row key
@@ -1880,7 +1884,7 @@ form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
 | A graph relationship `cardinality:` written `N:1`, `1:N`, `1:1`, `M:N` or any other spelling | `many_to_one`, `one_to_many`, `one_to_one` or `many_to_many` | |
 | Top-level `path_policy:` or `path_preferences:` | `graph.path_policy:` and `graph.path_preferences:` | |
 | Sibling `snapshot_policy:` | Nested `accumulation: { kind: stock, snapshot: end_of_period }` | `authoring-aliases` |
-| An `accumulation:` kind outside `{flow, stock, event, population}` | One of those kinds | |
+| An `accumulation:` kind outside `{flow, stock, event, population}`, on a measure or under `defaults.measure` | One of those kinds | |
 | A dimension or measure named in an entity's `disallowed_names:` | The canonical column, or an `expr:` rename | |
 
 Warnings (advisory only):
