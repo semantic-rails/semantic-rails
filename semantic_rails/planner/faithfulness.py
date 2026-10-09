@@ -359,7 +359,7 @@ def intent_faithfulness_why(
         else []
     )
     gaps.extend(stock_gaps or snapshot_day_gaps(runtime, question, query, partial_query))
-    gaps.extend(_ranking_gaps(runtime, text, query))
+    gaps.extend(_ranking_gaps(runtime, text, query, partial_query))
     gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
