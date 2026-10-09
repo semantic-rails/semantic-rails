@@ -1,10 +1,11 @@
 """MCP execute caps rows and says so when it does.
 
-An agent's plausible mistake, a time role with no grain, returns one row per
-order timestamp: hundreds of thousands of tokens in a single result. Execute
-returns at most ``max_rows`` rows (default 200). A truncated result carries
-``truncated``, ``total_row_count`` and a warning that says how to narrow the
-query. (A bounded window with no grain is a single total instead; see
+A list of rows (``group_by`` with a window and no grain) returns one row per store and
+order timestamp: hundreds of thousands of tokens in a single result. Execute returns at
+most ``max_rows`` rows (default 200) and fetches no more than that: the warehouse adapter
+reads one row past the cap to tell. A truncated result carries ``truncated``, a null
+``total_row_count`` (the rest is not counted) and a warning that says how to narrow the
+query. (A bounded window with no grain over measures is a single total; see
 ``test_window_total.py``.)
 """
 
@@ -17,26 +18,19 @@ import pytest
 
 from semantic_rails.mcp import (
     MCP_DEFAULT_MAX_ROWS,
-    MCP_ROW_COUNT_CEILING,
     SemanticLayerMCPAdapter,
     list_tool_definitions,
 )
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
-REVENUE = [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}]
-# 365 daily buckets: more than the default cap, fewer than the counting ceiling.
-DAILY_REVENUE = {
-    "version": 1,
-    "select": REVENUE,
-    "time": {"temporal_role": ORDER_TIME, "grain": "day"},
-}
-# A time role with no grain or window, grouped by store: one row per store and order timestamp.
+REVENUE = ["measure.jaffle.revenue_usd"]
+# 365 daily buckets: more than the default cap.
+DAILY_REVENUE = {"select": REVENUE, "time": {"temporal_role": ORDER_TIME, "grain": "day"}}
+# Stores listed over a window with no grain: one row per store and order timestamp.
 NO_GRAIN_WINDOW = {
-    "version": 1,
-    "select": REVENUE,
     "group_by": [STORE],
-    "time": {"temporal_role": ORDER_TIME},
+    "time": {"temporal_role": ORDER_TIME, "start": "2016-01-01"},
 }
 
 
@@ -68,15 +62,30 @@ def test_execute_advertises_its_default_cap() -> None:
     assert max_rows["maximum"] == 100_000
 
 
-def test_a_large_result_is_capped_with_its_exact_total(adapter: SemanticLayerMCPAdapter) -> None:
+def test_a_large_result_is_capped_and_says_more_exist(adapter: SemanticLayerMCPAdapter) -> None:
     response = adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 200})
     assert response["ok"], response["errors"]
     assert response["row_count"] == len(response["rows"]) == MCP_DEFAULT_MAX_ROWS
     assert response["truncated"] is True
-    assert response["total_row_count"] == 365
+    assert response["total_row_count"] is None
     warning = _truncation(response)
-    assert "Returned 200 of 365 rows" in warning["message"]
-    assert warning["details"] == {"returned_rows": 200, "total_row_count": 365, "max_rows": 200}
+    assert "Returned the first 200 rows; more exist" in warning["message"]
+    assert warning["details"] == {"returned_rows": 200, "total_row_count": None, "max_rows": 200}
+
+
+def test_execute_fetches_only_its_cap(
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    query = adapter.runtime.query
+    fetched: list[Any] = []
+
+    def run(call: Any, **options: Any) -> Any:
+        fetched.append(options["limits"])
+        return query(call, **options)
+
+    monkeypatch.setattr(adapter.runtime, "query", run)
+    adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 7})
+    assert fetched == [{"max_rows": 7}]
 
 
 def test_a_window_without_a_grain_is_capped_and_flagged(adapter: SemanticLayerMCPAdapter) -> None:
@@ -84,9 +93,7 @@ def test_a_window_without_a_grain_is_capped_and_flagged(adapter: SemanticLayerMC
     assert response["ok"], response["errors"]
     assert response["row_count"] == MCP_DEFAULT_MAX_ROWS
     assert response["truncated"] is True
-    # More rows exist than execute reads, so the total is unknown but bounded.
     assert response["total_row_count"] is None
-    assert f"more than {MCP_ROW_COUNT_CEILING:,}" in _truncation(response)["message"]
     assert "time.grain" in _truncation(response)["message"]
     assert "UNGRAINED_GROUPED_TIME_PROJECTION" in _codes(response)
 
@@ -99,39 +106,21 @@ def test_max_rows_raises_the_cap(adapter: SemanticLayerMCPAdapter) -> None:
     assert "EXECUTE_ROWS_TRUNCATED" not in _codes(response)
 
 
-def test_the_querys_own_row_limit_only_lowers_the_cap(adapter: SemanticLayerMCPAdapter) -> None:
-    fenced = {**DAILY_REVENUE, "limits": {"max_rows": 50}}
-    alone = adapter.call_tool("execute", {"query": fenced, "max_rows": 200})
-    assert alone["row_count"] == 50
-    assert alone["truncated"] is True
-    assert alone["total_row_count"] is None
-    # The query's limit, not max_rows, is what binds here, so don't suggest raising max_rows.
-    assert "limits.max_rows caps the rows fetched" in _truncation(alone)["message"]
-    raised = adapter.call_tool("execute", {"query": fenced, "max_rows": 300})
-    assert raised["row_count"] == 50
-    lowered = adapter.call_tool("execute", {"query": fenced, "max_rows": 10})
-    assert lowered["row_count"] == 10
-    # An operator's ceiling above the default is not a response size.
-    ceiling = {**DAILY_REVENUE, "limits": {"max_rows": 1000}}
-    assert adapter.call_tool("execute", {"query": ceiling})["row_count"] == MCP_DEFAULT_MAX_ROWS
-    assert adapter.call_tool("execute", {"query": ceiling, "max_rows": 200})["row_count"] == 200
-    assert adapter.call_tool("execute", {"query": ceiling, "max_rows": 400})["row_count"] == 365
+def test_the_questions_top_n_is_not_the_transport_cap(adapter: SemanticLayerMCPAdapter) -> None:
+    top = {**DAILY_REVENUE, "limit": 50}
+    alone = adapter.call_tool("execute", {"query": top, "max_rows": 200})
+    assert alone["row_count"] == 50 and alone["truncated"] is False
+    lowered = adapter.call_tool("execute", {"query": top, "max_rows": 10})
+    assert lowered["row_count"] == 10 and lowered["truncated"] is True
 
 
-def test_the_explicit_cap_is_transport_only(adapter: SemanticLayerMCPAdapter) -> None:
-    first = adapter.call_tool(
-        "execute", {"query": DAILY_REVENUE, "verbosity": "compact", "max_rows": 200}
-    )
+def test_the_cap_is_an_argument_not_part_of_the_call(adapter: SemanticLayerMCPAdapter) -> None:
+    first = adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 200})
     assert first["row_count"] == MCP_DEFAULT_MAX_ROWS
-    # The echo is the caller's query, without the fetch ceiling execute added.
-    assert "limits" not in first["query"]
-    again = adapter.call_tool("execute", {"query": first["query"], "max_rows": 400})
+    again = adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 400})
     assert again["row_count"] == 365
-    fenced = {**DAILY_REVENUE, "limits": {"max_rows": 5000}}
-    echoed = adapter.call_tool(
-        "execute", {"query": fenced, "verbosity": "compact", "max_rows": 200}
-    )["query"]
-    assert echoed["limits"] == {"max_rows": 5000}
+    fenced = adapter.call_tool("execute", {"query": {**DAILY_REVENUE, "limits": {"max_rows": 5}}})
+    assert fenced["errors"][0]["details"]["path"] == "limits"
 
 
 @pytest.mark.parametrize("bad", ["many", "²", "٣", 0, -1, True, 1.5, float("inf"), 1e30, 100_001])
@@ -164,7 +153,7 @@ def test_columnar_results_are_capped_too(adapter: SemanticLayerMCPAdapter) -> No
     )
     assert response["row_format"] == "columns"
     assert len(response["rows"]) == response["row_count"] == MCP_DEFAULT_MAX_ROWS
-    assert response["total_row_count"] == 365
+    assert response["total_row_count"] is None
 
 
 @pytest.mark.parametrize("mode", ["validate", "sql"])
@@ -177,35 +166,21 @@ def test_a_grouped_window_without_a_grain_is_flagged_before_execution(
     warning = next(
         w for w in response["warnings"] if w["code"] == "UNGRAINED_GROUPED_TIME_PROJECTION"
     )
-    # Same shape as the runtime's UNGRAINED_TIME_PROJECTION, which covers ungrouped queries.
-    assert warning["details"]["temporal_role"] == ORDER_TIME
     assert warning["details"]["recovery_hints"][0]["code"] == "SET_TIME_GRAIN"
 
 
-def test_an_ungrouped_window_without_a_grain_is_flagged_once(
-    adapter: SemanticLayerMCPAdapter,
-) -> None:
-    ungrouped = {key: value for key, value in NO_GRAIN_WINDOW.items() if key != "group_by"}
-    response = adapter.call_tool("execute", {"query": ungrouped, "mode": "validate"})
-    # The runtime warns for ungrouped queries; the adapter adds nothing.
-    assert _codes(response).count("UNGRAINED_TIME_PROJECTION") == 1
-    assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
-
-
-def test_a_grouped_role_without_a_window_or_grain_is_flagged(
-    adapter: SemanticLayerMCPAdapter,
-) -> None:
+def test_a_role_without_a_window_or_grain_is_refused(adapter: SemanticLayerMCPAdapter) -> None:
     role_only = {**NO_GRAIN_WINDOW, "time": {"temporal_role": ORDER_TIME}}
     response = adapter.call_tool("execute", {"query": role_only, "max_rows": 200})
-    assert "UNGRAINED_GROUPED_TIME_PROJECTION" in _codes(response)
-    assert "time.grain" in _truncation(response)["message"]
+    assert response["ok"] is False
+    assert response["errors"][0]["details"]["path"] == "time"
 
 
 def test_running_totals_do_not_hide_the_missing_grain() -> None:
     from semantic_rails.mcp import _grouped_ungrained_time_warning
 
     def query(kind: str) -> dict[str, Any]:
-        expression = {"kind": kind, "input": {"measure": "measure.jaffle.revenue_usd"}}
+        expression = {"kind": kind, "input": "measure.jaffle.revenue_usd"}
         return {**NO_GRAIN_WINDOW, "select": [{"as": "v", "expression": expression}]}
 
     # A running total's buckets come from time.grain, so its absence still matters...

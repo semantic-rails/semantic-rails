@@ -185,6 +185,8 @@ def call_arguments(payload: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
     """
     if "query" not in payload:
         return {key: value for key, value in payload.items() if key != "request_id"}, {}
+    if not isinstance(payload["query"], Mapping):
+        raise HTTPInputError("Field 'query' must be a JSON object.")
     extra = sorted(set(payload) - {"query", "options", "request_id"})
     if extra:
         raise SemanticLayerError(

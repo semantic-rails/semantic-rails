@@ -136,14 +136,7 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         count = result.get("row_count", len(rows))
         truncated = bool(result.get("truncated"))
         planned = result.get("planned_limit")
-        planned_row_limit = result.get("planned_row_limit")
-        plan_capped = bool(planned_row_limit) and planned_row_limit == result.get("row_limit")
-        if truncated and plan_capped:
-            limit_note = (
-                f" (stopped at the planned query's own {planned_row_limit}-row cap;"
-                " more rows match)"
-            )
-        elif truncated:
+        if truncated:
             limit_note = f" (stopped at the {result.get('row_limit')}-row limit; more rows match)"
         elif planned and count >= planned:
             limit_note = f" (the planned query itself returns at most {planned} rows)"
@@ -154,14 +147,12 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         _print_rows(shown, list(result.get("output_columns", []) or []), result.get("column_types"))
         if len(rows) > len(shown):
             print(f"... {len(rows) - len(shown)} more rows not shown; use --json to see them all.")
-        if truncated and not plan_capped:
+        if truncated:
             hint = (
                 f"To lift the {result.get('row_limit')}-row cap, run: {_every_row_command(report)}"
             )
             if planned:
                 hint += f" (the planned query's own limit of {planned} rows still applies)"
-            if planned_row_limit:
-                hint += f" (the planned query's own {planned_row_limit}-row cap still applies)"
             print(hint)
     if isinstance(compiled, dict):
         print("SQL:")
@@ -421,16 +412,17 @@ def _table_lines(
         info = dict(meta.get(column, {}) or {})
         values = [row.get(column) for row in rows]
         wire_type = (column_types or {}).get(column, {}).get("type")
+        dated = info.get("type") == "time" and info.get("grain") in _DATE_GRAINS
         if wire_type == "decimal":
             values = [Decimal(value) if isinstance(value, str) else value for value in values]
-        elif wire_type == "timestamp" and column.rsplit("__", 1)[-1] in _DATE_GRAINS:
+        elif wire_type == "timestamp" and dated:
             values = [
                 datetime.fromisoformat(value)
                 if isinstance(value, str) and value[11:19] == "00:00:00" and value[19:20] != "."
                 else value
                 for value in values
             ]
-        if info.get("type") == "time" and column.rsplit("__", 1)[-1] in _DATE_GRAINS:
+        if dated:
             # A month bucket is a date, whether the clock is a date or a timestamp column.
             values = [
                 value.date() if isinstance(value, datetime) and value.time() == dt_time() else value
@@ -467,8 +459,8 @@ def _column_headers(columns: list[str], meta: dict[str, dict[str, Any]]) -> dict
     for column in columns:
         info = dict(meta.get(column, {}) or {})
         label = str(info.get("display_label") or column)
-        if info.get("type") == "time" and "__" in column:
-            label += f" ({column.rsplit('__', 1)[1]})"
+        if info.get("type") == "time" and info.get("grain"):
+            label += f" ({info['grain']})"
         labels[column] = _shorten(_printable(label))
     shown = list(labels.values())
     headers: dict[str, str] = {}
