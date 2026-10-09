@@ -1406,7 +1406,7 @@ def test_growth_offers_the_units_its_calendar_can_fill(
     project = _shop(tmp_path, calendar=True)
     calendar = project / "models" / "core" / "calendar.yml"
     doc = yaml.safe_load(calendar.read_text("utf-8"))
-    fiscal ={**doc["model"], "id": "fiscal", "calendar_id": "fiscal", "entities": {"fiscal": {}}}
+    fiscal = {**doc["model"], "id": "fiscal", "calendar_id": "fiscal", "entities": {"fiscal": {}}}
     fiscal["dimensions"] = dict(fiscal["dimensions"])
     del doc["model"]["dimensions"]["month_start"]
     _write_yaml(calendar, doc)
