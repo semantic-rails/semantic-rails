@@ -17,9 +17,14 @@ from typing import Any
 import duckdb
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
 
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
-from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.mcp import (
+    MCP_SERVER_INSTRUCTIONS,
+    SemanticLayerMCPAdapter,
+    list_tool_definitions,
+)
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner.question_parts import split_question
@@ -240,6 +245,11 @@ def test_mcp_and_rest_plan_the_same_parts(runtime: Runtime) -> None:
     assert [(part["status"], part["best"]["query_ir"]) for part in mcp["parts"]] == [
         (part["status"], part["best"]["query_ir"]) for part in rest["parts"]
     ]
+    # The MCP plan tool declares parts, and its server instructions say to run each one.
+    [tool] = [tool for tool in list_tool_definitions() if tool["name"] == "plan"]
+    assert "parts" in tool["outputSchema"]["properties"]
+    Draft202012Validator(tool["outputSchema"]).validate(mcp)
+    assert "execute each part's best.query_ir" in MCP_SERVER_INSTRUCTIONS
 
 
 @pytest.mark.parametrize(
