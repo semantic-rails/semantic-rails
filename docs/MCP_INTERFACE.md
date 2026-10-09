@@ -740,7 +740,9 @@ ranking ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the 
 names a row: its [`display:`](PACKAGE_AUTHORING.md#display--the-name-of-one-row), else its one
 dimension whose own words name it, else the key alone with an assumption line saying so. A
 ranking keeps the count the question states (digits or "one" to "ten") and its direction
-("bottom", "least", "lowest" sort ascending); ties at the cut follow `execute`'s ordering. A list
+("bottom", "least", "lowest" sort ascending); ties at the cut follow `execute`'s ordering. A
+ranking whose subject only the ranked noun names ("top 5 customers", "the 3 stores that sold
+the most") has no value to rank by: it groups by nothing and stays held. A list
 ("Which accounts closed last week?", "Who upgraded last week?") also keeps only rows whose value
 isn't 0 (`metric_filters: [{"expression": <the select>, "op": "!=", "value": 0}]`) and orders
 them by name. "who" naming no entity lists the one entity with a `display` that the subject
