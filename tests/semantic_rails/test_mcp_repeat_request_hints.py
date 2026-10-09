@@ -39,9 +39,9 @@ def test_repeat_executes_again_and_points_to_first_response(
     calls = []
     query = adapter.runtime.query
 
-    def run(payload: Any) -> Any:
-        calls.append(payload)
-        return query(payload)
+    def run(*args: Any, **kwargs: Any) -> Any:
+        calls.append(args)
+        return query(*args, **kwargs)
 
     monkeypatch.setattr(adapter.runtime, "query", run)
     session = MCPQuerySession()
@@ -61,7 +61,7 @@ def test_repeat_executes_again_and_points_to_first_response(
 @pytest.mark.parametrize("mode", ["validate", "sql"])
 def test_dry_run_points_to_successful_run(adapter: SemanticLayerMCPAdapter, mode: str) -> None:
     session = MCPQuerySession()
-    query = {**QUERY, "group_by": ["dimension.jaffle_store_name"], "limits": {"max_rows": 2}}
+    query = {**QUERY, "group_by": ["dimension.jaffle_store_name"], "limit": 2}
     ran = adapter.call_tool("execute", {"query": query, "row_format": "columns"}, session=session)
     assert ran["row_count"] == 2
     args = {"query": query, "mode": mode, "request_id": "dry-run"}
@@ -118,7 +118,8 @@ def test_dry_runs_before_execution_have_no_guidance(
         ("execute", {"query": QUERY}),
         ("execute", {"query": QUERY, "mode": "sql"}),
         ("execute", {"query": QUERY, "mode": "validate", "sql_profile": "compact"}),
-        ("execute", {"query": {**QUERY, "limits": {"max_rows": 2}}, "mode": "validate"}),
+        ("execute", {"query": {**QUERY, "limit": 2}, "mode": "validate"}),
+        ("execute", {"query": QUERY, "mode": "validate", "now": "2020-01-01"}),
         ("execute", {"query": QUERY, "mode": "validate", "policy_context": {"audience": "other"}}),
         ("execute", {"query": {"select": "invalid"}, "mode": "validate"}),
     ],
@@ -184,7 +185,7 @@ def test_stateless_dry_runs_never_get_session_guidance(
 
 @pytest.mark.parametrize(
     "options",
-    [{"verbosity": "full"}, {"query": {**QUERY, "verbosity": "compact"}}],
+    [{"verbosity": "full"}, {"verbosity": "compact", "request_id": "other"}],
 )
 def test_response_options_and_object_key_order_do_not_distinguish_requests(
     adapter: SemanticLayerMCPAdapter, options: dict[str, Any]
@@ -204,7 +205,9 @@ def test_capped_run_then_full_run_reports_the_latest_answer(
     row_count = 5 if cap is not None else MCP_DEFAULT_MAX_ROWS + 5
     rows = [{"revenue": index} for index in range(row_count)]
     monkeypatch.setattr(
-        adapter.runtime, "query", lambda _: {"ok": True, "rows": rows, "row_count": len(rows)}
+        adapter.runtime,
+        "query",
+        lambda *_a, **_k: {"ok": True, "rows": rows, "row_count": len(rows)},
     )
     capped_args = {"query": QUERY, **({"max_rows": cap} if cap is not None else {})}
     full_args = {"query": QUERY, **({"max_rows": row_count} if cap is None else {})}
@@ -245,7 +248,9 @@ def test_same_as_preserves_historical_truncation_when_current_rows_shrink(
 ) -> None:
     rows = [{"revenue": index} for index in range(5)]
     monkeypatch.setattr(
-        adapter.runtime, "query", lambda _: {"ok": True, "rows": rows, "row_count": len(rows)}
+        adapter.runtime,
+        "query",
+        lambda *_a, **_k: {"ok": True, "rows": rows, "row_count": len(rows)},
     )
     session = MCPQuerySession()
     args = {"query": QUERY, "max_rows": 1}
@@ -272,7 +277,9 @@ def test_successful_run_refreshes_history_and_a_failure_does_not_replace_it(
 ) -> None:
     rows = [{"revenue": index} for index in range(5)]
     monkeypatch.setattr(
-        adapter.runtime, "query", lambda _: {"ok": True, "rows": rows, "row_count": len(rows)}
+        adapter.runtime,
+        "query",
+        lambda *_a, **_k: {"ok": True, "rows": rows, "row_count": len(rows)},
     )
     session = MCPQuerySession()
     adapter.call_tool("execute", {"query": QUERY}, session=session)
@@ -281,7 +288,7 @@ def test_successful_run_refreshes_history_and_a_failure_does_not_replace_it(
     assert adapter.call_tool("execute", {"query": QUERY, "mode": "validate"}, session=session)[
         "already_ran"
     ] == {"request_id": latest["request_id"], "row_count": 3}
-    monkeypatch.setattr(adapter.runtime, "query", lambda _: {"ok": False, "row_count": 99})
+    monkeypatch.setattr(adapter.runtime, "query", lambda *_a, **_k: {"ok": False, "row_count": 99})
     assert adapter.call_tool("execute", {"query": QUERY}, session=session)["ok"] is False
     assert adapter.call_tool("execute", {"query": QUERY, "mode": "validate"}, session=session)[
         "already_ran"
@@ -303,9 +310,9 @@ def test_truncated_run_without_a_known_cap_cannot_be_reused_as_an_answer(
     "changes",
     [
         {"query": {**QUERY, "group_by": ["dimension.jaffle_store_name"]}},
-        {"query": {**QUERY, "limits": {"max_rows": 2}}},
-        {"policy_context": {"audience": "another-audience"}},
-        {"query": {**QUERY, "select": [{"expression": {"measure": "missing"}}]}},
+        {"query": {**QUERY, "limit": 2}},
+        {"now": "2020-01-01"},
+        {"query": {**QUERY, "select": ["measure.jaffle.missing"]}},
     ],
 )
 def test_changed_arguments_get_no_hint(
