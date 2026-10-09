@@ -3,8 +3,9 @@
 A many-to-one (or one-to-one) hop only adds attributes, so a row whose foreign key is NULL or
 matches no row must keep its measure value when the query groups or filters by a dimension the
 hop looks up: it groups under NULL, and grouped rows add up to the ungrouped total. A filter on
-a looked-up dimension still drops such rows unless it asks for NULL, as it does for a NULL value
-in the row itself. ``test_lookups_keep_rows.py`` checks every query shape.
+a looked-up dimension reads such a row as it reads a NULL value in the row itself: ``not`` keeps
+it, and every other comparison drops it unless it asks for a missing value.
+``test_lookups_keep_rows.py`` checks every query shape.
 
 A few reads keep the inner join they always had (see the last section): a time role, a metric
 filter's own query and its route to its entity, a conversion, and a dimension a rollup holds.
@@ -371,7 +372,7 @@ def test_grouped_rows_add_up_to_the_total(runtime, gold, dimension, expected):
 
 def test_excluding_crew_through_the_roster_lookup(runtime, gold):
     """Passengers per leg, excluding anyone rostered as crew on that leg (an anti-join)."""
-    not_crew = [{"field": ROLE, "op": "IS NULL"}]
+    not_crew = [{"field": ROLE, "op": "missing", "value": True}]
 
     per_leg = _ask(runtime, "boarding_count", group_by=LEG, where=not_crew)
 
@@ -406,7 +407,8 @@ def test_measures_folded_into_one_leaf_keep_the_rows_too(runtime, package, gold)
     assert {row[EMPLOYEE]: float(row["fare"]) for row in rows} == gold(
         f"SELECT {SQL_EMPLOYEE}, SUM(b.fare) FROM boardings AS b GROUP BY 1"
     )
-    assert _lookup_left_joins(load_package_config(str(package)), query) == ["people"]
+    config = load_package_config(str(package))
+    assert _lookup_left_joins(config, runtime.engine_payload(query)) == ["people"]
 
 
 STOCK_SEED = """
@@ -480,6 +482,7 @@ def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
     runtime = Runtime.from_path(str(root))
     try:
         rows = runtime.query(query)["rows"]
+        engine = runtime.engine_payload(query)
     finally:
         runtime.close()
 
@@ -487,38 +490,40 @@ def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
     assert by_region == {"North": 12, "South": 7, None: 5}  # s3 at 4, s4 at 1
     assert sum(by_region.values()) == 24  # each stock at its last snapshot
     config = load_package_config(str(root))
-    sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
+    sql = " ".join(compile_query(config, Registry(config), engine)["sql"].split())
     assert re.findall(r"LEFT JOIN (regions)\b", sql) == ["regions"]
 
 
 @pytest.mark.parametrize(
     ("op", "value", "sql", "expected"),
     [
-        pytest.param("IS NULL", None, "IS NULL", 9, id="is-null"),
-        pytest.param("IS NOT NULL", None, "IS NOT NULL", 4, id="is-not-null"),
-        pytest.param("=", "operating", "= 'operating'", 3, id="equals"),
-        # A row with no roster match has no role: like a NULL role, it isn't "not operating".
-        pytest.param("!=", "operating", "<> 'operating'", 1, id="not-equals"),
-        # No row matches, but boardings have data elsewhere: the count of nothing is 0, as
-        # raw SQL counts.
+        pytest.param("missing", True, "{role} IS NULL", 9, id="is-null"),
+        pytest.param("missing", False, "{role} IS NOT NULL", 4, id="is-not-null"),
+        pytest.param("is", "operating", "{role} = 'operating'", 3, id="equals"),
+        # A row with no roster match has no role: like a NULL role, it is "not operating"
+        # (boardings 1, 2, 5, 7, 8, 10-13, and deadhead 4).
         pytest.param(
-            "NOT IN",
+            "not", "operating", "{role} IS DISTINCT FROM 'operating'", 10, id="not-equals"
+        ),
+        # Only the nine boardings with no roster match.
+        pytest.param(
+            "not",
             ["operating", "deadhead"],
-            "NOT IN ('operating', 'deadhead')",
-            0,
+            "{role} IS NULL OR {role} NOT IN ('operating', 'deadhead')",
+            9,
             id="not-in",
         ),
     ],
 )
-def test_filters_on_a_looked_up_column_follow_sql_null_rules(
+def test_filters_on_a_looked_up_column_follow_the_null_rules(
     runtime, gold, op, value, sql, expected
 ):
-    where = [{"field": ROLE, "op": op, **({"value": value} if value is not None else {})}]
+    where = [{"field": ROLE, "op": op, "value": value}]
 
     got = _ask(runtime, "boarding_count", where=where)[None]
 
     assert got == expected
-    reference = gold(f"SELECT NULL, COUNT(*) FROM boardings AS b WHERE {SQL_ROLE} {sql}")
+    reference = gold(f"SELECT NULL, COUNT(*) FROM boardings AS b WHERE {sql.format(role=SQL_ROLE)}")
     assert got == reference[None]
 
 
@@ -607,19 +612,12 @@ def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, 
     """Legs with two boardings or more: L1, L2 and L3. Boardings 12 and 13 (no leg) must not
     qualify the check-ins without a leg (3) or with a leg that has no record (4)."""
     busy_legs = {
-        "expression": {
-            "kind": "metric_predicate",
-            "entity": "entity.crew_leg",
-            "scope_mode": "entity_only",
-            "input": {"measure": "measure.crew.boarding_count"},
-            "op": ">=",
-            "value": 2,
-        },
-        "op": "=",
-        "value": True,
+        "entity": "entity.crew_leg",
+        "having": [{"field": "measure.crew.boarding_count", "op": "gte", "value": 2}],
+        "over": "all_time",
     }
 
-    (row,) = _conversion_rate(runtime, metric_filters=[busy_legs])
+    (row,) = _conversion_rate(runtime, where=[busy_legs])
 
     busy = "SELECT leg_id FROM boardings GROUP BY leg_id HAVING COUNT(*) >= 2"
     reference = _conversion_gold(gold, where=f"AND c.leg_id IN ({busy})")[None]
@@ -653,7 +651,7 @@ def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
         base, package=dataclasses.replace(base.package, warehouse=warehouse)
     )
     query = {
-        "select": [{"as": "value", "expression": "measure.crew.boarding_count"}],
+        "select": [{"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}],
         "group_by": [CITY],
         "where": [{"field": ROLE, "op": "missing", "value": True}],
         "observation_scope": "query",  # the leaf's joins alone, without a dataset probe's
@@ -689,7 +687,7 @@ def _scoped(measure: str, *predicates: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _monthly_query(expression: dict[str, Any], *, group_by=(), time=None) -> dict[str, Any]:
+def _monthly_query(expression: Any, *, group_by=(), time=None) -> dict[str, Any]:
     return {
         "version": 1,
         "select": [{"as": "value", "expression": expression}],
@@ -733,7 +731,7 @@ def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, package
     month: it stays out, as before, and no NULL time bucket appears. The person hop, which only
     the grouping reads, keeps its rows (boardings 7 and 8, under NULL)."""
     query = _monthly_query(
-        {"measure": "measure.crew.departing_boardings"}, group_by=[EMPLOYEE], time=DEPARTED_MONTHLY
+        "measure.crew.departing_boardings", group_by=[EMPLOYEE], time=DEPARTED_MONTHLY
     )
 
     rows = runtime.query(query)["rows"]
@@ -750,7 +748,8 @@ def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, package
         (True, 2): 2,
         (None, 2): 1,  # boarding 8
     }
-    assert _lookup_left_joins(load_package_config(str(package)), query) == ["people"]
+    config = load_package_config(str(package))
+    assert _lookup_left_joins(config, runtime.engine_payload(query)) == ["people"]
 
 
 def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime, package):
@@ -758,7 +757,7 @@ def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime, package):
     inner, the airport hop only the grouping reads keeps its rows (boardings 8-10, whose
     airport has no record, group under NULL)."""
     query = _monthly_query(
-        {"measure": "measure.crew.departing_boardings"}, group_by=[CITY], time=DEPARTED_MONTHLY
+        "measure.crew.departing_boardings", group_by=[CITY], time=DEPARTED_MONTHLY
     )
 
     rows = runtime.query(query)["rows"]
@@ -767,7 +766,8 @@ def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime, package):
     for row in rows:
         by_city[row[CITY]] = by_city.get(row[CITY], 0) + row["value"]
     assert by_city == {"New York": 4, "Chicago": 3, None: 3}
-    assert _lookup_left_joins(load_package_config(str(package)), query) == ["airports"]
+    config = load_package_config(str(package))
+    assert _lookup_left_joins(config, runtime.engine_payload(query)) == ["airports"]
 
 
 @pytest.mark.parametrize(
@@ -817,7 +817,7 @@ def test_a_metric_filter_matches_its_set_on_its_context_entity(runtime, package,
         _scoped("boarding_count", _busy_leg("boarding_count", 1)), group_by=[EMPLOYEE]
     )
 
-    rows = runtime.query(query)["rows"]
+    rows = runtime.query_internal(query)["rows"]
 
     by_employee: dict[Any, int] = {}
     for row in rows:
@@ -834,7 +834,7 @@ def test_an_entity_set_ratio_keeps_the_inner_join(runtime):
     """Of each month's boardings on a leg, the share on a leg with two boardings or more that
     month. Boardings 12 and 13 have no leg, so no set qualifies them: March's share is 0.0, as
     the inner joins have always answered, and never the 1.0 a NULL key in the set would give."""
-    rows = runtime.query(_monthly_query(_ratio_of_busy_legs()))["rows"]
+    rows = runtime.query_internal(_monthly_query(_ratio_of_busy_legs()))["rows"]
 
     months = {datetime.fromisoformat(row[BOARDED_MONTH]).month: row["value"] for row in rows}
     # January: legs L1 (4) and L2 (3), all qualify. February: L3 (3) qualifies, L9 (1) doesn't.
@@ -849,12 +849,12 @@ def test_a_contextual_filter_read_through_a_lookup_does_not_pair_with_a_null_gro
     record): it reads NULL there, and must not pair with P8's two boardings with no leg, which
     the filter's set holds under NULL. Only P10's meal on L1 qualifies."""
     query = {
-        "select": [{"as": "value", "expression": "measure.crew.meal_count"}],
+        "select": [{"as": "value", "expression": {"measure": "measure.crew.meal_count"}}],
         "group_by": [LEG],
         "metric_filters": [_contextual_person_filter("boarding_count", 2)],
     }
 
-    rows = orphan_leg_runtime.query(query)["rows"]
+    rows = orphan_leg_runtime.query_internal(query)["rows"]
 
     assert {row[LEG]: row["value"] for row in rows} == {"L1": 1}
 
@@ -871,7 +871,7 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(package):
         dimensions=[CITY],
     )
     query = {
-        "select": [{"as": "value", "expression": "measure.crew.boarding_count"}],
+        "select": [{"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}],
         "group_by": [CITY, EMPLOYEE],
     }
 
@@ -940,7 +940,7 @@ def test_a_metric_filter_leaves_the_query_s_own_lookups_left(
     package, measure, group_by, left_joins
 ):
     query = {
-        "select": [{"as": "value", "expression": f"measure.crew.{measure}"}],
+        "select": [{"as": "value", "expression": {"measure": f"measure.crew.{measure}"}}],
         "group_by": [group_by],
         "metric_filters": [_contextual_person_filter("boarding_count", 2)],
     }

@@ -201,11 +201,15 @@ BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
 WEB = {"field": CHANNEL, "op": "=", "value": "web"}
 HOT_ITEM = {"field": HOT, "op": "=", "value": True}
 FILTERED_SUM = {
-    "select": [{"expression": {"measure": "measure.hop.revenue"}, "as": "revenue"}],
+    "select": [
+        {"expression": {"kind": "measure", "measure": "measure.hop.revenue"}, "as": "revenue"}
+    ],
     "where": [BEVERAGE],
 }
 GROUPED_COUNT = {
-    "select": [{"expression": {"measure": "measure.hop.order_count"}, "as": "orders"}],
+    "select": [
+        {"expression": {"kind": "measure", "measure": "measure.hop.order_count"}, "as": "orders"}
+    ],
     "group_by": [TYPE],
 }
 ORDER = "entity.hop_order"
@@ -231,14 +235,14 @@ def _if(
     return expression
 
 
-def _ratio(numerator: dict[str, Any], denominator: dict[str, Any]) -> dict[str, Any]:
+def _ratio(numerator: dict[str, Any], denominator: Any) -> dict[str, Any]:
     return {"kind": "ratio", "numerator": numerator, "denominator": denominator}
 
 
 # Customer 10's orders, and their revenue: the conditional forms of order_count and revenue.
 OWN_ORDERS_IF = _if("count_distinct", _compare("customer_id", "=", 10), "order_id")
 OWN_REVENUE_IF = _if("sum", _compare("customer_id", "=", 10), "total")
-OWN_SHARE = _ratio(OWN_ORDERS_IF, {"measure": "measure.hop.order_count"})
+OWN_SHARE = _ratio(OWN_ORDERS_IF, {"kind": "measure", "measure": "measure.hop.order_count"})
 
 
 def _write(root: Path, models: dict[str, str], entities: dict[str, list[Any]]) -> Path:
@@ -289,7 +293,7 @@ def receipts_by_order(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _measure(name: str, aggregation: str = "", alias: str = "") -> dict[str, Any]:
-    expression = {"measure": f"measure.hop.{name}"}
+    expression = {"kind": "measure", "measure": f"measure.hop.{name}"}
     if aggregation:
         expression["aggregation"] = aggregation
     return {"expression": expression, "as": alias or f"{name}_{aggregation}".rstrip("_")}
@@ -300,7 +304,7 @@ def _run(package: Path, query: dict[str, Any], *, validate: bool = False) -> dic
     try:
         # The references are plain SQL, where a sum of no rows is NULL, as under the query
         # scope; test_observation_scope covers the dataset scope on these leaves.
-        payload = {"version": 1, "observation_scope": "query", **query}
+        payload = {"observation_scope": "query", **query}
         return engine.validate(payload) if validate else engine.query(payload)
     finally:
         engine.close()
@@ -464,7 +468,7 @@ def test_measure_bound_child_filter_does_not_change_unfiltered_sibling(package: 
 def test_time_bounded_child_filter_keeps_window_observation(
     package: Path, bound_filter: bool, fill: bool
 ) -> None:
-    expression: dict[str, Any] = {"measure": "measure.hop.revenue"}
+    expression: dict[str, Any] = {"kind": "measure", "measure": "measure.hop.revenue"}
     if bound_filter:
         expression.update(kind="aggregate", aggregation="sum", filter={"all": [BEVERAGE]})
     query = {
@@ -475,7 +479,6 @@ def test_time_bounded_child_filter_keeps_window_observation(
             "grain": "month",
             "start": "2016-10-01",
             "end": "2017-04-01",
-            "fill": fill,
         },
     }
     matching = """
@@ -514,13 +517,12 @@ def test_time_bounded_child_groups_keep_window_observation(
     """A child group lowers in the same semi-join leaf as a flat child filter."""
     query = {
         "select": ["measure.hop.revenue"],
-        "where": [{"child": "entity.hop_item", "match": match, "where": [BEVERAGE, HOT_ITEM]}],
+        "where": [{"entity": "entity.hop_item", match: [BEVERAGE, HOT_ITEM]}],
         "time": {
             "temporal_role": ROLE,
             "grain": "month",
             "start": "2016-10-01",
             "end": "2017-04-01",
-            "fill": fill,
         },
     }
     negation = "NOT " if match == "none" else ""
@@ -620,8 +622,8 @@ def test_child_filter_does_not_admit_many_to_many_or_unknown_hops(
 @pytest.mark.parametrize(
     ("expression", "clause", "expected"),
     [
-        ({"measure": "measure.hop.order_count"}, BEVERAGE, 4),
-        ({"measure": "measure.hop.revenue"}, BEVERAGE, 70),
+        ({"kind": "measure", "measure": "measure.hop.order_count"}, BEVERAGE, 4),
+        ({"kind": "measure", "measure": "measure.hop.revenue"}, BEVERAGE, 70),
         (OWN_REVENUE_IF, BEVERAGE, 30),
         (OWN_SHARE, BEVERAGE, 0.5),
     ],
@@ -896,7 +898,7 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
     options = caught.value.details["clarification"]["options"]
     assert [option["relationship_path"] for option in options] == [path for path, _, _ in routes]
     # Seed once; pinning must select the authored route even when it is longer.
-    _run(diamond_package, {"select": [{"expression": {"measure": "measure.diamond.amount"}}]})
+    _run(diamond_package, {"select": ["measure.diamond.amount"]})
     for path, expected, branch in routes:
         pinned = replace(
             config,
@@ -949,7 +951,7 @@ def test_a_conditional_aggregate_takes_the_same_child_route_rule(
         compile_query(config, Registry(config), query)
     assert caught.value.code == "AMBIGUOUS_PATH"
     assert caught.value.details["reason"] == "route_decision_required"
-    _run(diamond_package, {"select": [{"expression": {"measure": "measure.diamond.amount"}}]})
+    _run(diamond_package, {"select": ["measure.diamond.amount"]})
     # The client route reaches account 1 (50, so no amount over 60), the branch route account 2
     # (70). A sum of nothing reads NULL, and so does a ratio over it.
     routes = [
@@ -1131,7 +1133,7 @@ _OWN_REVENUE_SQL = "SUM(CASE WHEN o.customer_id = 10 THEN o.total END)"
             {
                 "kind": "arithmetic",
                 "op": "subtract",
-                "left": {"measure": "measure.hop.revenue"},
+                "left": "measure.hop.revenue",
                 "right": OWN_REVENUE_IF,
             },
             f"SUM(o.total) - {_OWN_REVENUE_SQL}",
@@ -1169,7 +1171,7 @@ def test_conditional_aggregates_keep_null_groups_beside_a_child_filter(package: 
             {"expression": others_revenue, "as": "sum"},
             {"expression": _if("avg", others, "total"), "as": "average"},
             {
-                "expression": _ratio(others_revenue, {"measure": "measure.hop.revenue"}),
+                "expression": _ratio(others_revenue, "measure.hop.revenue"),
                 "as": "share",
             },
         ],
@@ -1332,9 +1334,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         ({"select": [_measure("revenue", "avg")], "group_by": [TYPE]}, "is ambiguous across"),
         # A measure's own filter has no child scope to state (query filters do: see below).
         (_bound_filter({"field": TYPE, "op": "!=", "value": "beverage"}), NEGATED),
-        # A negated test with no exact complement has no 'none' reading to offer.
-        (_where("IS DISTINCT FROM", "beverage"), NEGATED),
-        (_where("NOT ILIKE", "bev%"), NEGATED),
         # At most one condition may cross a one-to-many hop: with two, one row may have to meet
         # both, or any rows each. On siblings under a shared hop, or both groups.
         ({**GROUPED_COUNT, "where": [{"field": HOT, "op": "=", "value": True}]}, TWO_CONDITIONS),
@@ -1376,7 +1375,7 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
                     {
                         "expression": {
                             "kind": "cumulative",
-                            "input": {"measure": "measure.hop.revenue"},
+                            "input": "measure.hop.revenue",
                         },
                         "as": "running",
                     }
@@ -1401,8 +1400,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         "sum",
         "avg",
         "measure_filter",
-        "is_distinct_from",
-        "not_ilike",
         "group_and_filter_one_child",
         "group_and_filter_through_a_lookup",
         "sibling_filters",
@@ -1428,7 +1425,7 @@ def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], rea
 
 
 PAID = {"select": [_measure("paid")], "where": [BEVERAGE]}
-PAID_SHARE = _ratio(PAID_IF, {"measure": "measure.hop.order_count"})
+PAID_SHARE = _ratio(PAID_IF, {"kind": "measure", "measure": "measure.hop.order_count"})
 BEVERAGE_ORDER = (
     "EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = {} AND i.product_type = 'beverage')"
 )
@@ -1496,14 +1493,9 @@ def _negations(any_not: str, none: str) -> dict[str, str]:
             _negations("i.product_type NOT IN ('beverage')", "i.product_type IN ('beverage')"),
         ),
         (
-            _where("NOT LIKE", "bev%"),
-            _negations("i.product_type NOT LIKE 'bev%'", "i.product_type LIKE 'bev%'"),
-        ),
-        (
-            _where("IS NULL", None),
+            _where("missing", True),
             _negations("i.product_type IS NULL", "i.product_type IS NOT NULL"),
         ),
-        (_where("=", None), _negations("i.product_type IS NULL", "i.product_type IS NOT NULL")),
         # On a boolean only "= true" reads one way.
         (_where("=", False, HOT), _negations("i.is_hot = false", "i.is_hot != false")),
         (_where("=", "false", HOT), _negations("i.is_hot = false", "i.is_hot != false")),
@@ -1525,9 +1517,7 @@ def _negations(any_not: str, none: str) -> dict[str, str]:
         "not_equal",
         "angle_not_equal",
         "not_in",
-        "not_like",
-        "is_null",
-        "equals_null",
+        "missing",
         "boolean_false",
         "boolean_false_text",
         "boolean_in_false",
@@ -1581,16 +1571,19 @@ def test_a_conditional_aggregate_asks_about_a_negated_child_filter_too(
         assert _rows(package, resent) == expected, option["id"]
 
 
-@pytest.mark.parametrize("op", ["IS", "IS NOT"])
-def test_invalid_is_operand_is_refused_before_hop_analysis(package: Path, op: str) -> None:
+@pytest.mark.parametrize("op", ["IS NOT", "IS NULL", "IS DISTINCT FROM", "NOT LIKE", "NOT ILIKE"])
+def test_sql_spellings_with_no_filter_word_are_refused_before_hop_analysis(
+    package: Path, op: str
+) -> None:
     error = _refusal(package, _where(op, "beverage"))
     assert error["code"] == "INVALID_QUERY"
-    assert error["recovery_hints"][0]["code"] == "USE_EQUALITY_FOR_SCALAR"
+    assert error["details"]["path"] == "where[0].op"
+    assert error["details"]["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
 
 
 def test_positive_null_and_boolean_tests_mean_exists(package: Path) -> None:
     for op, value, field, predicate in [
-        ("IS NOT NULL", None, TYPE, "i.product_type IS NOT NULL"),
+        ("missing", False, TYPE, "i.product_type IS NOT NULL"),
         ("=", True, HOT, "i.is_hot"),
     ]:
         reference = f"""
@@ -1715,7 +1708,7 @@ def test_rollup_safe_package_refuses_two_groups_across_a_hop(
         runtime = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
 
     def ask(group_by: list[str]) -> dict[str, Any]:
-        select = [{"expression": {"measure": measure}, "as": "value"}]
+        select = [{"expression": measure, "as": "value"}]
         return runtime.validate({"select": select, "group_by": group_by})
 
     try:
@@ -1839,11 +1832,11 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.t AS "temporal_role.hop_order_ordered_at__month",
+  base.t AS period,
   base.m1 AS revenue
 FROM guarded_base AS base
 ORDER BY
-  "temporal_role.hop_order_ordered_at__month" ASC""",
+  period ASC""",
     "median": """WITH leaf_1 AS (
 SELECT
   {median} AS m1
@@ -1916,11 +1909,11 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.t AS "temporal_role.hop_order_ordered_at__month",
+  base.t AS period,
   base.m1 AS revenue
 FROM guarded_base AS base
 ORDER BY
-  "temporal_role.hop_order_ordered_at__month" ASC""",
+  period ASC""",
     "median": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
