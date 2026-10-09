@@ -179,7 +179,7 @@ def _balance(column: str, day: str, by: str = "") -> str:
 
 
 def _answer(runtime: Runtime, plan: dict[str, Any], by: str = "") -> dict[Any, float]:
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     alias = _alias(query["select"][0])
     rows = runtime.query(query, now=NOW["now"])["rows"]
     return {(row[by] if by else ()): row[alias] for row in rows}
@@ -204,7 +204,7 @@ def test_a_balance_reads_the_day_the_question_names(
     plan = _plan(runtime, intent)
     assert plan["status"] == "ok", plan.get("why")
     assert plan["next"]["ready_for"] == ["execute"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
     assert query["time"] == {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end}
     reference = _reference(_balance(column, day, by))
@@ -228,13 +228,13 @@ def test_the_numbers_are_the_customers_balance_on_that_day(runtime: Runtime) -> 
     assert _reference(_balance("paying", "2026-10-04")) == {(): 2}
     assert _reference(_balance("paying", "2026-10-04", "plan")) == {"basic": 1, "pro": 1}
     plan = _plan(runtime, "What's our MRR?")
-    assert plan["best"]["query_ir"]["select"] == [{"as": "mrr", "expression": {"metric": MRR}}]
+    assert plan["best"]["query"]["select"] == [{"as": "mrr", "expression": {"metric": MRR}}]
 
 
 def test_right_now_is_the_same_read_as_no_time_words(runtime: Runtime) -> None:
     asked, plain = _plan(runtime, "MRR right now"), _plan(runtime, "What's our MRR?")
     for key in ("select", "time", "group_by"):
-        assert asked["best"]["query_ir"].get(key) == plain["best"]["query_ir"].get(key)
+        assert asked["best"]["query"].get(key) == plain["best"]["query"].get(key)
     assert _answer(runtime, asked) == _answer(runtime, plain) == {(): 599}
 
 
@@ -248,7 +248,7 @@ def test_a_caller_select_keeps_its_measure_and_alias(runtime: Runtime) -> None:
     })  # fmt: skip
     assert plan["status"] == "ok", plan.get("why")
     assert plan["next"]["ready_for"] == ["execute"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert query["select"] == select
     assert query["order_by"] == [{"field": "all_mrr", "direction": "DESC"}]
     assert (
@@ -392,7 +392,7 @@ def test_a_value_named_with_the_balance_filters_it(runtime: Runtime) -> None:
     assert "subject_ambiguous" in {gap["kind"] for gap in ambiguous["why"]["details"]["gaps"]}
     plan = _plan(runtime, "pro paying accounts right now")
     assert plan["status"] == "ok", plan.get("why")
-    assert plan["best"]["query_ir"]["where"] == [{"field": PLAN, "op": "=", "value": "pro"}]
+    assert plan["best"]["query"]["where"] == [{"field": PLAN, "op": "=", "value": "pro"}]
     assert "Paying accounts" in " ".join(plan["assumptions"])
     assert _answer(runtime, plan) == paying_pro
 
@@ -451,7 +451,7 @@ def test_an_unloaded_last_complete_day_returns_no_rows(runtime: Runtime) -> None
     later = {"now": "2026-10-06T06:00:00Z"}
     plan = _plan(runtime, "What's our MRR?", later)
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-05", "2026-10-06")
     result = runtime.query(query, now=later["now"])
     assert result["rows"] == []
@@ -507,7 +507,7 @@ def test_any_other_required_grouping_stays_a_hold(tmp_path: Path, required: list
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "VALIDATION_FAILED"
     assert plan["why"]["errors"][0]["code"] == "POLICY_DENIED"
-    assert PLAN not in plan["best"]["query_ir"].get("group_by", [])
+    assert PLAN not in plan["best"]["query"].get("group_by", [])
 
 
 def test_a_required_grouping_hidden_from_the_caller_is_never_added(tmp_path: Path) -> None:

@@ -260,7 +260,7 @@ def _value(engine: Runtime, query: dict[str, Any]) -> int:
 
 
 def _selected(plan: dict[str, Any]) -> dict[str, Any]:
-    expression = plan["best"]["query_ir"]["select"][0]["expression"]
+    expression = plan["best"]["query"]["select"][0]["expression"]
     return {key: value for key, value in expression.items() if key != "aggregation"}
 
 
@@ -302,7 +302,7 @@ def test_a_whole_synonym_selects_its_metric_beside_a_measure_named_by_its_own_wo
     plan = _plan(engine, UPGRADED)
     _assert_ok(plan)
     assert _selected(plan) == {"metric": UPGRADES}
-    assert _value(engine, plan["best"]["query_ir"]) == 1
+    assert _value(engine, plan["best"]["query"]) == 1
 
 
 def test_a_measure_name_outside_the_metric_s_words_still_vetoes(
@@ -332,7 +332,7 @@ def test_a_building_block_is_answered_with_its_governed_form(
     engine = engines[form]
     plan = _plan(engine, intent)
     _assert_ok(plan)
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert _selected(plan) == {"metric": CALLS}
     assert ("time" in query) is week
     assert plan["best"]["resolved"][0]["id"] == CALLS
@@ -353,11 +353,11 @@ def test_a_catalog_fallback_draft_over_the_measure_takes_the_same_swap(
         plan = _plan(engine, "How many calls last week?")
         _assert_ok(plan)
         assert plan["best"]["pattern"] == "catalog_fallback"
-        assert plan["best"]["query_ir"]["select"] == [
+        assert plan["best"]["query"]["select"] == [
             {"as": "calls", "expression": {"metric": CALLS}}
         ]
         assert plan["best"]["resolved"][0]["id"] == CALLS
-        assert _value(engine, plan["best"]["query_ir"]) == _calls_gold(customers=True, week=True)
+        assert _value(engine, plan["best"]["query"]) == _calls_gold(customers=True, week=True)
     finally:
         engine.close()
 
@@ -385,7 +385,7 @@ def test_a_filler_other_than_zero_is_not_a_governed_form(engines: dict[str, Runt
     engine = engines["one_filled"]
     plan = _plan(engine, "How many calls last week?")
     _assert_measure_held(plan, [CALLS])
-    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold(customers=False, week=True)
+    assert _value(engine, plan["best"]["query"]) == _calls_gold(customers=False, week=True)
 
 
 def test_a_filter_on_the_narrowing_dimension_keeps_the_measure(
@@ -394,7 +394,7 @@ def test_a_filter_on_the_narrowing_dimension_keeps_the_measure(
     engine = engines["zero_filled"]
     plan = _plan(engine, "How many calls from internal accounts last week?")
     _assert_measure_held(plan, [CALLS])
-    assert plan["best"]["query_ir"]["where"] == [{"field": SEGMENT, "op": "=", "value": "internal"}]
+    assert plan["best"]["query"]["where"] == [{"field": SEGMENT, "op": "=", "value": "internal"}]
 
 
 def test_a_caller_naming_the_measure_keeps_it(engines: dict[str, Runtime]) -> None:
@@ -403,7 +403,7 @@ def test_a_caller_naming_the_measure_keeps_it(engines: dict[str, Runtime]) -> No
     plan = _plan(engine, "How many calls last week?", select=select)
     _assert_ok(plan)
     assert _selected(plan) == {"measure": CALLS_ALL}
-    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold(customers=False, week=True)
+    assert _value(engine, plan["best"]["query"]) == _calls_gold(customers=False, week=True)
 
 
 def test_a_governed_form_on_another_clock_is_not_swapped_in(tmp_path: Path) -> None:
@@ -411,7 +411,7 @@ def test_a_governed_form_on_another_clock_is_not_swapped_in(tmp_path: Path) -> N
     try:
         plan = _plan(engine, "How many calls last week?")
         _assert_measure_held(plan, [CALLS])
-        assert plan["best"]["query_ir"]["time"]["temporal_role"] == CALL_CLOCK
+        assert plan["best"]["query"]["time"]["temporal_role"] == CALL_CLOCK
     finally:
         engine.close()
 
@@ -438,7 +438,7 @@ def test_a_compound_part_swaps_only_to_a_bare_governor(tmp_path: Path) -> None:
         plan = _plan(engine, "How many calls and how many callers last week")
         _assert_held(plan)
         assert plan["best"]["pattern"] == "conjoined_metrics"
-        assert [item["expression"] for item in plan["best"]["query_ir"]["select"]] == [
+        assert [item["expression"] for item in plan["best"]["query"]["select"]] == [
             {"metric": "metric.subscriptions.calls_all"},
             {"metric": "metric.subscriptions.callers"},
         ]

@@ -93,7 +93,7 @@ def test_hidden_dimension_is_not_selected_or_disclosed(
     try:
         payload = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
         _assert_no_hidden_dimension(payload)
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["group_by"] == [STORE_DISTRICT]
         if detail in {"full", "debug"}:
             assert payload["intent_ir"]["grouping"] == [
@@ -125,7 +125,7 @@ def test_visible_dimension_keeps_existing_selection(runtime_factory, monkeypatch
     _force_fallback(runtime, monkeypatch, intent, path)
     try:
         payload = plan_payload(runtime, intent=intent, detail="full")
-        assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_DISTRICT]
+        assert payload["best"]["query"]["group_by"] == [CUSTOMER_DISTRICT]
         assert payload["intent_ir"]["grouping"][0]["id"] == CUSTOMER_DISTRICT
     finally:
         runtime.close()
@@ -150,8 +150,8 @@ def test_visibility_is_scoped_to_each_request(runtime_factory, monkeypatch, path
             for audience in ("internal", "external", "internal")
         ]
         assert payloads[0] == payloads[2]
-        assert payloads[0]["best"]["query_ir"]["group_by"] == [CUSTOMER_DISTRICT]
-        assert payloads[1]["best"]["query_ir"]["group_by"] == [STORE_DISTRICT]
+        assert payloads[0]["best"]["query"]["group_by"] == [CUSTOMER_DISTRICT]
+        assert payloads[1]["best"]["query"]["group_by"] == [STORE_DISTRICT]
         _assert_no_hidden_dimension(payloads[1])
     finally:
         runtime.close()
@@ -175,7 +175,7 @@ def test_value_domains_do_not_reintroduce_hidden_dimensions(
         _assert_no_hidden_dimension(payload)
         # A domain naming the hidden dimension is hidden with it, shared or not: the value
         # grounds nothing, and the draft that leaves it out is held.
-        assert payload["best"]["query_ir"].get("where", []) == []
+        assert payload["best"]["query"].get("where", []) == []
         assert payload["status"] != "ok"
         assert "execute" not in payload.get("next", {}).get("ready_for", [])
     finally:

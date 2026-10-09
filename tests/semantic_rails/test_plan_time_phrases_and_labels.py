@@ -50,7 +50,7 @@ def unconsumed_terms(runtime: Any, text: str, query: dict[str, Any]) -> list[str
 
 
 def _query(payload: dict[str, Any]) -> dict[str, Any]:
-    return (payload.get("best") or {}).get("query_ir") or {}
+    return (payload.get("best") or {}).get("query") or {}
 
 
 def _measures(payload: dict[str, Any]) -> list[str]:
@@ -240,7 +240,7 @@ def test_a_window_shorter_than_a_day_is_unresolved_and_never_all_time(
     assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
     assert payload["why"]["details"]["sub_day_phrases"]
     assert payload["why"]["recovery_hints"][0]["kind"] == "state_hour_range"
-    assert "query_ir" not in payload["best"] and "validate" not in payload["next"]
+    assert "query" not in payload["best"] and "validate" not in payload["next"]
 
 
 def test_plan_accepts_a_window_shorter_than_a_day_the_caller_states(runtime_factory: Any) -> None:
@@ -783,8 +783,8 @@ def test_a_customer_ranking_keeps_its_window_and_ordinary_customer_key(
     payload = _plan(runtime_factory, "top 10 customers by revenue in Q1 2017")
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
-    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_customer_id"]
-    time = payload["best"]["query_ir"]["time"]
+    assert payload["best"]["query"]["group_by"] == ["dimension.jaffle_customer_id"]
+    time = payload["best"]["query"]["time"]
     assert (time["start"], time["end"]) == ("2017-01-01", "2017-04-01")
 
 
@@ -1102,7 +1102,7 @@ def test_plan_names_the_two_windows_that_differ(runtime_factory: Any) -> None:
         assert clash["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
         assert "differ" in clash["why"]["message"]
         assert len(clash["why"]["details"]["conflicting_phrases"]) == 2
-        assert "query_ir" not in clash["best"]
+        assert "query" not in clash["best"]
     finally:
         runtime.close()
 
@@ -1333,7 +1333,7 @@ def test_conjoined_store_grouping_answers_with_the_keyed_store(runtime_factory: 
     try:
         payload = plan_payload(runtime, intent="revenue and orders by store", detail="query")
         assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
         rows = runtime.query(query)["rows"]
         with duckdb.connect(runtime.db_path, read_only=True) as connection:

@@ -184,7 +184,7 @@ def test_store_attribute_matches_reference_sql_or_withholds_execution(
         return
 
     assert "execute" in payload["next"].get("ready_for", []), payload
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     if dimensions is None:
         dimensions = query.get("group_by", [])
         assert len(dimensions) == 1 and dimensions[0] in STORE_COLUMNS, payload
@@ -247,7 +247,7 @@ def test_filtered_store_name_matches_reference_sql_or_withholds_execution(
         if payload["status"] != "ok":
             assert "execute" not in payload["next"].get("ready_for", []), payload
             return
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert "execute" in payload["next"].get("ready_for", []), payload
         assert query.get("group_by") == [dimension], payload
         alias = _alias(query["select"][0])
@@ -310,7 +310,7 @@ def test_store_ranking_with_shared_name_matches_reference_sql_or_withholds_execu
             assert "execute" not in payload["next"].get("ready_for", []), payload
             return
         assert "execute" in payload["next"].get("ready_for", []), payload
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         alias = _alias(query["select"][0])
         actual = [row[alias] for row in typed_rows(runtime.query(query))]
         runtime.close()
@@ -338,7 +338,7 @@ def test_store_answers_by_its_key_and_name_on_both_paths(
     try:
         _force_fallback(runtime, monkeypatch, "revenue by store", path)
         payload = plan_payload(runtime, intent="revenue by store")
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
         assert payload["status"] == "ok", payload.get("why")
         assert "execute" in payload["next"]["ready_for"]
@@ -471,7 +471,7 @@ def test_number_of_open_stores_reads_the_last_complete_day(
         _force_fallback(runtime, monkeypatch, question, path)
         payload = plan_payload(runtime, intent=question, partial_query={"policy_context": now})
         assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert (query["time"]["start"], query["time"]["end"]) == ("2018-05-01", "2018-05-02")
         rows = runtime.query(query, now=now["now"])["rows"]
         answer = [row[_alias(query["select"][0])] for row in rows]
@@ -508,7 +508,7 @@ def test_named_store_revenue_is_one_combined_monthly_series(
         payload = plan_payload(runtime, intent=question)
         assert payload["status"] == "ok", payload
         assert "execute" in payload["next"].get("ready_for", [])
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert not query.get("group_by")
         actual = typed_rows(runtime.query(query))
         alias = _alias(query["select"][0])
@@ -590,7 +590,7 @@ def test_qualification_check_only_downgrades_scalar_cohort_answers(
         assert after["status"] == "low_confidence"
         assert after["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
         assert "execute" not in after["next"].get("ready_for", [])
-        assert after["best"]["query_ir"] == before["best"]["query_ir"]
+        assert after["best"]["query"] == before["best"]["query"]
     finally:
         runtime.close()
 
@@ -672,7 +672,7 @@ def test_grouped_customer_qualification_matches_reference_or_holds(
             assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
             assert "execute" not in payload["next"].get("ready_for", [])
         else:
-            actual = typed_rows(runtime.query(payload["best"]["query_ir"]))
+            actual = typed_rows(runtime.query(payload["best"]["query"]))
             with duckdb.connect(runtime.db_path, read_only=True) as connection:
                 expected = {
                     row[0]

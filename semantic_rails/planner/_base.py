@@ -273,7 +273,8 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
 
 
 def _top(rows: Iterable[Any], terms: set[str], words: Iterable[str]) -> Any | None:
-    tied, named = _tied_top(rows, terms, set(words) or terms)
+    # The terms are words the question says too, wherever they stand in it.
+    tied, named = _tied_top(rows, terms, set(words) | terms)
     return named or next(iter(tied), None)
 
 

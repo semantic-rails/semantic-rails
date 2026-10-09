@@ -182,7 +182,7 @@ def test_a_wrapped_balance_is_held_on_a_day_not_yet_complete(
 
     plan = _plan(engine, intent.format(label))
     _assert_held(plan)
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert query["select"][0]["expression"] == {"metric": METRICS[label][0]}
     assert query["time"]["grain"] == "day"
     [gap] = _stock_gaps(plan)
@@ -241,7 +241,7 @@ def test_a_complete_day_is_still_answered(
     plan = _plan(engine, intent.format(label))
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
     assert query["time"] == {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end}
     assert _rows(engine, query) == [(day, _gold(day) * METRICS[label][1])]
@@ -258,4 +258,4 @@ def test_a_closed_window_ending_on_the_last_complete_day_is_still_answered(
     assert "execute" in plan["next"]["ready_for"]
     days = [(date(2026, 9, 28) + timedelta(days=offset)).isoformat() for offset in range(7)]
     expected = [(day, _gold(day) * METRICS[label][1]) for day in days]
-    assert _rows(engine, plan["best"]["query_ir"]) == expected
+    assert _rows(engine, plan["best"]["query"]) == expected

@@ -334,12 +334,12 @@ def test_declared_name_variants_only_add_holds_against_immediate_base(
         if group_by != [STORE, CUSTOMER_TYPE]:
             assert after["status"] == "low_confidence"
             assert "customer_type" in after["why"]["details"]["dropped_groupings"]
-            if before["best"]["query_ir"].get("group_by") == [STORE]:
+            if before["best"]["query"].get("group_by") == [STORE]:
                 assert before["status"] == "ok"
                 assert after["why"]["details"]["dropped_groupings"] == ["customer_type"]
         else:
             assert before["status"] == after["status"] == "ok"
-            query = after["best"]["query_ir"]
+            query = after["best"]["query"]
             reference = _in_memory_reference(
                 jaffle,
                 "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
@@ -387,13 +387,13 @@ def test_boundary_underscore_names_only_add_holds(
     if group_by != [STORE, CUSTOMER_TYPE]:
         assert after["status"] == "low_confidence"
         assert term in after["why"]["details"]["dropped_groupings"]
-        if before["best"]["query_ir"].get("group_by") == [STORE]:
+        if before["best"]["query"].get("group_by") == [STORE]:
             assert before["status"] == "ok"
             assert after["why"]["details"]["dropped_groupings"] == [term]
         assert "execute" not in after["next"].get("ready_for", [])
     else:
         assert before["status"] == after["status"] == "ok"
-        query = after["best"]["query_ir"]
+        query = after["best"]["query"]
         reference = _in_memory_reference(
             jaffle,
             "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
@@ -471,7 +471,7 @@ def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
         base.setattr(grouping_checks, "_named_groupings_unmet", lambda *args: ([], []))
         before = plan_payload(jaffle, intent=question, partial_query=partial)
     assert after["best"] == before["best"]
-    query = after["best"]["query_ir"]
+    query = after["best"]["query"]
     assert {"field": CUSTOMER_TYPE, "op": "is", "value": "new"} in query["where"]
     held = (phrasing, path, group_by and len(group_by)) in _HELD_WITHOUT_IT
     assert before["status"] == ("low_confidence" if held else "ok")
@@ -571,7 +571,7 @@ def test_a_fully_grouped_alias_without_a_value_collision_matches_reference_sql(
     }
     before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
     assert grouping_checks._named_groupings_unmet(
-        jaffle._config, question, after["best"]["query_ir"]
+        jaffle._config, question, after["best"]["query"]
     ) == ([], [])
     listed = phrasing.startswith(("revenue by ", "revenue for each ", "revenue per "))
     if (alias == "_customer_type" and listed) or (
@@ -594,7 +594,7 @@ def test_a_fully_grouped_alias_without_a_value_collision_matches_reference_sql(
     assert len(reference) == 4
     assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
     assert (
-        sorted(_in_memory_rows(jaffle, after["best"]["query_ir"], [STORE, CUSTOMER_TYPE]))
+        sorted(_in_memory_rows(jaffle, after["best"]["query"], [STORE, CUSTOMER_TYPE]))
         == reference
     )
 
@@ -653,7 +653,7 @@ def test_a_metric_filter_cannot_pin_another_selections_named_grouping(
         "where": [JAFFLE_FILTER],
     }
     before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
-    query = after["best"]["query_ir"]
+    query = after["best"]["query"]
     assert query["select"] == partial["select"]
     assert query["group_by"] == partial["group_by"]
     assert query["where"] == partial["where"]
@@ -697,7 +697,7 @@ def test_a_named_grouping_without_a_filter_keeps_its_obligation(
     _force_fallback(jaffle, monkeypatch, question, path)
     partial = {"group_by": [STORE], "where": [JAFFLE_FILTER]}
     before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
-    query = after["best"]["query_ir"]
+    query = after["best"]["query"]
     unmet, inside = grouping_checks._named_groupings_unmet(jaffle._config, question, query)
     assert unmet == ["_new_type"]
     assert after["status"] == "low_confidence"
@@ -762,7 +762,7 @@ def test_a_grouped_or_pinned_name_keeps_its_answer(
     if (phrasing, path) in _HELD_WITHOUT_OBLIGATION:
         assert before["status"] == after["status"] == "low_confidence"
         return
-    query = after["best"]["query_ir"]
+    query = after["best"]["query"]
     assert grouping_checks._named_groupings_unmet(jaffle._config, question, query) == ([], [])
     assert before["status"] == after["status"] == "ok", after.get("why")
     assert "execute" in after["next"]["ready_for"]
@@ -817,11 +817,11 @@ def test_a_filter_never_stands_in_for_a_dropped_grouping(
     else:
         assert complete["status"] == "ok", complete.get("why")
         assert "execute" in complete["next"]["ready_for"]
-    query = complete["best"]["query_ir"]
+    query = complete["best"]["query"]
     assert grouping_checks._dropped_grouping_why(jaffle, question, query) is None
     actual = typed_rows(jaffle.query(query))
     assert len(actual) == 2
-    assert actual == typed_rows(jaffle.query(before["best"]["query_ir"]))
+    assert actual == typed_rows(jaffle.query(before["best"]["query"]))
     jaffle.close()
     with duckdb.connect(jaffle.db_path, read_only=True) as connection:
         reference = dict(
@@ -839,7 +839,7 @@ def test_a_filter_never_stands_in_for_a_dropped_grouping(
     assert dropped["best"]["validation_ok"] is True
     assert dropped["status"] == "low_confidence"
     assert dropped["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    why = grouping_checks._dropped_grouping_why(jaffle, question, dropped["best"]["query_ir"])
+    why = grouping_checks._dropped_grouping_why(jaffle, question, dropped["best"]["query"])
     assert why is not None
     assert why["details"]["dropped_groupings"] == ["customer type"]
     if "grain" not in phrasing:
@@ -867,7 +867,7 @@ def test_a_second_named_term_cannot_be_discharged_by_a_filter(
     partial = {"where": [NAME_FILTER, ID_FILTER], "group_by": [STORE_NAME, STORE_ID]}
     before, complete = _compare_base(retail, monkeypatch, question, partial)
     assert before["status"] == complete["status"] == "ok", complete.get("why")
-    query = complete["best"]["query_ir"]
+    query = complete["best"]["query"]
     assert grouping_checks._dropped_grouping_why(retail, question, query) is None
     actual = typed_rows(retail.query(query))
     alias = _alias(query["select"][0])
@@ -1002,7 +1002,7 @@ def test_complete_suffix_list_matches_reference_sql(
     else:
         assert before["status"] == complete["status"] == "ok", complete.get("why")
         assert "execute" in complete["next"]["ready_for"]
-    query = complete["best"]["query_ir"]
+    query = complete["best"]["query"]
     assert grouping_checks._dropped_grouping_why(jaffle, question, query) is None
     reference = _in_memory_reference(
         jaffle,
@@ -1050,7 +1050,7 @@ def test_suffix_list_holds_when_either_grouping_is_dropped(
     assert dropped["status"] == "low_confidence"
     assert dropped["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     name = "store name" if missing == STORE else "customer type"
-    why = grouping_checks._dropped_grouping_why(jaffle, question, dropped["best"]["query_ir"])
+    why = grouping_checks._dropped_grouping_why(jaffle, question, dropped["best"]["query"])
     assert why is not None
     assert why["details"]["dropped_groupings"] == [name]
     if "grain" not in question:
@@ -1077,7 +1077,7 @@ def test_level_in_a_measure_name_asks_for_no_level(
         before, complete = _compare_base(runtime, monkeypatch, question)
         assert before["status"] == complete["status"] == "ok", complete.get("why")
         assert "execute" in complete["next"]["ready_for"]
-        query = complete["best"]["query_ir"]
+        query = complete["best"]["query"]
         assert query["group_by"] == [STORE]
         assert query["select"][0]["expression"]["measure"] == "measure.jaffle.revenue_usd"
         assert grouping_checks._level_groupings_unmet(runtime._config, question, query) == []
@@ -1110,7 +1110,7 @@ def test_measure_words_before_a_level_add_no_grouping(
     before, complete = _compare_base(jaffle, monkeypatch, question, partial)
     assert before["status"] == complete["status"] == "ok", complete.get("why")
     assert "execute" in complete["next"]["ready_for"]
-    query = complete["best"]["query_ir"]
+    query = complete["best"]["query"]
     assert query["group_by"] == partial["group_by"]
     assert grouping_checks._level_groupings_unmet(jaffle._config, question, query) == []
     assert grouping_checks._level_groupings_unmet(
@@ -1150,7 +1150,7 @@ def test_only_a_one_value_filter_stands_in_for_a_named_grouping(
     )
     before, after = _compare_base(jaffle, monkeypatch, question, {"group_by": [STORE]})
     assert before["status"] == "ok"
-    query = after["best"]["query_ir"]
+    query = after["best"]["query"]
     if not ready:
         # The draft adds repeat customers to the answer the question limits to new ones.
         assert after["status"] == "low_confidence"
@@ -1244,8 +1244,8 @@ def test_repeated_description_of_one_grouping_stays_ready(
     )
     assert before["status"] == complete["status"] == "ok", complete.get("why")
     assert "execute" in complete["next"]["ready_for"]
-    assert typed_rows(jaffle.query(complete["best"]["query_ir"])) == typed_rows(
-        jaffle.query(before["best"]["query_ir"])
+    assert typed_rows(jaffle.query(complete["best"]["query"])) == typed_rows(
+        jaffle.query(before["best"]["query"])
     )
     _, dropped = _compare_base(
         jaffle,
@@ -1288,8 +1288,8 @@ def test_level_in_a_dimension_name_stays_ready(
     )
     assert before["status"] == complete["status"] == "ok", complete.get("why")
     assert "execute" in complete["next"]["ready_for"]
-    assert typed_rows(retail.query(complete["best"]["query_ir"])) == typed_rows(
-        retail.query(before["best"]["query_ir"])
+    assert typed_rows(retail.query(complete["best"]["query"])) == typed_rows(
+        retail.query(before["best"]["query"])
     )
 
 

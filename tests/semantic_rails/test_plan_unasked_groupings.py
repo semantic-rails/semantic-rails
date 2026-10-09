@@ -108,7 +108,7 @@ def test_a_comparison_never_splits_by_a_month_the_question_never_asks_for(
     )
 
     assert _held(payload, UNASKED) == {"unasked_groupings": ["month"], "grain": "month"}
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
     assert query["group_by"] == [STORE_ID, STORE, CUSTOMER_TYPE]
     reference = sorted(
@@ -162,10 +162,10 @@ def test_a_ranking_split_by_a_period_asks_which_ranking_it_means(
         "month?"
     )
     assert [hint["kind"] for hint in payload["why"]["recovery_hints"]] == ["ask_which_ranking"]
-    assert "query_ir" not in json.dumps(payload["why"])
+    assert "query" not in json.dumps(payload["why"])
 
     # The draft keeps the top N store-months, which is neither reading.
-    draft = _cents(typed_rows(jaffle.query(payload["best"]["query_ir"])), STORE, MONTH)
+    draft = _cents(typed_rows(jaffle.query(payload["best"]["query"])), STORE, MONTH)
     assert draft == [
         (store, str(month), round(float(revenue), 2))
         for store, month, revenue in _reference(
@@ -188,9 +188,9 @@ def test_a_ranking_of_more_than_its_entity_offers_no_runnable_option(
 
     ranked = [CUSTOMER_TYPE, STORE_ID, STORE]
     assert _held(payload, RANKING) == {"limit": 3, "ranked": ranked, **grain}
-    assert "query_ir" not in json.dumps(payload["why"])
+    assert "query" not in json.dumps(payload["why"])
     # Run anyway, the draft keeps the top 3 (store, customer type) rows, not the top 3 stores.
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["group_by"] == ranked
     stores = [row[STORE] for row in typed_rows(jaffle.query(query))]
     assert stores != [
@@ -213,9 +213,9 @@ def test_a_ranking_of_a_time_axis_value_offers_no_runnable_option(jaffle: Runtim
     payload = plan_payload(jaffle, intent="top 3 stores by cumulative revenue by month")
 
     assert _held(payload, RANKING) == {"limit": 3, "ranked": [STORE_ID, STORE], "grain": "month"}
-    assert "query_ir" not in json.dumps(payload["why"])
+    assert "query" not in json.dumps(payload["why"])
     # A running total needs its time axis: the draft without its grain doesn't validate.
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["select"][0]["expression"] == {"metric": "metric.sales.cumulative_revenue"}
     totals = {key: value for key, value in query.items() if key not in {"time", "order_by"}}
     assert jaffle.validate(totals)["ok"] is False
@@ -261,7 +261,7 @@ def test_a_ranking_of_a_period_or_on_another_calendar_offers_no_runnable_option(
     assert why is not None
     assert why["code"] == RANKING
     assert why["details"] == {"limit": 3, "ranked": [STORE], "grain": "month"}
-    assert "query_ir" not in json.dumps(why)
+    assert "query" not in json.dumps(why)
     if "months" in question:
         # As planned, "top 3 months by revenue by store" is held with no option too.
         payload = plan_payload(jaffle, intent="top 3 months by revenue by store")
@@ -279,7 +279,7 @@ def test_a_ranking_the_question_never_states_is_the_callers(jaffle: Runtime) -> 
     assert why is not None
     assert why["code"] == RANKING
     assert why["details"] == {"limit": 3, "ranked": [STORE, CUSTOMER_TYPE]}
-    assert "query_ir" not in json.dumps(why)
+    assert "query" not in json.dumps(why)
     # The caller's partial_query states them: its limit, over its own group_by.
     caller = {"group_by": [STORE, CUSTOMER_TYPE], "limit": 3}
     assert unasked_groupings._unasked_grouping_why(jaffle, question, query, caller) is None
@@ -308,7 +308,7 @@ def test_a_window_of_whole_years_never_splits_by_a_year_the_question_never_asks_
 ) -> None:
     payload = plan_payload(jaffle, intent=intent)
 
-    time = payload["best"]["query_ir"]["time"]
+    time = payload["best"]["query"]["time"]
     assert time == {
         "temporal_role": ORDER_TIME,
         "grain": "year",
@@ -331,7 +331,7 @@ def test_a_window_inside_the_list_never_hides_a_later_grouping(
 
     assert _listed_grouping_terms(intent, incident._config) == ["incident name", "incident"]
     assert _held(payload, UNMATCHED)["dropped_groupings"] == ["incident"]
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["group_by"] == [INCIDENT_NAME]
     # Run anyway, it would add both incidents into one row.
     rows = typed_rows(incident.query(query, now="2026-02-15"))
@@ -342,7 +342,7 @@ def test_a_grouping_after_a_window_keeps_the_window(incident: Runtime, jaffle: R
     payload = plan_payload(incident, intent="repair cost by incident name last month and incident")
 
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["group_by"] == [INCIDENT_NAME, INCIDENT_ID]
     assert query["time"]["range"] == {"last": {"unit": "month", "value": 1}}
     rows = typed_rows(incident.query(query, now="2026-02-15"))
@@ -355,7 +355,7 @@ def test_a_grouping_after_a_window_keeps_the_window(incident: Runtime, jaffle: R
 
     payload = plan_payload(jaffle, intent="revenue by store last month and customer type")
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["group_by"] == [STORE_ID, STORE, CUSTOMER_TYPE]
     rows = typed_rows(jaffle.query(query, now="2017-04-15"))
     assert sorted(
@@ -614,7 +614,7 @@ def test_the_check_only_holds_a_plan_that_was_ready(
 
     # Without them, plan answers as it did before; with them, the draft is the same.
     assert _outcome(before) == case.before
-    assert after["best"].get("query_ir") == before["best"].get("query_ir")
+    assert after["best"].get("query") == before["best"].get("query")
     assert after["best"].get("pattern") == before["best"].get("pattern")
     assert _outcome(after) == case.after
     if case.after == case.before:

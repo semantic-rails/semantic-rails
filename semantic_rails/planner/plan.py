@@ -554,8 +554,9 @@ def _question_payload(
         payload["why"] = value_why
     elif shape_why is not None:
         payload["why"] = shape_why
-    elif best_draft.blocked_reason.get("code") == "PLAN_INTENT_COVERAGE_GAP":
-        payload["why"] = best_draft.blocked_reason
+    elif best.get("blocked"):
+        # The pattern's own hold, as it states it.
+        payload["why"] = best_validation["errors"][0]
     elif not best_ok:
         errors = list(best_validation.get("errors") or [])
         payload["why"] = _trim_why_errors(errors)
@@ -631,6 +632,10 @@ def _question_payload(
                     else value
                     for key, value in gap["actual"].items()
                 }
+        for option in payload.get("why", {}).get("details", {}).get("options", []):
+            # An option that is the drafted call itself is sent as it stands.
+            if isinstance(option, dict) and option.get("call") == payload["best"].get("query"):
+                option["call"] = {"$ref": "best.query"}
     return finish(payload)
 
 

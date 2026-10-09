@@ -163,7 +163,7 @@ def test_named_reading_matches_reference_sql(subscriptions, phrase, start, end, 
     plan = plan_payload(subscriptions, intent=intent, partial_query={"policy_context": NOW})
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     time = query.get("time", {})
     assert time.get("start") == start and time.get("end") == end
     reference = (
@@ -190,7 +190,7 @@ def test_ambiguous_reading_names_both_options(subscriptions, phrase):
     assert plan["status"] == "needs_clarification", plan.get("why")
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
     assert len(plan["why"]["details"]["possible_readings"]) == 2
-    assert not plan.get("best", {}).get("query_ir")
+    assert not plan.get("best", {}).get("query")
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
 
 
@@ -487,7 +487,7 @@ def test_bounded_reading_matches_shop_reference_sql(
     plan = plan_payload(shop, intent=intent, partial_query={"policy_context": SHOP_NOW})
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     read = _time_window(intent, SHOP_NOW)
     from semantic_rails.ast import _relative_range_bounds
 

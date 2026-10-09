@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ...config_parts.measure_governance import _reachable_entities
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -168,14 +169,19 @@ def _preferred_predicate_target(
     metric_terms: list[str],
     *,
     target_measure: Any,
+    entity: Any,
 ) -> Any | None:
     if not metric_terms:
         return None
     term_set = set(metric_terms)
     has_distinct = "distinct" in term_set
+    # A measure each qualifying entity has one value of: its rows reach the entity.
+    measures = [
+        row for row in config.measures if entity.id in _reachable_entities(config, row.entity)
+    ]
     # A measure whose whole name the qualification says ("orders" names Order count).
     content = {term for term in metric_terms if term not in _QUALIFICATION_STOP_TOKENS}
-    _tied, named = _tied_top(config.measures, content, content)
+    _tied, named = _tied_top(measures, content, content)
     if named is not None:
         return named
 
@@ -192,7 +198,7 @@ def _preferred_predicate_target(
     )
     measure_ranked: list[tuple[int, int, int, int, str, Any]] = []
     target_role = str(getattr(target_measure, "default_temporal_role", "") or "")
-    for row in config.measures:
+    for row in measures:
         score = _score(row, term_set)
         if score <= 0:
             continue
@@ -254,7 +260,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     predicate_term_groups = _predicate_metric_terms(text, terms, target_terms)
     for metric_terms in predicate_term_groups:
         target = _preferred_predicate_target(
-            runtime._config, metric_terms, target_measure=target_measure
+            runtime._config, metric_terms, target_measure=target_measure, entity=entity
         )
         if target is not None and getattr(target, "id", "") not in {
             getattr(row, "id", "") for row in predicate_targets

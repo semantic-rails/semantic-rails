@@ -141,10 +141,10 @@ MCP_SERVER_INSTRUCTIONS = (
     "every id. inspect(object_id) shows one object's card when you need its aggregations, "
     "values or time roles. valid-values(dimension_id) lists a dimension's values.\n"
     "2. plan(intent) drafts the query call; draft with plan rather than writing one from "
-    'scratch. Run best.query_ir only when status is "ok" and there are no warnings; '
+    'scratch. Run best.query only when status is "ok" and there are no warnings; '
     "otherwise why and warnings name what the draft misses, so fix the call or ask the "
     "user. out_of_scope or unrealizable means the package can't answer. When status is ok, a "
-    "question asking several things returns parts; execute each part's best.query_ir.\n"
+    "question asking several things returns parts; execute each part's best.query.\n"
     "3. execute(query) validates, compiles and runs the call and returns at most "
     f"max_rows rows (default {MCP_DEFAULT_MAX_ROWS}); a capped result reports truncated. "
     'mode "validate" only checks the call; mode "sql" also returns its SQL.\n'
@@ -526,11 +526,11 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         description=(
             "Draft one best query call from a natural-language intent; call it before "
             "'execute' instead of writing a call from scratch. Returns 'status' ('ok' | "
-            "'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' "
+            "'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query', and 'why' "
             "or 'warnings' naming any part of the question the draft doesn't honor. "
             "detail='query' (default) is compact; 'best' adds intent_ir, trace and next "
             "steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. "
-            "Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are "
+            "Gotcha: pass 'best.query' to 'execute' only when status is 'ok' and there are "
             "no warnings."
         ),
         input_schema=_schema(

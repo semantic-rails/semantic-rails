@@ -229,7 +229,7 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
 def _ready(payload: dict[str, Any]) -> dict[str, Any]:
     assert payload["status"] == "ok", payload.get("why")
     assert "execute" in payload["next"]["ready_for"]
-    return payload["best"]["query_ir"]
+    return payload["best"]["query"]
 
 
 _MRR_ON = """
@@ -420,7 +420,7 @@ def test_a_draft_by_another_entitys_column_is_held(
     monkeypatch.setattr(groupings_module, "_entity_grouping", lambda *args: None)
     monkeypatch.setattr(rollup_module, "_entity_grouping", lambda *args: None)
     payload = _plan(subscriptions(), "Top 2 accounts by MRR on 2026-10-04")
-    assert payload["best"]["query_ir"]["group_by"] == [
+    assert payload["best"]["query"]["group_by"] == [
         "dimension.subscriptions_account_day_account_id"
     ]
     assert payload["status"] != "ok"

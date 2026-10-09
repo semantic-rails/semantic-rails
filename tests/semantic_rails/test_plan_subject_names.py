@@ -93,7 +93,7 @@ def test_the_named_measure_wins_a_tie(
     if unmatched:
         assert plan["why"]["details"] == {"terms": unmatched, "kind": "filter_values_unrealized"}
         assert "ready_for" not in plan["next"]
-    [select] = plan["best"]["query_ir"]["select"]
+    [select] = plan["best"]["query"]["select"]
     # A package's measures come with same-named metrics; either answers.
     assert (select["expression"].get("measure") or select["expression"]["metric"]).endswith(
         f"shop.{measure}"
@@ -211,7 +211,7 @@ def test_counting_words_name_the_count_measure(
         # Read on the last complete day, the draft still leaves "items" unconsumed.
         assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
         assert plan["why"]["details"]["terms"] == unconsumed
-        assert plan["best"]["query_ir"]["time"]["grain"] == "day"
+        assert plan["best"]["query"]["time"]["grain"] == "day"
     elif measure.endswith("_eop") and question.endswith(("month", "year")):
         assert_plan_held(plan, "PLAN_INTENT_COVERAGE_GAP")
         assert "stock_as_of_unrealized" in {gap["kind"] for gap in plan["why"]["details"]["gaps"]}
@@ -227,7 +227,7 @@ def test_counting_words_name_the_count_measure(
     else:
         assert plan["status"] == "ok", plan.get("why")
         assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     if question.endswith(("month", "year")):
         assert query["time"]["grain"] == question.rsplit(" ", 1)[-1]
     [select] = query["select"]
@@ -243,7 +243,7 @@ def test_a_whole_name_beats_one_that_adds_count(tmp_path: Path) -> None:
         runtime.close()
 
     assert plan["status"] == "ok", plan.get("why")
-    [select] = plan["best"]["query_ir"]["select"]
+    [select] = plan["best"]["query"]["select"]
     assert (select["expression"].get("measure") or select["expression"]["metric"]).endswith(
         "shop.customers"
     )

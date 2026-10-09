@@ -156,7 +156,7 @@ def test_plan_last_month_is_time_bounded_and_ready(runtime_factory) -> None:
     finally:
         runtime.close()
     assert payload["status"] == "ok"
-    time_spec = payload["best"]["query_ir"]["time"]
+    time_spec = payload["best"]["query"]["time"]
     assert time_spec["range"] == {"last": {"unit": "month", "value": 1}}
     assert payload["best"]["validation_ok"] is True
     assert payload["next"]["ready_for"] == ["execute"]
@@ -168,7 +168,7 @@ def test_plan_last_n_days_is_time_bounded(runtime_factory) -> None:
         payload = plan_payload(runtime, intent="revenue by store last 7 days")
     finally:
         runtime.close()
-    time_spec = payload["best"]["query_ir"]["time"]
+    time_spec = payload["best"]["query"]["time"]
     assert time_spec["range"] == {"last": {"unit": "day", "value": 7}}
     assert time_spec["grain"] == "day"
     # The draft splits the 7 days into days, which the question never asks for.
@@ -198,7 +198,7 @@ def test_plan_unresolved_window_downgrades_instead_of_silently_dropping(
     assert "time.start" in hint_text or "start" in hint_text
     # There is no unbounded draft to execute at all.
     assert "ready_for" not in payload["next"]
-    assert "query_ir" not in payload["best"] and "validate" not in payload["next"]
+    assert "query" not in payload["best"] and "validate" not in payload["next"]
 
 
 @pytest.mark.parametrize("detail", ["best", "full", None])
@@ -219,11 +219,11 @@ def test_mcp_plan_offers_no_runnable_draft_without_the_window(
         assert refused["status"] == "low_confidence"
         assert refused["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
         rows = [refused["best"], *refused.get("alternatives", []), *refused.get("blocked", [])]
-        assert all("query_ir" not in row for row in rows)
+        assert all("query" not in row for row in rows)
         assert "validate" not in refused.get("next", {})
     # The recovery hint's way out: pass the window with its temporal role and grain.
     assert bounded["status"] == "ok"
-    assert bounded["best"]["query_ir"]["time"] == window
+    assert bounded["best"]["query"]["time"] == window
 
 
 def test_plan_since_year_downgrades(runtime_factory) -> None:
@@ -252,7 +252,7 @@ def test_partial_query_bounds_suppress_the_downgrade(runtime_factory) -> None:
     finally:
         runtime.close()
     assert payload["status"] == "ok"
-    time_spec = payload["best"]["query_ir"]["time"]
+    time_spec = payload["best"]["query"]["time"]
     assert time_spec["start"] == "2025-01-01"
     assert time_spec["end"] == "2025-02-01"
     assert payload["next"]["ready_for"] == ["execute"]
@@ -272,7 +272,7 @@ def test_plan_period_shift_comparison_is_not_window_bounded(runtime_factory) -> 
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
     assert payload["best"]["pattern"] == "inline_period_shift"
-    time_spec = payload["best"]["query_ir"]["time"]
+    time_spec = payload["best"]["query"]["time"]
     assert "range" not in time_spec
     assert "start" not in time_spec
 

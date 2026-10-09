@@ -163,7 +163,7 @@ def test_the_measure_counts_every_store_the_metric_keeps_retail_ones() -> None:
 def test_a_question_naming_the_metric_gets_the_metric(runtime: Runtime, intent: str) -> None:
     plan = _plan(runtime, intent)
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert query["select"] == [METRIC]
     assert _value(runtime, query) == _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
 
@@ -177,7 +177,7 @@ def test_a_word_only_the_metric_names_is_read_by_the_metric(tmp_path: Path) -> N
     try:
         plan = _plan(engine, "How many retail stores were active last week?")
         assert plan["status"] == "ok", plan.get("why")
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert _subject(query) == METRIC
         assert _value(engine, query) == _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
     finally:
@@ -215,7 +215,7 @@ def test_a_filter_on_the_metric_field_reads_the_rows_it_asks_for(runtime: Runtim
     """The held draft keeps the question's demo stores, which the metric would drop."""
 
     plan = _plan(runtime, "How many demo stores were active last week?")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert _subject(query) == MEASURE
     assert _value(runtime, query) == _gold(f"{LAST_WEEK} AND channel = 'demo'") == 1
 
@@ -244,10 +244,10 @@ def test_plan_answers_a_building_block_with_its_only_metric(runtime: Runtime) ->
 
     plan = _plan(runtime, "stores last week")
     building_block = not next(row for row in runtime._config.measures if row.id == MEASURE).publish
-    assert _subject(plan["best"]["query_ir"]) == (METRIC if building_block else MEASURE)
+    assert _subject(plan["best"]["query"]) == (METRIC if building_block else MEASURE)
     if building_block:
         assert plan["status"] == "ok", plan.get("why")
-        assert _value(runtime, plan["best"]["query_ir"]) == 3
+        assert _value(runtime, plan["best"]["query"]) == 3
     else:
         assert plan["status"] == "low_confidence"
         assert "execute" not in plan["next"].get("ready_for", [])
@@ -266,8 +266,8 @@ def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
     assert status == 200
     for response in (mcp, http):
         assert response["status"] == direct["status"] == "ok"
-        assert response["best"]["query_ir"] == direct["best"]["query_ir"]
-        assert _subject(response["best"]["query_ir"]) == METRIC
+        assert response["best"]["query"] == direct["best"]["query"]
+        assert _subject(response["best"]["query"]) == METRIC
 
 
 @pytest.mark.parametrize(
@@ -302,7 +302,7 @@ def test_the_whole_question_is_checked_against_reference_sql(
             monkeypatch.setattr(metric_by_dimension_rollup, "_preferred_metric", lambda *_: plain)
         plan = _plan(engine, intent)
         assert plan["status"] == status, plan.get("why")
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert _value(engine, query) == value
         assert value == _gold(
             LAST_WEEK if status == "low_confidence" else f"{LAST_WEEK} AND channel = 'retail'"
@@ -358,7 +358,7 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
         serialized = json.dumps(response)
         assert hidden_id not in serialized
         assert hidden_label not in serialized
-        assert _subject(response["best"]["query_ir"]) == MEASURE
+        assert _subject(response["best"]["query"]) == MEASURE
         if building_block:
             assert response["status"] == "low_confidence", response.get("why")
             assert "execute" not in response.get("next", {}).get("ready_for", [])
@@ -407,7 +407,7 @@ def test_a_governed_swap_cannot_change_the_metrics_clock(
         plan = _plan(engine, QUESTION)
         assert plan["status"] == "low_confidence", plan.get("why")
         assert "execute" not in plan["next"].get("ready_for", [])
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert _subject(query) == MEASURE
         assert query["time"]["temporal_role"] == "temporal_role.shop_visit_day"
         assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[METRIC]]
@@ -757,7 +757,7 @@ def test_explicit_unpublished_measure_and_named_event_metric_keep_their_referenc
     )
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert _subject(query) == (TEAMS if explicit else NEW_TEAMS)
     with duckdb.connect(":memory:") as connection:
         connection.execute(TEAMS_SEED)
@@ -820,7 +820,7 @@ def test_a_draft_counting_teams_new_teams_leaves_out_is_held(
             ({"metrics": [NEW_TEAMS], "narrowed_by": [TEAM_CLASS]}, {"measure": TEAMS})
         ], detail
     # The held draft counts the test teams as well.
-    assert _value(engine, plan["best"]["query_ir"]) == _teams_gold(window)
+    assert _value(engine, plan["best"]["query"]) == _teams_gold(window)
     assert _teams_gold(window) > _teams_gold(f"{window} AND class = 'customer'")
 
 
@@ -845,7 +845,7 @@ def test_a_draft_counting_customer_teams_stays_ready(
     plan = _plan(engine, intent)
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert _subject(query) == expression
     assert _value(engine, query) == _teams_gold(f"{WEEK} AND class = 'customer'") == 3
 
@@ -859,7 +859,7 @@ def test_a_caller_selecting_the_team_count_counts_every_team(
     plan = _plan(engine, "teams created last week", select=select)
     assert plan["status"] == "ok", plan.get("why")
     assert _gaps(plan) == []
-    assert _value(engine, plan["best"]["query_ir"]) == _teams_gold(WEEK) == 4
+    assert _value(engine, plan["best"]["query"]) == _teams_gold(WEEK) == 4
 
 
 def test_mcp_plan_holds_the_count_of_every_team(teams: dict[tuple[str, bool], Runtime]) -> None:
@@ -935,7 +935,7 @@ def test_a_hidden_governor_is_neither_counted_nor_named(
         assert _gaps(plan) == []
         serialized = json.dumps(plan)
         assert NEW_TEAMS not in serialized and "New teams" not in serialized
-    assert _value(engine, plan["best"]["query_ir"]) == _teams_gold(WEEK) == 4
+    assert _value(engine, plan["best"]["query"]) == _teams_gold(WEEK) == 4
 
 
 def test_a_hidden_narrowing_dimension_still_holds_and_is_not_named(
@@ -1128,7 +1128,7 @@ def test_a_class_on_a_joined_entity_holds_a_draft_over_the_measure_its_metric_na
             ({"metrics": [governor], "narrowed_by": [TEAM_CLASS]}, {"measure": measure})
         ], detail
     # The held draft counts the test teams as well.
-    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold(select)
+    assert _value(engine, plan["best"]["query"]) == _calls_gold(select)
     assert _calls_gold(select) > _calls_gold(select, "AND class = 'customer'")
 
 
@@ -1157,7 +1157,7 @@ def test_a_draft_that_settles_the_joined_class_stays_ready(
     plan = _plan(engine, intent)
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert _subject(query) == expression
     select = "SUM(calls)" if expression == CALLS else "COUNT(DISTINCT team_id)"
     assert _value(engine, query) == _calls_gold(select, where) == (140 if "test" in where else 2)
@@ -1167,7 +1167,7 @@ def test_a_draft_grouped_by_the_joined_class_stays_ready(calls: dict[str, Runtim
     engine = calls["all"]
     plan = _plan(engine, "team calls by team class last week")
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert query["group_by"] == [TEAM_CLASS]
     rows = engine.query(query, now=NOW["now"])["rows"]
     alias = _alias(query["select"][0])
@@ -1187,7 +1187,7 @@ def test_a_caller_selecting_the_joined_measure_counts_every_team(calls: dict[str
     plan = _plan(engine, "team calls last week", select=select)
     assert plan["status"] == "ok", plan.get("why")
     assert _gaps(plan) == []
-    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold("SUM(calls)") == 155
+    assert _value(engine, plan["best"]["query"]) == _calls_gold("SUM(calls)") == 155
 
 
 @pytest.mark.parametrize("intent", CALL_QUESTIONS)
@@ -1201,7 +1201,7 @@ def test_a_governor_over_another_measure_narrows_only_through_the_measure_s_own_
     plan = _plan(engine, intent)
     assert plan["status"] == "ok", plan.get("why")
     assert _gaps(plan) == []
-    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold("SUM(calls)") == 155
+    assert _value(engine, plan["best"]["query"]) == _calls_gold("SUM(calls)") == 155
 
 
 def test_a_hidden_joined_governor_is_neither_counted_nor_named(
@@ -1228,7 +1228,7 @@ def test_a_hidden_joined_governor_is_neither_counted_nor_named(
         assert _gaps(plan) == []
         serialized = json.dumps(plan)
         assert PAYING_CALLS not in serialized and "Calls by paying teams" not in serialized
-    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold("SUM(calls)") == 155
+    assert _value(engine, plan["best"]["query"]) == _calls_gold("SUM(calls)") == 155
 
 
 def test_a_failing_entity_walk_holds_the_draft(
@@ -1322,7 +1322,7 @@ def test_an_explicit_join_holds_all_calls_and_preserves_the_filtered_reference(
         assert filtered["status"] == "ok", filtered.get("why")
         assert "execute" in filtered["next"]["ready_for"]
         assert (
-            _value(engine, filtered["best"]["query_ir"])
+            _value(engine, filtered["best"]["query"])
             == _calls_gold("SUM(calls)", "AND class = 'test'")
             == 140
         )

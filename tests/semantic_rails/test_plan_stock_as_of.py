@@ -159,7 +159,7 @@ def _stock_gaps(plan: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _value(runtime: Runtime, plan: dict[str, Any]) -> int:
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     [row] = runtime.query(query)["rows"]
     return int(row[_alias(query["select"][0])])
 
@@ -206,7 +206,7 @@ def test_a_balance_with_no_day_or_one_period_reads_its_closing_day(
 ) -> None:
     # No day: the last complete day before the clock. One period: its closing day.
     plan = _plan(runtime, intent, detail=detail)
-    assert plan["best"]["query_ir"]["time"]["start"] == day
+    assert plan["best"]["query"]["time"]["start"] == day
     assert _stock_gaps(plan) == []
     assert _value(runtime, plan) == _closing_day(day)
 
@@ -225,7 +225,7 @@ def test_mcp_plan_reads_a_balance_on_the_last_complete_day(runtime: Runtime) -> 
         "plan", {"intent": "What's our MRR?", "query": {"policy_context": NOW}}
     )
     assert plan["status"] == "ok", plan.get("why")
-    time = plan["best"]["query_ir"]["time"]
+    time = plan["best"]["query"]["time"]
     assert (time["grain"], time["start"], time["end"]) == ("day", "2026-10-04", "2026-10-05")
     held = adapter.call_tool("plan", {"intent": "MRR by week", "query": {"policy_context": NOW}})
     _assert_held(held, "week")
@@ -239,13 +239,13 @@ def test_a_balance_on_one_day_is_unchanged(
     runtime: Runtime, intent: str, day: str, value: int
 ) -> None:
     plan = _plan(runtime, intent)
-    assert plan["best"]["query_ir"]["time"]["grain"] == "day"
+    assert plan["best"]["query"]["time"]["grain"] == "day"
     assert _value(runtime, plan) == _closing_day(day) == value
 
 
 def test_a_stock_keyed_by_its_clock_alone_is_unchanged(runtime: Runtime) -> None:
     plan = _plan(runtime, "registered users")
-    assert "time" not in plan["best"]["query_ir"]
+    assert "time" not in plan["best"]["query"]
     reference = _reference("SELECT registered FROM user_totals ORDER BY day DESC LIMIT 1")
     assert reference == 340
     assert _value(runtime, plan) == reference
@@ -304,9 +304,9 @@ def test_a_where_item_with_a_stock_expression_is_refused(qualifying_runtime: Run
     plan = _plan(qualifying_runtime, "Account count", partial={"select": select, "where": where})
     assert plan["status"] == "low_confidence"
     assert plan["best"]["validation_ok"] is False
-    assert plan["best"]["query_ir"]["where"] == where
+    assert plan["best"]["query"]["where"] == where
     assert plan["why"]["code"] == "VALIDATION_FAILED"
-    report = qualifying_runtime.validate(plan["best"]["query_ir"])
+    report = qualifying_runtime.validate(plan["best"]["query"])
     assert report["ok"] is False
     [error] = report["errors"]
     assert error["code"] == "INVALID_QUERY"
@@ -321,8 +321,8 @@ def test_an_outer_day_does_not_clear_a_stock_in_a_metric_predicate(
 ) -> None:
     plan = _plan(qualifying_runtime, "Qualifying accounts yesterday", detail=detail)
     assert plan["best"]["validation_ok"] is True, plan.get("why")
-    assert plan["best"]["query_ir"]["time"]["grain"] == "day"
-    assert plan["best"]["query_ir"]["select"][0]["expression"] == {
+    assert plan["best"]["query"]["time"]["grain"] == "day"
+    assert plan["best"]["query"]["select"][0]["expression"] == {
         "metric": "metric.billing.qualifying_accounts"
     }
     _assert_held(plan, "day")

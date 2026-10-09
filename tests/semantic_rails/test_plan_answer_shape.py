@@ -156,7 +156,7 @@ def test_one_value_never_answers_a_question_asking_for_more(
     assert (gap["kind"], gap["clause"]) == (kind, clause)
     assert clause in gap["message"]
     # The draft stays for inspection, unchanged: one value.
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert len(query["select"]) == 1
     assert not query.get("group_by")
     assert gap["actual"]["select_count"] == 1
@@ -192,7 +192,7 @@ def test_a_caller_group_by_gives_who_its_rows(jaffle: Runtime) -> None:
     )
 
     assert payload["status"] == "ok"
-    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_ID, CUSTOMER_NAME]
+    assert payload["best"]["query"]["group_by"] == [CUSTOMER_ID, CUSTOMER_NAME]
 
 
 BOTH = "How many orders and how much revenue last week?"
@@ -345,7 +345,7 @@ def test_a_list_hold_names_the_listed_entitys_key_dimensions(
 
     [gap] = _gaps(payload)
     assert gap["expected"] == {"answer": "rows", "key_dimensions": keys}
-    assert payload["best"]["query_ir"].get("group_by") == group_by
+    assert payload["best"]["query"].get("group_by") == group_by
 
 
 @pytest.mark.parametrize(
@@ -408,7 +408,7 @@ def test_a_category_that_declares_no_values_lists_no_rows(
         "list_unrealized",
         {"answer": "rows", "key_dimensions": [CUSTOMER_ID]},
     )
-    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_TYPE]
+    assert payload["best"]["query"]["group_by"] == [CUSTOMER_TYPE]
     # Only the shape check holds it.
     assert unchecked["status"] == "ok"
 
@@ -564,7 +564,7 @@ def test_a_ready_answer_equals_its_reference(
             if not isinstance(value, datetime)
         )
 
-    rows = typed_rows(jaffle.query(payload["best"]["query_ir"], now=NOW["now"]))
+    rows = typed_rows(jaffle.query(payload["best"]["query"], now=NOW["now"]))
     values = sorted(plain(row.values()) for row in rows)
     assert values == sorted(plain(row) for row in _reference(jaffle, sql))
     assert values
@@ -579,7 +579,7 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
     )
     assert payload["status"] == "ok", payload.get("why")
 
-    rows = typed_rows(jaffle.query(payload["best"]["query_ir"], now=NOW["now"]))
+    rows = typed_rows(jaffle.query(payload["best"]["query"], now=NOW["now"]))
     listed = sorted((row[CUSTOMER_ID], row[CUSTOMER_NAME]) for row in rows)
     assert listed == sorted(
         _reference(jaffle, "SELECT customer_id, customer_name FROM jaffle_customer")
@@ -635,7 +635,7 @@ def test_a_contraction_is_expanded_before_any_check(jaffle: Runtime, question: s
 
     retry = plan_payload(jaffle, intent=_without(question, ["s"]))
     assert retry["status"] == "ok"
-    assert retry["best"]["query_ir"] == plan["best"]["query_ir"]
+    assert retry["best"]["query"] == plan["best"]["query"]
 
 
 @pytest.mark.parametrize(
@@ -698,7 +698,7 @@ def test_a_shape_word_inside_a_declared_name_asks_nothing(
         runtime.close()
 
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query_ir"]["select"] == [
+    assert payload["best"]["query"]["select"] == [
         {"as": "comparison_cost", "expression": {"metric": "metric.upkeep.comparison_cost"}}
     ]
     # Read outside the name, the same word would hold the one value.

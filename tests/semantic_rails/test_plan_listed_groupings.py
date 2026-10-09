@@ -189,7 +189,7 @@ def test_two_listed_groupings_never_add_up_one_name(
 
     assert payload["status"] == "ok", payload.get("why")
     assert "execute" in payload["next"]["ready_for"]
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["group_by"] == group_by
     rows = [
         (int(row[INCIDENT_ID]), str(row[INCIDENT_NAME]), float(row["repair_cost"]))
@@ -216,7 +216,7 @@ def test_a_grouping_after_a_comma_the_draft_drops_holds_the_plan(
     assert "ready_for" not in payload["next"]
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == dropped
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["group_by"] == group_by
     if group_by == [INCIDENT_NAME]:
         # Run anyway, it would add both incidents into one row.
@@ -284,8 +284,8 @@ def test_an_unrelated_dimension_never_masks_a_dropped_order_grouping(jaffle: Run
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["order"]
-    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_TYPE]
-    assert len(typed_rows(jaffle.query(payload["best"]["query_ir"]))) == 2
+    assert payload["best"]["query"]["group_by"] == [CUSTOMER_TYPE]
+    assert len(typed_rows(jaffle.query(payload["best"]["query"]))) == 2
 
 
 def test_a_forced_store_grouping_cannot_stand_in_for_order(
@@ -376,7 +376,7 @@ def test_a_customer_history_grouping_needs_its_whole_key(jaffle: Runtime) -> Non
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["customer history"]
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     dimension = "dimension.jaffle_customer_history_valid_from"
     assert query["group_by"] == [dimension]
     assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
@@ -421,7 +421,7 @@ def test_a_window_inside_the_list_never_drops_a_later_grouping(jaffle: Runtime) 
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
-    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_store_id", STORE]
+    assert payload["best"]["query"]["group_by"] == ["dimension.jaffle_store_id", STORE]
 
 
 @pytest.mark.parametrize(
@@ -541,7 +541,7 @@ def test_a_qualified_name_grouping_stays_ready(
 
     assert payload["status"] == "ok", payload.get("why")
     assert "execute" in payload["next"]["ready_for"]
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["group_by"] == [dimension]
     assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
     bucket = f"{ORDER_TIME}__month"
@@ -628,7 +628,7 @@ def test_a_comma_before_a_trailing_clause_keeps_the_original_plan(
 ) -> None:
     payload = plan_payload(jaffle, intent=intent)
     assert payload["status"] == status, payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query.get("group_by", []) == groups
     # The check's grouping list ends at the comma, including for a held sort request.
     assert _listed_grouping_terms(intent, jaffle._config) == [
@@ -680,7 +680,7 @@ def test_a_grouping_named_by_the_measure_word_is_not_dropped(
     assert "ready_for" not in payload["next"]
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["repair"]
-    assert not payload["best"]["query_ir"].get("group_by")
+    assert not payload["best"]["query"].get("group_by")
 
 
 def test_a_label_only_grouping_stays_ready(upkeep: Callable[[str, str], Runtime]) -> None:
@@ -689,7 +689,7 @@ def test_a_label_only_grouping_stays_ready(upkeep: Callable[[str, str], Runtime]
 
     # The question asks for the name only, so one row per name is its answer.
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["group_by"] == [INCIDENT_NAME]
     assert typed_rows(runtime.query(query)) == [{INCIDENT_NAME: "Leak", "repair_cost": 30}]
 
@@ -699,7 +699,7 @@ def test_a_geo_entity_keeps_its_plan(upkeep: Callable[[str, str], Runtime]) -> N
     payload = plan_payload(runtime, intent="geo cost by geo")
 
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query_ir"] == {
+    assert payload["best"]["query"] == {
         "version": 1,
         "select": [{"as": "geo_cost", "expression": {"metric": "metric.upkeep.geo_cost"}}],
         "group_by": ["dimension.upkeep_geo_geo_id"],
@@ -717,7 +717,7 @@ def test_a_single_grouping_stays_ready(
     payload = plan_payload(jaffle, intent=intent)
 
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query.get("group_by") == group_by
     assert (query.get("time") or {}).get("grain") == grain
 
@@ -1100,7 +1100,7 @@ def test_the_check_only_holds_a_plan_that_was_ready(
     # Without the checks, plan answers as it did before they existed.
     assert _outcome(before) == case.before
     # The checks never change the draft.
-    assert after["best"].get("query_ir") == before["best"].get("query_ir")
+    assert after["best"].get("query") == before["best"].get("query")
     assert after["best"].get("pattern") == before["best"].get("pattern")
     if case.held:
         # They only hold a plan that was ready, and never ready one or pick another.

@@ -169,7 +169,7 @@ def test_authored_names_answer_reference_sql(tmp_path: Path, question: str, metr
     with closing(Runtime.from_path(str(root))) as runtime:
         plan = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
         assert plan["status"] == "ok", plan.get("why")
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert query["select"][0]["expression"] == {"metric": f"metric.shop.{metric}"}
         rows = runtime.query(query, now=NOW["now"])["rows"]
         values = sorted((row[_alias(query["select"][0])] for row in rows), reverse=True)
@@ -297,7 +297,7 @@ def test_apostrophe_value_is_never_answered_as_another_value(tmp_path: Path, que
         if plan["status"] != "ok":
             assert "ready_for" not in plan["next"]
             return
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert [(row["field"], row["value"]) for row in query["where"]] == [
             ("dimension.shop_event_client", "Globex's")
         ]
@@ -317,7 +317,7 @@ def test_declared_value_with_a_possessive_still_matches(tmp_path: Path):
             runtime, intent="new accounts for Trader Joe's", partial_query={"policy_context": NOW}
         )
         assert plan["status"] == "ok", plan.get("why")
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert query["where"] == [
             {"field": "dimension.shop_event_client", "op": "=", "value": "Trader Joe's"}
         ]
@@ -422,7 +422,7 @@ def test_label_without_parenthetical_never_selects(
         ], plan
     else:
         assert "execute" in plan["next"]["ready_for"], plan
-    select = plan["best"]["query_ir"]["select"]
+    select = plan["best"]["query"]["select"]
     assert [item["expression"].get("measure") for item in select] == [subject]
 
 

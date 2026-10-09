@@ -113,7 +113,7 @@ def _not_ready(payload: dict[str, Any], terms: list[str]) -> None:
     assert payload["status"] == "low_confidence", payload.get("why")
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["terms"] == terms
-    assert payload["best"]["query_ir"]["select"]
+    assert payload["best"]["query"]["select"]
     assert "ready_for" not in payload["next"]
 
 
@@ -121,7 +121,7 @@ def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue by store, customer type and product type")
 
     _not_ready(payload, ["customer type", "product type"])
-    assert payload["best"]["query_ir"]["group_by"] == STORES
+    assert payload["best"]["query"]["group_by"] == STORES
     assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
     assert payload["why"]["details"]["ambiguous_groupings"] == ["product type"]
     assert payload["why"]["message"].startswith("The draft drops the grouping by customer type")
@@ -189,9 +189,9 @@ def test_one_catalog_name_never_consumes_another(
         payload = plan_payload(runtime, intent=intent)
 
         _not_ready(payload, terms)
-        assert payload["best"]["query_ir"]["group_by"] == group_by
+        assert payload["best"]["query"]["group_by"] == group_by
         assert payload["why"]["details"]["dropped_groupings"] == terms
-        assert unconsumed_catalog_words(runtime, intent, payload["best"]["query_ir"]) == terms
+        assert unconsumed_catalog_words(runtime, intent, payload["best"]["query"]) == terms
 
 
 def test_spelling_a_selected_id_uses_its_namespace_only_there(jaffle: Runtime) -> None:
@@ -291,7 +291,7 @@ def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
         assert plan_payload(runtime, intent="monthly revenue by store")["status"] == "ok"
         payload = plan_payload(runtime, intent=f"monthly revenue by store, {name}")
         _not_ready(payload, [name])
-        assert payload["best"]["query_ir"]["group_by"] == STORES
+        assert payload["best"]["query"]["group_by"] == STORES
         for intent in (
             "revenue by store by order date",
             "monthly revenue by order date",
@@ -344,7 +344,7 @@ def test_a_plural_is_consumed_by_the_same_forms_that_recognize_it(
         )
         assert selected["status"] == "ok", selected.get("why")
         assert "execute" in selected["next"]["ready_for"]
-        assert selected["best"]["query_ir"]["group_by"] == [f"dimension.{name}"]
+        assert selected["best"]["query"]["group_by"] == [f"dimension.{name}"]
         _not_ready(plan_payload(runtime, intent=f"revenue by store, {plural}"), [plural])
 
 
@@ -355,10 +355,10 @@ def test_es_does_not_invent_short_or_unrelated_catalog_names(jaffle: Runtime) ->
         payload = plan_payload(runtime, intent="revenue by store uses ones")
         assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
         assert (
-            unconsumed_catalog_words(runtime, payload["intent"], payload["best"]["query_ir"]) == []
+            unconsumed_catalog_words(runtime, payload["intent"], payload["best"]["query"]) == []
         )
         assert unconsumed_unknown_words(
-            runtime, payload["intent"], payload["best"]["query_ir"]
+            runtime, payload["intent"], payload["best"]["query"]
         ) == ["uses", "ones"]
 
 
@@ -432,7 +432,7 @@ def test_an_undeclared_filter_value_never_leaves_a_plan_ready(
         _not_ready(payload, [value])
         assert payload["why"]["details"]["kind"] == "filter_values_unrealized"
         assert payload["why"]["recovery_hints"][0]["kind"] == "add_missing_condition"
-        assert not payload["best"]["query_ir"].get("where")
+        assert not payload["best"]["query"].get("where")
     finally:
         runtime.close()
 
@@ -440,7 +440,7 @@ def test_an_undeclared_filter_value_never_leaves_a_plan_ready(
 def test_a_declared_filter_value_matches_reference_sql(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue in Brooklyn")
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     [select] = query["select"]
     assert select["expression"]["measure"] == "measure.jaffle.revenue_usd"
     [row] = jaffle.query(query)["rows"]
@@ -548,7 +548,7 @@ def test_a_description_that_negates_the_word_does_not_answer_it(billing: Runtime
     payload = plan_payload(billing, intent="discounts granted by region")
 
     # The draft takes the measure whose description holds "discounts", not the one named for them.
-    [select] = payload["best"]["query_ir"]["select"]
+    [select] = payload["best"]["query"]["select"]
     assert select["expression"]["measure"] == "measure.billing.charge_amount"
     _not_ready(payload, ["discounts"])
     # The warning names it too: a description no longer accounts for a word.
@@ -566,7 +566,7 @@ def test_an_unknown_word_only_a_description_holds_is_not_ready(billing: Runtime)
 
     _not_ready(payload, ["markdown"])
     assert payload["why"]["details"]["kind"] == "filter_values_unrealized"
-    [select] = payload["best"]["query_ir"]["select"]
+    [select] = payload["best"]["query"]["select"]
     assert select["expression"]["measure"] == "measure.billing.discount_amount"
     assert payload["warnings"][0]["details"]["terms"] == ["markdown"]
 
@@ -593,7 +593,7 @@ def test_every_draft_goes_through_the_one_gate(
     assert fallback["best"]["pattern"] == "catalog_fallback"
     # "store" names the Store entity, so the fallback groups by it and drops the customer type.
     assert fallback["best"]["validation_ok"] is True
-    assert fallback["best"]["query_ir"]["group_by"] == STORES
+    assert fallback["best"]["query"]["group_by"] == STORES
     _not_ready(fallback, ["customer", "type"])
 
     # Force an executable catalog draft past validation: it must still pass the

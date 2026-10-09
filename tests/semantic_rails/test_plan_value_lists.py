@@ -67,7 +67,7 @@ def test_separate_equality_clauses_keep_contradiction_and_refuse_execution(
         payload = plan_payload(runtime, intent=intent)
     finally:
         runtime.close()
-    assert _keeping(payload["best"]["query_ir"], STORE) == [
+    assert _keeping(payload["best"]["query"], STORE) == [
         {"field": STORE, "op": "is", "value": "Brooklyn"},
         {"field": STORE, "op": "is", "value": "Philadelphia"},
     ]
@@ -89,7 +89,7 @@ def test_separate_equality_clauses_match_empty_duckdb_reference(
         # Execute the diagnostic IR directly to compare its conjunction with SQL;
         # the public plan must refuse execute readiness for this contradiction.
         assert "execute" not in payload["next"].get("ready_for", [])
-        actual = runtime.query(payload["best"]["query_ir"])["rows"]
+        actual = runtime.query(payload["best"]["query"])["rows"]
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = connection.execute(
@@ -129,7 +129,7 @@ def test_named_values_share_one_filter_without_adding_grouping(runtime_factory, 
         else:
             payload = plan_payload(runtime, intent=INTENT)
             assert payload["status"] == "ok", payload.get("why")
-            query = payload["best"]["query_ir"]
+            query = payload["best"]["query"]
         filters = _keeping(query, STORE)
         assert len(filters) == 1
         assert filters[0]["op"] == "is"
@@ -145,7 +145,7 @@ def test_multi_value_draft_executes_combined_values_per_group(runtime_factory) -
     try:
         payload = plan_payload(runtime, intent=INTENT)
         assert payload["status"] == "ok", payload.get("why")
-        rows = runtime.query(payload["best"]["query_ir"])["rows"]
+        rows = runtime.query(payload["best"]["query"])["rows"]
         actual = {row[PRODUCT_TYPE]: row["item_revenue_usd"] for row in rows}
         assert len(actual) == len(rows)
         runtime.close()
@@ -200,7 +200,7 @@ def test_single_values_negation_and_distinct_dimensions_keep_their_behavior(
     finally:
         runtime.close()
     assert payload["status"] == status
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["where"] == expected_where
     assert query.get("group_by", []) == expected_groups
     if status == "low_confidence":
@@ -233,7 +233,7 @@ def test_caller_filter_stays_as_written_beside_named_values(
     assert partial == before
     expected_status = "ok" if isinstance(value, list) and path == "primary" else "low_confidence"
     assert payload["status"] == expected_status, payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert len(query["where"]) == 2
     # The caller's alias reads as its word.
     assert query["where"][0] == {"field": STORE, "op": "is", "value": value}
@@ -258,7 +258,7 @@ def test_caller_exclusion_refuses_a_requested_value(
         payload = plan_payload(runtime, intent=intent, partial_query={"where": [excluded]})
     finally:
         runtime.close()
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert len(_keeping(query, STORE)) == 1
     assert written in query["where"]
     assert payload["status"] == "low_confidence"
@@ -284,7 +284,7 @@ def test_caller_equality_outside_named_values_lowers_confidence(
     finally:
         runtime.close()
     assert payload["status"] == "low_confidence", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert _keeping(query, STORE) == [
         {"field": STORE, "op": "is", "value": "Brooklyn"},
         {"field": STORE, "op": "is", "value": "Philadelphia"},
@@ -335,7 +335,7 @@ def test_caller_only_intersection_keeps_filters_and_executed_rows(
         assert payload["status"] == ("ok" if path == "primary" else "low_confidence"), payload.get(
             "why"
         )
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["where"] == [{**row, "field": STORE} for row in where]
         assert partial == before
         assert len(query["group_by"]) == 1 and STORE not in query["group_by"]
@@ -386,7 +386,7 @@ def test_unrelated_caller_inclusions_are_preserved_and_refused(
         payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
     finally:
         runtime.close()
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["where"][: len(where)] == where
     assert STORE not in query["group_by"]
     assert payload["status"] == "low_confidence", payload.get("why")
@@ -429,7 +429,7 @@ def test_ranked_named_values_keep_exact_groupings_and_combined_totals(
         else:
             assert payload["status"] == "ok", payload.get("why")
             assert "execute" in payload["next"].get("ready_for", [])
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert {
             **query,
             "where": [{**row, "value": sorted(row["value"])} for row in query["where"]],
@@ -473,7 +473,7 @@ def test_ranked_plural_grouping_stays_unresolved_with_both_named_values(
         payload = plan_payload(runtime, intent=intent)
     finally:
         runtime.close()
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert payload["status"] == "low_confidence", payload.get("why")
     assert "execute" not in payload["next"].get("ready_for", [])
     assert query["limit"] == 3
@@ -531,7 +531,7 @@ def test_caller_membership_order_and_case_preserve_equality_and_readiness(
                 payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
                 assert where == before
                 # The caller's alias reads as its word.
-                assert payload["best"]["query_ir"]["where"][:2] == [
+                assert payload["best"]["query"]["where"][:2] == [
                     {**where[0], "op": "is"},
                     where[1],
                 ]
@@ -552,8 +552,8 @@ def test_supplied_ranking_does_not_add_named_value_grouping(runtime_factory, mon
         payload = plan_payload(runtime, intent=INTENT, partial_query=partial)
         _force_fallback(runtime, monkeypatch, INTENT, "fallback")
         fallback = plan_payload(runtime, intent=INTENT, partial_query=partial)
-        assert STORE not in fallback["best"]["query_ir"]["group_by"]
-        query = payload["best"]["query_ir"]
+        assert STORE not in fallback["best"]["query"]["group_by"]
+        query = payload["best"]["query"]
         assert STORE not in query["group_by"]
         filters = _keeping(query, STORE)
         assert len(filters) == 1 and filters[0]["op"] == "is"
@@ -607,7 +607,7 @@ def test_unranked_resolved_named_values_execute_a_total_with_caller_filters_pres
             )
         else:
             payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
-            query = payload["best"]["query_ir"]
+            query = payload["best"]["query"]
             assert payload["status"] == ("low_confidence" if caller_filter else "ok"), payload.get(
                 "why"
             )
@@ -654,7 +654,7 @@ def test_empty_caller_where_does_not_raise(runtime_factory, monkeypatch, path, w
         "why"
     )
     product_dimension = "dimension.jaffle_product_type" if path == "fallback" else PRODUCT_TYPE
-    assert payload["best"]["query_ir"]["group_by"] == [product_dimension]
+    assert payload["best"]["query"]["group_by"] == [product_dimension]
 
 
 @pytest.mark.parametrize(
@@ -703,7 +703,7 @@ def test_fallback_resolves_distinct_groupings_before_deduplicating(
     _force_fallback(runtime, monkeypatch, intent, "fallback")
     try:
         payload = plan_payload(runtime, intent=intent, partial_query=partial)
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert partial == before
         assert query["group_by"] == [existing, requested]
         assert payload["status"] == "low_confidence", payload.get("why")
@@ -736,7 +736,7 @@ def test_plan_keeps_both_product_groupings_or_refuses_readiness(
     try:
         payload = plan_payload(runtime, intent=intent)
         if payload["status"] == "ok":
-            groups = payload["best"]["query_ir"]["group_by"]
+            groups = payload["best"]["query"]["group_by"]
             assert len(groups) == 2
             assert groups[0] in {PRODUCT_TYPE, "dimension.jaffle_product_type"}
             assert groups[1] in {
@@ -823,7 +823,7 @@ def test_ambiguous_added_grouping_cannot_bypass_readiness_guard(
     try:
         payload = plan_payload(runtime, intent=intent, partial_query=partial)
         assert partial == before
-        assert payload["best"]["query_ir"]["group_by"] == [
+        assert payload["best"]["query"]["group_by"] == [
             PRODUCT_TYPE,
             "dimension.jaffle_product_type",
         ]
@@ -890,7 +890,7 @@ def test_grouping_added_beside_caller_group_by_is_not_execute_ready(
     finally:
         runtime.close()
     assert partial == before
-    assert payload["best"]["query_ir"]["group_by"] == group_by
+    assert payload["best"]["query"]["group_by"] == group_by
     assert payload["status"] == "low_confidence", payload.get("why")
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     gap = next(
@@ -907,7 +907,7 @@ def test_caller_group_by_naming_every_grouping_is_execute_ready(runtime_factory)
     partial = {"group_by": [PRODUCT_TYPE, STORE]}
     try:
         payload = plan_payload(runtime, intent="item revenue by store", partial_query=partial)
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         # The caller's Store name settles how stores show: the draft adds no Store id.
         assert query["group_by"] == [PRODUCT_TYPE, STORE]
         assert payload["status"] == "ok", payload.get("why")
@@ -974,7 +974,7 @@ def test_a_plural_entity_on_the_fallback_groups_by_its_key(
     try:
         payload = plan_payload(runtime, intent=intent)
         assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["group_by"] == [key]
         measure = _alias(query["select"][0])
         actual = sorted((row[key], row[measure]) for row in runtime.query(query)["rows"])

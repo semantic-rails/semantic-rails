@@ -97,7 +97,7 @@ def test_a_fiscal_series_drafts_on_the_fiscal_calendar_and_is_held(
     jaffle: Runtime, question: str, grain: str, group_by: list[str] | None
 ) -> None:
     payload = plan_payload(jaffle, intent=question)
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
 
     if group_by:
         # A fallback by store validates on the default calendar, which changes the time.
@@ -118,7 +118,7 @@ def test_a_fiscal_series_drafts_on_the_fiscal_calendar_and_is_held(
 def test_a_fiscal_series_is_refused_not_answered_in_gregorian_quarters(
     jaffle: Runtime,
 ) -> None:
-    query = plan_payload(jaffle, intent="revenue by fiscal quarter")["best"]["query_ir"]
+    query = plan_payload(jaffle, intent="revenue by fiscal quarter")["best"]["query"]
     with pytest.raises(SemanticLayerError) as refused:
         jaffle.query(query)
 
@@ -137,7 +137,7 @@ def test_a_fiscal_comparison_is_reported(
     for runtime in (jaffle, no_fiscal):
         payload = plan_payload(runtime, intent=question)
         assert payload["status"] == "low_confidence"
-        assert "calendar_id" not in payload["best"]["query_ir"]["time"]
+        assert "calendar_id" not in payload["best"]["query"]["time"]
     payload = plan_payload(no_fiscal, intent=question)
     assert "prior_period_comparison_unrealized" in _gap_kinds(payload)
 
@@ -181,7 +181,7 @@ def test_a_fiscal_window_resolves_only_from_exact_days(
     assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED" or (
         "time_window_unresolved" in _gap_kinds(payload)
     )
-    assert "query_ir" not in payload["best"]
+    assert "query" not in payload["best"]
     assert any("exact days" in hint["message"] for hint in payload["why"]["recovery_hints"])
 
 
@@ -206,7 +206,7 @@ def test_only_a_fiscal_bucket_of_the_drafted_grain_is_honored(
     payload = plan_payload(jaffle, intent=question)
 
     assert payload["status"] == "low_confidence"
-    assert "calendar_id" not in payload["best"]["query_ir"].get("time", {})
+    assert "calendar_id" not in payload["best"]["query"].get("time", {})
 
 
 def test_the_fiscal_gap_says_what_the_draft_lacks(jaffle: Runtime) -> None:
@@ -226,7 +226,7 @@ def test_the_fiscal_gap_says_what_the_draft_lacks(jaffle: Runtime) -> None:
     # A day is a day on any calendar.
     day = plan_payload(jaffle, intent="fiscal revenue on April 3, 2017")
     assert day["status"] == "ok"
-    assert day["best"]["query_ir"]["time"]["grain"] == "day"
+    assert day["best"]["query"]["time"]["grain"] == "day"
 
 
 @pytest.mark.parametrize(
@@ -252,7 +252,7 @@ def test_a_to_date_or_rolling_fiscal_question_is_not_answered(
 
     payload = plan_payload(jaffle, intent=question)
     assert payload["status"] == "low_confidence"
-    assert "calendar_id" not in payload["best"]["query_ir"].get("time", {})
+    assert "calendar_id" not in payload["best"]["query"].get("time", {})
 
 
 def test_an_order_on_the_fiscal_bucket_orders_by_time(jaffle: Runtime) -> None:
@@ -283,12 +283,12 @@ def test_a_caller_time_block_keeps_the_draft_off_the_fiscal_calendar(jaffle: Run
     )
 
     assert payload["status"] == "low_confidence"
-    assert "calendar_id" not in payload["best"]["query_ir"]["time"]
+    assert "calendar_id" not in payload["best"]["query"]["time"]
 
 
 def test_exact_days_bound_a_fiscal_series(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue by fiscal quarter from 2017-02-01 to 2018-01-31")
-    time = payload["best"]["query_ir"]["time"]
+    time = payload["best"]["query"]["time"]
 
     _assert_calendar_refused(payload)
     assert (time["calendar_id"], time["start"], time["end"]) == (
@@ -355,7 +355,7 @@ def test_the_fiscal_gap_reads_the_drafted_query(
 
 
 def test_a_gregorian_question_is_unchanged(jaffle: Runtime) -> None:
-    query = plan_payload(jaffle, intent="revenue by quarter")["best"]["query_ir"]
+    query = plan_payload(jaffle, intent="revenue by quarter")["best"]["query"]
 
     assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "quarter"}
 

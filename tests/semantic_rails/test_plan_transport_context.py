@@ -108,7 +108,7 @@ def _call(app, transport, operation, arguments, *, key="test-plan-dev"):
 def _query_irs(payload):
     """Include every returned draft and the advertised validation input."""
     rows = [payload["best"], *payload.get("alternatives", []), *payload.get("blocked", [])]
-    queries = [row["query_ir"] for row in rows if row and "query_ir" in row]
+    queries = [row["query"] for row in rows if row and "query" in row]
     assert "validate" not in payload.get("next", {})
     return queries
 
@@ -136,7 +136,7 @@ def test_authenticated_plan_queries_round_trip_to_compile(governed_app, transpor
             & query.keys()
         )
     # The authored answer remains portable and governed at compile time.
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     if partial:
         assert query["limit"] == 17  # The planner's alternative cap is not a query limit.
 
@@ -187,7 +187,7 @@ def test_plan_validates_with_trusted_policy_despite_caller_spoofs(governed_app, 
     # A legal fallback for a different revenue measure can make the planner
     # explain semantic drift first. Follow its public recovery path and prove
     # the selected draft failed policy, not query structure or caller claims.
-    query = {**plan["best"]["query_ir"], "group_by": ["dimension.jaffle_store_name"]}
+    query = {**plan["best"]["query"], "group_by": ["dimension.jaffle_store_name"]}
     status, denied = _call(
         governed_app, transport, "validate", {"query": query}, key="test-plan-prod"
     )

@@ -165,7 +165,7 @@ INSERT INTO account_day SELECT a.account_id, d::DATE,
 def test_shared_clock_executes_every_subject(subscriptions, question, kinds):
     payload = plan_payload(subscriptions, intent=question, partial_query={"policy_context": NOW})
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["version"] == 1
     assert payload["best"]["pattern"] == "conjoined_metrics"
     assert len(query["select"]) == len(kinds)
@@ -332,7 +332,7 @@ def test_each_settled_piece_matches_its_population_sql(shared_population_names, 
         partial_query={"select": selected, "policy_context": NOW},
     )
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["select"] == selected
     with duckdb.connect(shared_population_names.db_path, read_only=True) as connection:
         reference = dict(
@@ -394,7 +394,7 @@ def test_caller_grain_is_validated_after_the_merge(subscriptions):
         partial_query={"time": {"grain": "day"}, "policy_context": NOW},
     )
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert payload["best"]["pattern"] == "conjoined_metrics"
     rows = subscriptions.query(query)["rows"]
     with duckdb.connect(subscriptions.db_path, read_only=True) as connection:
@@ -419,7 +419,7 @@ def test_customer_count_uses_its_named_metric(runtime_factory):
     try:
         payload = plan_payload(runtime, intent="customer count and lifetime order count by month")
         assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert [item["expression"] for item in query["select"]] == [
             {"metric": "metric.sales.customer_count"},
             {"measure": "measure.jaffle.lifetime_order_count", "aggregation": "sum"},
@@ -450,7 +450,7 @@ def test_starter_revenue_uses_its_named_metric(tmp_path, publish):
     try:
         payload = plan_payload(runtime, intent="revenue and order count by month")
         assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["select"][0]["expression"] == {"metric": "metric.shop.revenue_usd"}
         assert query["select"][1]["expression"]["measure"] == "measure.shop.order_count"
         rows = runtime.query(query)["rows"]
@@ -533,7 +533,7 @@ def test_a_later_filter_value_is_not_consumed_as_a_subject(subscriptions):
     assert payload["why"]["details"]["gaps"][0]["kind"] == "multiple_subjects_unrealized"
     assert "execute" not in payload.get("next", {}).get("ready_for", [])
     # The later occurrence was retained as a filter in the first subject's query.
-    assert payload["best"]["query_ir"]["where"] == [
+    assert payload["best"]["query"]["where"] == [
         {"field": "dimension.subscriptions_event_kind", "op": "=", "value": "upgrade"}
     ]
 
@@ -600,7 +600,7 @@ def test_conjoined_measures_match_independent_sql(
     try:
         payload = plan_payload(runtime, intent=question)
         assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert [item["expression"]["measure"] for item in query["select"]] == [
             f"measure.jaffle.{subject}" for subject in subjects
         ]

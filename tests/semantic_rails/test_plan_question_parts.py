@@ -201,7 +201,7 @@ def test_each_part_answers_its_clause_like_its_reference(
     assert len(payload["parts"]) == len(expected)
     for part, (metric, start, end, sql) in zip(payload["parts"], expected, strict=True):
         assert part["status"] == "ok", part.get("why")
-        query = part["best"]["query_ir"]
+        query = part["best"]["query"]
         assert query["version"] == 1
         assert [item["expression"] for item in query["select"]] == [
             {"metric": f"metric.{NS}.{metric}"}
@@ -225,10 +225,10 @@ def test_the_query_detail_returns_every_parts_query(runtime: Runtime) -> None:
     compact = _plan(runtime, question, detail="query")
 
     assert compact["status"] == "ok"
-    assert [part["best"]["query_ir"] for part in compact["parts"]] == [
-        part["best"]["query_ir"] for part in best["parts"]
+    assert [part["best"]["query"] for part in compact["parts"]] == [
+        part["best"]["query"] for part in best["parts"]
     ]
-    assert compact["best"]["query_ir"] == compact["parts"][0]["best"]["query_ir"]
+    assert compact["best"]["query"] == compact["parts"][0]["best"]["query"]
     assert {key for part in compact["parts"] for key in part} <= {
         "text", "spans", "status", "best", "why", "assumptions", "warnings", "tie_break_hints",
     }  # fmt: skip
@@ -247,8 +247,8 @@ def test_mcp_and_rest_plan_the_same_parts(runtime: Runtime) -> None:
 
     assert code == 200
     assert mcp["status"] == rest["status"] == "ok"
-    assert [(part["status"], part["best"]["query_ir"]) for part in mcp["parts"]] == [
-        (part["status"], part["best"]["query_ir"]) for part in rest["parts"]
+    assert [(part["status"], part["best"]["query"]) for part in mcp["parts"]] == [
+        (part["status"], part["best"]["query"]) for part in rest["parts"]
     ]
     # The MCP plan tool declares parts, and its server instructions say to run each one.
     [tool] = [tool for tool in list_tool_definitions() if tool["name"] == "plan"]
@@ -256,7 +256,7 @@ def test_mcp_and_rest_plan_the_same_parts(runtime: Runtime) -> None:
     Draft202012Validator(tool["outputSchema"]).validate(mcp)
     assert (
         "When status is ok, a question asking several things returns parts; execute each "
-        "part's best.query_ir." in MCP_SERVER_INSTRUCTIONS
+        "part's best.query." in MCP_SERVER_INSTRUCTIONS
     )
 
 

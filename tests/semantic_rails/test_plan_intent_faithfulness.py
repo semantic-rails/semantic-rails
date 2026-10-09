@@ -70,7 +70,7 @@ def test_conjoined_store_quarter_answers_with_the_keyed_store(runtime_factory) -
             partial_query={"policy_context": now},
         )
         assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
         rows = runtime.query(query, now=now["now"])["rows"]
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
@@ -189,7 +189,7 @@ def test_positive_value_filter_is_not_mistaken_for_negation(runtime_factory) -> 
         runtime.close()
 
     assert payload["status"] == "ok"
-    assert payload["best"]["query_ir"]["where"] == [
+    assert payload["best"]["query"]["where"] == [
         {"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}
     ]
 
@@ -273,7 +273,7 @@ def test_a_subject_with_its_own_window_is_flagged_for_another_period(
     assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
     assert "subject_window_mismatch" in _gap_kinds(payload)
     if intent == "how many unique visitors":
-        assert payload["best"]["query_ir"]["time"]["grain"] == "day"
+        assert payload["best"]["query"]["time"]["grain"] == "day"
 
 
 def test_rolling_metrics_are_not_checked(runtime_factory) -> None:

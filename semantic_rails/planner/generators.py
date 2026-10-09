@@ -351,6 +351,13 @@ def _rerank_for_text(
     return tied_ranked + rest
 
 
+# The buckets a question asks for: "monthly", "by week", "per day", "each quarter".
+_CADENCE_RE = re.compile(
+    r"\b(?:daily|weekly|monthly|quarterly|yearly|annually)\b"
+    r"|\b(?:by|per|each)\s+(?:day|week|month|quarter|year)s?\b"
+)
+
+
 def _target_focus_text(intent: str) -> str:
     """Return the likely requested measure/metric phrase.
 
@@ -365,10 +372,11 @@ def _target_focus_text(intent: str) -> str:
     lowered = str(intent or "").lower()
     if not lowered.strip():
         return ""
-    # A time window, or the periods a comparison shifts by, names no part of the measure
-    # ("revenue this month", "revenue month over month").
+    # A time window, a cadence, or the periods a comparison shifts by, names no part of the
+    # measure ("revenue this month", "monthly revenue", "revenue month over month").
     spans = [
         *_time_window(lowered).spans,
+        *(match.span() for match in _CADENCE_RE.finditer(lowered)),
         *(
             match.span()
             for pattern, _unit in _PERIOD_SHIFT_TRIGGERS
@@ -382,7 +390,8 @@ def _target_focus_text(intent: str) -> str:
         lowered,
     )
     if top_by_match:
-        return " ".join(top_by_match.group(1).strip().split())
+        # "top stores by revenue by month": the value ranked ends at its own grouping.
+        return " ".join(top_by_match.group(1).split(" by ")[0].strip().split())
     splitters = (
         " grouped by ",
         " group by ",

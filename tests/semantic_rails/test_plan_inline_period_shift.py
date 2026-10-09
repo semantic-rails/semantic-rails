@@ -35,6 +35,6 @@ def test_active_menu_yoy_fires_inline_period_shift(runtime_factory) -> None:
     assert interpreted["shift_grain"] == "year"
     # The realized IR should carry both the current-period select and
     # the prior_period shorthand.
-    select = best["query_ir"]["select"]
+    select = best["query"]["select"]
     assert len(select) == 2
     assert any(col.get("expression", {}).get("kind") == "prior_period" for col in select)

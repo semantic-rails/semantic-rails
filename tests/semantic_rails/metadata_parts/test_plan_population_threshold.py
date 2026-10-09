@@ -35,9 +35,9 @@ def _drafted_best(runtime, intent):
     assert "ready_for" not in payload["next"]
     best = payload["best"]
     assert best["validation_ok"] is False
-    report = runtime.validate(best["query_ir"])
+    report = runtime.validate(best["query"])
     assert [error["code"] for error in report["errors"]] == [_REFUSED], report["errors"]
-    return best["query_ir"]
+    return best["query"]
 
 
 def _predicates(query_ir):

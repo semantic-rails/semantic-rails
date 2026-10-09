@@ -333,7 +333,7 @@ def test_an_entity_grouping_answers_like_plain_sql(jaffle: Runtime, case: _Case)
     payload = plan_payload(jaffle, intent=case.question, partial_query=partial or None)
     assert payload["status"] == "ok", payload.get("why")
     assert "execute" in payload["next"]["ready_for"]
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query.get("group_by") == list(case.dims)
     assert query.get("limit") == (case.limit or None)
     rows = jaffle.query({**query, **_context(case)})["rows"]

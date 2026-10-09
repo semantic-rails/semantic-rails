@@ -246,7 +246,7 @@ def test_short_and_symbol_names_are_items(tmp_path, monkeypatch, label, question
         assert len(_gaps(runtime, question, {"where": _drops("web")})) == 1
         # The planner drafts the second item too, and holds.
         payload = _plan(runtime, question, _drops("web"))
-        assert payload["best"]["query_ir"]["where"] == _drops("web", "store")
+        assert payload["best"]["query"]["where"] == _drops("web", "store")
         _assert_held(payload)
         _draft_plan(monkeypatch, _signups_draft(_drops("web")))
         _assert_held(_plan(runtime, question))
@@ -459,7 +459,7 @@ def test_a_partly_dropped_list_holds(tmp_path, monkeypatch, question, second):
     try:
         # The planner drafts every item, and holds; so does the caller's '!='.
         payload = _plan(runtime, question, _drops("web"))
-        assert payload["best"]["query_ir"]["where"] == _drops("web", second)
+        assert payload["best"]["query"]["where"] == _drops("web", second)
         _assert_held(payload)
         _assert_held(_plan(runtime, question, _drops("web", op="!=")))
         # A draft that drops only the first item holds, though it validates.
@@ -488,8 +488,8 @@ def test_a_list_dropped_exactly_holds(shop, question):
 def test_an_excluded_value_named_top_is_no_ranking(shop):
     # Read as "top 5", it drafted a limit, which truncates a grouped answer.
     payload = _plan(shop, "signups excluding web and Top")
-    assert "limit" not in payload["best"]["query_ir"]
-    assert payload["best"]["query_ir"]["where"] == _drops("web", "store")
+    assert "limit" not in payload["best"]["query"]
+    assert payload["best"]["query"]["where"] == _drops("web", "store")
     _assert_held(payload)
 
 
@@ -497,13 +497,13 @@ def test_the_held_draft_is_the_null_keeping_exclusion(shop):
     # The held draft shows the executable form, and it runs as reference SQL counts.
     payload = _plan(shop, "signups excluding web")
     _assert_held(payload)
-    assert payload["best"]["query_ir"]["where"] == _drops("web")
+    assert payload["best"]["query"]["where"] == _drops("web")
     expected = _reference(shop, "channel IS DISTINCT FROM 'web'")
-    assert _selected(shop, payload["best"]["query_ir"]) == (expected, 4)
+    assert _selected(shop, payload["best"]["query"]) == (expected, 4)
     windowed = _plan(shop, "signups excluding web in June 2024")
     _assert_held(windowed)
     expected = _reference(shop, f"channel IS DISTINCT FROM 'web' AND {JUNE_2024}")
-    assert _selected(shop, windowed["best"]["query_ir"]) == (expected, 1) == ({107}, 1)
+    assert _selected(shop, windowed["best"]["query"]) == (expected, 1) == ({107}, 1)
     # A plain '!=' holds too.
     _assert_held(_plan(shop, "signups excluding web", _drops("web", op="!=")))
 
@@ -561,7 +561,7 @@ SIGNUPS = {"measure": "measure.shop.signup_count"}
     "question", ["signups excluding web", "signups excluding web in June 2024"]
 )
 def test_an_exact_exclusion_draft_holds(shop, monkeypatch, question, control):
-    _draft_plan(monkeypatch, control(_plan(shop, question)["best"]["query_ir"]))
+    _draft_plan(monkeypatch, control(_plan(shop, question)["best"]["query"]))
     _assert_held(_plan(shop, question))
 
 
@@ -647,7 +647,7 @@ def test_held_store_exclusion_drafts_match_reference_sql(runtime_factory, questi
     try:
         payload = plan_payload(runtime, intent=question)
         _assert_held(payload)
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["where"] == [{"field": STORE, "op": KEEPS, "value": excluded}]
         first = query["select"][0]
         alias = first.split(".")[-1] if isinstance(first, str) else first["as"]

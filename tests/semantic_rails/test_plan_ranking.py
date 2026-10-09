@@ -89,7 +89,7 @@ def test_plan_prefers_revenue_usd_over_drink_revenue_for_generic_intent(
                 }
                 assert "ready_for" not in plan["next"]
                 assert (
-                    plan["best"]["query_ir"]["select"][0]["expression"]["measure"]
+                    plan["best"]["query"]["select"][0]["expression"]["measure"]
                     == "measure.jaffle.revenue_usd"
                 )
                 continue

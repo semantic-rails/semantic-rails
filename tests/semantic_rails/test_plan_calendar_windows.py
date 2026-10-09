@@ -205,7 +205,7 @@ def test_totals_over_a_window_get_one_bucket(text: str, grain: str) -> None:
 
 
 def _best(payload: dict[str, Any]) -> dict[str, Any]:
-    return (payload.get("best") or {}).get("query_ir") or {}
+    return (payload.get("best") or {}).get("query") or {}
 
 
 def test_plan_keeps_the_year(runtime_factory: Any) -> None:
@@ -322,7 +322,7 @@ def test_the_catalog_fallback_resolves_windows_the_same_way(
     finally:
         runtime.close()
     assert resolved["best"]["pattern"] == "catalog_fallback"
-    time = resolved["best"]["query_ir"]["time"]
+    time = resolved["best"]["query"]["time"]
     assert (time["start"], time["end"], time["grain"]) == ("2017-03-01", "2017-04-01", "month")
     assert unclear["status"] == "low_confidence"
     assert unclear["why"]["code"] == "TIME_WINDOW_UNRESOLVED"

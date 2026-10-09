@@ -180,9 +180,9 @@ def _assert_zone_hold(plan: dict[str, Any], phrases: list[str]) -> None:
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED", plan.get("why")
     assert plan["why"]["details"]["unresolved_phrases"] == phrases
     assert not plan.get("next", {}).get("ready_for")
-    assert not (plan.get("best") or {}).get("query_ir")
+    assert not (plan.get("best") or {}).get("query")
     assert not any(
-        row.get("query_ir") for row in plan.get("alternatives", []) + plan.get("blocked", [])
+        row.get("query") for row in plan.get("alternatives", []) + plan.get("blocked", [])
     )
 
 
@@ -208,7 +208,7 @@ def test_today_executes_where_both_zones_read_the_same_day(local_subscriptions: 
         now="2026-10-05T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-05", "2026-10-06")
     rows = local_subscriptions.query(query)["rows"]
     gold = _signups(local_subscriptions, "2026-10-05", "2026-10-06")
@@ -260,7 +260,7 @@ def test_orders_windows_run_as_returned_where_both_zones_agree(
     )
     assert plan["status"] == "ok", plan.get("why")
     # The returned query runs without the caller's clock.
-    time = normalize_query(plan["best"]["query_ir"], config=local_orders._config).time
+    time = normalize_query(plan["best"]["query"], config=local_orders._config).time
     assert (time.start, time.end) == (start, end)
 
 
@@ -282,7 +282,7 @@ def test_a_period_comparison_is_held_where_the_roles_zone_reads_another_year(
     )
     _assert_zone_hold(plan, ["this year"])
     # No query is returned, so there are no rows to filter.
-    assert "best.query_ir" not in str(plan["why"])
+    assert "best.query" not in str(plan["why"])
 
 
 def test_a_period_comparison_drops_its_start_where_both_zones_agree(local_orders: Runtime) -> None:
@@ -295,7 +295,7 @@ def test_a_period_comparison_drops_its_start_where_both_zones_agree(local_orders
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "TIME_WINDOW_START_DROPPED", plan.get("why")
     assert plan["why"]["details"]["requested_start"] == "2026-01-01"
-    time = plan["best"]["query_ir"]["time"]
+    time = plan["best"]["query"]["time"]
     assert "start" not in time and time["end"] == "2027-01-01"
 
 
@@ -475,7 +475,7 @@ def _plan_on(
 
 def _shop_value(runtime: Runtime, plan: dict[str, Any]) -> Any:
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     [row] = runtime.query(query)["rows"]
     return row[_alias(query["select"][0])]
 
@@ -496,7 +496,7 @@ def test_a_window_a_leg_reads_on_other_days_in_its_zone_is_held(
     # October 4, but they would read October 5, New York's tomorrow.
     plan = _plan_on(shop, monkeypatch, surface, f"purchase rate {phrase}", detail=detail)
     _assert_zone_hold(plan, [phrase])
-    assert not plan.get("query_ir")
+    assert not plan.get("query")
     details = plan["why"]["details"]
     assert details["temporal_roles"] == {SHOP_ORDERS: "America/New_York"}
     assert (details["temporal_role"], details["timezone"]) == (SHOP_ORDERS, "America/New_York")
@@ -645,10 +645,10 @@ def test_a_window_resolved_in_utc_is_held_for_a_local_role(
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED", plan.get("why")
     assert plan["why"]["details"]["unresolved_phrases"] == [phrase]
     assert not plan.get("next", {}).get("ready_for")
-    assert not (plan.get("best") or {}).get("query_ir")
-    assert not plan.get("query_ir")
+    assert not (plan.get("best") or {}).get("query")
+    assert not plan.get("query")
     assert not any(
-        row.get("query_ir") for row in plan.get("alternatives", []) + plan.get("blocked", [])
+        row.get("query") for row in plan.get("alternatives", []) + plan.get("blocked", [])
     )
 
 
@@ -680,7 +680,7 @@ def test_local_fallback_uses_the_same_clock(
         now="2026-10-05T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
-    time = plan["best"]["query_ir"]["time"]
+    time = plan["best"]["query"]["time"]
     assert (time["start"], time["end"]) == ("2026-10-05", "2026-10-06")
 
 
@@ -697,7 +697,7 @@ def test_a_returned_relative_window_keeps_the_supplied_clock(
         now="2026-10-05T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert "range" not in query["time"] and "policy_context" not in query
     # Run unchanged, without the clock it was planned on.
     rows = local_subscriptions.query(query)["rows"]
@@ -709,7 +709,7 @@ def test_a_returned_relative_window_keeps_the_supplied_clock(
     assert gold == 2
     assert sum(row[_alias(query["select"][0])] for row in rows) == gold
     assert not any(
-        "range" in (row.get("query_ir") or {}).get("time", {})
+        "range" in (row.get("query") or {}).get("time", {})
         for row in plan.get("alternatives", []) + plan.get("blocked", [])
     )
 
@@ -830,7 +830,7 @@ def test_an_omitted_caller_bound_keeps_the_drafted_one(
         now="2026-10-04T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-04", "2026-10-05")
     rows = local_subscriptions.query(query)["rows"]
     gold = _signups(local_subscriptions, "2026-10-04", "2026-10-05")
@@ -848,7 +848,7 @@ def test_a_whole_day_caller_window_executes(local_subscriptions: Runtime) -> Non
         now="2026-10-04T12:00:00Z",
     )
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     rows = local_subscriptions.query(query)["rows"]
     gold = _signups(local_subscriptions, "2026-10-04", "2026-10-05")
     assert gold == 2
@@ -879,7 +879,7 @@ def test_a_range_ending_in_now_is_held_in_full(runtime_factory, phrase: str) -> 
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
     assert plan["why"]["details"]["unresolved_phrases"] == [phrase.lower()]
-    assert not (plan.get("best") or {}).get("query_ir")
+    assert not (plan.get("best") or {}).get("query")
 
 
 @pytest.mark.parametrize("phrase", ["last 10000 years", "last 9999999999 days"])
@@ -891,7 +891,7 @@ def test_unrepresentable_as_of_bounds_are_held(runtime_factory, phrase: str) -> 
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
     assert plan["why"]["details"]["unresolved_phrases"] == [f"end of {phrase}"]
-    assert not (plan.get("best") or {}).get("query_ir")
+    assert not (plan.get("best") or {}).get("query")
     cue = _time_window(f"revenue end of {phrase}", policy_context=NOW).as_of[0]
     assert cue.bounds == {}
     # Ordinary relative intervals also return a held plan rather than escaping as an error.
@@ -920,7 +920,7 @@ def test_current_windows_use_the_query_clock(
         subscriptions, intent=f"new accounts {phrase}", partial_query={"policy_context": NOW}
     )
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert (query["time"]["start"], query["time"]["end"]) == (start, end)
     rows = subscriptions.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(":memory:") as connection:
@@ -958,7 +958,7 @@ def test_as_of_cues_are_held_in_full(subscriptions: Runtime, phrase: str) -> Non
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED", plan.get("why")
     assert plan["why"]["details"]["unresolved_phrases"] == [phrase.lower()]
     assert not plan["next"].get("ready_for")
-    assert not (plan.get("best") or {}).get("query_ir")
+    assert not (plan.get("best") or {}).get("query")
 
 
 @pytest.mark.parametrize(("phrase", "day"), list(AS_OF.items()))
@@ -969,7 +969,7 @@ def test_as_of_cues_read_a_balance_on_their_day(
         subscriptions, intent=f"MRR {phrase}", partial_query={"policy_context": NOW}
     )
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert (query["time"]["grain"], query["time"]["start"]) == ("day", day)
     rows = subscriptions.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(":memory:") as connection:
@@ -1011,7 +1011,7 @@ def test_an_explicit_interval_does_not_consume_an_as_of_cue(
     )
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-    assert not (plan.get("best") or {}).get("query_ir")
+    assert not (plan.get("best") or {}).get("query")
 
 
 def test_the_clock_is_scoped_and_the_cache_is_keyed_by_date(
@@ -1072,5 +1072,5 @@ def test_fallback_uses_the_same_clock(
     plan = plan_payload(
         subscriptions, intent="new accounts today", partial_query={"policy_context": NOW}
     )
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert query["time"]["start"] == "2026-10-05"

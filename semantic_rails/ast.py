@@ -923,7 +923,7 @@ def rewrite_select_shorthand(
 
     Every query entry point (validate, compile, execute, plan) rewrites through this one
     function. validate, compile and execute report its notes as response warnings; plan
-    discards them and returns the canonical form in ``best.query_ir``. The returned payload
+    discards them and returns the canonical form in ``best.query``. The returned payload
     is the canonical form: rewriting it again changes nothing.
     """
     raw_select = payload.get("select", [])

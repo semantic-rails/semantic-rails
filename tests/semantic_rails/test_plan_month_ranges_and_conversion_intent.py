@@ -24,7 +24,7 @@ def _plan(runtime, intent: str, detail: str = "best") -> dict:
 
 
 def _best_time(payload: dict) -> dict:
-    return ((payload.get("best") or {}).get("query_ir") or {}).get("time") or {}
+    return ((payload.get("best") or {}).get("query") or {}).get("time") or {}
 
 
 def test_month_range_with_both_years_lands_in_query_ir(runtime_factory):
@@ -84,7 +84,7 @@ def test_conversion_intent_resolved_to_conversion_metric_stays_ok(runtime_factor
     runtime = runtime_factory("jaffle_shop")
     payload = _plan(runtime, "session to order conversion rate (7d) by month")
     assert payload["status"] == "ok"
-    select = (payload.get("best") or {}).get("query_ir", {}).get("select") or []
+    select = (payload.get("best") or {}).get("query", {}).get("select") or []
     assert "conversion" in str(select)
 
 

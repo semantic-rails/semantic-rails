@@ -20,6 +20,7 @@ from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
 from .policies import enforce_query_policies, withheld_rank_order
 from .policy_rules import check_request_environment
+from .query_call import call_from_query
 from .request_context import RequestContext, context_from_policy_context
 from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
 from .runtime_parts.responses import (
@@ -435,7 +436,7 @@ def _restricted_plan(
             "why": {"code": "NO_AUTHORIZED_PLAN", "message": "The requested plan is unavailable."},
         }
     best = {
-        "query_ir": query,
+        "query": call_from_query(query),
         "validation_ok": True,
         "pattern": "granted_metric",
         "resolved": [row],

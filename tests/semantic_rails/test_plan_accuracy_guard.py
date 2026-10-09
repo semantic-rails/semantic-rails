@@ -1471,7 +1471,7 @@ def test_mcp_plan_rejects_list_values_for_scalar_filter_ops(
 
 def test_mcp_plan_detail_best_adds_the_trace(adapter: SemanticLayerMCPAdapter) -> None:
     best = adapter.call_tool("plan", {"intent": "revenue by store", "detail": "best"})
-    assert best["best"]["query_ir"]
+    assert best["best"]["query"]
     assert "intent_ir" in best and "next" in best
     assert "trace" in best["best"]
     # The compact default leaves them out, and an unknown detail level gets it.
@@ -1706,7 +1706,7 @@ def test_plan_answers_or_flags_the_metric_a_question_names(
 ) -> None:
     disable_planner_patterns(named_metrics.runtime, "conjoined_metrics")
     payload = named_metrics.call_tool("plan", {"intent": text, "detail": "full"})
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert payload["status"] == status
     if subject is not None:
         assert [
@@ -1774,7 +1774,7 @@ def test_a_number_in_a_time_phrase_is_not_a_ranking(
     assert (plan["status"], (plan.get("why") or {}).get("code")) == (
         ("low_confidence", "PLAN_UNASKED_GROUPING") if held else ("ok", None)
     )
-    assert plan["best"]["query_ir"].get("limit") == limit
+    assert plan["best"]["query"].get("limit") == limit
 
 
 Q1_2017 = {"start": "2017-01-01", "end": "2017-04-01"}
@@ -1816,7 +1816,7 @@ def test_a_named_order_date_is_the_order_clock(
     adapter: SemanticLayerMCPAdapter, intent: str, group_by: list[str], time: dict[str, str]
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert plan["status"] == "ok"
     # "At <unit> grain" names no catalog object, so the plan reports "grain" as unmatched.
     grain_only = [{"code": "PLAN_UNMATCHED_TERMS", "terms": ["grain"]}] if "grain" in intent else []
@@ -1832,7 +1832,7 @@ def test_the_order_date_answer_groups_by_store_and_month_only(
     intent = "revenue by store and order date at month grain, from January 1 2017 to March 31 2017"
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
     assert plan["status"] == "ok"
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     rows = adapter.call_tool("execute", {"query": query})["rows"]
     assert len(rows) == 4  # Philadelphia for three months, Brooklyn from March
     assert {key for row in rows for key in row} == {
@@ -1846,13 +1846,13 @@ def test_another_clocks_date_is_not_the_order_clock(adapter: SemanticLayerMCPAda
     plan = adapter.call_tool(
         "plan", {"intent": "revenue by store and customer first order date", "detail": "query"}
     )
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert "dimension.jaffle_customer_first_order_at" in query["group_by"]
     assert "time" not in query
     # With a grain, the draft still groups by that raw timestamp, and "grain" stays flagged.
     intent = "revenue by store and customer first order date at month grain"
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
-    assert "dimension.jaffle_customer_first_order_at" in plan["best"]["query_ir"]["group_by"]
+    assert "dimension.jaffle_customer_first_order_at" in plan["best"]["query"]["group_by"]
     codes = {w["code"]: w["details"]["terms"] for w in plan["warnings"]}
     assert "grain" in codes["PLAN_UNMATCHED_TERMS"]
 
@@ -1862,7 +1862,7 @@ def test_conjoined_filtered_metric_and_measure_match_reference_sql(named_metrics
         "plan", {"intent": "large order revenue and orders by month", "detail": "full"}
     )
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert [item["expression"] for item in query["select"]] == [
         {"metric": "metric.sales.large_order_revenue"},
         {"measure": "measure.jaffle.order_count", "aggregation": "count_distinct"},

@@ -6,7 +6,7 @@ import pytest
 
 from scripts.benchmark_plan import _compile_after_plan, _gate_exit_code
 
-PAYLOAD = {"status": "ok", "best": {"query_ir": {"select": [{"metric": "m"}]}}}
+PAYLOAD = {"status": "ok", "best": {"query": {"select": [{"metric": "m"}]}}}
 
 
 class FakeRuntime:

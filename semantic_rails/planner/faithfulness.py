@@ -596,7 +596,7 @@ def intent_subject_why(
     ):
         return None
     rows = config.measures if measure else config.metric_recipes
-    words = set(_tokens(_target_focus_text(text))) or terms
+    words = set(_tokens(_target_focus_text(text))) | terms
     grouped = {
         form
         for term in _asked_grouping_terms(config, text)

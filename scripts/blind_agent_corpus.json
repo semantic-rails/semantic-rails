@@ -106,7 +106,7 @@
           "grain": "month"
         }
       },
-      "expected_status": "low_confidence",
+      "expected_status": "needs_clarification",
       "forbid_ready_for_execute": true
     },
     {

@@ -144,7 +144,7 @@ def test_authored_snapshot_question_answers_reference(subscriptions):
     result = _plan(subscriptions)
     assert result["status"] == "ok", result.get("why")
     assert result["best"]["pattern"] == "package_example"
-    rows = subscriptions.query(result["best"]["query_ir"])["rows"]
+    rows = subscriptions.query(result["best"]["query"])["rows"]
     gold = _reference(subscriptions, "2026-10-04", 2)
     assert gold == [("Acme Data Co", 500), ("Initech", 99)]
     assert [(row[NAME], row["mrr"]) for row in rows] == gold
@@ -163,7 +163,7 @@ def test_case_and_whitespace_variants_match_reference(subscriptions, question):
     result = _plan(subscriptions, question)
     assert result["status"] == "ok", result.get("why")
     assert result["best"]["pattern"] == "package_example"
-    query = result["best"]["query_ir"]
+    query = result["best"]["query"]
     assert query["limit"] == 2
     assert query["time"]["start"] == "2026-10-04"
     assert query["time"]["end"] == "2026-10-05"
@@ -186,7 +186,7 @@ def test_contractions_use_the_same_normalizer(subscriptions, question):
     )
     result = _plan(subscriptions, question)
     assert result["status"] == "ok", result.get("why")
-    rows = subscriptions.query(result["best"]["query_ir"])["rows"]
+    rows = subscriptions.query(result["best"]["query"])["rows"]
     assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, "2026-10-04", 2)
 
 
@@ -316,7 +316,7 @@ def test_caller_fields_survive_and_resolved_ids_come_from_the_query(subscription
         },
     )
     assert result["status"] == "ok", result.get("why")
-    query = result["best"]["query_ir"]
+    query = result["best"]["query"]
     assert query["limit"] == 3
     assert query["where"][0]["value"] == "Acme Data Co"
     assert "policy_context" not in query
@@ -397,7 +397,7 @@ def test_an_example_answers_only_its_own_day(runtime_factory, day, end, other_da
         verbatim = plan_payload(runtime, intent=f"Revenue on {day}")
         assert verbatim["status"] == "ok", verbatim.get("why")
         assert verbatim["best"]["pattern"] == "package_example"
-        rows = runtime.query(verbatim["best"]["query_ir"])["rows"]
+        rows = runtime.query(verbatim["best"]["query"])["rows"]
         with duckdb.connect(runtime.db_path, read_only=True) as conn:
             (gold,) = conn.execute(
                 "SELECT SUM(order_total_cents / 100.0) FROM jaffle_order "
@@ -437,7 +437,7 @@ def test_a_signed_currency_threshold_answers_only_its_own_sign(runtime_factory):
         unsigned = plan_payload(runtime, intent="Total revenue above $5")
         assert verbatim["status"] == "ok", verbatim.get("why")
         assert verbatim["best"]["pattern"] == "package_example"
-        rows = runtime.query(verbatim["best"]["query_ir"])["rows"]
+        rows = runtime.query(verbatim["best"]["query"])["rows"]
         with duckdb.connect(runtime.db_path, read_only=True) as conn:
             gold = conn.execute(
                 "SELECT SUM(order_total_cents / 100.0) FROM jaffle_order "
@@ -481,8 +481,8 @@ def test_bundled_examples_verbatim_equal_authored_results(runtime_factory, examp
     result = plan_payload(runtime, intent=entry["question"])
     assert result["status"] == "ok", (example_id, result.get("why"))
     assert result["best"]["pattern"] == "package_example"
-    assert result["best"]["query_ir"] == entry["query"]
-    actual = runtime.query(result["best"]["query_ir"])
+    assert result["best"]["query"] == entry["query"]
+    actual = runtime.query(result["best"]["query"])
     gold = runtime.query(entry["query"])
     assert actual["output_columns"] == gold["output_columns"]
     assert actual["rows"] == gold["rows"]
