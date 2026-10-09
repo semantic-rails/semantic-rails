@@ -28,6 +28,7 @@ import pytest
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.planner import answer_shape, intent_holds, plan_payload
 from semantic_rails.planner import plan as plan_module
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import typed_rows
@@ -45,8 +46,8 @@ ORDER_NUMBER = "dimension.jaffle_order_customer_order_number"
 STORE_ID = "dimension.jaffle_store_id"
 STORE_NAME = "dimension.jaffle_store_name"
 STORE_TAX_RATE = "dimension.jaffle_store_tax_rate"
-ORDERS = {"measure": "measure.jaffle.order_count"}
-REVENUE = {"measure": "measure.jaffle.revenue_usd"}
+ORDERS = "measure.jaffle.order_count"
+REVENUE = "measure.jaffle.revenue_usd"
 LAST_WEEK = "WHERE ordered_at >= TIMESTAMP '2017-08-14' AND ordered_at < TIMESTAMP '2017-08-21'"
 COMPARED = "Orders by store name last week compared with the week ?"
 STORE_REVENUE_LAST_MONTH = (
@@ -56,7 +57,7 @@ STORE_REVENUE_LAST_MONTH = (
 )
 
 
-def _selects(*expressions: dict[str, Any]) -> dict[str, Any]:
+def _selects(*expressions: Any) -> dict[str, Any]:
     return {
         "select": [
             {"as": f"value_{index}", "expression": expression}
@@ -235,13 +236,7 @@ NARROWER = [
     # first one again, and two values don't say what the question compares.
     (
         COMPARED,
-        _selects(ORDERS, {"kind": "measure", **ORDERS}),
-        "comparison_unrealized",
-        '"compared"',
-    ),
-    (
-        COMPARED,
-        _selects(ORDERS, {"kind": "measure_ref", **ORDERS}),
+        _selects(ORDERS, {"kind": "measure", "measure": ORDERS}),
         "comparison_unrealized",
         '"compared"',
     ),
@@ -253,31 +248,41 @@ NARROWER = [
     # Order cost (one word of its name), nor revenue on the order clock ("Order time").
     (
         BOTH,
-        _selects({**REVENUE, "aggregation": "sum"}, {**REVENUE, "aggregation": "sum"}),
+        _selects(
+            {"kind": "measure", "measure": REVENUE, "aggregation": "sum"},
+            {"kind": "measure", "measure": REVENUE, "aggregation": "sum"},
+        ),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects(REVENUE, {**REVENUE, "aggregation": "sum"}),
+        _selects(REVENUE, {"kind": "measure", "measure": REVENUE, "aggregation": "sum"}),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({"measure": "measure.jaffle.tax_paid_usd"}, REVENUE),
+        _selects("measure.jaffle.tax_paid_usd", REVENUE),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({"measure": "measure.jaffle.order_cost_usd"}, REVENUE),
+        _selects("measure.jaffle.order_cost_usd", REVENUE),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({**REVENUE, "temporal_role": "temporal_role.jaffle_order_time"}, REVENUE),
+        _selects(
+            {
+                "kind": "measure",
+                "measure": REVENUE,
+                "temporal_role": "temporal_role.jaffle_order_time",
+            },
+            REVENUE,
+        ),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
@@ -368,7 +373,7 @@ def test_only_the_listed_entitys_key_lists_its_rows(
 
     partial = {"group_by": group_by}
     why = answer_shape._answer_shape_why(
-        jaffle, question, {**_selects(REVENUE), **partial}, partial
+        jaffle, question, Call.from_call({**_selects(REVENUE), **partial}), Call.from_call(partial)
     )
 
     assert (why is None) is listed
@@ -423,8 +428,6 @@ STAY_OK = [
     "Revenue for each store last month",
     "Show orders by store name last week.",
     "Show me orders by week for the last 4 weeks.",
-    # A prior-period select is a value to compare with.
-    "Monthly revenue vs prior year",
     # "who" after a noun is a relative pronoun: the total of a filtered set.
     "Revenue from customers who are new",
 ]
@@ -437,6 +440,17 @@ def test_an_answer_of_the_asked_shape_stays_ready(jaffle: Runtime, question: str
 
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
+
+
+def test_a_prior_period_comparison_asks_which_reading(jaffle: Runtime) -> None:
+    """A comparison with the prior year isn't ready as one draft: plan asks which reading to
+    run, and the why names the comparison."""
+
+    payload = plan_payload(jaffle, intent="Monthly revenue vs prior year")
+
+    assert payload["status"] == "needs_clarification"
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
+    assert "ready_for" not in payload["next"]
 
 
 @pytest.mark.parametrize(
@@ -698,8 +712,6 @@ def test_a_shape_word_inside_a_declared_name_asks_nothing(
         runtime.close()
 
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query"]["select"] == [
-        {"as": "comparison_cost", "expression": {"metric": "metric.upkeep.comparison_cost"}}
-    ]
+    assert payload["best"]["query"]["select"] == ["metric.upkeep.comparison_cost"]
     # Read outside the name, the same word would hold the one value.
     assert [gap["kind"] for gap in _gaps(unnamed)] == ["comparison_unrealized"]

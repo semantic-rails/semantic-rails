@@ -199,11 +199,11 @@ def _as_of_cues(lowered: str, today: date) -> tuple[_AsOfCue, ...]:
             cues.append(_AsOfCue("closing_day", lead.span()))
             continue
         span, bounds = max(candidates, key=lambda row: row[0][1])
-        cues.append(
-            _AsOfCue(
-                "closing_day", (lead.start(), lead.end() + span[1]), period_days(bounds, today)
-            )
-        )
+        try:
+            days = period_days(bounds, today)
+        except (ValueError, OverflowError):
+            days = {}  # past the calendar's range: the cue stays unread, and held
+        cues.append(_AsOfCue("closing_day", (lead.start(), lead.end() + span[1]), days))
     return tuple(sorted(cues, key=lambda cue: cue.span))
 
 

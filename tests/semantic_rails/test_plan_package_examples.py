@@ -225,7 +225,11 @@ def test_two_matching_examples_clarify_instead_of_choosing(subscriptions, detail
 
 
 @pytest.mark.parametrize(
-    "bad", [{"version": 2}, {"select": [{"expression": {"metric": "metric.missing"}}]}]
+    "bad",
+    [
+        {"select": ["metric.missing"]},
+        {"select": [{"expression": {"metric": "metric.subscriptions.mrr"}}]},
+    ],
 )
 def test_invalid_examples_fall_through_to_normal_planning(subscriptions, bad):
     _replace_entries(
@@ -671,7 +675,10 @@ def test_a_hidden_measure_answers_its_example_question_like_an_absent_one(tmp_pa
         return payload["status"], why.get("code"), why.get("details", {}).get("invalid_examples")
 
     assert outcome(answers["hidden"]) == outcome(answers["absent"])
-    assert outcome(answers["absent"])[1:] == ("PLAN_INVALID_EXAMPLE", ["monthly_revenue"])
+    # Without Revenue, "revenue" names no one measure: normal planning holds its draft and
+    # still names the example it couldn't use.
+    assert outcome(answers["absent"])[0] != "ok"
+    assert outcome(answers["absent"])[2] == ["monthly_revenue"]
     assert hidden not in json.dumps(answers["hidden"])
 
 

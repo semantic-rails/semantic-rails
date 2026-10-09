@@ -269,7 +269,8 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
 
     op, value = threshold
     time_spec = _time_spec(target_measure.default_temporal_role, text)
-    is_top, top_n = _top_n_intent(text)
+    # "Top decile of customers" is the population share, not a ranking of the rows.
+    is_top, top_n = _top_n_intent(text) if not isinstance(value, dict) else (False, 0)
     config = runtime._config
     group_by = _maybe_group_by(config, text, target_terms=target_terms)
     product_filter = _product_filter(config, "account") if "arr" in target_terms else None

@@ -57,7 +57,8 @@ def _merge_partial_query(config: Any, draft_query: Call, partial_query: Call | N
 
 
 def _merged_time(draft: Time | None, caller: Time | None) -> Time | None:
-    """The caller's time fields over the draft's; the caller's window replaces the draft's."""
+    """The caller's time fields over the draft's. The caller's window replaces the draft's,
+    except that a dated bound the caller leaves out keeps the draft's dated one."""
 
     if caller is None or draft is None:
         return caller or draft
@@ -66,7 +67,10 @@ def _merged_time(draft: Time | None, caller: Time | None) -> Time | None:
         grain=caller.grain or draft.grain,
         fill=caller.fill or draft.fill,
     )
-    return merged.with_window(caller.window or draft.window)
+    window = caller.window or draft.window
+    if caller.window and not (caller.relative or draft.relative):
+        window = {**draft.window, **caller.window}
+    return merged.with_window(window)
 
 
 def _without_caller_selects(

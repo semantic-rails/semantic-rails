@@ -13,7 +13,12 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from ..config_parts.measure_governance import governed_form, governing_metrics, whole_aggregate
+from ..config_parts.measure_governance import (
+    building_block_measures,
+    governed_form,
+    governing_metrics,
+    whole_aggregate,
+)
 from ..errors import SemanticLayerError
 from ..expressions import AggregateExpr, collect_object_references
 from ..naming import last_token as _last_token
@@ -427,6 +432,10 @@ def _balance_body(recipe: Any) -> AggregateExpr | None:
     return body if isinstance(body, AggregateExpr) and not body.window else None
 
 
+# A label's note that the measure counts every row: "Teams (all classes)".
+_EVERY_ROW_RE = re.compile(r"\(\s*all\b", re.IGNORECASE)
+
+
 def _governed_target(config: Any, focus: str, query: Call) -> Any | None:
     """The governed metric a one-select draft over a measure answers with instead.
 
@@ -434,7 +443,8 @@ def _governed_target(config: Any, focus: str, query: Call) -> Any | None:
     metric governs it when the metric is that measure's aggregate, at the same aggregation,
     through a filter (``governed_form``: bare or zero-filled; "Active stores" over "Active
     stores (all kinds)"). It is the answer when the question's target phrase ``focus`` names it
-    (``_said_name``) and no other such metric as fully, or when it alone governs the measure;
+    (``_said_name``) and no other such metric as fully, or when it alone governs a measure that
+    is a building block or is named for every row;
     never when the question names the measure beyond the metric's own names ("all kinds" asks
     for every row), when the draft filters or groups by something the metric's filter reads,
     or when it cuts by the measure itself: "demo stores" asks for rows the metric leaves out.
@@ -471,8 +481,13 @@ def _governed_target(config: Any, focus: str, query: Call) -> Any | None:
     widest = [key for key in named if all(words <= named[key] for words in named.values())]
     if named:
         chosen = widest[0] if len(widest) == 1 else ""
-    else:
+    elif measure.id in building_block_measures(config) or _EVERY_ROW_RE.search(measure.label):
+        # A building block, or a measure named for every row ("Teams (all classes)"), gives
+        # way to the one metric that filters it; a plain "Revenue" never to "Large order
+        # revenue".
         chosen = next(iter(candidates)) if len(candidates) == 1 else ""
+    else:
+        chosen = ""
     if chosen not in candidates:
         return None
     metric, narrowing = candidates[chosen]

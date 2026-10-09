@@ -700,7 +700,7 @@ def _planned_row(
         }
     require_visible_objects(config, merged_draft.query, merged_draft.resolved)
     if merged_draft.blocked_reason:
-        why = _with_ready_options(runtime, dict(merged_draft.blocked_reason))
+        why = _with_ready_options(runtime, dict(merged_draft.blocked_reason), partial_query)
         clarify = "clarification" in (why.get("details") or {})
         return _blocked_row(merged_draft, pattern, why, blocked, clarify=clarify)
     merged_draft = _governed_draft(config, intent, merged_draft, partial_query)
@@ -747,7 +747,7 @@ def _planned_row(
         if retry_validation["ok"]:
             merged_draft, validation = replace(merged_draft, query=reshaped), retry_validation
     # A question needs two readings the engine runs; with one, the draft is that reading.
-    ask = _with_ready_options(runtime, merged_draft.ask) if merged_draft.ask else {}
+    ask = _with_ready_options(runtime, merged_draft.ask, partial_query) if merged_draft.ask else {}
     if len(ask.get("details", {}).get("options") or []) < 2:
         ask = {}
     if ask and not validation["ok"]:
@@ -763,21 +763,30 @@ def _planned_row(
     }
 
 
-def _with_ready_options(runtime: Any, why: dict[str, Any]) -> dict[str, Any]:
-    """A why whose options each carry a call the engine accepts: an option it refuses is left
-    out, so every option offered is ready to send."""
+def _with_ready_options(
+    runtime: Any, why: dict[str, Any], partial_query: Call | None = None
+) -> dict[str, Any]:
+    """A why whose options each carry a call the engine accepts, with the caller's own fields
+    merged in as into the draft: an option it refuses is left out, so every option offered is
+    ready to send."""
 
     details = dict(why.get("details") or {})
     options = details.get("options")
     if not isinstance(options, list):
         return why
-    ready = [
-        option
-        for option in options
-        if not isinstance(option, dict)
-        or "call" not in option
-        or _validate_query(runtime, Call.from_call(option["call"]))["ok"]
-    ]
+    ready = []
+    for option in options:
+        if not isinstance(option, dict) or "call" not in option:
+            ready.append(option)
+            continue
+        try:
+            call = _merge_partial_query(
+                runtime._config, Call.from_call(option["call"]), partial_query
+            )
+        except SemanticLayerError:
+            continue
+        if _validate_query(runtime, call)["ok"]:
+            ready.append({**option, "call": call.to_call()})
     return {**why, "details": {**details, "options": ready}}
 
 

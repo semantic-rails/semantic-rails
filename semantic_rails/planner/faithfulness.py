@@ -336,12 +336,8 @@ def intent_faithfulness_why(
     # A balance read on the closing day of the question's window answers that window.
     read = snapshot_read(runtime, question, query)
     if caller_time is not None and caller_time.window:
-        # The window must agree in the planning zone. Existing holds read it in UTC, and the
-        # planning zone must not admit an explicit interval they held.
-        gaps.extend(
-            _caller_window_gaps(runtime, text, query)
-            or _caller_window_gaps(runtime, text, query, timezone="UTC")
-        )
+        # The window must agree with the question's, read on the call's clock.
+        gaps.extend(_caller_window_gaps(runtime, text, query))
     elif read is None:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))

@@ -15,6 +15,7 @@ import yaml
 
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.planner import _base, faithfulness, plan_payload, time_windows
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -170,7 +171,7 @@ def test_authored_names_answer_reference_sql(tmp_path: Path, question: str, metr
         plan = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
         assert plan["status"] == "ok", plan.get("why")
         query = plan["best"]["query"]
-        assert query["select"][0]["expression"] == {"metric": f"metric.shop.{metric}"}
+        assert Call.from_call(query).select[0].ref == f"metric.shop.{metric}"
         rows = runtime.query(query, now=NOW["now"])["rows"]
         values = sorted((row[_alias(query["select"][0])] for row in rows), reverse=True)
         with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
@@ -319,7 +320,7 @@ def test_declared_value_with_a_possessive_still_matches(tmp_path: Path):
         assert plan["status"] == "ok", plan.get("why")
         query = plan["best"]["query"]
         assert query["where"] == [
-            {"field": "dimension.shop_event_client", "op": "=", "value": "Trader Joe's"}
+            {"field": "dimension.shop_event_client", "op": "is", "value": "Trader Joe's"}
         ]
         rows = runtime.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
@@ -422,8 +423,7 @@ def test_label_without_parenthetical_never_selects(
         ], plan
     else:
         assert "execute" in plan["next"]["ready_for"], plan
-    select = plan["best"]["query"]["select"]
-    assert [item["expression"].get("measure") for item in select] == [subject]
+    assert Call.from_call(plan["best"]["query"]).subjects == [subject]
 
 
 def test_negation_is_normalized_before_scope_and_parsing(
@@ -478,7 +478,7 @@ def test_phrase_consumption_records_exact_span_and_preserves_numbers(tmp_path: P
         runtime._config = replace(
             runtime._config, metric_recipes=[replace(metric, aliases=["7 day signups"])]
         )
-        query = {"select": [{"as": "n", "expression": metric.id}]}
+        query = Call.from_call({"select": [{"as": "n", "expression": metric.id}]})
         assert _unconsumed_words(runtime, "7 days signups", query) == ([], [])
         assert unconsumed_terms(runtime, "7 days signups", query) == []
         assert unconsumed_terms(runtime, "7 days unrelated signups", query) == ["7"]
@@ -492,9 +492,7 @@ def test_collision_check_also_guards_a_forced_draft(tmp_path: Path):
         Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True, collision=True)))
     ) as runtime:
         question = "How many signups last week?"
-        query = {
-            "select": [{"as": "n", "expression": "metric.shop.new_accounts"}],
-        }
+        query = Call.from_call({"select": [{"as": "n", "expression": "metric.shop.new_accounts"}]})
         why = intent_subject_why(
             runtime, question=question, intent_ir=parse_intent(runtime, question), query=query
         )

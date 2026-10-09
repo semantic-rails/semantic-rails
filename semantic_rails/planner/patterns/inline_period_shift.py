@@ -8,9 +8,10 @@ two complete periods as one series. A comparison whose period isn't over yet hol
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
-from ...clock import parse_now
+from ...clock import parse_now, shift_period
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -69,13 +70,21 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     asked = _time_spec(role, text)
     window = asked.window if asked is not None else {}
     grain = (asked.grain if asked is not None else "") or shift_grain
-    # The two complete periods compared, as one series: the comparison itself, side by side,
-    # needs a read widened by the lookback, which this release doesn't make.
-    series = Time(temporal_role=role, grain=grain, last=(shift_grain, 2))
+    # The periods compared, as one series: the comparison itself, side by side, needs a read
+    # widened by the lookback, which this release doesn't make. A dated window the question
+    # states is widened back by one period, so the series keeps it.
+    start, end = str(window.get("start") or ""), str(window.get("end") or "")
+    if start and end:
+        before = shift_period(date.fromisoformat(start[:10]), shift_grain, -1).isoformat()
+        series = Time(temporal_role=role, grain=grain, start=before, end=end)
+        reads = f"{before} to {end} (the {shift_grain} before included), by {grain}"
+    else:
+        series = Time(temporal_role=role, grain=grain, last=(shift_grain, 2))
+        reads = f"the last two complete {shift_grain}s, by {grain}"
     builder = QueryBuilder(config).measure(measure.id, _aggregation_from_text(text, terms, measure))
     builder.time(series).groups(_maybe_group_by(config, text))
     query = _add_order(builder).build()
-    option = {"call": query.to_call(), "reads": f"the last two complete {shift_grain}s, by {grain}"}
+    option = {"call": query.to_call(), "reads": reads}
     now = parse_now((time_policy_context() or {}).get("now"))
     incomplete = bool(window) and Time(temporal_role=role).with_window(window).resolved(now).partial
     why = (
@@ -101,7 +110,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
                 f"this release; the {shift_grain}s compared can be read as one series."
             ),
             "details": {
-                "clarification": {"question": f"Read the last two {shift_grain}s as a series?"},
+                "clarification": {"question": f"Read the {shift_grain}s compared as one series?"},
                 "options": [option],
             },
             "recovery_hints": [{"kind": "read_the_series", "message": "Send the option's call."}],

@@ -14,7 +14,7 @@ from ._base import (
     _singular,
     _tokens,
 )
-from .call import Call
+from .call import Call, EntityFilter
 from .consumed_spans import _TERM_RE, _ZONE_NAME_RE, _consumed_spans
 from .coverage import (
     _PRIOR_PERIOD_RE,
@@ -179,14 +179,21 @@ def _unmatched_words(runtime: Any, question: str, query: Call) -> list[str]:
             # Names only: a description that says "not discounts" doesn't answer "discounts".
             vocabulary.update(_tokens(_core_text(row)))
     labels = _value_phrases(runtime._config)
-    for node in _dict_nodes(query.to_call()):
-        if "field" in node and "value" in node:
-            value = node.get("value")
-            for item in value if isinstance(value, list) else [value]:
-                vocabulary.update(_tokens(str(item)))
-                # A filter on 'jaffle' accounts for the question's "food".
-                for _domain, row in labels.get(_plain(item), []):
-                    vocabulary.update(_tokens(" ".join(_value_names(row))))
+    # The values rows are kept by; an aggregate's threshold (having, an entity filter's
+    # having) is a number the question's spans account for.
+    conditions = [
+        condition
+        for row in query.where
+        if not (isinstance(row, EntityFilter) and row.match == "having")
+        for condition in (row.conditions if isinstance(row, EntityFilter) else (row,))
+    ]
+    for condition in conditions:
+        value = condition.value
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            vocabulary.update(_tokens(str(item)))
+            # A filter on 'jaffle' accounts for the question's "food".
+            for _domain, row in labels.get(_plain(item), []):
+                vocabulary.update(_tokens(" ".join(_value_names(row))))
     by_initial: dict[str, list[str]] = {}
     for known in vocabulary:
         by_initial.setdefault(known[:1], []).append(known)
@@ -368,13 +375,20 @@ def _unconsumed_words(runtime: Any, question: str, query: Call) -> tuple[list[st
             or "count" in _own_words(row)
         )
         for row in runtime._config.measures
-    ) or any(aggregation in ("count", "count_distinct") for _id, aggregation in aggregations)
+    ) or any(
+        aggregation in ("count", "count_distinct")
+        for _id, aggregation in _measure_aggregations(runtime._config, query, conditions=False)
+    )
     time = _time_block(query)
     clock = next(
         (row.label for row in runtime._config.temporal_roles if row.id == time.temporal_role),
         "",
     )
     clock_units: Counter[str] = Counter()
+    if time.grain and any(row.over == "period" for row in query.entity_filters):
+        # An entity filter over each period reads "in that month" at the call's grain.
+        pattern = rf"\b(?:in|during|within|for)\s+(?:that|the\s+same|each)\s+{time.grain}\b"
+        spans.extend(match.span() for match in re.finditer(pattern, lowered))
     for match in re.finditer(r"\bat\s+(day|week|month|quarter|year)\s+grain\b", lowered):
         if match.group(1) == time.grain:
             spans.append(match.span())
@@ -481,9 +495,11 @@ def _unconsumed_words(runtime: Any, question: str, query: Call) -> tuple[list[st
     return out, unknown
 
 
-def _measure_aggregations(config: Any, query: Call) -> list[tuple[str, str]]:
-    """Each measure the draft aggregates, in its selects and in the conditions of its entity
-    filters and having, with the aggregation each reads it at."""
+def _measure_aggregations(
+    config: Any, query: Call, *, conditions: bool = True
+) -> list[tuple[str, str]]:
+    """Each measure the draft aggregates, in its selects and (with ``conditions``) in the
+    conditions of its entity filters and having, with the aggregation each reads it at."""
 
     measures = {row.id: row for row in config.measures}
     out: list[tuple[str, str]] = []
@@ -505,10 +521,10 @@ def _measure_aggregations(config: Any, query: Call) -> list[tuple[str, str]]:
 
     for item in query.select:
         walk(item.expression)
-    for row in query.entity_filters:
+    for row in query.entity_filters if conditions else ():
         for condition in row.conditions:
             walk(condition.field)
-    for condition in query.having:
+    for condition in query.having if conditions else ():
         walk(condition.field)
     return out
 

@@ -540,10 +540,14 @@ def _window_agrees(
 def _caller_window_gaps(
     runtime: Any, text: str, query: Call, *, timezone: str | None = None
 ) -> list[CoverageGap]:
-    """The window a caller passed is not the one the question's date phrases state."""
+    """The window a caller passed is not the one the question's date phrases state. A
+    relative phrase ("today") is read in the zone of the clock the call reads, as the engine
+    reads it, unless ``timezone`` names another."""
 
     lowered = text.lower()
     context = None
+    role = _time_block(query).temporal_role
+    timezone = timezone or (time_timezone(role, runtime=runtime) if role else None)
     time = _time_block(query).window
     windows, _others = _question_time(lowered, context, timezone=timezone)
     if _window_agrees(windows, time, context, timezone=timezone) or _is_prior_period_offset(
