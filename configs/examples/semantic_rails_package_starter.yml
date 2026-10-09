@@ -31,8 +31,6 @@ package:
   description: Minimal V1 starter package over a synthetic shop domain.
   warehouse: duckdb
   default_db: data/shop_starter.duckdb
-  # schema_strict rejects every legacy authoring form with a clear error
-  # and migration pointer. Recommended for new packages.
   environments: [development, staging, production]
   seed:
     kind: sql_script
@@ -76,8 +74,8 @@ graph:
   # rollup safety, SCD2 temporal_validity, a second role's own columns, etc.).
 
 models:
-  # One model per warehouse table. Primary entity is auto-detected from
-  # whichever entity's canonical key matches `model.grain`.
+  # One model per warehouse table. Its primary entity is the graph entity
+  # whose `model:` names it; that entity's key keys the model's rows.
   customers:
     relation: shop_customer
     entities:
@@ -174,7 +172,7 @@ models:
 # Metrics codify governed access patterns. Measures are queryable as
 # primitives; metrics exist when you want a stable, named contract for a
 # specific use of a measure (a ratio, a cumulative, a derived formula).
-# Auto-publish was removed in V1 — every governed metric is authored.
+# A measure never publishes a metric of its own — every governed metric is authored.
 metrics:
   # kind: aggregate — publish a measure as a stable metric.
   revenue_usd:
