@@ -24,6 +24,7 @@ INVENTORY_DAY = "temporal_role.jaffle_inventory_day"
 INVENTORY_STORE = "dimension.jaffle_store_inventory_snapshot_store_id"
 STORE_NAME = "dimension.jaffle_store_name"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
+CUSTOMER_ID = "dimension.jaffle_customer_id"
 ORDER = "entity.jaffle_order"
 CUSTOMER = "entity.jaffle_customer"
 AOV = "metric.sales.aov_usd"
@@ -246,8 +247,11 @@ CONDITIONAL = {
 
 
 @pytest.mark.parametrize("governed", [None, REVENUE])
-def test_a_conditional_aggregate_condition_is_never_an_allowed_field(config, monkeypatch, governed):
-    """Its condition reads columns, not fields: refused when it filters a governed leaf.
+def test_a_conditional_aggregate_condition_reads_the_fields_over_its_columns(
+    config, monkeypatch, governed
+):
+    """Each column its condition reads counts as the dimensions over it: refused when one is
+    not allowed and it filters a governed leaf.
 
     Revenue does not read this customer key; its measure constraint leaves it a sibling."""
     query = {
@@ -268,7 +272,52 @@ def test_a_conditional_aggregate_condition_is_never_an_allowed_field(config, mon
     assert violations == [
         {
             "kind": "disallowed_where",
-            "disallowed": ["aggregate_if.condition"],
+            "disallowed": [CUSTOMER_ID],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_a_conditional_aggregate_condition_on_allowed_fields_passes(config):
+    query = {"select": [{"expression": CONDITIONAL, "as": "customers"}]}
+    engine = _constrained(config, {"allowed_where": [STORE_NAME, CUSTOMER_ID]}, None)
+    try:
+        assert engine.validate(query)["ok"]
+    finally:
+        engine.close()
+
+
+def test_a_condition_on_a_column_no_dimension_declares_is_refused(config, monkeypatch):
+    """A column outside every allowed field cannot be filtered by naming it raw."""
+    condition = {
+        "kind": "comparison",
+        "op": ">",
+        "left": {"kind": "column", "table": "jaffle_order", "column": "order_total"},
+        "right": {"kind": "literal", "value": 0},
+    }
+    query = {
+        "select": [
+            {
+                "expression": {
+                    "kind": "aggregate_if",
+                    "aggregation": "count",
+                    "condition": condition,
+                },
+                "as": "orders",
+            }
+        ]
+    }
+    _compiles(config, query)
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, None)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": ["entity.jaffle_order.order_total"],
             "allowed": [STORE_NAME],
             "source": "inline_expression",
         }

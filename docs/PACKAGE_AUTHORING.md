@@ -404,7 +404,8 @@ package:
   seed: { kind: sql_script, source: data/seed.sql }
 
 defaults:
-  dimension: { groupable: true, filterable: true }
+  dimension: { groupable: true, filterable: true }   # filterable: false refuses it in every
+                                                      # caller's filter (POLICY_DENIED)
   time:
     timezone: UTC
     supported_grains: [day, week, month, quarter, year]
@@ -736,12 +737,19 @@ kind names must match exactly.
   counts. `allow_metric_filters: false` refuses any cut that counts for the
   governed object.
   A filter the caller writes inside an expression (an aggregate's or
-  `semi_additive` expression's `filter`, a scoped aggregate's `where`, at any
-  depth in `select` or `metric_filters`, predicate inputs included) is checked
-  like a `where` filter when it counts for the governed object, by the same leaf
-  rule: its field must be in `allowed_where` (a violation carries
+  `semi_additive` expression's `filter`, a scoped aggregate's `where`, an
+  `aggregate_if` condition, at any depth in `select`, `having` or an entity
+  filter, predicate inputs included) is checked like a `where` filter when it
+  counts for the governed object, by the same leaf rule: its field, read by the
+  id a name or alias binds to, must be in `allowed_where` (a violation carries
   `"source": "inline_expression"`), and it always counts as a metric filter. It
-  never satisfies `required_where`, which requires an outer `where` filter.
+  never satisfies `required_where`, which requires an outer `where` filter with
+  the same word and, when the spec names them, the same values: a spec without an
+  `op` is met only by `is` (a `not`, range, `contains` or `missing` on the field
+  never meets it). An entity filter (`{entity, having, over}`) or a scoped
+  aggregate's predicate takes its aggregate over the entity's rows, outside the
+  outer `where`, so a governed object with `required_where` read there is refused
+  (`required_where_outside_entity_filter`).
   Fields nested under an aggregate-filter `expression`, a scoped aggregate's
   `predicates[].input`, a metric predicate, `metric_filters`, or a conversion
   operand count for every governed object in the query. This conservative rule
@@ -760,9 +768,10 @@ kind names must match exactly.
   `case` value) follows the count measure's constraints. A column whose values happen
   to be constant cannot be told apart from a count, so constrain a measure reading it
   to govern it too. An `aggregate_if` condition reads
-  columns, not fields, so `allowed_where` refuses it under either a package-wide
-  or an inherited measure constraint. Its condition also counts as a metric filter,
-  and only outer `where` filters satisfy `required_where`. Constraints on unrelated
+  columns: each counts as the dimensions over it, and a column no dimension declares
+  (named `<entity>.<column>`) is in no `allowed_where`, so a condition on it is refused
+  under either a package-wide or an inherited measure constraint. Its condition also
+  counts as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to
   aggregate by time.
