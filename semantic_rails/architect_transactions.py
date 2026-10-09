@@ -30,7 +30,7 @@ import yaml
 from .architect_scaffold import dump_project_yaml
 from .config_validation import PackageReference, parse_config_report
 from .errors import SemanticLayerError
-from .package_snapshot import load_package_snapshot
+from .package_snapshot import links_package_input, load_package_snapshot
 from .route_census import route_changes, unkept_route_changes
 from .yaml_loader import safe_load as yaml_safe_load
 
@@ -176,6 +176,8 @@ def _authored_project_files(
             if include is not None and not include(relative_dir.as_posix()):
                 continue
             if path.is_symlink():
+                if not links_package_input(str(project_path), relative_dir.as_posix()):
+                    continue  # a link to data files holds nothing authored
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     "Architect revisions refuse symlinked project directories",

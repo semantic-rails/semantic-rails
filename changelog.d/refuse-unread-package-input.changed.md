@@ -5,8 +5,12 @@
   under `models/`, or in two files), a root YAML file or root directory of YAML that nothing
   reads, such as a `policies/` directory (write its rows in `policies.yml`), a root
   `tests.yml` or `examples.yml` (write the entries under `tests/` or `examples/`) or a
-  `notes.yml`, and a directory symlink, which the loader never followed (copy the directory or
-  link its files); names starting with `_` or `.` stay ignored. In every layout: a rollup
+  `notes.yml`, and a directory symlink the loader never followed that could hide package input
+  (copy the directory or link its files): one at or under `models/`, `relations/`, `metrics/`,
+  `segments/`, `examples/` or `tests/`, or one holding a `.yml` or `.yaml` file, a directory
+  symlink or an unreadable directory. A link to a folder of data files, such as `data/`, still
+  loads, and Architect writes and `semantic-rails project upgrade` accept it; names starting
+  with `_` or `.` stay ignored. In every layout: a rollup
   `columns:` entry whose name binds no measure, dimension or key column (the measure it meant
   read the column named after it instead), including one named by an `id:` that `as:`
   replaces, and an `accumulation:` key other than `kind` and `snapshot`.
