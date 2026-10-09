@@ -105,7 +105,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     # canonical singular `entity:` + `keys.primary:` + `keys.foreign:`
     # shape so the downstream parser stays bijective. The block lists every entity
     # the model exposes; graph model bindings determine the primary entity,
-    # otherwise an explicit entity or matching grain identifies it. Per-entity options:
+    # otherwise an explicit entity or the model's own name identifies it. Per-entity options:
     #   expr:    column rename when authored column != graph's canonical key
     #   label:   display override (passed through as model_entity_labels meta)
     # Block-level option:
@@ -154,21 +154,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 # Allow `entities: { customer: }` shorthand (None value).
                 ent_raw = {}
             per_entity[str(ent_name)] = dict(ent_raw or {})
-        # Without an explicit binding or authored identity, match the grain to an entity key.
-        # Compute from graph_entities (which the loader will further normalize
-        # below — but `key:` is authored, so it's available now).
-        model_grain = model.get("grain")
-        if model_grain is not None:
-            grain_cols = [
-                str(c) for c in (model_grain if isinstance(model_grain, list) else [model_grain])
-            ]
-        else:
-            existing_primary = (
-                (model.get("keys") or {}).get("primary")
-                if isinstance(model.get("keys"), dict)
-                else None
-            )
-            grain_cols = _column_list(existing_primary)
 
         def _canonical_key_for(entity_name: str) -> list[str]:
             ent = graph_entities.get(entity_name) or {}
@@ -185,18 +170,8 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             else:
                 effective_cols[ent_name] = _canonical_key_for(ent_name)
 
-        # Explicit bindings and authored identity precede grain and name matching.
+        # Explicit bindings and authored identity precede the model-name default.
         primary_entity = str(model.get("entity", "") or "").strip()
-        if not primary_entity and grain_cols:
-            matches = sorted(name for name, cols in effective_cols.items() if cols == grain_cols)
-            if len(matches) > 1:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"model '{model_id}' grain {grain_cols} matches multiple entity keys: "
-                    f"{', '.join(matches)}; bind the model in the graph or set entity:",
-                )
-            if matches:
-                primary_entity = matches[0]
         # Empty blocks retain the graph's existing model-name default.
         if (
             not primary_entity
@@ -208,28 +183,8 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"model '{model_id}' must identify its primary entity with a graph model "
-                "binding, entity, grain matching an entity key, or an unbound entity "
-                "listed with the model's name",
-            )
-
-        # An explicit graph binding fixes identity independently of the row grain.
-        # Otherwise grain must agree with the resolved primary.
-        # A primary with no declared columns may instead receive its key from grain.
-        primary_cols = (
-            effective_cols.get(primary_entity)
-            or _canonical_key_for(primary_entity)
-            or _column_list((model.get("keys") or {}).get("primary"))
-        )
-        if (
-            model_id not in bound_entities
-            and model_grain is not None
-            and primary_cols
-            and grain_cols != primary_cols
-        ):
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"model '{model_id}' grain {grain_cols} does not match the key of "
-                f"primary entity '{primary_entity}' ({primary_cols})",
+                "binding (graph.entities.<entity>.model), or list an unbound entity with the "
+                "model's name",
             )
 
         # Translate to canonical singular-entity shape.
@@ -267,7 +222,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         models[model_id] = model
 
     # Back-fill `graph.entities.<x>.model:` from the model whose primary
-    # entity is <x>. Authors can leave the binding implicit when grain
+    # entity is <x>. Authors can leave the binding implicit when the model's name
     # disambiguates which model owns each entity.
     for model_id, model in models.items():
         # Fact models don't bind to a graph entity — skip the back-fill.
@@ -327,9 +282,9 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 f"graph entity '{entity_key}'",
             )
         # Refuse keyless graph entities before translating authored relationships.
-        # Only this entity's declared key or its own model's key/grain can supply it.
+        # Only this entity's declared key or its own model's key can supply it.
         model_keys = dict(model.get("keys", {}) or {})
-        if not _column_list(entity.get("key") or model_keys.get("primary") or model.get("grain")):
+        if not _column_list(entity.get("key") or model_keys.get("primary")):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"graph entity '{entity_key}' must declare key (model '{model_id}')",

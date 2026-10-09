@@ -74,7 +74,7 @@ _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 # What upsert_model(replace=True) keeps from the model it rewrites.
 _KEPT_ON_REPLACE = ("id", "entities", "calendar_id")
 # Model blocks of named objects: dropped_fields names each object a replace drops.
-_MODEL_BLOCKS = ("dimensions", "times", "measures", "joins")
+_MODEL_BLOCKS = ("dimensions", "times", "measures")
 
 
 def _is_query(value: Any) -> bool:
@@ -756,7 +756,6 @@ class ArchitectProject:
         dimensions: dict[str, Any] | None = None,
         times: dict[str, Any] | None = None,
         measures: dict[str, Any] | None = None,
-        joins: dict[str, Any] | None = None,
         group: str = "core",
         description: str = "",
         label: str = "",
@@ -793,7 +792,6 @@ class ArchitectProject:
             dimensions=dimensions,
             times=times,
             measures=measures,
-            joins=joins,
             group=group,
             description=description,
             label=label,
@@ -826,7 +824,6 @@ class ArchitectProject:
                 "dimensions": dimensions,
                 "times": times,
                 "measures": measures,
-                "joins": joins,
                 "group": group,
                 "description": description,
                 "label": label,
@@ -1007,7 +1004,6 @@ class ArchitectProject:
         dimensions: dict[str, Any] | None = None,
         times: dict[str, Any] | None = None,
         measures: dict[str, Any] | None = None,
-        joins: dict[str, Any] | None = None,
         group: str = "core",
         description: str = "",
         label: str = "",
@@ -1106,7 +1102,6 @@ class ArchitectProject:
             ("dimensions", dimensions),
             ("times", times),
             ("measures", measures),
-            ("joins", joins),
         ):
             if updates is not None:
                 model[block] = _merge_named_objects(

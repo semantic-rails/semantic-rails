@@ -3,12 +3,11 @@
 A metric governs a measure when it aggregates it through a filter: an aggregate with a
 ``filter``, or a scoped aggregate with ``where`` or ``predicates`` ("Active stores", the retail
 stores of an all-kinds store count). A metric publishes a measure when its whole expression
-is that measure's aggregate with no filter, as a measure's own ``publish`` and a
-``kind: aggregate`` metric make.
+is that measure's aggregate with no filter, as a ``kind: aggregate`` metric is.
 
-A measure authored with ``publish: false`` that a metric governs and no metric publishes is a
-building block: ``discover`` doesn't offer it and ``plan`` answers with the metrics that
-govern it. It stays queryable by id.
+A measure authored with ``publish: false`` that no metric publishes isn't offered by
+``discover``; one a metric governs is a building block, and ``plan`` answers with the metrics
+that govern it. It stays queryable by id.
 """
 
 from __future__ import annotations

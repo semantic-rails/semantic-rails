@@ -610,6 +610,11 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
             drops(filename, doc, (wrapper,), f"the loader reads only {wrapper!r} from this file")
 
     raw = load(package_path)
+    if raw.get("relations") not in (None, {}, []):
+        errors.append(
+            f"{package_path} declares relations:, which a directory package keeps in "
+            "relations.yml or relations/; move it there"
+        )
     merged: dict[str, Any] = dict(raw)
     merged.setdefault("defaults", {})
     merged.setdefault("graph", {})
@@ -694,6 +699,11 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                 }
             for model_key, model_raw in model_docs.items():
                 model = dict(model_raw or {})
+                if "models" in doc and str(model.get("id", model_key)).strip() != str(model_key):
+                    errors.append(
+                        f"{file_path}: model '{model_key}' authors id {model['id']!r}; the "
+                        "model's key is its id, so delete id:"
+                    )
                 model_id = str(
                     model.get("id") or model_key or os.path.splitext(os.path.basename(file_path))[0]
                 )
@@ -1339,7 +1349,6 @@ def _parse_package_meta(
         seed=seed,
         connection=connection,
         environments=_ensure_list(package.get("environments")),
-        schema_strict=bool(package.get("schema_strict", False)),
         planner=planner_cfg,
         observation_scope=observation_scope,
     )
@@ -1799,7 +1808,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         model = model_rows[model_id]
         model_keys = dict(model.get("keys", {}) or {})
         key, primary_role = _key_columns_and_role(
-            entity_spec.get("key") or model_keys.get("primary") or model.get("grain"),
+            entity_spec.get("key") or model_keys.get("primary"),
             default_role="primary",
         )
         if not key:
@@ -2077,9 +2086,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             temporal_lookup[(model_id, time_key)] = temporal_id
 
         default_time = model_default_times[model_id]
-        row_grain = _ensure_list(
-            model.get("grain") or dict(model.get("keys", {}) or {}).get("primary")
-        )
+        row_grain = _ensure_list(dict(model.get("keys", {}) or {}).get("primary"))
         # Fact models infer grain from the declared time_column (the row's
         # time-key on the fact table).
         if is_fact and not row_grain:
@@ -2092,14 +2099,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             measure_spec = lookup_measure_spec(
                 raw_measure_spec, measure_spec, f"{path}: measure '{measure_key}'"
             )
-            publish_spec = measure_spec.get("publish")
-            if isinstance(publish_spec, dict):
-                for advisory_key in ("clock_variants", "comparison_peers", "preferred_filter_ops"):
-                    if advisory_key in publish_spec:
-                        raise SemanticLayerError(
-                            "INVALID_CONFIG",
-                            f"{path}: measure '{measure_key}' publish.{advisory_key} is not supported",
-                        )
             measure_id = str(
                 measure_spec.get("id", f"measure.{_slug(entity_cfg.name)}_{_slug(measure_key)}")
             )
