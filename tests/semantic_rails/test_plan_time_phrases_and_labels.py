@@ -19,6 +19,7 @@ import duckdb
 import pytest
 
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.consumed_spans import unconsumed_terms as _unconsumed_terms
 from semantic_rails.planner.groupings import _time_spec
 from semantic_rails.planner.patterns.metric_by_dimension_rollup import (
@@ -39,14 +40,14 @@ ORDER_TIME = "temporal_role.jaffle_order_time"
 # `unconsumed_terms` reads it as the window the question states. Its presence is what counts
 # here; the question's own spans are what it consumes.
 WINDOW = {"grain": "day", **YEAR_2017}
-LAST_7_DAYS = {"grain": "day", "range": {"last": {"unit": "day", "value": 7}}}
+LAST_7_DAYS = {"grain": "day", "last": {"unit": "day", "value": 7}}
 
 
 def unconsumed_terms(runtime: Any, text: str, query: dict[str, Any]) -> list[str]:
     bounds = _time_window(text.lower()).bounds if query.get("time") is WINDOW else {}
     if bounds:
         query = {**query, "time": {"grain": "day", **bounds}}
-    return _unconsumed_terms(runtime, text, query)
+    return _unconsumed_terms(runtime, text, Call.from_call(query))
 
 
 def _query(payload: dict[str, Any]) -> dict[str, Any]:
@@ -54,16 +55,11 @@ def _query(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _measures(payload: dict[str, Any]) -> list[str]:
-    return [
-        item["expression"]["measure"]
-        for item in _query(payload).get("select", [])
-        if "measure" in item["expression"]
-    ]
+    return [item.ref for item in Call.from_call(_query(payload)).select if item.kind == "measure"]
 
 
 def _draft(measure: str = "measure.jaffle.revenue_usd", **parts: Any) -> dict[str, Any]:
-    select = [{"as": "value", "expression": {"measure": measure}}]
-    return {"version": 1, "select": select, **parts}
+    return {"select": [{"expression": measure, "as": "value"}], **parts}
 
 
 # --- hours, zones and windows shorter than a day --------------------------------------
@@ -207,9 +203,18 @@ def test_every_unconsumed_number_and_clock_word_is_named(
     ("text", "query"),
     [
         ("top 10 stores by revenue", _draft(limit=10)),
-        ("stores with revenue over 12.50", _draft(having=[{"op": ">", "value": 12.5}])),
-        ("stores with 1,000 or more orders", _draft(having=[{"op": ">=", "value": 1000}])),
-        ("stores in the 90th percentile", _draft(having=[{"op": ">", "value": 90}])),
+        (
+            "stores with revenue over 12.50",
+            _draft(having=[{"field": "value", "op": "gt", "value": 12.5}]),
+        ),
+        (
+            "stores with 1,000 or more orders",
+            _draft(having=[{"field": "value", "op": "gte", "value": 1000}]),
+        ),
+        (
+            "stores in the 90th percentile",
+            _draft(having=[{"field": "value", "op": "gt", "value": 90}]),
+        ),
         ("revenue on 15 March 2017", _draft(time=WINDOW)),
         ("revenue in Q1 2017 by month", _draft(time=WINDOW)),
         ("revenue for the last 7 days", _draft(time=LAST_7_DAYS)),
@@ -234,7 +239,8 @@ def test_a_window_shorter_than_a_day_is_unresolved_and_never_all_time(
     window = _time_window(text)
     assert window.bounds == {} and window.sub_day != () and window.unresolved != ()
     assert _time_bounds_from_text(text) == {}
-    assert not {"start", "end", "range"} & set(_time_spec(ORDER_TIME, text))
+    spec = _time_spec(ORDER_TIME, text)
+    assert spec is None or not spec.window
     payload = _plan(runtime_factory, text)
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
@@ -389,12 +395,12 @@ def test_a_number_word_or_zone_no_construct_reads_is_never_ok(
         ("stores with more than 2000 orders in 2017", _draft(time=WINDOW), ["2000"]),
         (
             "stores with more than 2000 orders in 2017",
-            _draft(time=WINDOW, having=[{"op": ">", "value": 2000}]),
+            _draft(time=WINDOW, having=[{"field": "value", "op": "gt", "value": 2000}]),
             [],
         ),
         (
             "customers with 1999 or more orders in 2017",
-            _draft(time=WINDOW, having=[{"op": ">=", "value": 1999}]),
+            _draft(time=WINDOW, having=[{"field": "value", "op": "gte", "value": 1999}]),
             [],
         ),
         # The same number elsewhere is not consumed by it.
@@ -485,7 +491,7 @@ def test_a_ranking_consumes_its_count_by_span(runtime_factory: Any, text: str, l
         # A count and a threshold in one question: each is read where it is stated.
         (
             "the 2 stores with the most revenue among those with at\nleast 10 orders",
-            _draft(limit=2, having=[{"op": ">=", "value": 10}]),
+            _draft(limit=2, having=[{"field": "value", "op": "gte", "value": 10}]),
             [],
         ),
         (
@@ -499,24 +505,48 @@ def test_a_ranking_consumes_its_count_by_span(runtime_factory: Any, text: str, l
         ("top 10 stores by revenue with at least 10 orders", _draft(limit=10), ["10"]),
         (
             "top 10 stores by revenue with at least 10 orders",
-            _draft(limit=10, having=[{"op": ">=", "value": 10}]),
+            _draft(limit=10, having=[{"field": "value", "op": "gte", "value": 10}]),
             [],
         ),
         (
             "top 10 stores by revenue with at least 10 orders",
-            _draft(having=[{"op": ">=", "value": 10}]),
+            _draft(having=[{"field": "value", "op": "gte", "value": 10}]),
             ["10"],
         ),
         ("the 10 largest stores by revenue", _draft(limit=10), []),
         # A number is a percentage only before %, percent or percentile.
-        ("stores with revenue over 500", _draft(having=[{"op": ">", "value": 5}]), ["500"]),
+        (
+            "stores with revenue over 500",
+            _draft(having=[{"field": "value", "op": "gt", "value": 5}]),
+            ["500"],
+        ),
         ("top 1000 customers by revenue", _draft(limit=10), ["1000"]),
         ("top 100 customers by revenue", _draft(limit=1), ["100"]),
-        ("stores in the top 10 percent", _draft(having=[{"op": ">", "value": 0.9}]), []),
-        ("stores over 50 percent of revenue", _draft(having=[{"op": ">", "value": 0.5}]), []),
-        ("stores over 50% of revenue", _draft(having=[{"op": ">", "value": 0.5}]), []),
-        ("stores over 50 of revenue", _draft(having=[{"op": ">", "value": 0.5}]), ["50"]),
-        ("stores in the 10 of revenue", _draft(having=[{"op": ">", "value": 0.9}]), ["10"]),
+        (
+            "stores in the top 10 percent",
+            _draft(having=[{"field": "value", "op": "gt", "value": 0.9}]),
+            [],
+        ),
+        (
+            "stores over 50 percent of revenue",
+            _draft(having=[{"field": "value", "op": "gt", "value": 0.5}]),
+            [],
+        ),
+        (
+            "stores over 50% of revenue",
+            _draft(having=[{"field": "value", "op": "gt", "value": 0.5}]),
+            [],
+        ),
+        (
+            "stores over 50 of revenue",
+            _draft(having=[{"field": "value", "op": "gt", "value": 0.5}]),
+            ["50"],
+        ),
+        (
+            "stores in the 10 of revenue",
+            _draft(having=[{"field": "value", "op": "gt", "value": 0.9}]),
+            ["10"],
+        ),
     ],
 )
 def test_a_limit_or_threshold_is_read_where_the_question_states_it(
@@ -653,12 +683,14 @@ def test_a_question_past_the_scan_cap_is_still_held_to_the_rule(runtime_factory:
 def test_a_number_too_large_to_read_is_not_a_crash(runtime_factory: Any, huge: int) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        query = _draft(limit=huge, having=[{"op": ">", "value": huge}], time=WINDOW)
+        query = _draft(
+            limit=huge, having=[{"field": "value", "op": "gt", "value": huge}], time=WINDOW
+        )
         assert unconsumed_terms(runtime, f"top 5 stores over {'9' * 400}", query) == [
             "5",
             "9" * 400,
         ]
-        assert unmatched_intent_terms(runtime, "revenue over 5", query) == ["5"]
+        assert unmatched_intent_terms(runtime, "revenue over 5", Call.from_call(query)) == ["5"]
     finally:
         runtime.close()
 
@@ -692,13 +724,17 @@ def test_the_warning_reads_a_number_by_span_too(runtime_factory: Any) -> None:
     # carry doesn't either: named, as unconsumed_terms names it.
     runtime = runtime_factory("jaffle_shop")
     try:
-        assert unmatched_intent_terms(runtime, "revenue over 5", _draft(limit=5)) == ["5"]
-        assert unmatched_intent_terms(runtime, "top 5 stores by revenue", _draft(limit=5)) == [
-            "stores"
-        ]
-        having = _draft(having=[{"op": ">", "value": 5}])
-        assert unmatched_intent_terms(runtime, "revenue over 5", having) == []
-        assert unmatched_intent_terms(runtime, "top 5 stores by revenue", having) == ["5", "stores"]
+        assert unmatched_intent_terms(
+            runtime, "revenue over 5", Call.from_call(_draft(limit=5))
+        ) == ["5"]
+        assert unmatched_intent_terms(
+            runtime, "top 5 stores by revenue", Call.from_call(_draft(limit=5))
+        ) == ["stores"]
+        having = _draft(having=[{"field": "value", "op": "gt", "value": 5}])
+        assert unmatched_intent_terms(runtime, "revenue over 5", Call.from_call(having)) == []
+        assert unmatched_intent_terms(
+            runtime, "top 5 stores by revenue", Call.from_call(having)
+        ) == ["5", "stores"]
     finally:
         runtime.close()
 
@@ -709,14 +745,19 @@ def test_a_numeral_that_is_not_one_number_is_never_a_crash(
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        for query in (_draft(), _draft(time=WINDOW, limit=5, having=[{"op": ">", "value": 5}])):
+        for query in (
+            _draft(),
+            _draft(time=WINDOW, limit=5, having=[{"field": "value", "op": "gt", "value": 5}]),
+        ):
             for text in (
                 f"revenue on 15 March 2017 for {token}",
                 f"{token} orders over {token}",
                 f"top 5 stores by revenue in 2017 version {token}",
                 token,
             ):
-                assert isinstance(unmatched_intent_terms(runtime, text, query), list)
+                assert isinstance(
+                    unmatched_intent_terms(runtime, text, Call.from_call(query)), list
+                )
                 assert isinstance(unconsumed_terms(runtime, text, query), list)
     finally:
         runtime.close()
@@ -1090,10 +1131,9 @@ def test_plan_names_the_two_windows_that_differ(runtime_factory: Any) -> None:
             runtime, intent="revenue in Q1 2017 (January 1 to March 31, 2017)", detail="query"
         )
         assert ok["status"] == "ok"
-        assert {key: _query(ok)["time"][key] for key in ("grain", "start", "end")} == {
-            "grain": "quarter",
-            **Q1_2017,
-        }
+        # No grain is asked for, so the window is one total.
+        assert "grain" not in _query(ok)["time"]
+        assert {key: _query(ok)["time"][key] for key in ("start", "end")} == Q1_2017
         assert "time.end is 2017-04-01" in ok["assumptions"][0]
         clash = plan_payload(
             runtime, intent="revenue in Q1 2017 (January 1 to March 30, 2017)", detail="query"
@@ -1390,7 +1430,7 @@ def test_a_single_measure_still_plans(runtime_factory: Any, intent: str) -> None
 def test_function_words_and_verbs_are_not_unmatched(runtime_factory: Any, question: str) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        assert unmatched_intent_terms(runtime, question, _draft()) == []
+        assert unmatched_intent_terms(runtime, question, Call.from_call(_draft())) == []
     finally:
         runtime.close()
 
@@ -1416,7 +1456,7 @@ def test_numbers_comparatives_and_measure_nouns_stay_unmatched(
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        assert unmatched_intent_terms(runtime, question, query) == expected
+        assert unmatched_intent_terms(runtime, question, Call.from_call(query)) == expected
     finally:
         runtime.close()
 
@@ -1426,8 +1466,14 @@ def test_numbers_comparatives_and_measure_nouns_stay_unmatched(
     [
         # A number the draft carries: a limit, a threshold, a percentage.
         ("top 5 stores by revenue", _draft(limit=5)),
-        ("stores with revenue over 500 dollars", _draft(having=[{"op": ">", "value": 500}])),
-        ("stores with more than 50 percent of revenue", _draft(having=[{"op": ">", "value": 0.5}])),
+        (
+            "stores with revenue over 500 dollars",
+            _draft(having=[{"field": "value", "op": "gt", "value": 500}]),
+        ),
+        (
+            "stores with more than 50 percent of revenue",
+            _draft(having=[{"field": "value", "op": "gt", "value": 0.5}]),
+        ),
         ("orders in the 7 days", _draft()),
         # A year is the draft's window, whoever set it.
         ("revenue for 2017 please", _draft(time={"grain": "year", **YEAR_2017})),
@@ -1440,7 +1486,7 @@ def test_numbers_the_draft_carries_are_matched(
     runtime = runtime_factory("jaffle_shop")
     try:
         assert not {"5", "500", "50", "2017", "30"} & set(
-            unmatched_intent_terms(runtime, question, query)
+            unmatched_intent_terms(runtime, question, Call.from_call(query))
         )
     finally:
         runtime.close()
@@ -1474,26 +1520,28 @@ def test_a_list_of_names_the_draft_does_not_filter_on_is_not_ok(
 @pytest.mark.parametrize(
     "intent",
     # "revenue with cumulative" is not here: "cumulative" names the Cumulative revenue metric.
-    # The draft compares months, so the question names its month grain.
     ["monthly revenue with YoY"],
 )
-def test_a_single_word_the_planner_reads_elsewhere_is_only_a_warning(
+def test_a_single_comparison_word_asks_how_to_read_the_comparison(
     runtime_factory: Any, intent: str
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
-        assert payload["status"] == "ok", payload.get("why")
-        assert "why" not in payload
+        # "YoY" asks for two years side by side, which the plan doesn't answer as asked: it
+        # names the comparison and offers the years read as one monthly series.
+        assert payload["status"] == "needs_clarification", payload.get("why")
+        assert payload["why"]["code"] == "PERIOD_COMPARISON"
+        assert payload["why"]["details"]["options"]
         assert _measures(payload)[0] == "measure.jaffle.revenue_usd"
-        (warning,) = payload["warnings"]
-        assert warning["code"] == "PLAN_UNMATCHED_TERMS"
+        assert "execute" not in (payload.get("next") or {}).get("ready_for", [])
     finally:
         runtime.close()
 
 
 def test_a_lifetime_percentile_cohort_is_refused_not_warned(runtime_factory: Any) -> None:
-    """A percentile cohort ranked by a lifetime measure is refused as semantic drift, not ok."""
+    """A percentile cohort cut by a lifetime balance is held, not ok: the balance is read
+    through a predicate on no stated day."""
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
@@ -1502,7 +1550,12 @@ def test_a_lifetime_percentile_cohort_is_refused_not_warned(runtime_factory: Any
             detail="query",
         )
         assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert [gap["kind"] for gap in payload["why"]["details"]["gaps"]] == [
+            "stock_as_of_unrealized"
+        ]
+        # A top decile is a share of customers, not a ranking: the draft carries no limit.
+        assert "limit" not in payload["best"]["query"]
     finally:
         runtime.close()
 
@@ -1536,7 +1589,7 @@ def _last_days(days: int) -> dict[str, str]:
         ("revenue in March 2017", MARCH_2017, True),
         ("revenue in Q1 2017", Q1_2017, True),
         ("revenue in 2017", YEAR_2017, True),
-        ("revenue for the last 7 days", {"range": {"last": {"unit": "day", "value": 7}}}, True),
+        ("revenue for the last 7 days", {"last": {"unit": "day", "value": 7}}, True),
         ("revenue for the last 7 days", _last_days(7), True),
         # A window missing a bound reads past the question's on that side.
         ("revenue in 2017", {"end": "2018-01-01"}, False),
@@ -1552,7 +1605,7 @@ def _last_days(days: int) -> dict[str, str]:
         ("revenue in 2017", MARCH_2017, False),
         # A year the window's bounds carry is not the year the question states.
         ("revenue in 2018", YEAR_2017, False),
-        ("revenue for the last 7 days", {"range": {"last": {"unit": "day", "value": 30}}}, False),
+        ("revenue for the last 7 days", {"last": {"unit": "day", "value": 30}}, False),
         ("revenue for the last 7 days", _last_days(30), False),
         # Bounds that are not dates never agree.
         ("revenue on 15 March 2017", {"start": "soon", "end": "later"}, False),
@@ -1566,7 +1619,7 @@ def test_a_window_agrees_with_the_date_phrases_only_at_the_phrases_start_and_end
     query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
     runtime = runtime_factory("jaffle_shop")
     try:
-        assert (_caller_window_gaps(runtime, text, query) == []) is agrees
+        assert (_caller_window_gaps(runtime, text, Call.from_call(query)) == []) is agrees
         left = unconsumed_terms(runtime, text, query)
     finally:
         runtime.close()
@@ -1599,7 +1652,7 @@ def test_a_window_over_two_phrases_must_span_them_and_no_more(runtime_factory: A
             ({**both, "end": "2018-01-01"}, False),
         ):
             query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **time})
-            assert (_caller_window_gaps(runtime, text, query) == []) is agrees, time
+            assert (_caller_window_gaps(runtime, text, Call.from_call(query)) == []) is agrees, time
     finally:
         runtime.close()
 
@@ -1615,7 +1668,9 @@ def test_a_question_too_long_to_read_is_held_to_the_years_its_date_phrases_state
     try:
         for year, agrees in ((2017, True), (2018, False)):
             query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
-            gaps = _caller_window_gaps(runtime, f"revenue in {year} {LONG_FILLER}", query)
+            gaps = _caller_window_gaps(
+                runtime, f"revenue in {year} {LONG_FILLER}", Call.from_call(query)
+            )
             assert (gaps == []) is agrees
     finally:
         runtime.close()
@@ -1637,7 +1692,7 @@ def test_a_question_too_long_to_read_never_reads_a_quantity_as_a_window(
     runtime = runtime_factory("jaffle_shop")
     try:
         # No window is stated, so none is invented for the caller's to disagree with ...
-        assert _caller_window_gaps(runtime, text, query) == []
+        assert _caller_window_gaps(runtime, text, Call.from_call(query)) == []
         # ... and the years are left unconsumed, so the plan is not ready.
         assert "2017" in unconsumed_terms(runtime, text, query)
     finally:
@@ -1651,7 +1706,7 @@ def test_a_question_too_long_to_read_skips_a_year_that_states_a_count(
     query = _draft(time={"temporal_role": ORDER_TIME, "grain": "day", **YEAR_2017})
     runtime = runtime_factory("jaffle_shop")
     try:
-        assert _caller_window_gaps(runtime, text, query) == []
+        assert _caller_window_gaps(runtime, text, Call.from_call(query)) == []
         # "2017" is the stated window; the count is a number no construct reads.
         left = unconsumed_terms(runtime, text, query)
         assert "2000" in left

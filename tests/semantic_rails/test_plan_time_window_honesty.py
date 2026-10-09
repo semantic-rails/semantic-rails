@@ -7,8 +7,8 @@ unbounded query believing it answered the time-scoped question.
 Two-part contract under test:
 
 1. Common relative windows ("last month", "last 7 days", "this year",
-   "yesterday", ...) resolve into the Query IR's existing relative range
-   form (``time.range.last``) or absolute ``start``/``end`` bounds.
+   "yesterday", ...) resolve into the call's relative window (``time.last``
+   or ``time.this``); calendar windows resolve to ``start``/``end`` bounds.
 2. Temporal phrases the planner detects but cannot resolve ("last few
    weeks", "since 2023") downgrade the plan to ``low_confidence`` with a
    structured ``why`` naming the unresolved phrase and recovery hints
@@ -18,8 +18,7 @@ Two-part contract under test:
 
 from __future__ import annotations
 
-from datetime import date
-
+import duckdb
 import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -47,24 +46,17 @@ from semantic_rails.planner.time_windows import _time_bounds_from_text
         ("orders last quarter", "quarter", 1),
     ],
 )
-def test_relative_windows_resolve_to_range_last(text: str, unit: str, value: int) -> None:
+def test_relative_windows_resolve_to_last(text: str, unit: str, value: int) -> None:
     bounds = _time_bounds_from_text(text)
-    assert bounds == {"range": {"last": {"unit": unit, "value": value}}}
+    assert bounds == {"last": {"unit": unit, "value": value}}
 
 
-def test_yesterday_resolves_to_one_day_relative_range() -> None:
-    assert _time_bounds_from_text("orders yesterday") == {
-        "range": {"last": {"unit": "day", "value": 1}}
-    }
+def test_yesterday_resolves_to_the_last_day() -> None:
+    assert _time_bounds_from_text("orders yesterday") == {"last": {"unit": "day", "value": 1}}
 
 
-def test_this_year_resolves_to_current_calendar_year_bounds() -> None:
-    bounds = _time_bounds_from_text("revenue this year")
-    today = date.today()
-    assert bounds == {
-        "start": date(today.year, 1, 1).isoformat(),
-        "end": date(today.year + 1, 1, 1).isoformat(),
-    }
+def test_this_year_resolves_to_this_year() -> None:
+    assert _time_bounds_from_text("revenue this year") == {"this": "year"}
 
 
 def test_quarter_year_bounds_still_resolve() -> None:
@@ -75,11 +67,8 @@ def test_quarter_year_bounds_still_resolve() -> None:
     }
 
 
-def test_this_month_bounds_still_resolve() -> None:
-    bounds = _time_bounds_from_text("revenue this month")
-    today = date.today()
-    assert bounds["start"] == today.replace(day=1).isoformat()
-    assert "end" in bounds
+def test_this_month_still_resolves() -> None:
+    assert _time_bounds_from_text("revenue this month") == {"this": "month"}
 
 
 @pytest.mark.parametrize(
@@ -94,7 +83,7 @@ def test_this_month_bounds_still_resolve() -> None:
 )
 def test_comparison_contexts_do_not_resolve_to_a_window(text: str) -> None:
     bounds = _time_bounds_from_text(text)
-    assert "range" not in bounds
+    assert "last" not in bounds
     # ... and they are not flagged unresolved either: the period-shift
     # patterns own those phrasings.
     leftovers = [p for p in _unresolved_time_phrases(text) if "last" in p or "versus" in p]
@@ -131,17 +120,15 @@ def test_resolved_or_absent_windows_are_not_flagged(text: str) -> None:
     assert _unresolved_time_phrases(text) == []
 
 
-def test_time_spec_grain_follows_resolved_window_unit() -> None:
+def test_time_spec_window_without_a_grain_is_one_total() -> None:
     spec = _time_spec("temporal_role.jaffle_order_time", "revenue last 7 days")
-    assert spec["grain"] == "day"
+    assert (spec.grain, spec.last) == ("", ("day", 7))
     spec = _time_spec("temporal_role.jaffle_order_time", "orders yesterday")
-    assert spec["grain"] == "day"
+    assert (spec.grain, spec.last) == ("", ("day", 1))
     spec = _time_spec("temporal_role.jaffle_order_time", "revenue by store last month")
-    assert spec["grain"] == "month"
-    # No window, no explicit grain cue — the month default stands.
-    spec = _time_spec("temporal_role.jaffle_order_time", "revenue by store")
-    assert spec["grain"] == "month"
-    assert "range" not in spec
+    assert (spec.grain, spec.last) == ("", ("month", 1))
+    # No window and no grain cue: no time block at all.
+    assert _time_spec("temporal_role.jaffle_order_time", "revenue by store") is None
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +144,7 @@ def test_plan_last_month_is_time_bounded_and_ready(runtime_factory) -> None:
         runtime.close()
     assert payload["status"] == "ok"
     time_spec = payload["best"]["query"]["time"]
-    assert time_spec["range"] == {"last": {"unit": "month", "value": 1}}
+    assert time_spec["last"] == {"unit": "month", "value": 1}
     assert payload["best"]["validation_ok"] is True
     assert payload["next"]["ready_for"] == ["execute"]
 
@@ -169,12 +156,65 @@ def test_plan_last_n_days_is_time_bounded(runtime_factory) -> None:
     finally:
         runtime.close()
     time_spec = payload["best"]["query"]["time"]
-    assert time_spec["range"] == {"last": {"unit": "day", "value": 7}}
-    assert time_spec["grain"] == "day"
-    # The draft splits the 7 days into days, which the question never asks for.
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
-    assert payload["why"]["details"]["grain"] == "day"
+    assert time_spec["last"] == {"unit": "day", "value": 7}
+    # The question asks for no grain: the 7 days are one total per store, ready to run.
+    assert "grain" not in time_spec
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+
+
+ONE_TOTAL_NOW = "2017-03-15T12:00:00Z"
+REVENUE_BY_STORE = (
+    "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0) "
+    "FROM jaffle_order o JOIN jaffle_store s USING (store_id) "
+    "WHERE o.ordered_at >= TIMESTAMP '{start}' AND o.ordered_at < TIMESTAMP '{end}' "
+    "GROUP BY 1, 2 ORDER BY 1"
+)
+
+
+@pytest.mark.parametrize(
+    ("intent", "reference"),
+    [
+        # At 2017-03-15 (UTC, the package's zone) the last 7 days are March 8 to 14...
+        (
+            "revenue by store last 7 days",
+            REVENUE_BY_STORE.format(start="2017-03-08", end="2017-03-15"),
+        ),
+        # ...last month is February...
+        (
+            "revenue by store last month",
+            REVENUE_BY_STORE.format(start="2017-02-01", end="2017-03-01"),
+        ),
+        # ...and yesterday is March 14.
+        (
+            "orders yesterday",
+            "SELECT COUNT(DISTINCT order_id) FROM jaffle_order "
+            "WHERE ordered_at >= TIMESTAMP '2017-03-14' AND ordered_at < TIMESTAMP '2017-03-15'",
+        ),
+    ],
+)
+def test_a_relative_window_without_a_grain_answers_one_total(
+    runtime_factory, intent: str, reference: str
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent=intent, now=ONE_TOTAL_NOW)
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query"]
+        assert "last" in query["time"] and "grain" not in query["time"]
+        rows = runtime.query(query, now=ONE_TOTAL_NOW)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            gold = connection.execute(reference).fetchall()
+    finally:
+        runtime.close()
+    assert gold and all(row[-1] for row in gold)
+
+    def rounded(values) -> tuple:
+        return tuple(round(value, 2) if isinstance(value, float) else value for value in values)
+
+    # One row per group, with no period column: the window is one total.
+    assert all("period" not in row for row in rows)
+    assert [rounded(row.values()) for row in rows] == [rounded(row) for row in gold]
 
 
 def test_plan_unresolved_window_downgrades_instead_of_silently_dropping(
@@ -258,39 +298,38 @@ def test_partial_query_bounds_suppress_the_downgrade(runtime_factory) -> None:
     assert payload["next"]["ready_for"] == ["execute"]
 
 
-def test_plan_period_shift_comparison_is_not_window_bounded(runtime_factory) -> None:
-    """ "vs last month" is a period-shift comparison, not a trailing
-    window — the prior_period expression owns its own lookback."""
+def test_plan_period_shift_comparison_with_this_month_is_held(runtime_factory) -> None:
+    """ "this month vs last month" compares a month not over yet with a complete
+    one: held, with the two complete months offered as one series."""
 
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent="revenue this month vs last month")
     finally:
         runtime.close()
-    # The draft keeps this month's end without its start (the lookback needs
-    # last month's rows), and plan says which rows answer the question.
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
+    assert payload["why"]["code"] == "PERIOD_COMPARISON_INCOMPLETE"
+    assert payload["why"]["details"]["window"] == {"this": "month"}
     assert payload["best"]["pattern"] == "inline_period_shift"
+    assert "ready_for" not in payload["next"]
     time_spec = payload["best"]["query"]["time"]
-    assert "range" not in time_spec
-    assert "start" not in time_spec
+    assert (time_spec["grain"], time_spec["last"]) == ("month", {"unit": "month", "value": 2})
 
 
-def test_intent_ir_time_carries_resolved_relative_range(runtime_factory) -> None:
+def test_intent_ir_time_carries_the_relative_window(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         intent_ir = parse_intent(runtime, "revenue by store last month")
     finally:
         runtime.close()
     assert intent_ir.time is not None
-    assert intent_ir.time["range"] == {"last": {"unit": "month", "value": 1}}
-    assert intent_ir.to_dict()["time"]["range"]["last"]["unit"] == "month"
+    assert intent_ir.time["last"] == {"unit": "month", "value": 1}
+    assert intent_ir.to_dict()["time"]["last"]["unit"] == "month"
 
 
-def test_since_named_month_has_explicit_complete_day_bounds():
+def test_since_named_month_has_an_explicit_start():
     from semantic_rails.planner.time_windows import _time_window
 
     read = _time_window("orders since January", {"now": "2026-10-05T06:00:00Z"})
-    assert read.bounds == {"start": "2026-01-01", "end": "2026-10-05"}
+    assert read.bounds == {"start": "2026-01-01"}
     assert not read.unresolved
