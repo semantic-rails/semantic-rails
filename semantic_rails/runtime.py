@@ -1525,7 +1525,7 @@ def _compiled_cte_row(runtime, compiled, payload, probes, columns):
         joins=[SqlJoin("CROSS", SqlTableRef(name)) for name in probes[1:]],
         ctes=[
             cte
-            for cte in compiled["sql_ast"].ctes
+            for cte in [*compiled["sql_ast"].ctes, *compiled.get("balance_coverage", ())]
             if cte.name in probes or cte.name in {f"{p}_rows" for p in probes}
         ],
     )
@@ -1570,7 +1570,8 @@ def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
     changes the answer or its warnings.
     """
     by_alias, _ = _guard_probe_names(compiled, "coverage_")
-    probes = sorted(set().union(*by_alias.values()))
+    balances = [item["probes"] for item in compiled.get("balance_edges", ())]
+    probes = sorted(set().union(*by_alias.values(), *balances))
     if not probes:
         return {}
     try:
@@ -1590,7 +1591,7 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
     time = compiled["logical_plan"].time
     outputs = {
         item["output"]: item
-        for item in compiled.get("zero_outputs", [])
+        for item in [*compiled.get("zero_outputs", []), *compiled.get("balance_edges", [])]
         if item["output"] not in excluded_outputs
         and (
             any(row.get(item["output"]) is None for row in rows)
@@ -1601,6 +1602,9 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
     if not outputs:
         return []
     by_alias, by_output = _guard_probe_names(compiled, "coverage_")
+    for name, item in outputs.items():
+        if "probes" in item:  # a balance's own coverage
+            by_output[name] = set(item["probes"])
     probes = sorted(set().union(*(by_output.get(name, set()) for name in outputs)))
     if not probes or any(f"{p}__loaded_to" not in coverage for p in probes):
         return []
@@ -1615,7 +1619,7 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
     last_rows: dict[str, str] = {}
     for output, item in outputs.items():
         for measure in item["measures"]:
-            names = set().union(
+            names = set(item.get("probes", ())) or set().union(
                 *(
                     by_alias.get(aliases.internal(b.alias), set())
                     for b in bound

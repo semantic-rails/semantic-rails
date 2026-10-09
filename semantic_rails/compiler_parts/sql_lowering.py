@@ -137,6 +137,8 @@ from .empty_groups import (
     observation_scope,
     observes_dataset,
     reads_every_row,
+    record_balance_output,
+    record_balance_scope,
     record_leaf_scope,
     record_zero_output,
     recording_leaf_scopes,
@@ -619,25 +621,6 @@ def _record_time_scope(
         role = _temporal_role_index(config)[
             _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
         ]
-        coverage_bucket = bucket
-        if plan.time.get("window_total"):
-            # The whole [start, end) interval is bucket 0; timestamps before/after it
-            # are -1/1. The central guard can then compare its key to loaded coverage
-            # just as for a grained bucket, using the source clock's bound semantics.
-            window = _source_time_window(
-                _apply_role_timezone(raw_time, role, config), plan.time, config, role_id=role.id
-            )
-            coverage_bucket = SqlCase(
-                [SqlCaseWhen(SqlIsNull(raw_time), SqlLiteral(None))]
-                + [
-                    SqlCaseWhen(
-                        build_negation(condition),
-                        SqlLiteral(-1 if condition.op == ">=" else 1),
-                    )
-                    for condition in window
-                ],
-                else_expr=SqlLiteral(0),
-            )
         record_leaf_scope(
             alias,
             LeafScope(
@@ -645,12 +628,59 @@ def _record_time_scope(
                 joins=() if nested else tuple(leaf.joins),
                 where=() if nested else tuple(untimed),
                 value=value,
-                bucket=coverage_bucket if local else None,
+                bucket=_coverage_bucket(plan, config, raw_time, bucket, role) if local else None,
                 raw_time=raw_time,
                 storage_zone=role.column_timezone or role.timezone or "UTC",
                 bounded=not nested and bool(plan.time.get("start") or plan.time.get("end")),
             ),
         )
+
+
+def _coverage_bucket(
+    plan: LogicalPlan, config: PackageConfig, raw_time: Any, bucket: Any, role: Any
+) -> Any:
+    """The bucket loaded coverage compares: the leaf's own, or for a window total the whole
+    [start, end) interval as bucket 0 and times before/after it as -1/1, using the source
+    clock's bound semantics, so coverage reads it just as a grained bucket."""
+    if not plan.time.get("window_total"):
+        return bucket
+    window = _source_time_window(
+        _apply_role_timezone(raw_time, role, config), plan.time, config, role_id=role.id
+    )
+    return SqlCase(
+        [SqlCaseWhen(SqlIsNull(raw_time), SqlLiteral(None))]
+        + [
+            SqlCaseWhen(build_negation(condition), SqlLiteral(-1 if condition.op == ">=" else 1))
+            for condition in window
+        ],
+        else_expr=SqlLiteral(0),
+    )
+
+
+def _record_balance_edge(
+    plan: LogicalPlan,
+    config: PackageConfig,
+    row: MeasurePlan,
+    relation: str,
+    raw_time: Any,
+    bucket: Any,
+) -> None:
+    """A balance's loaded coverage on its own clock, to say where its data ends."""
+    if not _dialect(config).has_time_coverage:
+        return
+    role = _temporal_role_index(config)[
+        _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
+    ]
+    scope = LeafScope(
+        from_table=SqlTableRef(name=relation),
+        joins=(),
+        where=(),
+        value=None,
+        bucket=_coverage_bucket(plan, config, raw_time, bucket, role),
+        raw_time=raw_time,
+        storage_zone=role.column_timezone or role.timezone or "UTC",
+    )
+    record_balance_scope(row.bound_measure.alias, scope, _dialect(config))
 
 
 def _dataset_scope(row: MeasurePlan, config: PackageConfig) -> LeafScope | None:
@@ -3331,6 +3361,15 @@ def _measure_leaf_select(
                         "dimension": dim_id,
                     },
                 )
+        if plan.time and time_source_local:
+            _record_balance_edge(
+                plan,
+                config,
+                measure_plan,
+                _measure_source_relation(measure, entities[measure.entity]),
+                coverage_time,
+                time_expr,
+            )
         return _semi_additive_leaf_select(
             key_fields=list(select_fields),
             period_aliases=period_aliases,
@@ -6048,32 +6087,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         base_name = "series_base"
         base_table = SqlTableRef(name=base_name, alias="base")
 
-    # The one place an empty group reads 0 instead of NULL: the projection below reads
-    # every such measure through this CTE, so nothing after it can change what it sees.
+    # The one place an empty group reads 0 instead of NULL: the projection reads every such
+    # measure through the guard below, so nothing after it can change what it sees.
     zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
-    if zero:
-        ctes.extend(
-            guard_empty_groups(
-                base_table.name,
-                key_aliases,
-                measure_aliases,
-                zero,
-                scopes,
-                rows=rows,
-                earlier={
-                    row.bound_measure.alias
-                    for row in plan.measure_plans
-                    if has_nested_case(_measure_index(config)[row.bound_measure.measure_id])
-                },
-                time_key=time_alias if _emits_time_coverage(plan, config) else "",
-                dialect=_dialect(config),
-                observed=observed,
-                observed_buckets=retained,
-                bucketed=bool(plan.time),
-            )
-        )
-        base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
-
     projected_fields: list[SqlField] = [
         SqlField(SqlIdentifier(parts=["base", alias]), alias) for alias in key_aliases
     ]
@@ -6104,6 +6120,45 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)
         ):
             record_zero_output(alias, lookups)
+        reads = base_reads(compiled_output)
+        record_balance_output(
+            alias,
+            reads,
+            (
+                row.bound_measure.measure_id
+                for row in plan.measure_plans
+                if row.bound_measure.alias in reads
+            ),
+        )
+
+    if zero:
+        ctes.extend(
+            guard_empty_groups(
+                base_table.name,
+                key_aliases,
+                measure_aliases,
+                zero,
+                scopes,
+                rows=rows,
+                earlier={
+                    row.bound_measure.alias
+                    for row in plan.measure_plans
+                    if has_nested_case(_measure_index(config)[row.bound_measure.measure_id])
+                },
+                time_key=time_alias if _emits_time_coverage(plan, config) else "",
+                dialect=_dialect(config),
+                observed=observed,
+                observed_buckets=retained,
+                bucketed=bool(plan.time),
+                names={
+                    measure: [
+                        f.alias for f in projected_fields if measure in base_reads(f.expression)
+                    ]
+                    for measure in measure_aliases
+                },
+            )
+        )
+        base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
 
     metric_filter_aliases: list[str] = []
     for index, item in enumerate(list(plan.query.get("metric_filters", []) or [])):

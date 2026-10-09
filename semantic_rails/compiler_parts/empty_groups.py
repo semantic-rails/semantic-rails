@@ -563,6 +563,48 @@ def base_reads(expr: Any) -> set[str]:
     }
 
 
+_balance_edges: ContextVar[dict[str, Any] | None] = ContextVar("balance_edges", default=None)
+
+
+@contextmanager
+def recording_balance_edges() -> Iterator[dict[str, Any]]:
+    """Record each balance output's loaded coverage: CTEs of their own, apart from the query,
+    read only to say where the balance's data ends (``NO_DATA_YET``). A balance reads NULL
+    in a period without a snapshot either way, so its coverage never changes a value."""
+    edges: dict[str, Any] = {"ctes": {}, "leaves": {}, "outputs": []}
+    token = _balance_edges.set(edges)
+    try:
+        yield edges
+    finally:
+        _balance_edges.reset(token)
+
+
+def record_balance_scope(alias: str, scope: LeafScope, dialect: Any) -> None:
+    edges = _balance_edges.get()
+    if edges is None or not plan_is_root():
+        return
+    query = coverage_select(scope, dialect)
+    name = next((cte.name for cte in edges["ctes"].values() if cte.query == query), None)
+    if name is None:
+        name = f"balance_coverage_{len(edges['ctes']) + 1}"
+        edges["ctes"][name] = SqlCte(name=name, query=query)
+    edges["leaves"][alias] = name
+
+
+def record_balance_output(output: str, reads: set[str], measure_ids: Iterable[str]) -> None:
+    """An output that reads only balances, with the coverage of each."""
+    edges = _balance_edges.get()
+    if edges is None or not reads or not reads <= edges["leaves"].keys():
+        return
+    edges["outputs"].append(
+        {
+            "output": output,
+            "measures": sorted(set(measure_ids)),
+            "probes": sorted({edges["leaves"][alias] for alias in reads}),
+        }
+    )
+
+
 _zero_outputs: ContextVar[list[dict[str, Any]] | None] = ContextVar("zero_outputs", default=None)
 
 

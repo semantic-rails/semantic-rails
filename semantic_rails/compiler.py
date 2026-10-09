@@ -74,6 +74,7 @@ from .compiler_parts.empty_groups import (
     capping_at,
     expr_resolves_to_zero,
     observing,
+    recording_balance_edges,
     recording_zero_outputs,
     require_settled_source,
 )
@@ -5031,6 +5032,10 @@ class BoundQuery:
     route_decisions: tuple[dict[str, Any], ...] = ()
     # The request's ``now`` the SQL's loaded coverage caps at ("" when it reads none).
     coverage_now: str = ""
+    # Each output that reads only balances, with the coverage CTEs (kept apart from the
+    # query's SQL) that say where their data ends.
+    balance_edges: tuple[dict[str, Any], ...] = ()
+    balance_coverage: tuple[SqlCte, ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``."""
@@ -5352,6 +5357,7 @@ def _bind_query(
         recording_rollup_scans() as rollup_scans,
         recording_stock_key_gaps() as stock_key_gaps,
         recording_zero_outputs() as zero_outputs,
+        recording_balance_edges() as balance_edges,
         recording_route_choices() as route_choices,
         observing(plan.query, config),
         capping_at(parse_now((payload.get("policy_context") or {}).get("now"))) as clock,
@@ -5381,6 +5387,8 @@ def _bind_query(
         retained_filtered_series=tuple(sorted(leaves.retained_filtered_series)),
         route_choices=tuple(route_choices),
         coverage_now=clock.literal if clock.read else "",
+        balance_edges=tuple(balance_edges["outputs"]),
+        balance_coverage=tuple(balance_edges["ctes"].values()),
     )
 
 
@@ -5484,4 +5492,6 @@ def compile_query(
         "route_choices": list(bound.route_choices),
         "route_decisions": list(bound.route_decisions),
         "coverage_now": bound.coverage_now,
+        "balance_edges": list(bound.balance_edges),
+        "balance_coverage": list(bound.balance_coverage),
     }
