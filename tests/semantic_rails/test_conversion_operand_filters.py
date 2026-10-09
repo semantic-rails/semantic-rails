@@ -150,10 +150,10 @@ def test_operand_expression_filter_clause_is_rejected_not_dropped(runtime_factor
                         "expression": {
                             "kind": "metric_predicate",
                             "entity": "entity.jaffle_customer",
-                            "scope_mode": "entity_only",
-                            "input": {"measure": "measure.jaffle.lifetime_order_count"},
-                            "op": ">",
+                            "input": "measure.jaffle.lifetime_order_count",
+                            "op": "gt",
                             "value": 1,
+                            "over": "all_time",
                         }
                     }
                 ]

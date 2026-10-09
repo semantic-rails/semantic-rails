@@ -1291,7 +1291,7 @@ SELECT
 FROM refunds
 INNER JOIN orders ON refunds.order_id = orders.order_id
 WHERE
-  (refunds.order_id <> 7) OR (refunds.order_id IS NULL)
+  ((refunds.order_id <> 7) OR (refunds.order_id IS NULL))
 GROUP BY
   orders.store_id,
   DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))
@@ -1319,7 +1319,7 @@ SELECT
   SUM(orders.amount) AS m1
 FROM orders
 WHERE
-  (orders.order_id <> 7) OR (orders.order_id IS NULL)
+  ((orders.order_id <> 7) OR (orders.order_id IS NULL))
 GROUP BY
   orders.store_id,
   orders.order_id,

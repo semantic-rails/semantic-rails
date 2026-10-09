@@ -19,6 +19,7 @@ from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.http_request import HTTPInputError, coerce_string_list
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import discover_payload
+from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.request_payload import DISCOVER_RANKED_KINDS, parse_string_list
 from semantic_rails.resource_access import GRANT_DISCOVER_KINDS
 
@@ -288,12 +289,10 @@ def test_resource_grant_mode_refuses_a_kind_it_cannot_produce_and_says_which(
 ) -> None:
     """Grant errors are sanitised, so the kinds refusal must still keep its recovery detail."""
     service = SemanticHTTPService(runtime)
+    # HTTP identity is the request's resolved context, never the body.
+    context = context_from_policy_context(_granted(runtime))
     with pytest.raises(SemanticLayerError) as raised:
-        service.handle(
-            "POST",
-            "/discover",
-            {"terms": "revenue", "kinds": kinds, "policy_context": _granted(runtime)},
-        )
+        service.handle("POST", "/discover", {"terms": "revenue", "kinds": kinds}, context=context)
     out, status = service.exception_payload(raised.value, stage="http")
     assert status == 400 and out["ok"] is False
     assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
@@ -325,12 +324,13 @@ def test_resource_grant_mode_mcp_refusal_keeps_its_recovery_hint(
 def _grant_discover(
     runtime: Any, adapter: SemanticLayerMCPAdapter, transport: str, kinds: list[str]
 ) -> dict[str, Any]:
-    body = {"terms": "revenue", "kinds": kinds, "policy_context": _granted(runtime)}
+    body = {"terms": "revenue", "kinds": kinds}
     if transport == "mcp":
-        return adapter.call_tool("discover", body)
+        return adapter.call_tool("discover", {**body, "policy_context": _granted(runtime)})
     service = SemanticHTTPService(runtime)
+    context = context_from_policy_context(_granted(runtime))
     try:
-        out, status = service.handle("POST", "/discover", body)
+        out, status = service.handle("POST", "/discover", body, context=context)
     except SemanticLayerError as exc:
         out, status = service.exception_payload(exc, stage="http")
         assert status == 400
