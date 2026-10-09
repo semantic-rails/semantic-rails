@@ -179,7 +179,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "union_all": {
                             "branches": [
                                 {
-                                    "source": "sms_sends",
+                                    "relation": "sms_sends",
                                     "columns": {
                                         "account_id": "account_id",
                                         "sent_at": "sent_at",
@@ -188,7 +188,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                                     },
                                 },
                                 {
-                                    "source": "email_sends",
+                                    "relation": "email_sends",
                                     "columns": {
                                         "account_id": "account_id",
                                         "sent_at": "sent_at",
@@ -271,7 +271,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                             "match_rank": {
                                 "function": "row_number",
                                 "partition_by": ["signup_id"],
-                                "order_by": [{"column": "sent_at", "direction": "ASC"}],
+                                "order_by": [{"expr": "sent_at", "direction": "ASC"}],
                             }
                         }
                     },

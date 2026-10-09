@@ -31,14 +31,26 @@ def _version_two(files: PackageFiles) -> Iterator[Finding]:
 
 
 def _expression_nodes(files: PackageFiles) -> Iterator[Row]:
-    """Expression nodes in metrics, segments and every example, test and membership query."""
+    """Expression nodes in metrics, segments, measure `expr:` and `filter:`, relation steps and
+    every example, test and membership query."""
     roots = {(file, path) for file, path, _ in (*files.metrics(), *files.segments())}
     yield from (row for row in files.expressions() if row[:2] not in roots)
-    for file, path, query in files.queries():
-        if path[-1:] != ("membership",):
-            for child_path, child in _walk(query, path, expression=True):
-                if isinstance(child, dict):
-                    yield file, child_path, child
+    trees = [
+        (file, (*path, key), measure[key])
+        for file, path, measure in files.measures()
+        for key in ("expr", "filter")
+        if isinstance(measure.get(key), (dict, list))
+    ]
+    trees += [
+        (file, (*path, "steps"), relation["steps"])
+        for file, path, relation in files.relations()
+        if isinstance(relation.get("steps"), list)
+    ]
+    trees += [row for row in files.queries() if row[1][-1:] != ("membership",)]
+    for file, path, tree in trees:
+        for child_path, child in _walk(tree, path, expression=True):
+            if isinstance(child, dict):
+                yield file, child_path, child
 
 
 def _arithmetic(files: PackageFiles) -> Iterator[Finding]:

@@ -10,9 +10,14 @@ import pytest
 import yaml
 
 from semantic_rails.config import load_package_config, resolve_repo_path
+from semantic_rails.config_parts.shape_checks import _RELATION_RENAMED_KEYS
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.package_snapshot import json_fingerprint, load_package_snapshot
+from semantic_rails.relation_pipelines import lower_relation
+from semantic_rails.renderer import render_select
+from semantic_rails.schema import PackageConfig
+from semantic_rails.sql_ast import SqlField, SqlLiteral, SqlSelect
 from semantic_rails.yaml_loader import safe_load
 from tests.semantic_rails.conftest import copy_package_config, write_single_file_package
 
@@ -90,12 +95,12 @@ def test_retired_expression_spellings_are_refused(expression, code, message):
     assert message in str(exc.value)
 
 
-def _load_with(tmp_path: Path, **blocks) -> None:
+def _load_with(tmp_path: Path, **blocks) -> PackageConfig:
     source = write_single_file_package(tmp_path / "project")
     doc = safe_load(source.read_bytes())
     doc.update(blocks)
     source.write_text(yaml.safe_dump(doc, sort_keys=False))
-    load_package_config(str(source))
+    return load_package_config(str(source))
 
 
 STEPS = [{"source": "shop_order"}, {"select": {"columns": {"order_id": "order_id"}}}]
@@ -151,6 +156,208 @@ def test_retired_relation_spellings_are_refused(tmp_path, relations, message):
         _load_with(tmp_path, relations=relations)
     assert exc.value.code == "INVALID_CONFIG"
     assert message in str(exc.value)
+
+
+SOURCE = {"source": "shop_order"}
+ON = [{"left": "customer_id", "right": "customer_id"}]
+JOIN = {"relation": "shop_customer", "on": ON}
+BRANCH = {"relation": "shop_order", "columns": {"order_id": "order_id"}}
+ATTRIBUTION = {
+    "base": "shop_customer",
+    "attributed": "shop_order",
+    "base_time": "first_ordered_at",
+    "attributed_time": "ordered_at",
+    "select": {"customer_id": "customer_id"},
+}
+# One row per retired spelling of a key a relation step's lowering reads, as (block, steps,
+# retired key, kept key). Each loaded before, and the lowering read only one of the pair.
+RETIRED_STEP_KEYS = [
+    ("source", [{"source": {"table": "shop_order"}}], "table", "relation"),
+    ("source", [{"source": {"name": "shop_order"}}], "name", "relation"),
+    ("source", [{"source": {"value": "shop_order"}}], "value", "relation"),
+    ("select", [SOURCE, {"select": {"value": {"order_id": "order_id"}}}], "value", "columns"),
+    (
+        "where",
+        [SOURCE, {"where": {"predicates": ["channel = 'web'"], "where": ["order_id = 'x'"]}}],
+        "where",
+        "predicates",
+    ),
+    ("where", [SOURCE, {"where": {"value": ["channel = 'web'"]}}], "value", "predicates"),
+    (
+        "group_by",
+        [SOURCE, {"group_by": {"group_by": {"channel": "channel"}}}],
+        "group_by",
+        "dimensions",
+    ),
+    ("group_by", [SOURCE, {"group_by": {"measures": {"n": "count"}}}], "measures", "aggregates"),
+    (
+        "aggregate",
+        [SOURCE, {"group_by": {"aggregates": {"n": {"agg": "count"}}}}],
+        "agg",
+        "function",
+    ),
+    (
+        "aggregate",
+        [SOURCE, {"group_by": {"aggregates": {"n": {"function": "sum", "expression": "x"}}}}],
+        "expression",
+        "expr",
+    ),
+    ("join", [SOURCE, {"join": {"table": "shop_customer", "on": ON}}], "table", "relation"),
+    (
+        "join",
+        [SOURCE, {"join": {**JOIN, "require_preaggregated": True}}],
+        "require_preaggregated",
+        "require_pre_aggregate",
+    ),
+    (
+        "pre_aggregate side",
+        [SOURCE, {"join": {**JOIN, "pre_aggregate": {"left": {"group_by": {"c": "c"}}}}}],
+        "group_by",
+        "dimensions",
+    ),
+    (
+        "pre_aggregate side",
+        [SOURCE, {"join": {**JOIN, "pre_aggregate": {"right": {"measures": {"n": "count"}}}}}],
+        "measures",
+        "aggregates",
+    ),
+    *(
+        (kind, [SOURCE, {kind: {"table": "shop_customer", "on": ON}}], "table", "relation")
+        for kind in ("semi_join", "anti_join", "exclude")
+    ),
+    (
+        "date_lag",
+        [SOURCE, {"join": {**JOIN, "on": [{**ON[0], "date_lag": {"unit": "day", "value": 7}}]}}],
+        "value",
+        "max",
+    ),
+    (
+        "window",
+        [SOURCE, {"window": {"columns": {"n": {"function": "count"}}}}],
+        "columns",
+        "windows",
+    ),
+    ("window spec", [SOURCE, {"window": {"n": {"kind": "row_number"}}}], "kind", "function"),
+    (
+        "window spec",
+        [SOURCE, {"window": {"n": {"function": "sum", "expression": "x"}}}],
+        "expression",
+        "expr",
+    ),
+    (
+        "order_by",
+        [SOURCE, {"window": {"n": {"function": "row_number", "order_by": [{"column": "x"}]}}}],
+        "column",
+        "expr",
+    ),
+    ("explode", [SOURCE, {"explode": {"column": "channel", "alias": "c"}}], "alias", "as"),
+    (
+        "json_extract",
+        [SOURCE, {"json_extract": {"column": "channel", "path": ["a"], "alias": "a"}}],
+        "alias",
+        "as",
+    ),
+    (
+        "date_spine",
+        [{"date_spine": {"start": "2026-01-01", "end": "2026-01-03", "date_column": "d"}}],
+        "date_column",
+        "column",
+    ),
+    (
+        "state_as_of",
+        [SOURCE, {"state_as_of": {"date_spine": "rel_days", "valid_from": "ordered_at"}}],
+        "date_spine",
+        "spine",
+    ),
+    (
+        "attribution_join",
+        [{"attribution_join": {**ATTRIBUTION, "base_relation": "shop_order"}}],
+        "base_relation",
+        "base",
+    ),
+    (
+        "attribution_join",
+        [{"attribution_join": {**ATTRIBUTION, "attributed_relation": "shop_customer"}}],
+        "attributed_relation",
+        "attributed",
+    ),
+    (
+        "attribution key",
+        [{"attribution_join": {**ATTRIBUTION, "keys": [{"left": "customer_id"}]}}],
+        "left",
+        "base",
+    ),
+    (
+        "attribution key",
+        [{"attribution_join": {**ATTRIBUTION, "keys": [{"right": "customer_id"}]}}],
+        "right",
+        "attributed",
+    ),
+    (
+        "lookback",
+        [{"attribution_join": {**ATTRIBUTION, "lookback": {"unit": "day", "max": 7}}}],
+        "max",
+        "value",
+    ),
+    ("union_all", [{"union_all": {"value": [BRANCH]}}], "value", "branches"),
+    *(
+        ("union branch", [{"union_all": [{**BRANCH, key: "shop_order"}]}], key, "relation")
+        for key in ("table", "source")
+    ),
+    (
+        "union branch",
+        [{"union_all": {"branches": [{"relation": "shop_order", "select": {"a": "a"}}]}}],
+        "select",
+        "columns",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("block", "steps", "retired", "kept"),
+    RETIRED_STEP_KEYS,
+    ids=[f"{block}-{retired}" for block, _, retired, _ in RETIRED_STEP_KEYS],
+)
+def test_second_relation_step_spellings_are_refused(tmp_path, block, steps, retired, kept):
+    with pytest.raises(SemanticLayerError) as exc:
+        _load_with(tmp_path, relations={"recent": {"steps": steps, "columns": ["order_id"]}})
+    assert exc.value.code == "INVALID_CONFIG"
+    assert f"unknown key '{retired}'" in str(exc.value)
+    assert f"write `{kept}:`" in str(exc.value)
+
+
+def test_every_retired_relation_step_spelling_has_a_refusal_row():
+    rows = {(block, retired, kept) for block, _, retired, kept in RETIRED_STEP_KEYS}
+    assert rows == {
+        (block, retired, kept)
+        for block, renamed in _RELATION_RENAMED_KEYS.items()
+        for retired, kept in renamed.items()
+    }
+
+
+def _relation_sql(config: PackageConfig) -> str:
+    (relation,) = config.relations
+    ctes, _ = lower_relation(relation, warehouse=config.package.warehouse)
+    return render_select(SqlSelect(select=[SqlField(SqlLiteral(1), "one")], ctes=ctes))
+
+
+def test_an_annotation_beside_a_step_kind_changes_nothing(tmp_path):
+    select = {"select": {"columns": {"order_id": "order_id"}}}
+    plain = _load_with(tmp_path / "plain", relations={"recent": {"steps": [SOURCE, select]}})
+    noted = _load_with(
+        tmp_path / "noted",
+        relations={"recent": {"steps": [{**SOURCE, "_note": "x"}, {"_why": "y", **select}]}},
+    )
+    assert _relation_sql(noted) == _relation_sql(plain)
+    assert "FROM shop_order AS src" in _relation_sql(plain)
+
+
+@pytest.mark.parametrize("step", [{}, {"_note": "x"}], ids=["empty", "annotation-only"])
+def test_a_step_naming_no_kind_is_refused(tmp_path, step):
+    with pytest.raises(SemanticLayerError) as exc:
+        _load_with(tmp_path, relations={"recent": {"steps": [SOURCE, step]}})
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "step 1 names no kind; write each step as one key naming its kind" in str(exc.value)
 
 
 def test_relation_steps_and_graph_route_policy_load(tmp_path):

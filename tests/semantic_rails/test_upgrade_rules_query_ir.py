@@ -211,3 +211,50 @@ def test_a_retired_expression_upgrade_loads_with_the_same_semantics(tmp_path):
     assert source.read_text() == text
     assert load_package_snapshot(source).semantic_fingerprint == baseline.semantic_fingerprint
     assert upgrade_project(source, workspace_root=tmp_path)["status"] == "up_to_date"
+
+
+BINARY = "{kind: binary, op: subtract, left: {kind: column, column: a}, right: 1}"
+ARITHMETIC = "{kind: arithmetic, op: subtract, left: {kind: column, column: a}, right: 1}"
+NOT_IN = "{kind: not_in, left: {kind: column, column: channel}, values: [web]}"
+CURRENT_NOT_IN = "{kind: not_in, expr: {kind: column, column: channel}, values: [web]}"
+# The parser refuses a retired spelling in a measure's `expr:` and `filter:` and in a relation
+# step, so the rule reaches each of them.
+PLACES = {
+    "measure": (
+        "models:\n"
+        "  orders:\n"
+        "    measures:\n"
+        "      margin:\n"
+        "        expr: <expr>\n"
+        "        filter: <filter>\n",
+        ((5, "kind binary becomes arithmetic"), (6, "left becomes expr")),
+    ),
+    "relation": (
+        "relations:\n"
+        "  recent:\n"
+        "    steps:\n"
+        "      - source: orders\n"
+        "      - select:\n"
+        "          columns:\n"
+        "            margin: <expr>\n"
+        "      - where: [<filter>]\n",
+        ((7, "kind binary becomes arithmetic"), (8, "left becomes expr")),
+    ),
+}
+
+
+@pytest.mark.parametrize(("template", "findings"), PLACES.values(), ids=list(PLACES))
+def test_retired_expression_spellings_become_current_in_measures_and_relations(
+    tmp_path, template, findings
+):
+    legacy = template.replace("<expr>", BINARY).replace("<filter>", NOT_IN)
+    (tmp_path / "pkg.yml").write_text(legacy)
+    files = PackageFiles(tmp_path / "pkg.yml")
+
+    result = plan(files, QUERY_IR_RULES, {})
+
+    current = template.replace("<expr>", ARITHMETIC).replace("<filter>", CURRENT_NOT_IN)
+    assert result.files == {"pkg.yml": current.encode()}
+    assert tuple((row.line, row.message) for row in result.findings) == findings
+    upgraded = PackageFiles(files.source, contents={**files.contents, **result.files})
+    assert plan(upgraded, RULES, {}).findings == ()
