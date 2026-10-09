@@ -22,9 +22,9 @@ from ..common import (
     _policy_context_from_args,
     _print,
     _query_call_from_args,
-    _query_with_policy_context,
     _ref_from_args,
     _runtime_from_package_or_path,
+    _seed_from_args,
 )
 
 
@@ -55,15 +55,12 @@ def cmd_catalog(args: argparse.Namespace) -> None:
 def cmd_discover(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        query = _query_with_policy_context(
-            _parse_json(args.query_json) if args.query_json else None, args
-        )
         _print(
             discover_payload(
                 runtime,
                 terms=args.terms,
                 kinds=checked_string_list(args.kinds, field="kinds"),
-                partial_query=query,
+                partial_query=_seed_from_args(runtime, args),
                 stage=args.stage,
                 verbosity=args.verbosity,
                 limit=args.limit,
@@ -77,12 +74,12 @@ def cmd_discover(args: argparse.Namespace) -> None:
 def cmd_inspect(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        query = _query_with_policy_context(
-            _parse_json(args.query_json) if args.query_json else None, args
-        )
         _print(
             inspect_payload(
-                runtime, object_id=args.object_id, partial_query=query, verbosity=args.verbosity
+                runtime,
+                object_id=args.object_id,
+                partial_query=_seed_from_args(runtime, args),
+                verbosity=args.verbosity,
             )
         )
     finally:
@@ -169,14 +166,11 @@ def cmd_serve(args: argparse.Namespace) -> None:
 def cmd_valid_values(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        query = _query_with_policy_context(
-            _parse_json(args.query_json) if args.query_json else None, args
-        )
         _print(
             valid_values_payload(
                 runtime,
                 dimension_id=args.dimension,
-                query=query,
+                query=_seed_from_args(runtime, args),
                 search=args.search,
                 limit=args.limit,
                 offset=args.offset,
@@ -190,11 +184,12 @@ def cmd_valid_values(args: argparse.Namespace) -> None:
 def cmd_build_options(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        query = _query_with_policy_context(_parse_json(args.query_json), args) or {}
         _print(
             build_options_payload(
                 runtime,
-                partial_query=query,
+                partial_query=runtime.seed_payload(
+                    _parse_json(args.query_json), context=_policy_context_from_args(args)
+                ),
                 focus_terms=args.focus_terms,
                 focus_object_id=args.focus_object_id,
                 step=args.step,
@@ -211,14 +206,13 @@ def cmd_build_options(args: argparse.Namespace) -> None:
 def cmd_plan(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     try:
-        query = _query_with_policy_context(
-            _parse_json(args.query_json) if args.query_json else None, args
-        )
+        seed = _parse_json(args.query_json) if args.query_json else {}
         _print(
             plan_payload(
                 runtime,
                 intent=args.intent,
-                partial_query=query,
+                partial_query={**seed, "policy_context": _policy_context_from_args(args)},
+                now=args.now or None,
                 limit=args.limit,
                 detail=args.detail,
             )

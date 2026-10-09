@@ -1,14 +1,14 @@
 """Protocol-neutral request shaping shared by HTTP and MCP.
 
 Transport adapters own identity resolution, input errors, and response defaults.
-This module owns the common query envelope and policy-claim removal rules so a
-new transport cannot accidentally preserve a nested caller claim.
+This module owns the rules every transport shares, such as refusing a request that
+claims an identity, so a new transport cannot accept a caller's claim.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .errors import SemanticLayerError
@@ -111,43 +111,32 @@ def checked_discover_kinds(kinds: Sequence[str] | None, valid: frozenset[str]) -
     return requested
 
 
-def without_policy_context(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Copy a request and remove every supported caller policy-context location."""
+def identity_claim_refusal(path: str, *, remote: bool) -> SemanticLayerError:
+    """The refusal of a request that says who is asking: identity comes only from credentials.
 
-    out = dict(payload)
-    out.pop("policy_context", None)
-    raw_query = out.get("query")
-    if isinstance(raw_query, Mapping):
-        query = dict(raw_query)
-        query.pop("policy_context", None)
-        out["query"] = query
-    return out
-
-
-def build_query_payload(
-    payload: Mapping[str, Any],
-    *,
-    object_payload: Callable[..., dict[str, Any]],
-    policy_context: Mapping[str, Any],
-    replace_policy_context: bool = False,
-) -> dict[str, Any]:
-    """Unwrap Query IR, hoist response options, and apply the resolved context.
-
-    The adapter supplies its existing object validator to preserve protocol
-    error contracts. An authoritative context replaces caller claims; local
-    contexts merge with outer values taking precedence over nested values.
+    Behind a door that resolved the caller's credentials (``remote``) it is
+    ``IDENTITY_CLAIM_REFUSED``; a trusted local caller passes its identity as ``context``, so
+    for it the key is just unknown.
     """
+    from .query_call import refusal
 
-    query = object_payload(payload.get("query", payload), field="query")
-    query.pop("request_id", None)
-    for name in ("verbosity", "sql_profile"):
-        if name not in query and payload.get(name) not in (None, ""):
-            query[name] = payload[name]
-    nested = object_payload(query.get("policy_context"), field="query.policy_context")
-    if replace_policy_context:
-        query.pop("policy_context", None)
-        if policy_context:
-            query["policy_context"] = dict(policy_context)
-    elif "policy_context" in query or policy_context:
-        query["policy_context"] = {**nested, **policy_context}
-    return query
+    if remote:
+        fix = f"Remove {path}; the server reads the caller's identity from the credentials."
+        return SemanticLayerError(
+            "IDENTITY_CLAIM_REFUSED",
+            f"{path}: a request may not say who is asking; that comes from its credentials",
+            details={"path": path, "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": fix}]},
+        )
+    return refusal(
+        path,
+        "is not part of a request; a local caller's identity is its `context` argument",
+        fix=f"Remove {path} and pass the caller's identity as `context`.",
+    )
+
+
+def refuse_identity_claims(request: Mapping[str, Any], *, remote: bool) -> None:
+    """Refuse ``policy_context`` beside or inside ``query``; it is never stripped."""
+    query = request.get("query")
+    for path, holder in (("policy_context", request), ("query.policy_context", query)):
+        if isinstance(holder, Mapping) and "policy_context" in holder:
+            raise identity_claim_refusal(path, remote=remote)

@@ -328,7 +328,11 @@ def query_call_schema_document() -> dict[str, Any]:
                     "temporal_role": {"type": "string", "minLength": 1},
                     "grain": {"enum": list(GRAINS)},
                     "start": {"type": "string", "minLength": 1},
-                    "end": {"type": "string", "minLength": 1},
+                    "end": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "ISO date or date-time, exclusive: [start, end).",
+                    },
                     "last": window,
                     "this": {"enum": list(GRAINS)},
                     "fill": {"type": "boolean"},

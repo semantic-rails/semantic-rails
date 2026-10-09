@@ -1349,6 +1349,7 @@
       ],
       "properties": {
         "end": {
+          "description": "ISO date or date-time, exclusive: [start, end).",
           "minLength": 1,
           "type": "string"
         },

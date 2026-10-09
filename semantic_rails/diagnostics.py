@@ -277,7 +277,7 @@ def recovery_hints_for_error(
                     "kind": "use_supported_filter_operator",
                     "message": (
                         f"Choose a where operator: {', '.join(details['allowed'])}. "
-                        "To test for null, use op 'IS NULL' or 'IS NOT NULL' and omit value."
+                        "To test for no value, use op 'missing' with value true or false."
                     ),
                     "allowed": list(details["allowed"]),
                 }
@@ -290,7 +290,12 @@ def recovery_hints_for_error(
         closest = list(details.get("closest_matches", []) or [])
         if kind == "prior_period":
             hints = []
-            received_measure = str(received_dict.get("measure", "") or "")
+            received_input = received_dict.get("input")
+            received_measure = str(
+                received_dict.get("measure")
+                or (received_input.get("measure") if isinstance(received_input, dict) else "")
+                or ""
+            )
             if "unknown_offset_keys" in details:
                 hints.append(
                     {
@@ -307,34 +312,15 @@ def recovery_hints_for_error(
                         "unknown_offset_keys": list(details.get("unknown_offset_keys", []) or []),
                     }
                 )
-            shorthand_shape: dict[str, Any] = {
-                "kind": "prior_period",
-                "measure": received_measure or "<measure_id>",
-                "offset": -1,
-                "grain": "<day|week|month|quarter|year>",
-            }
-            ir_shape: dict[str, Any] = {
-                "kind": "prior_period",
-                "input": {"kind": "measure", "measure": received_measure or "<measure_id>"},
-                "offset": {"unit": "<day|week|month|quarter|year>", "value": 1},
-            }
-            hints.append(
-                {
-                    "kind": "use_prior_period_shorthand",
-                    "message": (
-                        "For an inline period shift in a select, use the shorthand: "
-                        "{kind: 'prior_period', measure: '<id>', offset: <signed int>, grain: '<unit>'}."
-                    ),
-                    "shape": shorthand_shape,
-                }
-            )
             hints.append(
                 {
                     "kind": "use_prior_period_ir_shape",
-                    "message": (
-                        "Canonical IR shape: input is required and offset must be {unit, value}."
-                    ),
-                    "shape": ir_shape,
+                    "message": "prior_period takes an input and an offset {unit, value}.",
+                    "shape": {
+                        "kind": "prior_period",
+                        "input": received_measure or "<measure or metric id>",
+                        "offset": {"unit": "<day|week|month|quarter|year>", "value": 1},
+                    },
                 }
             )
             if closest:
@@ -343,8 +329,8 @@ def recovery_hints_for_error(
                     {
                         "kind": "use_authored_prior_period_metric",
                         "message": (
-                            "An authored metric already defines this period shift over the same measure. "
-                            "Reference it directly via {kind: 'metric', metric: '<id>'} — no inline shift needed."
+                            "An authored metric already defines this period shift over the same "
+                            'measure. Select its id ("metric.<id>"); no inline shift needed.'
                         ),
                         "closest_matches": closest,
                     },
@@ -355,9 +341,8 @@ def recovery_hints_for_error(
                 "kind": "fix_expression_shape",
                 "message": (
                     f"Expression with kind={kind!r} in position {position!r} is malformed. "
-                    "For select, send {expression: {measure: '<id>'}, as: '<alias>'} or "
-                    "{expression: {metric: '<id>'}}. Put dimension ids in group_by; "
-                    "send where entries as {field, op, value}."
+                    "For select, send a measure or metric id, or {expression, as}. Put "
+                    "dimension ids in group_by; send where entries as {field, op, value}."
                 ),
                 "details": dict(details),
             }
@@ -1132,7 +1117,8 @@ def recovery_hints_for_error(
                 "details": dict(details),
             }
         ]
-    return []
+    # A refusal that carries its own hint (``query_call.refusal``) is followed as is.
+    return list(details.get("recovery_hints", []) or [])
 
 
 def _object_catalog_ids(config: PackageConfig) -> list[str]:

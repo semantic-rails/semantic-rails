@@ -343,15 +343,13 @@ def _policy_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _query_with_policy_context(
-    query: dict[str, Any] | None, args: argparse.Namespace
-) -> dict[str, Any] | None:
-    policy_context = _policy_context_from_args(args)
-    if not policy_context:
-        return dict(query or {}) if query is not None else None
-    payload = dict(query or {})
-    payload["policy_context"] = policy_context
-    return payload
+def _seed_from_args(runtime: Runtime, args: argparse.Namespace) -> dict[str, Any] | None:
+    """A metadata command's ``--query-json`` seed in the engine's form, as the operator."""
+    seed = _parse_json(args.query_json) if args.query_json else None
+    context = _policy_context_from_args(args)
+    if seed is None and not context:
+        return None
+    return runtime.seed_payload(seed, context=context)
 
 
 def _query_call_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
@@ -373,7 +371,8 @@ def _add_now_arg(parser: argparse.ArgumentParser) -> None:
         default="",
         help=(
             "The instant relative windows (time.last, time.this) resolve against, as an ISO "
-            "date or date-time. Default: the current time."
+            "date or date-time. Default: the current time; an example or test that sets its "
+            "own now keeps it."
         ),
     )
 
