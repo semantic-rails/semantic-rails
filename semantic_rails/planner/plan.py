@@ -40,6 +40,7 @@ from .grouping_checks import _dropped_grouping_why
 from .groupings import _key_only_assumptions
 from .intent_holds import (
     _conversion_intent_why,
+    _define_metric_why,
     _dropped_value_why,
     _pattern_dropped_start,
     _qualifying_entity_why,
@@ -467,7 +468,16 @@ def _question_payload(
     )
     value_why = (
         (
-            _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            _define_metric_why(
+                runtime,
+                intent_str,
+                best_draft.query,
+                [
+                    *unconsumed_catalog_words(runtime, intent_str, best_draft.query),
+                    *unconsumed_unknown_words(runtime, intent_str, best_draft.query),
+                ],
+            )
+            or _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
             # A shared grouping needs options even when fallback discovery consumed
             # words the primary parser did not (for example "their districts").
             or (

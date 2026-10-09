@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ._base import _runtime_composition_terms
-from .call import Call
+import yaml
+
+from ..naming import last_token
+from ._base import _object_by_id, _runtime_composition_terms
+from .call import Call, QueryBuilder
 from .groupings import _requested_grouping_terms
 from .intent_ir import IntentIR
 from .time_windows import _time_window
@@ -185,6 +188,77 @@ def _contraction_tail(question: str, term: str) -> bool:
     return bool(found) and all(
         re.search(r"[^\W_]['’]$", lowered[: match.start()]) for match in found
     )
+
+
+# A statistic a question asks of a measure: "median revenue", "latest MRR", "unique visitors".
+_STATISTICS = {"median": "median", "latest": "last_value", "unique": "count_distinct"}
+_STATISTIC_RE = re.compile(rf"\b({'|'.join(_STATISTICS)})\b")
+
+
+def _define_metric_why(
+    runtime: Any, question: str, query: Call, unconsumed: list[str]
+) -> dict[str, Any] | None:
+    """A statistic the question asks of a measure that reads at another one, and that no
+    metric defines (the draft selects the measure itself): plan holds with the metric's YAML
+    ready to paste, and the call that reads the measure at that statistic now when the
+    package allows it. Only when the statistic is the one word the draft leaves ``unconsumed``:
+    otherwise the subject itself is in doubt."""
+
+    words = sorted(set(_STATISTIC_RE.findall(question.lower())))
+    if not words or len(query.select) != 1 or not set(unconsumed) <= set(words):
+        return None
+    config = runtime._config
+    item = query.select[0]
+    measure = _object_by_id(config.measures, item.ref)
+    if measure is None:
+        return None
+    read_at = item.aggregation or measure.default_aggregation
+    asked = [word for word in words if _STATISTICS[word] != read_at]
+    if not asked:
+        return None
+    word = asked[0]
+    aggregation = _STATISTICS[word]
+    name = f"{word}_{last_token(measure.id)}"
+    metric = {
+        "label": f"{word.capitalize()} {measure.label or last_token(measure.id)}",
+        "kind": "aggregate",
+        **({"value_type": measure.value_type} if measure.value_type else {}),
+        **(
+            {"temporal_role": measure.default_temporal_role}
+            if measure.default_temporal_role
+            else {}
+        ),
+        "expression": {"kind": "aggregate", "measure": measure.id, "aggregation": aggregation},
+    }
+    details: dict[str, Any] = {
+        "measure": measure.id,
+        "aggregation": aggregation,
+        "yaml": yaml.safe_dump({"metrics": {name: metric}}, sort_keys=False),
+    }
+    if aggregation in (measure.allowed_aggregations or []):
+        override = {"kind": "measure", "measure": measure.id, "aggregation": aggregation}
+        components = QueryBuilder(config, query).selects([]).select(override, name).build()
+        details["components"] = {"call": components.to_call()}
+    return {
+        "code": "DEFINE_METRIC",
+        "message": (
+            f"No metric defines the {word} of {measure.label or measure.id}, which reads at "
+            f"{read_at}; plan doesn't answer with a statistic the package hasn't defined."
+        ),
+        "details": details,
+        "recovery_hints": [
+            {
+                "kind": "define_metric",
+                "message": (
+                    "Add details.yaml to the package's metrics, or send "
+                    "details.components.call to read the measure at that statistic now."
+                    if "components" in details
+                    else "Add details.yaml to the package's metrics; the measure doesn't "
+                    f"allow {aggregation} until its allowed_aggregations include it."
+                ),
+            }
+        ],
+    }
 
 
 def _dropped_value_why(

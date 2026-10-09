@@ -6,6 +6,7 @@ import json
 
 import duckdb
 import pytest
+import yaml
 
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import RuntimeCompositionDraft
@@ -1014,3 +1015,37 @@ def test_benchmark_store_questions_require_clarification(runtime_factory, name, 
         assert "execute" not in payload["next"].get("ready_for", [])
     finally:
         runtime.close()
+
+
+def test_a_statistic_no_metric_defines_holds_with_its_yaml(runtime_factory) -> None:
+    """ "Median revenue" reads Revenue at a statistic no metric defines: plan holds, hands the
+    metric's YAML to paste, and the call reading the measure at the median now."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="median revenue by store")
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "DEFINE_METRIC"
+        assert "execute" not in payload["next"].get("ready_for", [])
+        details = payload["why"]["details"]
+        [(name, metric)] = yaml.safe_load(details["yaml"])["metrics"].items()
+        assert name == "median_revenue_usd"
+        assert metric["expression"] == {
+            "kind": "aggregate",
+            "measure": "measure.jaffle.revenue_usd",
+            "aggregation": "median",
+        }
+        call = details["components"]["call"]
+        rows = runtime.query(call)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute(
+                "SELECT s.store_name, MEDIAN(o.order_total_cents / 100.0) FROM jaffle_order o "
+                "JOIN jaffle_store s USING (store_id) GROUP BY 1 ORDER BY 1"
+            ).fetchall()
+        # A measure already read at the asked statistic needs no metric.
+        stock = plan_payload(runtime, intent="latest lifetime spend by customer type")
+        assert stock["why"]["code"] != "DEFINE_METRIC"
+    finally:
+        runtime.close()
+    actual = sorted((row["dimension.jaffle_store_name"], row[name]) for row in rows)
+    assert [store for store, _ in actual] == [store for store, _ in reference]
+    assert [value for _, value in actual] == pytest.approx([value for _, value in reference])
