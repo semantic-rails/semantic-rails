@@ -275,7 +275,6 @@ LOADED = LeafScope(
     SqlCall("SUM", [SqlIdentifier(["t", "v"])]),
     bucket=SqlIdentifier(["t", "b"]),
     raw_time=SqlIdentifier(["t", "at"]),
-    now=DUCKDB.now(),
 )
 
 

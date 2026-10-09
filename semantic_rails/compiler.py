@@ -37,7 +37,7 @@ from .ast import (
     route_decisions_from_payload,
     time_output_alias,
 )
-from .clock import parse_now
+from .clock import UNITS, parse_now
 from .compiler_parts.bind import (
     _aggregation_expr,
     _bind_measure,
@@ -422,7 +422,7 @@ def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool
     return bool(
         time is not None
         and time.named
-        and time.grain
+        and time.grain in UNITS
         and query.select
         and dialect_for_warehouse(config.package.warehouse).has_time_coverage
     )

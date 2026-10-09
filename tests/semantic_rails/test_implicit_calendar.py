@@ -18,6 +18,7 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.ast import PERIOD_PARTIAL
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.dialects import DuckDbDialect
@@ -129,9 +130,10 @@ def _query(
             result = engine.query(query)
     finally:
         engine.close()
+    rows = [{k: v for k, v in row.items() if k != PERIOD_PARTIAL} for row in result["rows"]]
     return _sorted(
         _normal(tuple(row.values()), [result["column_types"][key]["type"] for key in row])
-        for row in result["rows"]
+        for row in rows
     ), str(result["rendered_sql"])
 
 
