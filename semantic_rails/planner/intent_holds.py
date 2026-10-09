@@ -298,7 +298,7 @@ def _unclocked_window_why(
     return {
         "code": "TIME_WINDOW_UNRESOLVED",
         "message": (
-            "The draft's relative window could not be bounded on policy_context.now, so plan "
+            "The draft's relative window could not be bounded on now, so plan "
             "returns no query: run on another clock it would answer a different question."
         ),
         "details": {
@@ -415,7 +415,7 @@ def _unresolved_time_why(
                 "message": (
                     "Or pass a complete window in the plan tool's query argument: "
                     "set query.time.start and query.time.end (end-exclusive), or "
-                    "query.time.range.last with unit and value. Include the selected "
+                    "query.time.last with unit and value. Include the selected "
                     "temporal_role and grain in query.time; inspect the measure to choose them."
                 ),
             },

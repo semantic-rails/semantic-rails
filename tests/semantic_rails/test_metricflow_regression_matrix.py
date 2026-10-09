@@ -89,9 +89,8 @@ QUERY_MATRIX = [
     {
         "name": "group_by_only_distinct_values_executes",
         "query": {
-            "version": 1,
             "group_by": ["dimension.jaffle_store_name"],
-            "order_by": [{"field": "dimension.jaffle_store_name", "direction": "ASC"}],
+            "order_by": [{"field": "dimension.jaffle_store_name", "direction": "asc"}],
             "limit": 5,
         },
         "expected_columns": ["dimension.jaffle_store_name"],
@@ -99,9 +98,8 @@ QUERY_MATRIX = [
     {
         "name": "time_only_distinct_values_executes",
         "query": {
-            "version": 1,
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "order_by": [{"field": "time", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 5,
         },
         "expected_columns": ["period"],

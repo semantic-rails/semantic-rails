@@ -16,6 +16,7 @@ from ..config import list_package_paths, package_root_for_source
 from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
 from ..local_config import resolve_local_package_path
+from ..request_payload import refuse_identity_claims
 from ..runtime import Runtime
 from ..yaml_loader import safe_load as yaml_safe_load
 
@@ -343,15 +344,21 @@ def _policy_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _query_with_policy_context(
-    query: dict[str, Any] | None, args: argparse.Namespace
-) -> dict[str, Any] | None:
-    policy_context = _policy_context_from_args(args)
-    if not policy_context:
-        return dict(query or {}) if query is not None else None
-    payload = dict(query or {})
-    payload["policy_context"] = policy_context
-    return payload
+def _seed_call_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    """The ``--query-json`` seed call with the operator's identity beside it.
+
+    The seed never says who is asking: identity comes from --environment/--audience.
+    """
+    seed = _parse_json(args.query_json) if args.query_json else {}
+    refuse_identity_claims({"query": seed}, remote=False)
+    return {**seed, "policy_context": _policy_context_from_args(args)}
+
+
+def _seed_from_args(runtime: Runtime, args: argparse.Namespace) -> dict[str, Any] | None:
+    """A metadata command's seed in the engine's form, or None when it has none."""
+    if not args.query_json and not _policy_context_from_args(args):
+        return None
+    return runtime.engine_seed(_seed_call_from_args(args))
 
 
 def _query_call_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
@@ -373,7 +380,8 @@ def _add_now_arg(parser: argparse.ArgumentParser) -> None:
         default="",
         help=(
             "The instant relative windows (time.last, time.this) resolve against, as an ISO "
-            "date or date-time. Default: the current time."
+            "date or date-time. Default: the current time; an example or test that sets its "
+            "own now keeps it."
         ),
     )
 

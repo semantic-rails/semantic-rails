@@ -17,8 +17,15 @@ def test_dialect_capture_compiles_every_query_for_every_dialect():
     assert capture_dialect_sql.failures(captured) == []
     # Expected refusals are recorded as rows, so every dialect captures every query.
     assert len({len(rows) for rows in captured.values()}) == 1
-    # BigQuery legalizes result column names, so its mapping is part of the golden output.
-    assert all(row["column_mapping"] for row in captured["bigquery"].values())
+    # BigQuery legalizes result column names (a dimension column keeps its dotted id), so its
+    # mapping is part of the golden output.
+    grouped = [
+        entry["metric_id"]
+        for entry in capture_dialect_sql._payloads()
+        if entry["payload"].get("group_by")
+    ]
+    assert grouped
+    assert all(captured["bigquery"][metric_id]["column_mapping"] for metric_id in grouped)
 
 
 @pytest.mark.parametrize(

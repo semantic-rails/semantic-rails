@@ -1,9 +1,9 @@
-"""Query patches returned by the MCP metadata tools are pure Query IR.
+"""Query patches returned by the MCP metadata tools are ready-to-send query calls.
 
 discover (with full cards, verbosity="full") and inspect return starter
 patches an agent can pass straight to execute, as does build-options (HTTP and
-CLI). A patch must carry only Query IR fields: never the caller's policy
-context, response options, or the tool's own arguments.
+CLI). A patch carries only the call's fields: never the caller's identity,
+response options, or the tool's own arguments.
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ import pytest
 
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.metadata import _QUERY_IR_KEYS
+from semantic_rails.query_call import FIELDS
 from semantic_rails.request_context import RequestContext
 
-QUERY_IR_KEYS = set(_QUERY_IR_KEYS)
-REVENUE = [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}]
+QUERY_IR_KEYS = set(FIELDS)
+REVENUE = ["measure.jaffle.revenue_usd"]
 STORE = "dimension.jaffle_store_name"
 ORDER_MONTH = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
 # build-options arguments that reach each of its seven builder steps.
@@ -36,7 +36,7 @@ BUILDER_STEPS = {
     "time": {"step": "time", "query": {"select": REVENUE, "group_by": [STORE]}},
     "review": {"step": "review", "query": {"select": REVENUE, "group_by": [STORE]}},
 }
-POLICY_CONTEXT = {"environment": "development", "audience": "internal", "roles": ["analyst"]}
+POLICY_CONTEXT = {"environment": "development", "audience": "internal", "roles": ("analyst",)}
 CALLS = [
     ("discover", {"terms": "revenue by store", "verbosity": "full"}),
     ("inspect", {"object_id": "measure.jaffle.revenue_usd"}),
@@ -81,13 +81,11 @@ def test_patches_carry_only_query_ir_behind_a_transport_context(
 
 
 def test_patches_keep_the_callers_partial_query(adapter: SemanticLayerMCPAdapter) -> None:
-    partial = {
-        "version": 1,
-        "select": [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
-        "policy_context": POLICY_CONTEXT,
-    }
+    partial = {"select": REVENUE}
     response = adapter.call_tool(
-        "discover", {"terms": "store", "query": partial, "verbosity": "full"}
+        "discover",
+        {"terms": "store", "query": partial, "verbosity": "full"},
+        request_context=RequestContext(**POLICY_CONTEXT),
     )
     dimension_patches = [row["starter_query_patch"] for row in response["dimensions"]]
     assert dimension_patches
@@ -101,7 +99,7 @@ def test_every_patch_runs_as_is(
     adapter: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
 ) -> None:
     response = adapter.call_tool(
-        tool, {**arguments, "policy_context": POLICY_CONTEXT, "unexpected": 1}
+        tool, {**arguments, "unexpected": 1}, request_context=RequestContext(**POLICY_CONTEXT)
     )
     assert response["ok"], response["errors"]
     for patch in _patches(response):
@@ -119,10 +117,13 @@ def test_build_options_patches_are_pure_ir_and_run_at_every_step(
     adapter: SemanticLayerMCPAdapter, step: str
 ) -> None:
     # MCP has no build-options tool; HTTP shapes the request. Response options
-    # and a policy context must not leak into the patches.
-    payload = {**BUILDER_STEPS[step], "policy_context": POLICY_CONTEXT, "sql_profile": "off"}
+    # and the caller's identity must not leak into the patches.
+    payload = {**BUILDER_STEPS[step], "sql_profile": "off"}
     response, status = SemanticHTTPService(adapter.runtime).handle(
-        "POST", normalize_route("/api/v1/build-options"), {**payload, "verbosity": "full"}
+        "POST",
+        normalize_route("/api/v1/build-options"),
+        {**payload, "verbosity": "full"},
+        context=RequestContext(**POLICY_CONTEXT),
     )
     assert status == 200, response
     assert response.get("builder_step", step) == step

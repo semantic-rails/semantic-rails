@@ -195,7 +195,7 @@ from .ir import (
 )
 from .naming import semantic_token as _semantic_token
 from .naming import slug as _slug
-from .query_call import call_where
+from .query_call import call_where, engine_where
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
 from .renderer import render_select_for_profile
@@ -1692,7 +1692,7 @@ def _unsupported_conversion(expr: ConversionExpr) -> SemanticLayerError:
 _NUMERIC_DATA_TYPES = {"integer", "number"}
 
 
-def _validate_where_value_type(dim, item) -> None:
+def _validate_where_value_type(dim, item, path: str = "where") -> None:
     """Catch common where-value type mismatches before warehouse execution.
 
     Skip dimensions without a classified catalog data type.
@@ -1700,6 +1700,21 @@ def _validate_where_value_type(dim, item) -> None:
     # ``missing`` takes a boolean, not a value of the dimension; ``contains`` takes text.
     if item.op in {"missing", "contains"}:
         return
+    if str(getattr(dim, "data_type", "") or "").lower() == "boolean" and item.op in (
+        operators.RANGE_WORDS
+    ):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}.op: a boolean dimension compares with is or not",
+            details={
+                "path": f"{path}.op",
+                "dimension": dim.id,
+                "op": item.op,
+                "recovery_hints": [
+                    {"code": "USE_FILTER_WORD", "message": "Write is true or is false."}
+                ],
+            },
+        )
     values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:
@@ -2124,9 +2139,9 @@ def _cross_clock_predicate_error(
                 {
                     "code": "CHOOSE_PREDICATE_CLOCK",
                     "message": (
-                        "To apply the threshold per period, set query.time.temporal_role "
-                        "to one of `compatible`. To apply it over all time, set "
-                        "scope_mode to 'entity_only'."
+                        "To apply the threshold per period, set time.temporal_role "
+                        "to one of `compatible`. To apply it over all time, write "
+                        "over: all_time."
                     ),
                 }
             ],
@@ -2159,8 +2174,8 @@ def _validate_predicate_metric_clocks(
                             "code": "CHOOSE_PREDICATE_CLOCK",
                             "message": (
                                 f"The input is bound to {', '.join(clocks)}; set "
-                                "query.time.temporal_role to one of them, or omit "
-                                "time_alignment to apply the predicate over all time."
+                                "time.temporal_role to one of them, or write over: "
+                                "all_time to apply the predicate over all time."
                             ),
                         }
                     ],
@@ -2284,9 +2299,9 @@ def _predicate_time_spec(
                                             "Set query.time.temporal_role to one of the listed clocks. "
                                             if isinstance(predicate.input, MetricRecipeRefExpr)
                                             else "Set the predicate input's temporal_role to a candidate "
-                                            "clock, or set temporal_role_overrides for its measures. "
+                                            "clock, or pin its measures' clock in a package metric. "
                                         )
-                                        + "Omit time_alignment to apply the predicate over all time."
+                                        + "Write over: all_time to apply the predicate over all time."
                                     ),
                                 }
                             ],
@@ -3006,7 +3021,7 @@ def _mixed_grain_error(
 
 
 def _checked_where_dimension(
-    item: Filter, dimensions: dict[str, Any], measures: dict[str, Any]
+    item: Filter, dimensions: dict[str, Any], measures: dict[str, Any], path: str = "where"
 ) -> Any:
     """The dimension a where filter compares, once its value suits it."""
     if item.field not in dimensions:
@@ -3017,19 +3032,18 @@ def _checked_where_dimension(
                 details={
                     "dimension": item.field,
                     "measure": item.field,
-                    "path": "where[].field",
+                    "path": "where.field",
                     "why_invalid": (
-                        "where filters compare row-level dimensions to literal values. "
-                        "Measures require metric_filters, a governed segment, or an "
-                        "authored dimension value that represents the cohort."
+                        "where filters compare row-level dimensions to literal values; filter "
+                        "entities by a measure with an entity filter, or results with having."
                     ),
                     "recovery_hints": [
                         {
                             "kind": "use_metric_filter_or_segment",
                             "message": (
-                                "Move aggregate/cohort predicates to metric_filters, "
-                                "or filter by a reachable dimension/segment that encodes "
-                                "the governed cohort."
+                                "Keep entities by an aggregate with an entity filter in "
+                                "where ({entity, having, over}), or filter by a reachable "
+                                "dimension or segment that encodes the governed cohort."
                             ),
                         }
                     ],
@@ -3040,7 +3054,7 @@ def _checked_where_dimension(
             f"Unknown dimension '{item.field}'",
             details={"dimension": item.field},
         )
-    _validate_where_value_type(dimensions[item.field], item)
+    _validate_where_value_type(dimensions[item.field], item, path)
     return dimensions[item.field]
 
 
@@ -3068,19 +3082,21 @@ def _root_path_summary(
                 details={"dimension": dim_id},
             )
         targets[dimensions[dim_id].entity] = "group_by"
-    for item in query.where:
+    for index, item in enumerate(query.where):
         if isinstance(item, ChildGroup):
             if item.child not in _entity_index(config):
                 raise SemanticLayerError(
                     "OBJECT_NOT_FOUND",
                     f"Unknown entity '{item.child}'",
-                    details={"entity": item.child, "path": "where[].child"},
+                    details={"entity": item.child, "path": f"where[{index}].entity"},
                 )
-            for condition in item.where:
-                _checked_where_dimension(condition, dimensions, measures)
+            for position, condition in enumerate(item.where):
+                at = f"where[{index}].{item.match}[{position}]"
+                _checked_where_dimension(condition, dimensions, measures, at)
             targets[item.child] = "child_group"
             continue
-        targets[_checked_where_dimension(item, dimensions, measures).entity] = "where"
+        dim = _checked_where_dimension(item, dimensions, measures, f"where[{index}]")
+        targets[dim.entity] = "where"
     for target_entity, purpose in sorted(targets.items()):
         if target_entity == root_entity:
             continue
@@ -3182,8 +3198,9 @@ def _query_target_entities(query: NormalizedQuery, config: PackageConfig) -> dic
                 details={"dimension": dim_id},
             )
         targets.setdefault(dimensions[dim_id].entity, "group_by")
-    for item in refuse_child_groups(query.where, "in a query without a measure"):
-        dim = _checked_where_dimension(item, dimensions, _measure_index(config))
+    rows = refuse_child_groups(query.where, "in a query without a measure")
+    for index, item in enumerate(rows):
+        dim = _checked_where_dimension(item, dimensions, _measure_index(config), f"where[{index}]")
         targets.setdefault(dim.entity, "where")
     if query.time is not None:
         role = temporal_roles.get(query.time.temporal_role)
@@ -3341,8 +3358,8 @@ def _conversion_operand_filters(
                 "CONVERSION_NOT_SUPPORTED",
                 (
                     f"Expression clauses (e.g. metric_predicate) inside conversion {side} "
-                    "operand filters are not supported. Use query-level metric_filters to "
-                    "constrain the conversion population instead."
+                    "operand filters are not supported. Constrain the conversion population "
+                    "with an entity filter in the call's where, or with having, instead."
                 ),
                 details={"side": side, "clause": clause},
             )
@@ -5015,7 +5032,16 @@ def bind_query(
             raise
         ambiguity = exc
     for option in ambiguity.details["clarification"]["options"]:
-        resent = {**payload, "where": option["where"]}
+        # An option is the call's where; entity filters re-enter as the engine's predicates.
+        where, entity_filters = engine_where(
+            option["where"], grain=str((payload.get("time") or {}).get("grain") or "")
+        )
+        result_filters = [
+            item
+            for item in payload.get("metric_filters") or []
+            if (item.get("expression") or {}).get("kind") != "metric_predicate"
+        ]
+        resent = {**payload, "where": where, "metric_filters": [*entity_filters, *result_filters]}
         try:
             binding = bind(resent)
             if check_policies is not None:

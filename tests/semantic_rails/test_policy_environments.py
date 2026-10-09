@@ -117,12 +117,9 @@ def test_every_policy_kind_checks_the_request_environment(
     context, applies, in_force = SCOPES[scope]
     context = {**context, "attributes": TrustedAttributes({"has_food": True})}
     engine = Runtime.from_config(governed(config, kind), source_path=str(package))
-    query = {**QUERY, "policy_context": context}
     try:
         # A prior successful compile cannot let an invalid environment through a fast path.
-        assert engine.compile({**QUERY, "policy_context": {"environment": "staging"}})[
-            "rendered_sql"
-        ]
+        assert engine.compile(QUERY, context={"environment": "staging"})["rendered_sql"]
         if scope == "undeclared":
 
             def no_evaluation(*args, **kwargs):
@@ -135,7 +132,7 @@ def test_every_policy_kind_checks_the_request_environment(
             monkeypatch.setattr("semantic_rails.caveats._match_caveat", no_evaluation)
             monkeypatch.setattr("semantic_rails.compiler.render_select_for_profile", no_evaluation)
             monkeypatch.setattr(engine, "_get_adapter", no_evaluation)
-            report = engine.validate(query)
+            report = engine.validate(QUERY, context=context)
             assert report["ok"] is False
             issue = report["errors"][0]
             assert_environment_error(
@@ -143,12 +140,12 @@ def test_every_policy_kind_checks_the_request_environment(
             )
             for operation in (engine.compile, engine.query):
                 with pytest.raises(SemanticLayerError) as exc:
-                    operation(query)
+                    operation(QUERY, context=context)
                 assert_environment_error(
                     exc.value.code, str(exc.value), exc.value.details, config.package.environments
                 )
             result = SemanticLayerMCPAdapter(engine).call_tool(
-                "execute", {"query": query, "mode": "run"}
+                "execute", {"query": QUERY, "mode": "run", "policy_context": context}
             )
             assert result["ok"] is False
             assert result["errors"][0]["code"] == "INVALID_QUERY"
@@ -158,7 +155,7 @@ def test_every_policy_kind_checks_the_request_environment(
         denied = (kind == "visible_only" and in_force) or (
             applies and kind in {"hidden", "deny", "withhold_values", "metric_constraint"}
         )
-        report = engine.validate(query)
+        report = engine.validate(QUERY, context=context)
         assert report["ok"] is (not denied), report
         if denied:
             # The query names the measure: hidden from this context, it is unknown.
@@ -167,7 +164,7 @@ def test_every_policy_kind_checks_the_request_environment(
                 "OBJECT_NOT_FOUND" if hidden else "POLICY_DENIED"
             )
             return
-        compiled = engine.compile(query)
+        compiled = engine.compile(QUERY, context=context)
         if kind == "caveat":
             assert (
                 any(
@@ -193,7 +190,7 @@ def test_caveat_matches_declared_environment_with_padding(config, package, envir
     config = governed(config, "caveat")
     engine = Runtime.from_config(config, source_path=str(package))
     try:
-        compiled = engine.compile({**QUERY, "policy_context": {"environment": environment}})
+        compiled = engine.compile(QUERY, context={"environment": environment})
         warnings = compiled.get("warnings", [])
         assert any(warning["code"] == "SEMANTIC_CAVEAT_APPLIED" for warning in warnings)
     finally:
@@ -236,7 +233,7 @@ def test_package_declaring_no_environments_preserves_only_absent_context(
     config = replace(config, package=replace(config.package, environments=[]))
     engine = Runtime.from_config(config, source_path=str(package))
     try:
-        report = engine.validate({**QUERY, "policy_context": {"environment": environment}})
+        report = engine.validate(QUERY, context={"environment": environment})
         assert report["ok"] is (not environment)
         if environment:
             issue = report["errors"][0]
@@ -264,9 +261,9 @@ SURFACES = {
     "plan": lambda engine, context: plan_payload(
         engine, intent="revenue", partial_query={"policy_context": context}
     ),
-    "validate": lambda engine, context: engine.validate({**QUERY, "policy_context": context}),
-    "compile": lambda engine, context: engine.compile({**QUERY, "policy_context": context}),
-    "execute": lambda engine, context: engine.query({**QUERY, "policy_context": context}),
+    "validate": lambda engine, context: engine.validate(QUERY, context=context),
+    "compile": lambda engine, context: engine.compile(QUERY, context=context),
+    "execute": lambda engine, context: engine.query(QUERY, context=context),
     "segment_validate": lambda engine, context: engine.segment_validate(
         "segment.test.missing", policy_context=context
     ),

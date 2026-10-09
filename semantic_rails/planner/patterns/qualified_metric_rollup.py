@@ -334,7 +334,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         resolved=resolved,
         rationale=[
             "composed qualified metric rollup from target measure, predicate metric/measure, qualifying entity, and query-time grain",
-            "synthesized metric_filters at the top level so the IR explicitly names the qualification cohort",
+            "synthesized an entity filter so the call explicitly names the qualification cohort",
         ],
         interpreted_intent={
             "pattern": "qualified_metric_rollup",

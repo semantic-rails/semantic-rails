@@ -21,7 +21,7 @@ ORDERS = "measure.jaffle.order_count"
 def total(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "select": [{"expression": REVENUE, "as": "value"}],
+        "select": [{"expression": {"measure": REVENUE}, "as": "value"}],
         "time": {"temporal_role": ROLE, "start": "2026-09-21", "end": "2026-09-28"},
     }
     return compile_query(config, Registry(config), query), query
@@ -73,7 +73,7 @@ def test_window_total_markers_only_disclose_proven_edges(
 
 def test_relative_window_total_names_the_normalized_start(total, monkeypatch):
     compiled, query = total
-    query["time"] = {"temporal_role": ROLE, "range": {"last": 1, "unit": "week"}}
+    query["time"] = {"temporal_role": ROLE, "last_unit": "week", "last_value": 1}
     monkeypatch.setattr(
         runtime_module,
         "_compiled_cte_row",
@@ -131,11 +131,7 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
             "coverage_2__loaded_to": None,
         },
     )
-    rows = (
-        []
-        if window_total
-        else [{f"{ROLE}__week": datetime(2026, 9, 21), "money": None, "count": None}]
-    )
+    rows = [] if window_total else [{"period": datetime(2026, 9, 21), "money": None, "count": None}]
     warnings = _no_data_yet_warnings(None, compiled, rows, query)
     assert len(warnings) == 1
     assert warnings[0]["details"]["outputs"] == ["money", "count"]
@@ -195,7 +191,7 @@ def test_series_compares_only_compatible_sql_bucket_keys(
         ],
     )
     query = {
-        "select": [{"expression": REVENUE, "as": "value"}],
+        "select": [{"expression": {"measure": REVENUE}, "as": "value"}],
         "time": {
             "temporal_role": ROLE,
             "grain": grain,
@@ -234,7 +230,7 @@ def test_series_compares_only_compatible_sql_bucket_keys(
         "_compiled_cte_row",
         lambda *a: {f"coverage_{i}__loaded_to": edge for i, edge in enumerate(edges, 1)},
     )
-    rows = [{f"{ROLE}__{grain}": bucket, "value": None} for bucket in buckets]
+    rows = [{"period": bucket, "value": None} for bucket in buckets]
     warnings = _no_data_yet_warnings(None, compiled, rows, query)
     assert bool(warnings) is (expected is not None)
     if expected:

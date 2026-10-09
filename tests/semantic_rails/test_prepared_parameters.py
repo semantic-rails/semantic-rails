@@ -195,16 +195,14 @@ def test_runtime_binds_each_request_from_its_own_trusted_attributes(
     )
     runtime = runtime_factory("jaffle_shop")
     runtime.set_adapter(ledger)
-    request = {"version": 1, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
+    request = {"select": ["metric.sales.aov_usd"]}
     try:
         with ThreadPoolExecutor(max_workers=6) as pool:
             results = list(
                 pool.map(
                     lambda customer: (
                         customer,
-                        runtime.query(
-                            {**request, "policy_context": _context(customer_id=customer)}
-                        ),
+                        runtime.query(request, context=_context(customer_id=customer)),
                     ),
                     ["c-a", "c-b"] * 6,
                 )
@@ -213,9 +211,8 @@ def test_runtime_binds_each_request_from_its_own_trusted_attributes(
             assert result["rows"] == [
                 {"n": 2, "total": 15} if customer == "c-a" else {"n": 1, "total": 7}
             ]
-        spoofed = {**request, "policy_context": {"attributes": {"customer_id": "c-a"}}}
         with pytest.raises(SemanticLayerError) as caught:
-            runtime.query(spoofed)
+            runtime.query(request, context={"attributes": {"customer_id": "c-a"}})
         assert caught.value.details["reason"] == "missing_attribute"
     finally:
         runtime.close()

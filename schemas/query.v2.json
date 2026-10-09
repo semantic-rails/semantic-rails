@@ -557,7 +557,18 @@
       "additionalProperties": false,
       "properties": {
         "aggregation": {},
-        "filter": {},
+        "filter": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
         "kind": {
           "const": "aggregate"
         },
@@ -834,7 +845,9 @@
           "const": "date_add"
         },
         "unit": {},
-        "value": {}
+        "value": {
+          "$ref": "#/$defs/Expression"
+        }
       },
       "required": [
         "kind",
@@ -874,7 +887,12 @@
         "kind": {
           "const": "entity_value"
         },
-        "where": {}
+        "where": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        }
       },
       "required": [
         "kind",
@@ -1128,9 +1146,19 @@
         },
         "measure": {},
         "parameters": {},
-        "predicates": {},
+        "predicates": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
         "temporal_role": {},
-        "where": {},
+        "where": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
         "window": {}
       },
       "required": [
@@ -1143,7 +1171,18 @@
       "additionalProperties": false,
       "properties": {
         "aggregation": {},
-        "filter": {},
+        "filter": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
         "kind": {
           "const": "semi_additive"
         },
@@ -1349,6 +1388,7 @@
       ],
       "properties": {
         "end": {
+          "description": "ISO date or date-time, exclusive: [start, end).",
           "minLength": 1,
           "type": "string"
         },

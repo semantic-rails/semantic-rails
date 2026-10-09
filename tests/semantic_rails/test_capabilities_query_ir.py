@@ -1,4 +1,4 @@
-"""Capability discovery advertises only the accepted Query IR contract."""
+"""Capability discovery advertises only the accepted query call contract."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from semantic_rails.metadata_parts.capabilities import capabilities_payload
 
 
 @pytest.mark.parametrize("surface", ["python", "mcp-tool", "mcp-resource", "http"])
-def test_capabilities_advertise_only_query_ir_v1(runtime_factory, surface):
+def test_capabilities_advertise_only_the_query_call(runtime_factory, surface):
     runtime = runtime_factory("jaffle_shop")
     try:
         if surface == "python":
@@ -29,18 +29,13 @@ def test_capabilities_advertise_only_query_ir_v1(runtime_factory, surface):
         ir_rows = [
             row
             for row in payload["capabilities"] + payload["unsupported_capabilities"]
-            if row["kind"].startswith("agent_query_ir_")
+            if row["kind"].startswith(("agent_query_ir_", "query_call_"))
         ]
-        assert ir_rows == [{"kind": "agent_query_ir_v1", "available": True, "reason": ""}]
+        assert ir_rows == [{"kind": "query_call_v2", "available": True, "reason": ""}]
         assert capabilities_payload(runtime)["capabilities"] == payload["capabilities"]
 
-        report = runtime.validate(
-            {
-                "select": ["measure.jaffle.order_count"],
-            }
-        )
-        assert report["ok"] is False
-        assert report["errors"][0]["code"] == "INVALID_QUERY"
-        assert report["errors"][0]["details"]["supported_versions"] == [1]
+        # A call's version is ignored; the schema's id carries the contract's version.
+        report = runtime.validate({"version": 1, "select": ["measure.jaffle.order_count"]})
+        assert report["ok"] is True
     finally:
         runtime.close()

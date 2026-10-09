@@ -210,7 +210,7 @@ def normalize_condition(
         return "missing", False
     if internal and spelling == "is" and isinstance(value, bool):
         return "is", value
-    word = operator_word(op, path=f"{path}.op")
+    word = operator_word(spelling if internal else op, path=f"{path}.op")
     if internal and word in {"is", "not"} and isinstance(value, (list, tuple)) and not value:
         # Engine-built membership over no values: vacuously false (is) or true (not).
         return word, []
@@ -239,8 +239,9 @@ def exact_complement(word: str, value: Any) -> tuple[str, Any] | None:
     return (complement, value) if complement else None
 
 
-def pinned_value(word: str, value: Any) -> tuple[bool, Any]:
+def pinned_value(op: str, value: Any) -> tuple[bool, Any]:
     """``(True, v)`` when the condition pins the field to the single value ``v``."""
+    word = ALIASES.get(_compact(op), _compact(op))
     if word == "is" and not isinstance(value, (list, tuple)):
         return True, value
     if word == "is" and isinstance(value, (list, tuple)) and len(value) == 1:

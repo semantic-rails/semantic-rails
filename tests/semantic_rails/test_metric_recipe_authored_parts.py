@@ -11,7 +11,7 @@ a load error that names the metric and the part.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -355,9 +355,7 @@ def test_prior_period_shorthand_resolves_a_short_measure_key_and_answers(
             ],
             "time": {"temporal_role": ORDER_TIME, "grain": "month"},
         }
-        rows = sorted(
-            runtime.query(query)["rows"], key=lambda row: str(row[f"{ORDER_TIME}__month"])
-        )
+        rows = sorted(runtime.query(query)["rows"], key=lambda row: str(row["period"]))
     finally:
         runtime.close()
     assert len(rows) > 2
@@ -420,9 +418,7 @@ def _by_product_type_gold(runtime: Runtime, window_sql: str) -> dict[tuple[str, 
 def _by_product_type_result(runtime: Runtime, key: str) -> dict[tuple[str, date], float]:
     out: dict[tuple[str, date], float] = {}
     for row in runtime.query(_metric_query(key, by_product_type=True))["rows"]:
-        day = row[f"{ORDER_TIME}__day"]
-        day = datetime.fromisoformat(day).date()
-        out[(row[PRODUCT_TYPE], day)] = float(row["value"])
+        out[(row[PRODUCT_TYPE], date.fromisoformat(row["period"]))] = float(row["value"])
     return out
 
 

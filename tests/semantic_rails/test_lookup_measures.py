@@ -267,7 +267,7 @@ def _query(
     group_by: list[str] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
-    expression: dict[str, Any] = {"measure": _measure(measure)}
+    expression: dict[str, Any] = {"kind": "measure", "measure": _measure(measure)}
     if "aggregation" in extra:
         expression["aggregation"] = extra.pop("aggregation")
     return {
@@ -284,9 +284,9 @@ def _rows(runtime: Runtime, payload: dict[str, Any], key: str = CLAIM_KEY) -> di
     return {row[key]: row["v"] for row in result["rows"]}
 
 
-def _refusal(runtime: Runtime, payload: dict[str, Any]) -> SemanticLayerError:
+def _refusal(runtime: Runtime, payload: dict[str, Any], **options: Any) -> SemanticLayerError:
     with pytest.raises(SemanticLayerError) as raised:
-        runtime.query(payload)
+        runtime.query(payload, **options)
     return raised.value
 
 
@@ -300,10 +300,9 @@ def test_each_claim_carries_its_coverage_total(runtime: Runtime, package_dir: Pa
     assert _rows(runtime, _query()) == expected
     assert expected["K1"] == expected["K2"] == 7
     by_coverage = {
-        "version": 1,
         "select": [
-            {"expression": {"measure": CARRIED}, "as": "v"},
-            {"expression": {"measure": _measure("claim_count")}, "as": "claims"},
+            {"expression": CARRIED, "as": "v"},
+            {"expression": _measure("claim_count"), "as": "claims"},
         ],
         "group_by": [COVERAGE_KEY],
     }
@@ -316,8 +315,8 @@ def test_each_claim_carries_its_coverage_total(runtime: Runtime, package_dir: Pa
 def test_a_claim_level_ratio_reads_the_carried_total(runtime: Runtime) -> None:
     ratio = {
         "kind": "ratio",
-        "numerator": {"measure": _measure("reserve")},
-        "denominator": {"measure": CARRIED},
+        "numerator": _measure("reserve"),
+        "denominator": CARRIED,
     }
     payload = {"select": [{"expression": ratio, "as": "v"}], "group_by": [CLAIM_KEY]}
     rows = _rows(runtime, payload)
@@ -398,7 +397,9 @@ def test_a_grain_coarser_than_the_via_key_is_refused(runtime: Runtime) -> None:
         assert f"entity.{NS}_coverage" in error.details["recovery_hints"][0]["message"]
         assert error.columns == ["coverage_id"] and error.dimensions == [COVERAGE_KEY]
     # Pinning one coverage, or one claim, holds one total per output row.
-    pinned = _query(group_by=[POLICY_KEY], where=[{"field": COVERAGE_KEY, "value": "C1"}])
+    pinned = _query(
+        group_by=[POLICY_KEY], where=[{"field": COVERAGE_KEY, "op": "is", "value": "C1"}]
+    )
     assert _rows(runtime, pinned, key=POLICY_KEY) == {"P1": 7}
 
 
@@ -413,7 +414,7 @@ def test_statistics_cannot_dodge_the_guard(runtime: Runtime, aggregation: str) -
     "payload",
     [
         _query(group_by=[CLAIM_KEY, LINE_TYPE]),
-        _query(where=[{"field": LINE_TYPE, "value": "medical"}]),
+        _query(where=[{"field": LINE_TYPE, "op": "is", "value": "medical"}]),
     ],
     ids=["group", "filter"],
 )
@@ -502,7 +503,7 @@ def test_a_row_filter_on_the_source_is_denied_never_unfiltered(package_dir: Path
         replace(config, semantic_policies=[policy]), source_path=str(package_dir)
     )
     context = {"audience": "customer", "attributes": {"premium_kind": "written"}}
-    error = _refusal(engine, {**_query(), "policy_context": context})
+    error = _refusal(engine, _query(), context=context)
     assert error.code == "POLICY_DENIED"
 
 
@@ -518,9 +519,9 @@ def test_access_to_the_source_measure_is_required(package_dir: Path) -> None:
     engine = Runtime.from_config(
         replace(config, semantic_policies=[policy]), source_path=str(package_dir)
     )
-    error = _refusal(engine, {**_query(), "policy_context": {"audience": "external"}})
+    error = _refusal(engine, _query(), context={"audience": "external"})
     assert error.code == "POLICY_DENIED"
-    assert engine.query({**_query("reserve"), "policy_context": {"audience": "external"}})["ok"]
+    assert engine.query(_query("reserve"), context={"audience": "external"})["ok"]
 
 
 @pytest.mark.parametrize("action", ["deny"])
@@ -532,8 +533,8 @@ def test_access_to_the_lookup_relationship_is_required(
 
     relationship = "relationship.claims_coverage"
     config = load_package_config(str(package_dir))
-    query = _query(group_by=group_by, policy_context={"audience": "external"})
-    assert relationship in bind_query(config, None, query).object_ids
+    query, context = _query(group_by=group_by), {"audience": "external"}
+    assert relationship in bind_query(config, None, {**query, "policy_context": context}).object_ids
     policy = SemanticPolicyConfig(
         id="policy.test.no_coverage_link",
         kind="object_access",
@@ -551,10 +552,10 @@ def test_access_to_the_lookup_relationship_is_required(
     monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
     monkeypatch.setattr(engine, "_get_adapter", no_output)
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        assert engine.validate(query, context=context)["errors"][0]["code"] == "POLICY_DENIED"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as raised:
-                operation(query)
+                operation(query, context=context)
             assert raised.value.code == "POLICY_DENIED"
     finally:
         engine.close()
@@ -573,31 +574,27 @@ def test_child_filters_select_claims_not_the_total(runtime: Runtime) -> None:
         {
             **_query(time={"temporal_role": OPENED_ROLE, "grain": "month"}),
             "select": [
-                {"expression": {"measure": CARRIED}, "as": "v"},
-                {"expression": {"measure": _measure("claim_count")}, "as": "claims"},
+                {"expression": CARRIED, "as": "v"},
+                {"expression": _measure("claim_count"), "as": "claims"},
             ],
         }
     )
     assert {row[CLAIM_KEY]: (row["v"], row["claims"]) for row in monthly["rows"]} == {
         claim: (value, 1) for claim, value in every.items()
     }
-    auto = {"field": f"dimension.{NS}_coverage_line_of_business", "value": "auto"}
+    auto = {"field": f"dimension.{NS}_coverage_line_of_business", "op": "is", "value": "auto"}
     assert _rows(runtime, _query(where=[auto])) == {"K1": 7, "K2": 7, "K6": 0, "K8": 12}
-    # A metric predicate selects claims too: those of coverages with two or more claims.
+    # An entity filter selects claims too: those of coverages with two or more claims.
     busy = {
-        "kind": "metric_predicate",
         "entity": f"entity.{NS}_coverage",
-        "input": {"measure": _measure("claim_count")},
-        "op": ">=",
-        "value": 2,
-        "scope_mode": "entity_only",
+        "having": [{"field": _measure("claim_count"), "op": "gte", "value": 2}],
+        "over": "all_time",
     }
-    predicate = {"expression": busy, "op": "=", "value": True}
-    assert _rows(runtime, _query(metric_filters=[predicate])) == {"K1": 7, "K2": 7}
+    assert _rows(runtime, _query(where=[busy])) == {"K1": 7, "K2": 7}
 
 
 def test_a_filter_on_the_source_is_refused(runtime: Runtime) -> None:
-    written = {"field": PREMIUM_KIND, "value": "written"}
+    written = {"field": PREMIUM_KIND, "op": "is", "value": "written"}
     assert _refusal(runtime, _query(where=[written])).code == "MIXED_GRAIN_INVALID"
 
 
@@ -607,10 +604,9 @@ def test_a_filter_on_the_source_is_refused(runtime: Runtime) -> None:
     [
         # Beside a premium measure the source's clock binds, and the lookup would be retimed.
         {
-            "version": 1,
             "select": [
-                {"expression": {"measure": _measure("premium_amount")}, "as": "premium"},
-                {"expression": {"measure": CARRIED}, "as": "v"},
+                {"expression": _measure("premium_amount"), "as": "premium"},
+                {"expression": CARRIED, "as": "v"},
             ],
             "group_by": [COVERAGE_KEY],
             "time": {"temporal_role": BOOKED_ROLE, "grain": "month"},
@@ -621,7 +617,7 @@ def test_a_filter_on_the_source_is_refused(runtime: Runtime) -> None:
                 {
                     "expression": {
                         "kind": "prior_period",
-                        "input": {"measure": CARRIED},
+                        "input": CARRIED,
                         "offset": {"unit": "month", "value": 1},
                     },
                     "as": "v",
@@ -631,9 +627,7 @@ def test_a_filter_on_the_source_is_refused(runtime: Runtime) -> None:
         },
         {
             **_query(),
-            "select": [
-                {"expression": {"metric": f"metric.{NS}.cumulative_coverage_premium"}, "as": "v"}
-            ],
+            "select": [{"expression": f"metric.{NS}.cumulative_coverage_premium", "as": "v"}],
             "time": {"temporal_role": OPENED_ROLE, "grain": "month"},
         },
         _query(
@@ -644,7 +638,11 @@ def test_a_filter_on_the_source_is_refused(runtime: Runtime) -> None:
     ids=["source-clock", "prior-period", "cumulative", "override"],
 )
 def test_time_on_the_lookup_itself_is_refused(runtime: Runtime, payload: dict[str, Any]) -> None:
-    error = _refusal(runtime, payload)
+    # A clock override has no call spelling; the engine's own form still reads one.
+    ask = runtime.query_internal if "temporal_role_overrides" in payload else runtime.query
+    with pytest.raises(SemanticLayerError) as raised:
+        ask(payload)
+    error = raised.value
     assert error.code == "REWRITE_NOT_SUPPORTED"
     assert error.details["unsupported_construct"] == "lookup_time"
 
@@ -660,9 +658,10 @@ def test_time_on_the_lookup_itself_is_refused(runtime: Runtime, payload: dict[st
                 {
                     "kind": "metric_predicate",
                     "entity": f"entity.{NS}_coverage",
-                    "input": {"measure": CARRIED},
-                    "op": ">",
+                    "input": CARRIED,
+                    "op": "gt",
                     "value": 5,
+                    "over": "all_time",
                 }
             ],
         },
@@ -672,7 +671,7 @@ def test_time_on_the_lookup_itself_is_refused(runtime: Runtime, payload: dict[st
             "over": {
                 "kind": "entity_value",
                 "entity": f"entity.{NS}_coverage",
-                "input": {"measure": CARRIED},
+                "input": CARRIED,
             },
         },
     ],

@@ -1,8 +1,8 @@
-"""Regression test for the published Query IR JSON Schema.
+"""Regression test for the published query call JSON Schema.
 
-The schema at ``schemas/query_ir.v1.json`` is the durable contract callers
+The schema at ``schemas/query.v2.json`` is the durable contract callers
 reference instead of trial-and-erroring against the runtime. This test
-runs it (via ``jsonschema``, Draft 2020-12) against every committed IR in
+runs it (via ``jsonschema``, Draft 2020-12) against every committed call in
 the benchmark corpus, the comparison fixtures, and the published example
 file. If a future change drifts the schema away from the runtime, this
 fails before the contract goes stale.
@@ -20,8 +20,10 @@ from typing import Any
 
 import pytest
 
+from semantic_rails.query_call import RETIRED
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
+SCHEMA_PATH = REPO_ROOT / "schemas" / "query.v2.json"
 
 
 def _load_schema() -> dict[str, Any]:
@@ -29,12 +31,12 @@ def _load_schema() -> dict[str, Any]:
 
 
 def _all_committed_irs() -> list[tuple[str, dict[str, Any]]]:
-    """Collect every committed Query IR shape under the repo. Each entry
-    is ``(source_label, ir_dict)`` so a schema regression points at the
+    """Collect every committed query call under the repo. Each entry
+    is ``(source_label, call)`` so a schema regression points at the
     file the contract first drifted from.
     """
     irs: list[tuple[str, dict[str, Any]]] = []
-    # Comparison fixtures — these are the canonical "real" IRs that the
+    # Comparison fixtures — these are the canonical "real" calls that the
     # comparisons benchmark runs against MetricFlow, Cube, Malloy, and
     # Snowflake Semantic Views.
     comparison_dir = REPO_ROOT / "comparisons" / "semantic_layers" / "semantic_rails" / "queries"
@@ -100,7 +102,7 @@ def test_every_committed_ir_validates_against_schema() -> None:
     jsonschema = _require_jsonschema()
     validator = jsonschema.Draft202012Validator(_load_schema())
     irs = _all_committed_irs()
-    assert irs, "no committed IRs found — corpus regression"
+    assert irs, "no committed calls found — corpus regression"
 
     failures: list[str] = []
     for label, ir in irs:
@@ -110,7 +112,7 @@ def test_every_committed_ir_validates_against_schema() -> None:
             failures.append(f"{label}\n" + "\n".join(lines))
     if failures:
         pytest.fail(
-            "Query IR schema diverged from committed IRs — fix the schema, not the IRs:\n"
+            "Query call schema diverged from committed calls — fix the schema, not the calls:\n"
             + "\n\n".join(failures)
         )
 
@@ -119,7 +121,7 @@ def test_obviously_invalid_ir_fails_schema_validation() -> None:
     jsonschema = _require_jsonschema()
     validator = jsonschema.Draft202012Validator(_load_schema())
     # ``select`` must be an array — a string is rejected.
-    bad = {"version": 1, "select": "not_a_list"}
+    bad = {"select": "not_a_list"}
     errors = list(validator.iter_errors(bad))
     assert errors, "schema should reject select=not_a_list"
 
@@ -133,9 +135,8 @@ def test_obviously_invalid_order_by_shape_fails_schema_validation() -> None:
     jsonschema = _require_jsonschema()
     validator = jsonschema.Draft202012Validator(_load_schema())
     bad = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.revenue"}, "as": "rev"}],
-        "order_by": [{"expression": {"measure": "measure.revenue"}, "direction": "DESC"}],
+        "select": [{"expression": "measure.revenue", "as": "rev"}],
+        "order_by": [{"expression": "measure.revenue", "direction": "desc"}],
     }
     errors = list(validator.iter_errors(bad))
     assert errors, "schema should reject order_by entries without 'field'"
@@ -149,85 +150,72 @@ def test_committed_irs_satisfy_stdlib_minimal_shape_checks() -> None:
     ``jsonschema`` isn't installed. This is intentionally a minimal
     superset of what the full schema enforces — its job is to catch
     drift on the most reviewer-impacting shapes (the ``order_by``
-    field gotcha, the ``metric_filters`` vs ``having`` gotcha) without
-    depending on a runtime validator.
+    field gotcha, the retired ``metric_filters`` vs ``having`` gotcha)
+    without depending on a runtime validator.
     """
     irs = _all_committed_irs()
-    assert irs, "no committed IRs found — corpus regression"
+    assert irs, "no committed calls found — corpus regression"
     failures: list[str] = []
     for label, ir in irs:
         if not isinstance(ir, dict):
-            failures.append(f"{label}: top-level IR must be an object")
+            failures.append(f"{label}: a query call must be an object")
             continue
-        if "having" in ir:
-            failures.append(f"{label}: top-level 'having' is not supported — use 'metric_filters'")
+        for key in sorted(set(ir) & set(RETIRED)):
+            failures.append(f"{label}: '{key}' is not part of a query call")
         for index, item in enumerate(list(ir.get("order_by", []) or [])):
             if not isinstance(item, dict) or "field" not in item:
                 failures.append(f"{label}: order_by[{index}] must be {{'field': ...}}")
         for index, item in enumerate(list(ir.get("select", []) or [])):
-            if not isinstance(item, dict) or "expression" not in item:
-                failures.append(f"{label}: select[{index}] must carry an 'expression'")
+            if not isinstance(item, str) and (
+                not isinstance(item, dict) or "expression" not in item
+            ):
+                failures.append(f"{label}: select[{index}] must be an id or carry an 'expression'")
     if failures:
         pytest.fail(
-            "Committed IRs failed stdlib structural checks:\n  - " + "\n  - ".join(failures)
+            "Committed calls failed stdlib structural checks:\n  - " + "\n  - ".join(failures)
         )
 
 
-def test_having_top_level_key_documented_as_unsupported() -> None:
-    """``having`` is not part of the schema and the runtime does NOT
-    accept it (use ``metric_filters`` instead). Top-level extra keys are
-    rejected except underscore-prefixed annotations, so the canonical
-    unsupported name MUST not appear in the schema's properties.
-    """
-    schema = _load_schema()
-    assert "having" not in schema.get("properties", {}), (
-        "Query IR schema must not declare 'having'. Use 'metric_filters'."
-    )
+def test_retired_top_level_keys_are_not_in_the_schema() -> None:
+    """Result filters are ``having``; ``metric_filters`` and the other retired keys are
+    not part of the call, so the schema must not declare them."""
+    properties = _load_schema().get("properties", {})
+    assert "having" in properties
+    assert not set(RETIRED) & set(properties), sorted(set(RETIRED) & set(properties))
 
 
 def test_schema_rejects_unknown_top_level_keys_except_annotations() -> None:
     jsonschema = _require_jsonschema()
     validator = jsonschema.Draft202012Validator(_load_schema())
-    bad = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-        "filters": [],
-    }
+    bad = {"select": ["measure.jaffle.order_count"], "filters": []}
     assert list(validator.iter_errors(bad)), "schema should reject unknown top-level keys"
 
-    annotated = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-        "_note": "fixture-only annotation",
-    }
+    annotated = {"select": ["measure.jaffle.order_count"], "_note": "fixture-only annotation"}
     assert not list(validator.iter_errors(annotated)), (
         "schema should allow underscore-prefixed annotations"
     )
 
 
-def test_schema_rejects_unsupported_query_ir_version() -> None:
+def test_schema_ignores_the_version_key() -> None:
     jsonschema = _require_jsonschema()
     validator = jsonschema.Draft202012Validator(_load_schema())
-    bad = {
-        "version": 2,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-    }
-    errors = list(validator.iter_errors(bad))
-    assert errors, "schema should reject unsupported Query IR versions"
+    for version in (1, 2):
+        call = {"version": version, "select": ["measure.jaffle.order_count"]}
+        assert not list(validator.iter_errors(call)), version
 
 
-def test_schema_takes_a_child_group_and_refuses_a_malformed_one() -> None:
+def test_schema_takes_an_entity_filter_and_refuses_a_malformed_one() -> None:
     jsonschema = _require_jsonschema()
-    beverage = {"field": "dimension.x_item_type", "op": "=", "value": "beverage"}
-    group = {"child": "entity.x_item", "match": "none", "where": [beverage]}
-    base = {"select": [{"expression": {"measure": "measure.x.count"}, "as": "count"}]}
+    beverage = {"field": "dimension.x_item_type", "op": "is", "value": "beverage"}
+    group = {"entity": "entity.x_item", "none": [beverage]}
     validator = jsonschema.Draft202012Validator(_load_schema())
-    query = {"version": 1, **base, "where": [beverage, group]}
+    query = {"select": ["measure.x.count"], "where": [beverage, group]}
     assert not list(validator.iter_errors(query))
     for bad in (
-        {**group, "match": "all"},
-        {**group, "where": []},
-        {**group, "where": [group]},
-        {key: value for key, value in group.items() if key != "match"},
+        {"entity": "entity.x_item", "all": [beverage]},
+        {**group, "none": []},
+        {**group, "none": [group]},
+        {**group, "any": [beverage]},
+        {"entity": "entity.x_item"},
     ):
         assert list(validator.iter_errors({**query, "where": [bad]})), bad

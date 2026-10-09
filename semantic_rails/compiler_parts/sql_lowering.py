@@ -1425,8 +1425,8 @@ def _distribution_metric_filters(plan: LogicalPlan) -> list[dict[str, Any]]:
     ):
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
-            "Comparison metric_filters beside a distribution cannot be evaluated at the "
-            "returned group's grain. Run the group-level filter without the distribution first.",
+            "A having filter beside a distribution cannot be evaluated at the returned "
+            "group's grain. Run the group-level filter without the distribution first.",
         )
     return filters
 
@@ -1470,7 +1470,7 @@ def _distribution_select(
             raise SemanticLayerError(
                 "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
                 "A distribution's per-entity grouping cannot inherit this contextual predicate. "
-                "Use scope_mode: 'entity_only' or a where filter.",
+                "Use over: all_time or a where filter.",
             )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
@@ -2680,6 +2680,12 @@ def _distinct_parent_group_conditions(
     ]
 
 
+def _group_path(query: Any, group: ChildGroup) -> str:
+    """Where a child group sits in the call: ``where[i].entity``."""
+    where = list(getattr(query, "where", None) or [])
+    return f"where[{where.index(group)}].entity" if group in where else "where"
+
+
 def child_group_route(
     config: PackageConfig, query: Any, measure: Any, group: ChildGroup
 ) -> tuple[PathSelection, list[PathSelection | None]]:
@@ -2712,7 +2718,7 @@ def child_group_route(
         return SemanticLayerError(
             "INVALID_QUERY",
             message,
-            details={"path": "where[].child", "child": group.child, **details},
+            details={"path": _group_path(query, group), "child": group.child, **details},
         )
 
     if group.child == start:
@@ -3833,9 +3839,9 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
     if _query_metric_predicates(plan):
         raise SemanticLayerError(
             "PREDICATE_NOT_SUPPORTED",
-            "A metric_predicate filter requires a measure or conversion leaf; "
-            "add a select that reads a measure, or remove metric_filters.",
-            details={"path": "metric_filters", "reason": "distinct_values_without_leaf"},
+            "An entity filter on an aggregate needs a measure or conversion leaf; "
+            "add a select that reads a measure, or remove the entity filter.",
+            details={"path": "where", "reason": "distinct_values_without_leaf"},
         )
     entities = _entity_index(config)
     dimensions = _dimension_index(config)

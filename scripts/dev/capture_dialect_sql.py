@@ -33,6 +33,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 
 Capture = dict[str, dict[str, dict[str, Any]]]
@@ -68,7 +69,8 @@ def capture() -> Capture:
         rows: dict[str, dict[str, Any]] = {}
         for entry in payloads:
             try:
-                compiled = compile_query(config, registry, {"version": 1, **entry["payload"]})
+                query, _ = read_call(entry["payload"], config=config)
+                compiled = compile_query(config, registry, query)
             except Exception as exc:  # recorded, and it fails the capture
                 code = exc.code if isinstance(exc, SemanticLayerError) else type(exc).__name__
                 rows[entry["metric_id"]] = {"error": f"{code}: {exc}"}

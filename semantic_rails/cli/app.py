@@ -219,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_validate)
     _add_response_detail_args(p_validate)
@@ -234,7 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_compile.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_compile)
     _add_response_detail_args(p_compile)
@@ -339,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full check report instead of the compact summary.",
     )
+    _add_now_arg(p_check)
     p_check.set_defaults(func=cmd_check)
 
     p_build_package = sub.add_parser(
@@ -368,6 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the package-local example queries (declared in examples blocks) against the package.",
     )
     _add_optional_reference_args(p_run_examples, package_choices, required=True)
+    _add_now_arg(p_run_examples)
     p_run_examples.set_defaults(func=cmd_run_examples)
 
     p_test_package = sub.add_parser(
@@ -375,6 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the package-local tests (declared in tests blocks) against the package.",
     )
     _add_optional_reference_args(p_test_package, package_choices, required=True)
+    _add_now_arg(p_test_package)
     p_test_package.set_defaults(func=cmd_test_package)
 
     p_diff_package = sub.add_parser(
@@ -431,6 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Git ref (e.g. 'main') to use as a baseline if --compare-path is not given.",
     )
+    _add_now_arg(p_promote_package)
     p_promote_package.set_defaults(func=cmd_promote_package)
 
     p_query = sub.add_parser(
@@ -441,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_query.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_query)
     _add_response_detail_args(p_query)
@@ -584,7 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_plan = sub.add_parser(
         "plan",
-        description="Plan one best Query IR from a free-text intent and optional partial query.",
+        description="Plan one best query call from a free-text intent and an optional partial call.",
     )
     _add_package_or_path_args(p_plan, package_choices)
     p_plan.add_argument(
@@ -609,6 +613,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="best",
         help="Planner response detail (default: best). Use full for alternatives/blocked, debug for compose hints.",
     )
+    _add_now_arg(p_plan)
     _add_policy_context_args(p_plan)
     p_plan.set_defaults(func=cmd_plan)
 

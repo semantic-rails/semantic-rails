@@ -21,6 +21,7 @@ from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr, parse_semantic_expression
+from semantic_rails.query_call import read_call
 from semantic_rails.request_context import RequestContext
 from semantic_rails.resource_access import ResourceAccess
 from semantic_rails.runtime import Runtime
@@ -69,7 +70,8 @@ def test_conversion_predicate_window_filters_only_base_events_matches_reference(
             """
         ).fetchall()
         assert expected == [(datetime(2016, 9, 1), "Philadelphia", 1.0)]
-        result = conn.execute(compile_query(config, None, example["query"])["sql"])
+        query, _notes = read_call(example["query"], config=config)
+        result = conn.execute(compile_query(config, None, query)["sql"])
         columns = [column[0] for column in result.description]
         rows = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
         assert [
@@ -225,7 +227,7 @@ def warehouse(tmp_path):
 
 def _query(input_=None, alignment="query_window"):
     return {
-        "select": [{"expression": "measure.clocks.customers", "as": "n"}],
+        "select": [{"expression": {"measure": "measure.clocks.customers"}, "as": "n"}],
         "group_by": ["dimension.clocks_customer_customer_id"],
         "time": {"temporal_role": SIGNED_UP, "start": "2025-01-01", "end": "2025-02-01"},
         "metric_filters": [
@@ -610,7 +612,7 @@ def test_conversion_input_refuses_overridden_converted_measure(
         if entrypoint == "runtime":
             runtime = _runtime(tmp_path, conn)
             try:
-                runtime.query(query)
+                runtime.query_internal(query)
             finally:
                 runtime.close()
         else:
@@ -627,7 +629,7 @@ def test_conversion_input_without_override_matches_reference(warehouse, tmp_path
     assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
     runtime = _runtime(tmp_path, conn)
     try:
-        result = runtime.query(query)
+        result = runtime.query_internal(query)
     finally:
         runtime.close()
     assert [tuple(row.values()) for row in result["rows"]] == [
@@ -717,6 +719,16 @@ def _output_query(name, role, grain=""):
     return query
 
 
+def _output_call(name, role, grain=""):
+    """``_output_query`` as a caller's query call."""
+    time = {"temporal_role": role, "start": "2025-01-01", "end": "2025-02-01"}
+    return {
+        "select": [{"expression": f"metric.clocks.{name}", "as": "n"}],
+        "group_by": ["dimension.clocks_customer_customer_id"],
+        "time": {**time, "grain": grain} if grain else time,
+    }
+
+
 @pytest.mark.parametrize("grain", ["", "month"])
 @pytest.mark.parametrize("entrypoint", ["compile", "nested", "runtime"])
 def test_pinned_metric_output_refuses_a_window_on_another_advertised_clock(
@@ -731,11 +743,12 @@ def test_pinned_metric_output_refuses_a_window_on_another_advertised_clock(
     with pytest.raises(SemanticLayerError) as raised:
         if entrypoint == "runtime":
             runtime = _runtime(tmp_path, conn)
+            call = _output_call("pinned_orders", ORDERED, grain)
             try:
-                report = runtime.validate(query)
+                report = runtime.validate(call)
                 assert not report["ok"]
                 assert report["errors"][0]["code"] == "INVALID_TEMPORAL_BINDING"
-                runtime.query(query)
+                runtime.query(call)
             finally:
                 runtime.close()
         elif entrypoint == "nested":
@@ -850,7 +863,7 @@ def test_nested_scoped_predicate_refuses_an_override_its_input_would_drop(
         if entrypoint == "runtime":
             runtime = _runtime(tmp_path, conn)
             try:
-                runtime.query(query)
+                runtime.query_internal(query)
             finally:
                 runtime.close()
         else:
@@ -869,7 +882,7 @@ def test_nested_scoped_predicate_without_override_matches_reference(
     assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
     runtime = _runtime(tmp_path, conn)
     try:
-        result = runtime.query(query)
+        result = runtime.query_internal(query)
     finally:
         runtime.close()
     assert [tuple(row.values()) for row in result["rows"]] == [
@@ -956,13 +969,13 @@ def test_aggregate_filter_predicates_refuse_an_override_their_input_would_drop(
     runtime = _runtime(tmp_path, conn)
     try:
         if entrypoint == "validate":
-            report = runtime.validate(query)
+            report = runtime.validate_internal(query)
             assert not report["ok"], report
             assert report["errors"][0]["code"] == "INVALID_TEMPORAL_BINDING"
             assert report["errors"][0]["details"]["measures"] == ["measure.clocks.orders"]
         else:
             with pytest.raises(SemanticLayerError) as raised:
-                runtime.compile(query)
+                runtime.compile_internal(query)
             _assert_override_refusal(raised.value)
     finally:
         runtime.close()

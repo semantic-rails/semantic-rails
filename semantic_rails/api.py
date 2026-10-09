@@ -90,10 +90,7 @@ class Handler(BaseHTTPRequestHandler):
             self._request_id = request_id_from_parts(headers, query_params)
             self._request_id_source = "generated"
         self._request_context = self._service().request_context(
-            headers,
-            payload=payload or {},
-            query_params=query_params,
-            request_id=self._request_id,
+            headers, request_id=self._request_id
         )
 
     def _auth_ok(self, route: str) -> bool:

@@ -491,7 +491,7 @@ def _unsupported_expression_kind(kind: Any, path: str) -> SemanticLayerError:
     return SemanticLayerError(
         "INVALID_EXPRESSION_AST",
         f"Unsupported expression kind {kind!r} at {path}. "
-        "Send a select expression {measure: '<measure_id>'} or {metric: '<metric_id>'}; "
+        "Select a measure or metric by its id string, e.g. 'metric.<id>'; "
         "put dimension ids in group_by.",
         details={"expression_kind": kind, "expression_position": path, "path": path},
     )
@@ -1370,9 +1370,8 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         raise SemanticLayerError(
             "INVALID_EXPRESSION_AST",
             (
-                "Expression requires a 'kind'. Send "
-                '{"kind": "measure", "measure": "<measure id>", "aggregation": "sum"} or '
-                '{"kind": "metric", "metric": "<metric id>"}.'
+                "Expression requires a 'kind'. Send a measure or metric id string, or "
+                '{"kind": "measure", "measure": "<measure id>", "aggregation": "sum"}.'
             ),
             details={"expression_position": context, "received_keys": sorted(expr)},
         )

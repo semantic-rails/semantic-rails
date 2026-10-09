@@ -14,8 +14,6 @@ shapes the runtime needs:
   (:func:`public_api_route`) and route-path normalization that maps
   ``/api/v1/foo`` to ``/foo`` (:func:`normalize_route`)
 * envelope-error helpers (:func:`issue`, :func:`status_label`)
-* policy-context and query-body payload builders
-  (:func:`policy_context_payload`, :func:`query_payload`)
 
 Extracted from :mod:`semantic_rails.http_core` to keep that module
 focused on the stateful :class:`SemanticHTTPService` (routing,
@@ -30,18 +28,13 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from .request_context import RequestContext
-from .request_payload import (
-    build_query_payload,
-    parse_string_list,
-    without_policy_context,
-)
 from .request_payload import (
     clean_request_id as clean_request_id,
 )
 from .request_payload import (
     coerce_bool as coerce_bool,
 )
+from .request_payload import parse_string_list
 
 
 class HTTPInputError(ValueError):
@@ -131,90 +124,4 @@ def request_id_from_parts(
         or clean_request_id((query_params or {}).get("request_id"))
         or clean_request_id((payload or {}).get("request_id"))
         or uuid.uuid4().hex
-    )
-
-
-def _object_payload(value: Any, *, field: str) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise HTTPInputError(f"Field '{field}' must be a JSON object.")
-    return dict(value)
-
-
-def _safe_request_context_payload(
-    payload: Mapping[str, Any] | None,
-    query_params: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Collect caller context only for the configured resolver to interpret.
-
-    The default local resolver intentionally accepts body/query-parameter
-    context. Hosted resolvers may ignore it and derive identity elsewhere.
-    Nested Query IR context is collected first, then the outer envelope (the
-    same precedence used by the local query builder), followed by the two GET
-    catalog context parameters.
-    """
-
-    raw_payload = dict(payload or {}) if isinstance(payload, Mapping) else {}
-    policy_context: dict[str, Any] = {}
-    raw_query = raw_payload.get("query")
-    if isinstance(raw_query, Mapping):
-        nested = raw_query.get("policy_context")
-        if isinstance(nested, Mapping):
-            policy_context.update(dict(nested))
-    outer = raw_payload.get("policy_context")
-    if isinstance(outer, Mapping):
-        policy_context.update(dict(outer))
-    for key in ("environment", "audience"):
-        value = dict(query_params or {}).get(key)
-        if value not in (None, ""):
-            policy_context[key] = value
-    return {"policy_context": policy_context} if policy_context else {}
-
-
-def authoritative_request_payload(
-    payload: Mapping[str, Any], context: RequestContext | None
-) -> dict[str, Any]:
-    """Strip caller policy claims when a transport resolved trusted context.
-
-    Direct/local callers pass ``context=None`` and retain the trusted-local
-    body behavior. Remote transports always pass a resolved RequestContext;
-    in that mode *all* caller-controlled context locations are removed before
-    the resolver result is injected. Omitted resolver fields stay omitted.
-    """
-
-    out = dict(payload or {})
-    if context is None:
-        return out
-
-    if "policy_context" in out:
-        _object_payload(out.get("policy_context"), field="policy_context")
-    raw_query = out.get("query")
-    if isinstance(raw_query, Mapping) and "policy_context" in raw_query:
-        _object_payload(raw_query.get("policy_context"), field="query.policy_context")
-    out = without_policy_context(out)
-    trusted = context.to_policy_context()
-    if trusted:
-        out["policy_context"] = trusted
-    return out
-
-
-def policy_context_payload(
-    payload: Mapping[str, Any] | None = None, context: RequestContext | None = None
-) -> dict[str, Any]:
-    if context is not None:
-        return context.to_policy_context()
-    raw_payload = dict(payload or {})
-    policy_context = _object_payload(raw_payload.get("policy_context"), field="policy_context")
-    return policy_context
-
-
-def query_payload(
-    payload: Mapping[str, Any], context: RequestContext | None = None
-) -> dict[str, Any]:
-    return build_query_payload(
-        payload,
-        object_payload=_object_payload,
-        policy_context=policy_context_payload(payload, context),
-        replace_policy_context=context is not None,
     )

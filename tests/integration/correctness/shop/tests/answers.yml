@@ -42,17 +42,17 @@ tests:
     query:
       select:
         - {as: history, expression: {kind: cumulative, input: measure.shop.revenue}}
-      metric_filters:
-        - expression:
+        - as: recent
+          expression:
             kind: aggregate
             measure: measure.shop.revenue
             filter:
-              all: [{field: dimension.shop_order_ordered_at, op: '>=', value: '2023-12-01'}]
-          op: '>'
-          value: 0
+              all: [{field: dimension.shop_order_ordered_at, op: gte, value: '2023-12-01'}]
+      having:
+        - {field: recent, op: gt, value: 0}
       time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month, end: '2024-01-01'}
     expected_rows:
-      - {period: '2023-12-01', history: 22}
+      - {period: '2023-12-01', history: 22, recent: 7}
     reference_sql: |
       WITH monthly AS (
         SELECT date_trunc('month', ordered_at) AS period, SUM(amount) AS revenue,
@@ -62,7 +62,7 @@ tests:
         SELECT period, SUM(revenue) OVER (ORDER BY period ROWS UNBOUNDED PRECEDING) AS total, recent
         FROM monthly
       )
-      SELECT period, total FROM history WHERE recent > 0
+      SELECT period, total, recent FROM history WHERE recent > 0
   shop/cumulative-input-clock-filter-refuses-truncated-history:
     kind: validate_fails_with_code
     expect: refuse
@@ -263,46 +263,17 @@ tests:
     query:
       select: [{expression: metric.shop.closed_orders, as: orders}]
       time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2023-12-01'}
-  shop/aggregate-filter-predicate-refuses-a-dropped-clock-override:
+  shop/clock-override-key-is-refused:
     kind: validate_fails_with_code
     expect: refuse
-    code: INVALID_TEMPORAL_BINDING
-    why: A nested conversion predicate in an aggregate filter cannot silently drop the order-clock override.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    code: INVALID_QUERY
+    why: A call cannot re-pin a measure's clock; temporal_role_overrides is refused at its path, and a package metric pins the clock instead.
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
     tags: [time-window, clock, refusal]
     query:
-      select: [{expression: measure.shop.signup_count, as: signups}]
-      time: {temporal_role: temporal_role.shop_customer_signed_up_at, start: '2023-11-01', end: '2023-12-01'}
-      temporal_role_overrides: {measure.shop.window_order_count: temporal_role.shop_order_ordered_at}
-      metric_filters:
-        - expression:
-            kind: metric_predicate
-            entity: entity.shop_customer
-            scope_mode: entity_only
-            time_alignment: query_window
-            input:
-              kind: aggregate
-              measure: measure.shop.signup_count
-              aggregation: count_distinct
-              filter:
-                all:
-                  - expression:
-                      kind: metric_predicate
-                      entity: entity.shop_customer
-                      scope_mode: entity_only
-                      input:
-                        kind: conversion
-                        entity: entity.shop_customer
-                        window: {unit: day, value: 7}
-                        matching_mode: first_converted_after_base
-                        base: {kind: aggregate, measure: measure.shop.signup_count}
-                        converted: {kind: aggregate, measure: measure.shop.window_order_count, temporal_role: temporal_role.shop_order_closed_at}
-                      op: '>'
-                      value: 0.5
-            op: '>='
-            value: 1
-          op: '='
-          value: true
+      select: [{expression: measure.shop.window_order_count, as: orders}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2023-12-01'}
+      temporal_role_overrides: {measure.shop.window_order_count: temporal_role.shop_order_closed_at}
   shop/pinned-output-on-its-bound-clock:
     kind: query_matches_snapshot
     expect: answer
@@ -334,12 +305,15 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Customer 102 signed up and ordered within the window but closed the order after it; the pinned close clock keeps no signups.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
     tags: [time-window, clock]
     query:
       <<: *window_predicate
       time: {temporal_role: temporal_role.shop_customer_signed_up_at, grain: day, start: '2023-11-13', end: '2023-11-21'}
-      temporal_role_overrides: {measure.shop.window_order_count: temporal_role.shop_order_closed_at}
+      where:
+        - entity: entity.shop_customer
+          having: [{field: metric.shop.closed_orders, op: gte, value: 1}]
+          over: window
     expected_rows: []
     reference_sql: |
       SELECT date_trunc('day', s.signed_up_at), COUNT(*) FROM signups s
@@ -508,15 +482,15 @@ tests:
       SELECT COUNT(order_id) FROM orders o
       WHERE EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id AND r.refund_type = 'goods')
         AND EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id AND r.refund_type = 'shipping')
-  shop/is-with-a-value-is-refused:
+  shop/null-filter-value-is-refused:
     kind: validate_fails_with_code
     expect: refuse
-    why: IS accepts only null or a boolean, so a string store value is refused before inspecting orders.
+    why: A filter value is never null; is with null is refused before inspecting orders, with missing as the fix.
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id, docs/QUERY_IR_SCHEMA.md#wherefilter]
     tags: [refusal]
     query:
       select: *orders
-      where: [{field: dimension.shop_order_store_id, op: IS, value: x}]
+      where: [{field: dimension.shop_order_store_id, op: is, value: null}]
     code: INVALID_QUERY
   shop/plan-revenue-by-store:
     kind: query_matches_snapshot
@@ -1800,8 +1774,8 @@ tests:
   shop/utc-fiscal_quarter:
     kind: validate_fails_with_code
     expect: refuse
-    code: REWRITE_NOT_SUPPORTED
-    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    code: INVALID_QUERY
+    why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
     cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
@@ -1817,8 +1791,8 @@ tests:
   shop/ny-fiscal_quarter:
     kind: validate_fails_with_code
     expect: refuse
-    code: REWRITE_NOT_SUPPORTED
-    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    code: INVALID_QUERY
+    why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
     cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: ny_authored
@@ -1834,8 +1808,8 @@ tests:
   shop/date-fiscal_quarter:
     kind: validate_fails_with_code
     expect: refuse
-    code: REWRITE_NOT_SUPPORTED
-    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    code: INVALID_QUERY
+    why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
     cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: date_authored
@@ -1851,8 +1825,8 @@ tests:
   shop/tz-fiscal_quarter:
     kind: validate_fails_with_code
     expect: refuse
-    code: REWRITE_NOT_SUPPORTED
-    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    code: INVALID_QUERY
+    why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
     cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: tz_authored
@@ -1868,8 +1842,8 @@ tests:
   shop/utc-fiscal_year:
     kind: validate_fails_with_code
     expect: refuse
-    code: REWRITE_NOT_SUPPORTED
-    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    code: INVALID_QUERY
+    why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
     cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
@@ -2437,98 +2411,6 @@ tests:
                          WHERE o.customer_id = s.customer_id AND o.amount >= 1000) = 0
     expected_rows:
       - {signups: null}
-  shop/customers_with_no_large_orders-aggregate_if-one_match_keeps_every_other_customer:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for customers with no large orders aggregate if one match
-      keeps every other customer.
-    cites:
-      - tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
-    tags: [null-vs-zero]
-    variant: utc_authored
-    query:
-      select:
-      - expression: measure.shop.signup_count
-        as: signups
-      metric_filters:
-      - expression:
-          kind: metric_predicate
-          entity: entity.shop_customer
-          scope_mode: entity_only
-          input:
-            kind: aggregate_if
-            aggregation: count
-            condition:
-              kind: comparison
-              op: '>='
-              left:
-                kind: column
-                column: amount
-                entity: entity.shop_order
-              right:
-                kind: literal
-                value: 10
-          op: '='
-          value: 0
-        op: '='
-        value: true
-    reference_sql: |-
-      SELECT COUNT(*) FROM signups AS s
-                  WHERE EXISTS (SELECT 1 FROM orders WHERE amount >= 10)
-                    AND (SELECT COUNT(*) FROM orders AS o
-                         WHERE o.customer_id = s.customer_id AND o.amount >= 10) = 0
-    expected_rows:
-      - {signups: 5}
-  shop/customers_with_no_large_orders-aggregate_if-no_match_keeps_no_customer:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for customers with no large orders aggregate if no match
-      keeps no customer.
-    cites:
-      - tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
-    tags: [null-vs-zero]
-    variant: utc_authored
-    query:
-      select:
-      - expression: measure.shop.signup_count
-        as: signups
-      metric_filters:
-      - expression:
-          kind: metric_predicate
-          entity: entity.shop_customer
-          scope_mode: entity_only
-          input:
-            kind: aggregate_if
-            aggregation: count
-            condition:
-              kind: comparison
-              op: '>='
-              left:
-                kind: column
-                column: amount
-                entity: entity.shop_order
-              right:
-                kind: literal
-                value: 1000
-          op: '='
-          value: 0
-        op: '='
-        value: true
-    reference_sql: |-
-      SELECT NULLIF(COUNT(*), 0) FROM signups AS s
-                  WHERE EXISTS (SELECT 1 FROM orders WHERE amount >= 1000)
-                    AND (SELECT COUNT(*) FROM orders AS o
-                         WHERE o.customer_id = s.customer_id AND o.amount >= 1000) = 0
-    expected_rows:
-      - {signups: null}
   shop/predicate-conditional_count-null-=:
     kind: query_matches_snapshot
     expect: answer
@@ -2543,30 +2425,15 @@ tests:
     variant: utc_authored
     query:
       select:
-      - expression: measure.shop.order_count
-        as: n
-      metric_filters:
       - expression:
-          kind: metric_predicate
-          entity: entity.shop_order
-          scope_mode: entity_only
-          input:
-            kind: aggregate_if
-            aggregation: count
-            condition:
-              kind: comparison
-              op: '='
-              left:
-                kind: column
-                column: amount
-                entity: entity.shop_order
-              right:
-                kind: literal
-                value: null
-          op: '>'
-          value: 0
-        op: '='
-        value: true
+          kind: aggregate_if
+          aggregation: count
+          condition:
+            kind: comparison
+            op: '='
+            left: {kind: column, column: amount, entity: entity.shop_order}
+            right: {kind: literal, value: null}
+        as: n
     reference_sql: SELECT COUNT(*) FROM orders WHERE amount IS NULL
     expected_rows:
       - {n: 1}
@@ -2584,30 +2451,15 @@ tests:
     variant: utc_authored
     query:
       select:
-      - expression: measure.shop.order_count
-        as: n
-      metric_filters:
       - expression:
-          kind: metric_predicate
-          entity: entity.shop_order
-          scope_mode: entity_only
-          input:
-            kind: aggregate_if
-            aggregation: count
-            condition:
-              kind: comparison
-              op: '!='
-              left:
-                kind: column
-                column: amount
-                entity: entity.shop_order
-              right:
-                kind: literal
-                value: null
-          op: '>'
-          value: 0
-        op: '='
-        value: true
+          kind: aggregate_if
+          aggregation: count
+          condition:
+            kind: comparison
+            op: '!='
+            left: {kind: column, column: amount, entity: entity.shop_order}
+            right: {kind: literal, value: null}
+        as: n
     reference_sql: SELECT COUNT(*) FROM orders WHERE amount IS NOT NULL
     expected_rows:
       - {n: 10}
@@ -2625,30 +2477,15 @@ tests:
     variant: utc_authored
     query:
       select:
-      - expression: measure.shop.order_count
-        as: n
-      metric_filters:
       - expression:
-          kind: metric_predicate
-          entity: entity.shop_order
-          scope_mode: entity_only
-          input:
-            kind: aggregate_if
-            aggregation: count
-            condition:
-              kind: comparison
-              op: <>
-              left:
-                kind: column
-                column: amount
-                entity: entity.shop_order
-              right:
-                kind: literal
-                value: null
-          op: '>'
-          value: 0
-        op: '='
-        value: true
+          kind: aggregate_if
+          aggregation: count
+          condition:
+            kind: comparison
+            op: '<>'
+            left: {kind: column, column: amount, entity: entity.shop_order}
+            right: {kind: literal, value: null}
+        as: n
     reference_sql: SELECT COUNT(*) FROM orders WHERE amount IS NOT NULL
     expected_rows:
       - {n: 10}
@@ -2760,22 +2597,13 @@ tests:
     variant: utc_authored
     query:
       select:
-      - expression: measure.shop.order_count
-        as: orders
-      metric_filters:
-      - expression:
-          kind: comparison
-          op: '>'
-          left:
-            measure: measure.shop.order_count
-          right:
-            kind: literal
-            value: 3
-        op: IS
-        value: true
-    reference_sql: SELECT COUNT(*) FROM orders HAVING (COUNT(*) > 3) IS TRUE
+      - {expression: measure.shop.order_count, as: orders}
+      - expression: {kind: comparison, op: '>', left: measure.shop.order_count, right: {kind: literal, value: 3}}
+        as: over_3
+      having: [{field: over_3, op: is, value: true}]
+    reference_sql: SELECT COUNT(*), COUNT(*) > 3 FROM orders HAVING (COUNT(*) > 3) IS TRUE
     expected_rows:
-      - {orders: 11}
+      - {orders: 11, over_3: true}
   shop/is_operand-IS-False:
     kind: query_matches_snapshot
     expect: answer
@@ -2789,20 +2617,11 @@ tests:
     variant: utc_authored
     query:
       select:
-      - expression: measure.shop.order_count
-        as: orders
-      metric_filters:
-      - expression:
-          kind: comparison
-          op: '>'
-          left:
-            measure: measure.shop.order_count
-          right:
-            kind: literal
-            value: 3
-        op: IS
-        value: false
-    reference_sql: SELECT COUNT(*) FROM orders HAVING (COUNT(*) > 3) IS FALSE
+      - {expression: measure.shop.order_count, as: orders}
+      - expression: {kind: comparison, op: '>', left: measure.shop.order_count, right: {kind: literal, value: 3}}
+        as: over_3
+      having: [{field: over_3, op: is, value: false}]
+    reference_sql: SELECT COUNT(*), COUNT(*) > 3 FROM orders HAVING (COUNT(*) > 3) IS FALSE
     expected_rows: []
   shop/is_operand-IS NOT-True:
     kind: query_matches_snapshot
@@ -2817,20 +2636,11 @@ tests:
     variant: utc_authored
     query:
       select:
-      - expression: measure.shop.order_count
-        as: orders
-      metric_filters:
-      - expression:
-          kind: comparison
-          op: '>'
-          left:
-            measure: measure.shop.order_count
-          right:
-            kind: literal
-            value: 3
-        op: IS NOT
-        value: true
-    reference_sql: SELECT COUNT(*) FROM orders HAVING (COUNT(*) > 3) IS NOT TRUE
+      - {expression: measure.shop.order_count, as: orders}
+      - expression: {kind: comparison, op: '>', left: measure.shop.order_count, right: {kind: literal, value: 3}}
+        as: over_3
+      having: [{field: over_3, op: not, value: true}]
+    reference_sql: SELECT COUNT(*), COUNT(*) > 3 FROM orders HAVING (COUNT(*) > 3) IS NOT TRUE
     expected_rows: []
   shop/is_operand-IS NOT-False:
     kind: query_matches_snapshot
@@ -2845,22 +2655,13 @@ tests:
     variant: utc_authored
     query:
       select:
-      - expression: measure.shop.order_count
-        as: orders
-      metric_filters:
-      - expression:
-          kind: comparison
-          op: '>'
-          left:
-            measure: measure.shop.order_count
-          right:
-            kind: literal
-            value: 3
-        op: IS NOT
-        value: false
-    reference_sql: SELECT COUNT(*) FROM orders HAVING (COUNT(*) > 3) IS NOT FALSE
+      - {expression: measure.shop.order_count, as: orders}
+      - expression: {kind: comparison, op: '>', left: measure.shop.order_count, right: {kind: literal, value: 3}}
+        as: over_3
+      having: [{field: over_3, op: not, value: false}]
+    reference_sql: SELECT COUNT(*), COUNT(*) > 3 FROM orders HAVING (COUNT(*) > 3) IS NOT FALSE
     expected_rows:
-      - {orders: 11}
+      - {orders: 11, over_3: true}
   shop/child_filter-conditional_counts_and_sum_by_channel:
     kind: query_matches_snapshot
     expect: answer
@@ -3454,7 +3255,7 @@ tests:
   shop/lookup_channel_not_web:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for lookup channel not web.
+    why: Not web keeps the two orders whose looked-up channel is unknown, since an unknown channel is not web.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
@@ -3476,10 +3277,11 @@ tests:
         op: not
         value: web
     reference_sql: SELECT (SELECT s.channel FROM signups AS s WHERE s.customer_id = o.customer_id), SUM(o.amount), COUNT(*)
-      FROM orders AS o WHERE (SELECT s.channel FROM signups AS s WHERE s.customer_id = o.customer_id) <> 'web' GROUP
-      BY 1
+      FROM orders AS o WHERE ((SELECT s.channel FROM signups AS s WHERE s.customer_id = o.customer_id) <> 'web' OR (SELECT
+      s.channel FROM signups AS s WHERE s.customer_id = o.customer_id) IS NULL) GROUP BY 1
     expected_rows:
       - {dimension.shop_customer_channel: store, revenue: 17, orders: 3}
+      - {dimension.shop_customer_channel: null, revenue: 2, orders: 2}
   shop/filtered_input:
     kind: query_matches_snapshot
     expect: answer
@@ -7090,7 +6892,7 @@ tests:
     intent: signups not in June
     known_wrong: {planner: "The planner holds excluded time periods until it can represent their complement. This xfail can't tell that hold from a wrong number; tests/semantic_rails/test_plan_named_periods.py::test_excluded_period_never_becomes_a_positive_window pins the hold (PLAN_INTENT_COVERAGE_GAP, negation_unrealized on a time item)."}
     partial_query:
-      where: [{field: dimension.shop_customer_channel, op: not, value: store}]
+      where: [{field: dimension.shop_customer_channel, op: not, value: store}, {field: dimension.shop_customer_channel, op: missing, value: false}]
     query:
       select:
         - as: signups
@@ -7106,7 +6908,7 @@ tests:
                 all:
                   - {field: dimension.shop_customer_signed_up_at, op: gte, value: '2024-06-01'}
                   - {field: dimension.shop_customer_signed_up_at, op: lt, value: '2024-07-01'}
-      where: [{field: dimension.shop_customer_channel, op: not, value: store}]
+      where: [{field: dimension.shop_customer_channel, op: not, value: store}, {field: dimension.shop_customer_channel, op: missing, value: false}]
     now: '2024-07-05T06:00:00Z'
     expected_rows: [{signups: 2}]
     reference_sql: |

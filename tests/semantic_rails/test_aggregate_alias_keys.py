@@ -23,15 +23,15 @@ _SESSION_TIME = "temporal_role.jaffle_session_started_at"
 
 
 def _new_customer(value: bool) -> dict:
-    return {"field": "dimension.jaffle_order_is_new_customer_order", "op": "=", "value": value}
+    return {"field": "dimension.jaffle_order_is_new_customer_order", "op": "is", "value": value}
 
 
 _ORDERS = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
 _NEW_ORDERS = {**_ORDERS, "filter": {"all": [_new_customer(True)]}}
 
 
-def _by_year(rows: list[dict], role: str, select: list[dict]) -> dict[str, list]:
-    rows = sorted(rows, key=lambda row: str(row[f"{role}__year"]))
+def _by_year(rows: list[dict], select: list[dict]) -> dict[str, list]:
+    rows = sorted(rows, key=lambda row: str(row["period"]))
     return {item["as"]: [row[item["as"]] for row in rows] for item in select}
 
 
@@ -40,8 +40,9 @@ def _query(runtime, select: list[dict], role: str = _ORDER_TIME, config=None) ->
     if config is None:
         rows = runtime.query(query)["rows"]
     else:
-        rows = runtime._get_adapter().query(compile_query(config, Registry(config), query)["sql"])
-    return _by_year(rows, role, select)
+        compiled = compile_query(config, Registry(config), runtime.engine_payload(query))
+        rows = runtime._get_adapter().query(compiled["sql"])
+    return _by_year(rows, select)
 
 
 def _each_alone(runtime, select: list[dict], **kwargs) -> dict[str, list]:
@@ -89,10 +90,7 @@ def test_a_share_of_one_measure_under_a_filter_is_not_one(runtime_factory):
 def test_a_filtered_metric_beside_its_unfiltered_measure_keeps_its_filter(runtime_factory):
     # repeat_customer_orders is order_count (count_distinct) under a filter.
     select = [
-        {
-            "expression": {"kind": "metric", "metric": "metric.sales.repeat_customer_orders"},
-            "as": "repeat",
-        },
+        {"expression": "metric.sales.repeat_customer_orders", "as": "repeat"},
         {"expression": {**_ORDERS, "aggregation": "count_distinct"}, "as": "orders"},
     ]
     runtime = runtime_factory("jaffle_shop")

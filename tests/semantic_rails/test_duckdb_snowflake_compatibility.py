@@ -59,7 +59,7 @@ def _probe_queries(config):
         )
     for recipe in config.metric_recipes:
         query = {
-            "select": [{"expression": recipe.id, "as": "probe_value"}],
+            "select": [{"expression": {"metric": recipe.id}, "as": "probe_value"}],
             "limit": 0,
         }
         if _requires_query_time(recipe.expression, config):
@@ -299,6 +299,7 @@ EDGE_CASE_QUERIES = {
 
 
 def test_jaffle_shop_compiles_all_probes_and_edge_cases_for_duckdb_and_snowflake():
+    # The compiler's own query form, as the package probes build it.
     duckdb_config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
     configs = {"duckdb": duckdb_config, "snowflake": _snowflake_config(duckdb_config)}
     compiled = {warehouse: {} for warehouse in configs}

@@ -240,7 +240,7 @@ def intent_faithfulness_why(
                 actual={"subjects": _projected_subject_ids(query)},
                 recovery_hint={
                     "kind": "use_named_metric",
-                    "message": "Select the named metric in Query IR, then validate.",
+                    "message": "Select the named metric in the call, then validate.",
                 },
             )
         )
@@ -272,7 +272,7 @@ def intent_faithfulness_why(
                     "kind": "author_partitioned_ranking",
                     "message": (
                         "Do not execute this as within-group top-N. Author an explicitly "
-                        "partitioned ranking through a supported Query IR/relation shape, or "
+                        "partitioned ranking through a supported call or relation shape, or "
                         "run one governed query per parent group."
                     ),
                 },
@@ -324,7 +324,7 @@ def intent_faithfulness_why(
                         "kind": "provide_multiple_selects",
                         "message": (
                             "Use 'X vs Y' for a supported side-by-side comparison, or provide "
-                            "one explicit Query IR select entry per requested subject."
+                            "one select entry per requested subject."
                         ),
                     },
                 )
@@ -510,10 +510,10 @@ def _governed_metric_gaps(
                 recovery_hint={
                     "kind": "use_governed_metric",
                     "message": (
-                        "Select the governed metric in Query IR. Name the measure by id in "
-                        "partial_query.select only when the question asks for every row it counts."
+                        "Select the governed metric in the call. Name the measure by id in the "
+                        "seed's select only when the question asks for every row it counts."
                         if expected["metrics"] or "narrowed_by" in expected
-                        else "Name the measure by id in partial_query.select when the question asks "
+                        else "Name the measure by id in the seed's select when the question asks "
                         "for every row it counts, or pick an offered metric."
                     ),
                 },

@@ -166,7 +166,7 @@ def _anchor_measure_id(
             except SemanticLayerError as exc:
                 if exc.details.get("reason") == "route_decision_unused":
                     dropped.add((exc.details["source_entity"], exc.details["target_entity"]))
-                    index = exc.details["path"].removeprefix("route_decisions[").rstrip("]")
+                    index = exc.details["path"].removeprefix("routes[").rstrip("]")
                     del decisions[int(index)]
                     continue
                 if exc.code == "POLICY_DENIED":
@@ -182,7 +182,7 @@ def _anchor_measure_id(
                 {
                     "measure": measure.id,
                     "code": "INVALID_QUERY",
-                    "message": "reads a pair the query's route_decisions decide by another route",
+                    "message": "reads a pair the query's routes decide by another route",
                 }
             )
             break

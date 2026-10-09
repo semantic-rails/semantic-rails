@@ -28,7 +28,8 @@ from tests.semantic_rails.conftest import opened
 
 ENTITY = "entity.nulls_record"
 KEY = "dimension.nulls_record_id"
-COUNT = {"measure": "measure.nulls.records"}
+RECORDS = "measure.nulls.records"
+COUNT = {"measure": RECORDS}
 NULL = {"kind": "literal", "value": None}
 NOT_NULL = {"kind": "boolean", "op": "not", "args": [NULL]}
 SEED = """
@@ -187,7 +188,7 @@ def test_non_null_share_is_one_hundred_percent(runtime):
         "left": {
             "kind": "ratio",
             "numerator": _conditional_count("!=", column="id"),
-            "denominator": COUNT,
+            "denominator": RECORDS,
         },
         "right": {"kind": "literal", "value": 100},
     }
@@ -210,8 +211,13 @@ def test_null_safe_comparisons_keep_their_meaning(runtime, op, reverse):
 @pytest.mark.parametrize("op", ["IS DISTINCT FROM", "IS NOT DISTINCT FROM"])
 def test_where_filter_null_safe_comparison_matches_sql(runtime, op):
     where = [{"field": "dimension.nulls_value", "op": op, "value": None}]
+    with pytest.raises(SemanticLayerError) as exc:
+        runtime.query(_query(RECORDS, where=where))
+    assert exc.value.details["path"] == "where[0].op"
+    assert exc.value.details["recovery_hints"]
+    missing = [{"field": "dimension.nulls_value", "op": "missing", "value": "NOT" in op}]
     expected = _gold(f"SELECT COUNT(*) FROM records WHERE value {op} NULL")[0][0]
-    assert runtime.query(_query(COUNT, where=where))["rows"] == [{"n": expected}]
+    assert runtime.query(_query(RECORDS, where=missing))["rows"] == [{"n": expected}]
 
 
 @pytest.mark.parametrize(
@@ -244,7 +250,7 @@ def test_ordering_null_refuses(runtime, op, reverse):
 def test_metric_predicate_conditional_count_matches_sql(runtime):
     query = _query(COUNT, metric_filters=[_metric_predicate(_conditional_count())])
     expected = _gold("SELECT COUNT(*) FROM records WHERE value IS NULL")[0][0]
-    assert runtime.query(query)["rows"] == [{"n": expected}]
+    assert runtime.query_internal(query)["rows"] == [{"n": expected}]
 
 
 def test_segment_conditional_count_matches_sql(runtime):
@@ -316,7 +322,7 @@ def test_post_aggregate_comparison_matches_sql(runtime, op, sql_op):
     expression = {
         "kind": "comparison",
         "op": op,
-        "left": COUNT,
+        "left": RECORDS,
         "right": {"kind": "literal", "value": None},
     }
     expected = _gold(f"SELECT COUNT(*) {sql_op} FROM records")[0][0]
@@ -343,7 +349,7 @@ def test_lower_cased_join_on_null_matches_null_test(op, gold_op, reverse):
 
 def test_post_aggregate_not_null_reads_null(runtime):
     query = {
-        "select": [{"expression": COUNT, "as": "n"}, {"expression": NOT_NULL, "as": "flag"}],
+        "select": [{"expression": RECORDS, "as": "n"}, {"expression": NOT_NULL, "as": "flag"}],
     }
     ((n, flag),) = _gold("SELECT COUNT(*), NOT NULL FROM records")
     assert flag is None
@@ -416,7 +422,7 @@ def test_configured_false_not_equal_not_null_stays_unknown(runtime, reverse):
 def test_post_aggregate_false_not_equal_not_null_stays_unknown(runtime, reverse):
     query = {
         "select": [
-            {"expression": COUNT, "as": "n"},
+            {"expression": RECORDS, "as": "n"},
             {"expression": _false_not_equal_not_null(reverse=reverse), "as": "flag"},
         ],
     }
@@ -540,7 +546,7 @@ def test_case_condition_and_where_filter_match_sql(runtime):
     expected = _gold("SELECT COUNT(*) FROM records WHERE value IS NULL")[0][0]
     assert runtime.query(_query(expression))["rows"] == [{"n": expected}]
     assert runtime.query(
-        _query(COUNT, where=[{"field": "dimension.nulls_value", "op": "=", "value": None}])
+        _query(RECORDS, where=[{"field": "dimension.nulls_value", "op": "missing", "value": True}])
     )["rows"] == [{"n": expected}]
 
 

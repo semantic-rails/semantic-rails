@@ -260,9 +260,9 @@ def test_sql_render_profiles_change_rendered_shape_without_changing_metadata(tmp
         "group_by": ["dimension.demo_order_store"],
     }
     try:
-        audit = runtime.compile({**query, "sql_profile": "audit"})
-        compact = runtime.compile({**query, "sql_profile": "compact"})
-        debug = runtime.compile({**query, "sql_profile": "debug"})
+        audit = runtime.compile(query, sql_profile="audit")
+        compact = runtime.compile(query, sql_profile="compact")
+        debug = runtime.compile(query, sql_profile="debug")
     finally:
         runtime.close()
 

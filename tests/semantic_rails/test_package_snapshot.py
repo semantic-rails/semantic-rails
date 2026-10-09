@@ -283,17 +283,14 @@ def test_in_memory_source_identity_and_table_binding_ignore_cache_order(tmp_path
     ]
     assert snapshots[0].source_fingerprint != snapshots[1].source_fingerprint
     assert snapshots[0].semantic_fingerprint == snapshots[1].semantic_fingerprint
-    query = {
-        "select": [{"expression": measure.id, "as": "n"}],
-        "verbosity": "full",
-    }
+    query = {"select": [{"expression": measure.id, "as": "n"}]}
     cache = LruCompiledSqlCache()
     sql = []
     for snapshot in snapshots:
         runtime = Runtime.from_snapshot(snapshot)
         runtime.set_compile_cache(cache)
         try:
-            result = runtime.compile(query)
+            result = runtime.compile(query, verbosity="full")
             assert result["ok"] is True
             assert result["compile_stats"]["cache_hit"] is False
             sql.append(result["rendered_sql"])

@@ -11,6 +11,7 @@ from semantic_rails import compiler
 from semantic_rails.compiler_parts import bind
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.conftest import copy_package_config
@@ -45,6 +46,12 @@ def _constrained(config, constraint, governed, source_path=PACKAGE):
     return Runtime.from_config(replace(config, semantic_policies=[policy]), source_path=source_path)
 
 
+def _compiles(config, query):
+    """Without the policy the query compiles (an engine-form query is passed as it is)."""
+    payload = query if "metric_filters" in query else read_call(query, config=config)[0]
+    assert compiler.compile_query(config, None, payload)["sql"]
+
+
 def _assert_denied_before_output(engine, monkeypatch, query):
     def no_output(*args, **kwargs):
         pytest.fail("a constrained inline filter reached output")
@@ -52,9 +59,17 @@ def _assert_denied_before_output(engine, monkeypatch, query):
     monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
     monkeypatch.setattr(engine, "_compile", no_output)
     monkeypatch.setattr(engine, "_get_adapter", no_output)
-    result = engine.validate(query)
+    # An inline expression as an entity filter's input has no call spelling.
+    internal = "metric_filters" in query
+    validate = engine.validate_internal if internal else engine.validate
+    result = validate(query)
     assert result["errors"][0]["code"] == "POLICY_DENIED"
-    for operation in (engine.compile, engine.query):
+    operations = (
+        (engine.compile_internal, engine.query_internal)
+        if internal
+        else (engine.compile, engine.query)
+    )
+    for operation in operations:
         with pytest.raises(SemanticLayerError) as exc:
             operation(query)
         assert exc.value.code == "POLICY_DENIED"
@@ -80,7 +95,7 @@ def _closing_inventory(store_filter):
 def test_an_inline_filter_outside_allowed_where_is_refused(config, monkeypatch):
     """The closing-day value of a stock filtered inside its own expression."""
     query = _closing_inventory({"field": STORE_NAME, "op": "=", "value": "Brooklyn"})
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = _constrained(config, {"allowed_where": [INVENTORY_STORE]}, INVENTORY)
     try:
         violations = _assert_denied_before_output(engine, monkeypatch, query)
@@ -109,28 +124,34 @@ INLINE_SHAPES = {
     "aggregate": _select(FILTERED_REVENUE),
     "semi_additive": _select({**FILTERED_REVENUE, "kind": "semi_additive"}),
     "scoped_where": _select({"kind": "scoped_aggregate", "measure": REVENUE, "where": [RETURNING]}),
-    "nested": _select(
-        {"kind": "ratio", "numerator": FILTERED_REVENUE, "denominator": {"measure": REVENUE}}
-    ),
+    "nested": _select({"kind": "ratio", "numerator": FILTERED_REVENUE, "denominator": REVENUE}),
     "window_input": _select(
         {"kind": "cumulative", "input": FILTERED_REVENUE},
         time={"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
     ),
-    "metric_filter": {
-        **_select({"measure": ORDERS}),
-        "metric_filters": [{"expression": FILTERED_REVENUE, "op": ">", "value": 0}],
+    "having": {
+        "select": [ORDERS, {"expression": FILTERED_REVENUE, "as": "value"}],
+        "having": [{"field": "value", "op": "gt", "value": 0}],
     },
     "predicate_input": _select(
         {
             "kind": "scoped_aggregate",
             "measure": ORDERS,
-            "predicates": [{"entity": CUSTOMER, "input": FILTERED_REVENUE, "op": ">", "value": 0}],
+            "predicates": [
+                {
+                    "entity": CUSTOMER,
+                    "input": FILTERED_REVENUE,
+                    "op": "gt",
+                    "value": 0,
+                    "over": "all_time",
+                }
+            ],
         }
     ),
     "conversion_operand": _select(
         {
             "kind": "conversion",
-            "base": {"measure": "measure.jaffle.session_starts"},
+            "base": "measure.jaffle.session_starts",
             "converted": {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}},
             "entity": CUSTOMER,
             "window": {"unit": "day", "value": 28},
@@ -156,7 +177,7 @@ CONSTRAINTS = {
 @pytest.mark.parametrize("shape", sorted(INLINE_SHAPES))
 def test_constraint_keys_govern_inline_filters(config, monkeypatch, shape, key):
     query = INLINE_SHAPES[shape]
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     constraint, kind = CONSTRAINTS[key]
     engine = _constrained(config, constraint, ORDERS if shape == "conversion_operand" else REVENUE)
     try:
@@ -176,14 +197,14 @@ def test_constraint_keys_govern_inline_filters(config, monkeypatch, shape, key):
 
 
 def test_a_metric_read_by_an_inline_filter_meets_the_metric_allowlist(config, monkeypatch):
-    predicate = {"kind": "metric_predicate", "entity": CUSTOMER, "input": {"metric": AOV}}
+    predicate = {"kind": "metric_predicate", "entity": CUSTOMER, "input": AOV, "over": "all_time"}
     expression = {
         "kind": "aggregate",
         "measure": REVENUE,
         "filter": {"all": [{"expression": {**predicate, "op": ">", "value": 0}}]},
     }
     query = _select(expression)
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = _constrained(config, {"allowed_metric_filter_metrics": []}, REVENUE)
     try:
         violations = _assert_denied_before_output(engine, monkeypatch, query)
@@ -219,7 +240,7 @@ CONDITIONAL = {
     "condition": {
         "kind": "not_in",
         "expr": {"kind": "column", "table": "jaffle_customer", "column": "customer_id"},
-        "values": [0],
+        "values": [{"kind": "literal", "value": 0}],
     },
 }
 
@@ -235,7 +256,7 @@ def test_a_conditional_aggregate_condition_is_never_an_allowed_field(config, mon
             {"expression": CONDITIONAL, "as": "customers"},
         ]
     }
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = _constrained(config, {"allowed_where": [STORE_NAME]}, governed)
     try:
         if governed:
@@ -254,19 +275,18 @@ def test_a_conditional_aggregate_condition_is_never_an_allowed_field(config, mon
     ]
 
 
-@pytest.mark.parametrize("placement", ["select", "metric_filter"])
+@pytest.mark.parametrize("placement", ["select", "having"])
 def test_an_inline_filter_on_a_sibling_counts_when_query_wide(config, monkeypatch, placement):
-    """A select sibling keeps its own cut; metric_filters govern the whole query."""
+    """A select sibling keeps its own cut; having on it governs the whole query."""
     filtered_orders = {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}}
-    query = _select({"measure": REVENUE})
-    if placement == "select":
-        query["select"].append({"expression": filtered_orders, "as": "orders"})
-    else:
-        query["metric_filters"] = [{"expression": filtered_orders, "op": ">", "value": 0}]
+    query = _select(REVENUE)
+    query["select"].append({"expression": filtered_orders, "as": "orders"})
+    if placement == "having":
+        query["having"] = [{"field": "orders", "op": "gt", "value": 0}]
     query["group_by"] = [STORE_NAME]
     engine = _constrained(config, {"allowed_where": [STORE_NAME]}, REVENUE)
     try:
-        if placement == "metric_filter":
+        if placement == "having":
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations == [
                 {
@@ -288,24 +308,31 @@ RETURNING_CUSTOMER = {
     "kind": "metric_predicate",
     "entity": CUSTOMER,
     "input": FILTERED_ORDERS,
-    "scope_mode": "entity_only",
     "op": ">",
     "value": 0,
 }
+# The engine's own spelling of the call's ``over: all_time``.
+ALL_TIME = {"scope_mode": "entity_only"}
 WHOLE_QUERY_FILTERS = {
     "aggregate_predicate": _select(
         {
             "kind": "aggregate",
             "measure": REVENUE,
-            "filter": {"all": [{"expression": RETURNING_CUSTOMER}]},
+            "filter": {"all": [{"expression": {**RETURNING_CUSTOMER, "over": "all_time"}}]},
         }
     ),
     "scoped_predicate": _select(
-        {"kind": "scoped_aggregate", "measure": REVENUE, "predicates": [RETURNING_CUSTOMER]}
+        {
+            "kind": "scoped_aggregate",
+            "measure": REVENUE,
+            "predicates": [{**RETURNING_CUSTOMER, "over": "all_time"}],
+        }
     ),
     "metric_filter_predicate": _select(
         {"measure": REVENUE},
-        metric_filters=[{"expression": RETURNING_CUSTOMER, "op": "=", "value": True}],
+        metric_filters=[
+            {"expression": {**RETURNING_CUSTOMER, **ALL_TIME}, "op": "=", "value": True}
+        ],
     ),
     "conversion_base": _select(
         {
@@ -315,7 +342,7 @@ WHOLE_QUERY_FILTERS = {
                 "measure": "measure.jaffle.session_starts",
                 "filter": {"all": [RETURNING]},
             },
-            "converted": {"measure": ORDERS},
+            "converted": ORDERS,
             "entity": CUSTOMER,
             "window": {"unit": "day", "value": 28},
             "matching_mode": "first_converted_after_base",
@@ -327,7 +354,7 @@ WHOLE_QUERY_FILTERS = {
 @pytest.mark.parametrize("shape", sorted(WHOLE_QUERY_FILTERS))
 def test_nested_filter_counts_for_the_governed_outer_measure(config, monkeypatch, shape):
     query = WHOLE_QUERY_FILTERS[shape]
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     governed = ORDERS if shape == "conversion_base" else REVENUE
     engine = _constrained(config, {"allowed_where": [STORE_NAME]}, governed)
     try:
@@ -380,9 +407,6 @@ def test_an_inline_filter_on_an_allowed_field_still_answers(tmp_path):
             stores * 2,
         ).fetchall()
     assert len(reference) == 9
-    actual = dict(
-        (date.fromisoformat(str(row[f"{INVENTORY_DAY}__month"])[:10]), row["inventory"])
-        for row in rows
-    )
+    actual = dict((date.fromisoformat(row["period"]), row["inventory"]) for row in rows)
     expected = {date.fromisoformat(str(month)[:10]): float(value) for month, value in reference}
     assert actual == pytest.approx(expected)

@@ -209,18 +209,7 @@ class SemanticLayerASGIApp:
                 return await self._send(send, 400, response, request_origin=request_origin)
             payload = dict(decoded)
             request_id = request_id_from_parts(headers, query_params, payload)
-            context = service.request_context(
-                headers,
-                payload=payload,
-                query_params=query_params,
-                request_id=request_id,
-            )
-        else:
-            context = service.request_context(
-                headers,
-                query_params=query_params,
-                request_id=request_id,
-            )
+        context = service.request_context(headers, request_id=request_id)
 
         try:
             handle = functools.partial(
