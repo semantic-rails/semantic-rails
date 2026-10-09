@@ -8,14 +8,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .. import operators
-from ..ast import is_child_group
 from ._base import _singular, _tokens
+from .call import Call, EntityFilter
 from .coverage import (
     CoverageGap,
     _catalog_rows,
     _core_text,
-    _dict_nodes,
-    _filter_word,
+    _expression_nodes,
     _plain,
     _referenced_ids,
     _value_phrases,
@@ -71,7 +70,7 @@ _GENERIC_ID_WORDS = frozenset(
 )
 
 
-def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+def _filter_value_gaps(runtime: Any, text: str, query: Call) -> list[CoverageGap]:
     """Every governed value the question names outside an exclusion must reach the draft.
 
     A value is honored by a filter that keeps it, by grouping on its dimension
@@ -101,7 +100,7 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
     # _plain removes punctuation, so its offsets cannot place a clause.
     source_words = list(re.finditer(r"[^\W_]+", text.lower()))
     excluded = exclusion_regions(text, _time_window(text).spans)
-    grouped = {str(item) for item in list(query.get("group_by") or [])}
+    grouped = set(query.group_by)
     referenced = set(_referenced_ids(query))
     carried = {
         token
@@ -147,14 +146,15 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
             message="The draft does not preserve the requested inclusion or exclusion of named values.",
             expected={"values": missing},
             actual={
-                "where": list(query.get("where") or []),
-                "group_by": list(query.get("group_by") or []),
+                "where": [row.to_call() for row in query.where],
+                "group_by": list(query.group_by),
             },
             recovery_hint={
                 "kind": "provide_filter_values",
                 "message": (
                     "Use a filter with the requested polarity for every named value "
-                    "(op 'in' for several included values of one dimension), then validate."
+                    "(op 'is' with a list for several included values of one dimension), then "
+                    "validate."
                 ),
             },
         )
@@ -170,7 +170,7 @@ _WHERE_FIELD_RE = re.compile(
 )
 
 
-def _where_clause_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+def _where_clause_gaps(runtime: Any, text: str, query: Call) -> list[CoverageGap]:
     """A "where <dimension> is <value>" clause needs a filter on that dimension."""
 
     predicates = _field_predicates(query)
@@ -189,7 +189,7 @@ def _where_clause_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
                     clause=match.group(0),
                     message="The question filters on a dimension it names, but the draft doesn't.",
                     expected={"filter_on": fields},
-                    actual={"where": list(query.get("where") or [])},
+                    actual={"where": [row.to_call() for row in query.where]},
                     recovery_hint={
                         "kind": "provide_dimension_filter",
                         "message": (
@@ -312,36 +312,30 @@ def _contains_literal(literals: list[Any], canonical: Any) -> bool:
     return any(type(item) is type(canonical) and item == canonical for item in literals)
 
 
-def _field_predicates(query: dict[str, Any]) -> dict[str, _FieldConstraints]:
+def _field_predicates(query: Call) -> dict[str, _FieldConstraints]:
     """Build query-level AND constraints; nested expression scopes remain unproven."""
 
     out: dict[str, _FieldConstraints] = {}
-    for node in list(query.get("where") or []):
-        if is_child_group(node):
-            # A child group's conditions cut child rows, a scope of its own: unproven here.
-            for condition in list(node.get("where") or []):
-                if isinstance(condition, dict) and isinstance(condition.get("field"), str):
-                    out.setdefault(condition["field"], _FieldConstraints()).uncertain = True
+    for node in query.where:
+        if isinstance(node, EntityFilter):
+            # An entity filter's conditions cut the entity's rows, a scope of its own: unproven.
+            for condition in node.conditions:
+                out.setdefault(condition.field, _FieldConstraints()).uncertain = True
             continue
-        if not isinstance(node, dict) or not isinstance(node.get("field"), str):
-            continue
-        name = node["field"]
-        entry = out.setdefault(name, _FieldConstraints())
-        word, value = _filter_word(node)
-        literals = _membership_literals(word, value)
+        entry = out.setdefault(node.field, _FieldConstraints())
+        literals = _membership_literals(node.op, node.value)
         if literals is None:
             entry.uncertain = True
-        elif operators.keeps_values(word):
+        elif operators.keeps_values(node.op):
             entry.keeping.append(literals)
-        elif operators.excludes_values(word):
+        elif operators.excludes_values(node.op):
             entry.dropping.append(literals)
     # A selected expression can have its own where/predicate scope. Its rows
     # are not interchangeable with query-level where rows, so do not union or
     # intersect its values with the outer filter (or credit grouping through it).
-    nested = {key: value for key, value in query.items() if key != "where"}
-    for node in _dict_nodes(nested):
-        name = node.get("field")
-        if isinstance(name, str) and ("op" in node or "value" in node):
+    for nested in _expression_nodes(query):
+        name = nested.get("field")
+        if isinstance(name, str) and ("op" in nested or "value" in nested):
             out.setdefault(name, _FieldConstraints()).uncertain = True
     return out
 
@@ -380,7 +374,7 @@ def _value_honored(
     return False
 
 
-def _contradictory_filter_gaps(query: dict[str, Any]) -> list[CoverageGap]:
+def _contradictory_filter_gaps(query: Call) -> list[CoverageGap]:
     """Query-level conjunctions that leave no kept literal after exclusions."""
 
     conflicts: list[dict[str, Any]] = []
@@ -406,12 +400,12 @@ def _contradictory_filter_gaps(query: dict[str, Any]) -> list[CoverageGap]:
                 "The draft's filters on one field cannot retain any value together, so it "
                 "returns no rows."
             ),
-            expected={"filters": "one filter per field, op 'in' for several values"},
+            expected={"filters": "one filter per field, op 'is' with a list for several values"},
             actual={"conflicts": conflicts},
             recovery_hint={
                 "kind": "merge_filter_values",
                 "message": (
-                    "Filter each dimension once, with op 'in' and a list for several values (or "
+                    "Filter each dimension once, with op 'is' and a list for several values (or "
                     "group by it to compare them), then validate."
                 ),
             },
@@ -420,7 +414,7 @@ def _contradictory_filter_gaps(query: dict[str, Any]) -> list[CoverageGap]:
 
 
 def _positive_filter_evidence(
-    runtime: Any, query: dict[str, Any], excluded_text: str
+    runtime: Any, query: Call, excluded_text: str
 ) -> list[dict[str, Any]]:
     """Positive outer filters that actually retain a canonical excluded value."""
 
@@ -433,16 +427,15 @@ def _positive_filter_evidence(
                 entry = constraints.get(dimension)
                 if entry is None or not entry.keeps(value.value, grouped=False):
                     continue
-                for row in list(query.get("where") or []):
-                    if not isinstance(row, dict) or row.get("field") != dimension:
+                for row in query.conditions:
+                    if row.field != dimension:
                         continue
-                    word, raw = _filter_word(row)
-                    literals = _membership_literals(word, raw)
+                    literals = _membership_literals(row.op, row.value)
                     if (
-                        operators.keeps_values(word)
+                        operators.keeps_values(row.op)
                         and literals
                         and _contains_literal(literals, value.value)
-                        and row not in out
+                        and row.to_call() not in out
                     ):
-                        out.append(row)
+                        out.append(row.to_call())
     return out

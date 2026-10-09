@@ -14,6 +14,7 @@ from ._base import (
     _singular,
     _tokens,
 )
+from .call import Call
 from .consumed_spans import _TERM_RE, _ZONE_NAME_RE, _consumed_spans
 from .coverage import (
     _PRIOR_PERIOD_RE,
@@ -165,23 +166,20 @@ _MAX_UNMATCHED_TERMS = 8
 _MAX_SCANNED_WORDS = 256
 
 
-def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+def _unmatched_words(runtime: Any, question: str, query: Call) -> list[str]:
     """Question words the draft accounts for nowhere (the warning; readiness is
     ``unconsumed_terms`` and ``unconsumed_catalog_words``)."""
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
     referenced = _used_ids(runtime._config, query)
-    calendar_id = str(_time_block(query).get("calendar_id") or "default")
     vocabulary: set[str] = set()
     for row in _catalog_rows(runtime._config):
-        if str(getattr(row, "id", "")) in referenced or (
-            calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
-        ):
+        if str(getattr(row, "id", "")) in referenced:
             # Names only: a description that says "not discounts" doesn't answer "discounts".
             vocabulary.update(_tokens(_core_text(row)))
     labels = _value_phrases(runtime._config)
-    for node in _dict_nodes(query):
+    for node in _dict_nodes(query.to_call()):
         if "field" in node and "value" in node:
             value = node.get("value")
             for item in value if isinstance(value, list) else [value]:
@@ -239,11 +237,11 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     return out
 
 
-def _grouped_entities(config: Any, query: dict[str, Any]) -> set[str]:
+def _grouped_entities(config: Any, query: Call) -> set[str]:
     """The entities whose one-column key dimension the draft groups by: what "by product" names
     when the key's own name ("Sku") doesn't say it."""
 
-    grouped = set(query.get("group_by") or [])
+    grouped = set(query.group_by)
     owners = {row.id: row for row in config.entities}
     return {
         row.entity
@@ -254,7 +252,7 @@ def _grouped_entities(config: Any, query: dict[str, Any]) -> set[str]:
     }
 
 
-def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
+def _used_ids(config: Any, query: Call) -> set[str]:
     """The objects a draft uses: those it names, the entities whose key it groups by, and the
     entity and clock of each measure or metric it names ("revenue from orders" uses the Order
     entity of Revenue)."""
@@ -269,7 +267,7 @@ def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
     return used
 
 
-def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> list[tuple[int, int]]:
+def _honored_clause_spans(runtime: Any, text: str, query: Call) -> list[tuple[int, int]]:
     """The clauses another check owns, when the draft honors them: a fiscal calendar ("fiscal
     revenue on April 3, 2017"), a prior-period comparison, or an included/excluded value.
     The exclusion check owns its markers ("other than") and list separators ("as well as"); it
@@ -306,7 +304,7 @@ def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> lis
     return spans
 
 
-def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+def unmatched_intent_terms(runtime: Any, question: str, query: Call) -> list[str]:
     """Question words the draft accounts for nowhere, in question order.
 
     A word is accounted for when it frames the question, sits in a time phrase
@@ -319,7 +317,7 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
     return _unmatched_words(runtime, question, query)[:_MAX_UNMATCHED_TERMS]
 
 
-def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+def unconsumed_catalog_words(runtime: Any, question: str, query: Call) -> list[str]:
     """The question's words that name a catalog object (``_own_words``; a plural counts as its
     singular) and that the draft doesn't consume: the readiness invariant for words, beside
     ``unconsumed_terms`` for numbers.
@@ -335,15 +333,13 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
     return _unconsumed_words(runtime, question, query)[0]
 
 
-def unconsumed_unknown_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+def unconsumed_unknown_words(runtime: Any, question: str, query: Call) -> list[str]:
     """Unconsumed words that name no catalog object, in question order."""
 
     return _unconsumed_words(runtime, question, query)[1]
 
 
-def _unconsumed_words(
-    runtime: Any, question: str, query: dict[str, Any]
-) -> tuple[list[str], list[str]]:
+def _unconsumed_words(runtime: Any, question: str, query: Call) -> tuple[list[str], list[str]]:
     """One consumption pass classifies leftover catalog names and unknown words."""
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
@@ -352,15 +348,14 @@ def _unconsumed_words(
     lowered = text.lower()
     spans = [*_time_window(text).spans, *_honored_clause_spans(runtime, text, query)]
     referenced = set(_referenced_ids(query)) | _grouped_entities(runtime._config, query)
-    selected = {"expressions": [item.get("expression") for item in query.get("select", [])]}
-    selected_ids = set(_referenced_ids(selected))
+    selected_ids = {ref for item in query.select for ref in item.references()}
     measures = {row.id: row for row in runtime._config.measures}
+    aggregations = _measure_aggregations(runtime._config, query)
     distinct_words = {
         word
-        for node in _dict_nodes(query)
-        if (row := measures.get(node.get("measure"))) is not None
-        and node.get("aggregation", row.default_aggregation) == "count_distinct"
-        for word in _own_words(row)
+        for measure_id, aggregation in aggregations
+        if aggregation == "count_distinct"
+        for word in _own_words(measures[measure_id])
     }
     for match in re.finditer(r"\bdistinct\s+([^\W_]+)\b", lowered):
         if _singular(match.group(1)) in distinct_words:
@@ -373,24 +368,17 @@ def _unconsumed_words(
             or "count" in _own_words(row)
         )
         for row in runtime._config.measures
-    ) or any(
-        node.get("aggregation") in ("count", "count_distinct") for node in _dict_nodes(selected)
-    )
-    calendar_id = str(_time_block(query).get("calendar_id") or "default")
+    ) or any(aggregation in ("count", "count_distinct") for _id, aggregation in aggregations)
     time = _time_block(query)
     clock = next(
-        (
-            row.label
-            for row in runtime._config.temporal_roles
-            if row.id == time.get("temporal_role")
-        ),
+        (row.label for row in runtime._config.temporal_roles if row.id == time.temporal_role),
         "",
     )
     clock_units: Counter[str] = Counter()
     for match in re.finditer(r"\bat\s+(day|week|month|quarter|year)\s+grain\b", lowered):
-        if match.group(1) == time.get("grain"):
+        if match.group(1) == time.grain:
             spans.append(match.span())
-    if clock and time.get("grain") == _explicit_grain(text, clock):
+    if clock and time.grain == _explicit_grain(text, clock):
         clock_spans = [
             (start, end)
             for start, end in _requested_grouping_spans(text)
@@ -402,7 +390,7 @@ def _unconsumed_words(
             [(start, end)] = clock_spans
             units = [_singular(match.group(0)) for match in _TERM_RE.finditer(lowered[start:end])]
             units = [unit for unit in units if unit in _TIME_UNITS]
-            if all(unit == time.get("grain") for unit in units):
+            if all(unit == time.grain for unit in units):
                 spans.append((start, end))
                 clock_units.update(units)
     names: set[str] = set()
@@ -419,9 +407,7 @@ def _unconsumed_words(
             _plain(str(name))
             for name in [getattr(row, "label", "") or "", *(getattr(row, "aliases", None) or [])]
         )
-        if str(getattr(row, "id", "")) in referenced or (
-            calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
-        ):
+        if str(getattr(row, "id", "")) in referenced:
             # Multi-word synonyms consume only their contiguous spans.
             used |= _own_words(row, phrase_words=False)
             spans.extend((start, end) for _, start, end in _name_matches(row, lowered))
@@ -432,7 +418,7 @@ def _unconsumed_words(
                 spans.extend(match.span() for match in found)
     labels = _value_phrases(runtime._config)
     reads: Counter[str] = Counter()
-    for node in _dict_nodes(query):
+    for node in _dict_nodes(query.to_call()):
         if "field" in node and "value" in node:
             value = node["value"]
             for item in value if isinstance(value, list) else [value]:
@@ -454,7 +440,7 @@ def _unconsumed_words(
             else:
                 reads.update({grain, "daily" if grain == "day" else f"{grain}ly"})
     reads.subtract(clock_units)
-    if count_valued and not query.get("group_by"):
+    if count_valued and not query.group_by:
         # Entity counts normalize to count_distinct; snapshot counts can use last_value.
         # These read "number of" only when the draft has no group_by. A clock grain
         # can still carry a monthly count without grouping by a catalog dimension.
@@ -493,6 +479,32 @@ def _unconsumed_words(
             if word not in remaining:
                 remaining.append(word)
     return out, unknown
+
+
+def _measure_aggregations(config: Any, query: Call) -> list[tuple[str, str]]:
+    """Each measure the draft's selects aggregate, with the aggregation each reads it at."""
+
+    measures = {row.id: row for row in config.measures}
+    out: list[tuple[str, str]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, str) and node in measures:
+            out.append((node, str(measures[node].default_aggregation)))
+        elif isinstance(node, dict):
+            measure_id = node.get("measure")
+            if isinstance(measure_id, str) and measure_id in measures:
+                default = str(measures[measure_id].default_aggregation)
+                out.append((measure_id, str(node.get("aggregation") or default)))
+            for key, child in node.items():
+                if key != "measure":
+                    walk(child)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                walk(child)
+
+    for item in query.select:
+        walk(item.expression)
+    return out
 
 
 def _own_words(row: Any, *, phrase_words: bool = True) -> set[str]:

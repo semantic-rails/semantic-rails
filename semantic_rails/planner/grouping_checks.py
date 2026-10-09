@@ -9,7 +9,7 @@ from typing import Any
 from .. import operators
 from ..errors import SemanticLayerError
 from ._base import _NAME_CONNECTORS, _last_token, _object_by_id, _strip_leading_rank_count
-from .coverage import _filter_word
+from .call import Call, Order, QueryBuilder
 from .generators import _grouping_term_matches
 from .groupings import (
     _entity_stand_ins,
@@ -20,10 +20,15 @@ from .groupings import (
     _names_whole_entity,
     _term_matches_value_domain,
 )
-from .plan_query import _validate_query, _where_filters
+from .plan_query import _validate_query
 from .time_phrases import _names_time_axis
 from .time_windows import _time_window
-from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
+from .visibility import (
+    discovery_query,
+    visible_dimensions,
+    visible_object_ids,
+    visible_value_domains,
+)
 
 
 def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
@@ -139,25 +144,14 @@ def _entity_grouping_dimensions(config: Any, term: str) -> set[str] | None:
     return allowed
 
 
-def _query_clocks(config: Any, query: dict[str, Any]) -> list[str]:
-    """The labels of the time block's clock: its temporal role, and the calendar it buckets on."""
+def _query_clocks(config: Any, query: Call) -> list[str]:
+    """The label of the time block's clock, its temporal role."""
 
-    time = _time_of(query)
-    return [
-        str(row.label or "")
-        for row in [
-            _object_by_id(config.temporal_roles, str(time.get("temporal_role") or "")),
-            *(
-                row
-                for row in config.entities
-                if row.calendar_id and row.calendar_id == time.get("calendar_id")
-            ),
-        ]
-        if row is not None
-    ]
+    role = _object_by_id(config.temporal_roles, query.time.temporal_role if query.time else "")
+    return [str(role.label or "")] if role is not None else []
 
 
-def _listed_dimension_terms(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+def _listed_dimension_terms(config: Any, question: str, query: Call) -> list[str]:
     """The listed groupings a dimension answers: not a clock term ("by month", "by order
     date"), which is the time block's, nor a declared value, which is a filter."""
 
@@ -179,11 +173,6 @@ def _reads_grouping(term: str, ids: set[str] | None, row: Any) -> bool:
     words name the term."""
 
     return _grouping_matches(term, row) if ids is None else row.id in ids
-
-
-def _time_of(query: dict[str, Any]) -> dict[str, Any]:
-    raw = (query or {}).get("time")
-    return raw if isinstance(raw, dict) else {}
 
 
 # A word asking for the rows at the level of the groupings it follows ("store name levels").
@@ -234,7 +223,7 @@ def _declared_name_spans(
     }
 
 
-def _clock_spans(config: Any, lowered: str, query: dict[str, Any]) -> list[tuple[int, int]]:
+def _clock_spans(config: Any, lowered: str, query: Call) -> list[tuple[int, int]]:
     """Where the question names a clock, the time block's: "week", or "order date" for Order
     time. A clock phrase is words joined by spaces only, never with a level word."""
 
@@ -251,17 +240,13 @@ def _clock_spans(config: Any, lowered: str, query: dict[str, Any]) -> list[tuple
     return spans
 
 
-def _pinned_fields(query: dict[str, Any]) -> set[str]:
-    """The fields the draft's ``where`` pins to one value (``=``, or ``IN`` with one value)."""
+def _pinned_fields(query: Call) -> set[str]:
+    """The fields the draft's ``where`` pins to one value (``is`` with one value)."""
 
-    pinned: set[str] = set()
-    for row in _where_filters(query):
-        if "field" in row and operators.pinned_value(*_filter_word(row))[0]:
-            pinned.add(str(row["field"]))
-    return pinned
+    return {row.field for row in query.conditions if operators.pinned_value(row.op, row.value)[0]}
 
 
-def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+def _level_groupings_unmet(config: Any, question: str, query: Call) -> list[str]:
     """The groupings a question asking for a level or grain names that the draft doesn't
     group by.
 
@@ -290,7 +275,7 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
         return []
     clock_spans = _clock_spans(config, lowered, query)
     pinned = _pinned_fields(query)
-    grouped = set(query.get("group_by") or [])
+    grouped = set(query.group_by)
     unmet: list[str] = []
     for (low, high), named in sorted(spans.items()):
         term = " ".join(lowered[low:high].split())
@@ -322,22 +307,21 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
 
 
 def _grouping_filter_value_spans(
-    config: Any, lowered: str, query: dict[str, Any]
+    config: Any, lowered: str, query: Call
 ) -> list[tuple[tuple[int, int], str, str]]:
     """Source spans of declared values carried by a positive draft filter, with the filter's
     field and the value, matching the literal, label and alias spellings value inference does.
     """
 
-    filters = _where_filters(query)
     spans: list[tuple[tuple[int, int], str, str]] = []
     for domain in config.value_domains:
         for value in domain.values or []:
             fields = [
-                str(row["field"])
-                for row in filters
-                if row.get("field") in domain.dimensions
-                and operators.keeps_values((word := _filter_word(row))[0])
-                and value.value in operators.values_of(*word)
+                row.field
+                for row in query.conditions
+                if row.field in domain.dimensions
+                and operators.keeps_values(row.op)
+                and value.value in row.values
             ]
             for name in [value.value, value.label, *(value.aliases or [])]:
                 phrase = str(name or "").strip().lower()
@@ -352,7 +336,7 @@ def _grouping_filter_value_spans(
 
 
 def _named_groupings_unmet(
-    config: Any, question: str, query: dict[str, Any]
+    config: Any, question: str, query: Call
 ) -> tuple[list[str], list[dict[str, str]]]:
     """The caller-visible names in any question, read with spaces, underscores and any case
     (``_declared_name_spans``), that the draft leaves unmet, and the filters read from inside
@@ -372,8 +356,8 @@ def _named_groupings_unmet(
     lowered = str(question or "").lower()
     clock_spans = _clock_spans(scoped, lowered, query)
     values = _grouping_filter_value_spans(scoped, lowered, query)
-    grouped = set(query.get("group_by") or [])
-    settled = grouped | _pinned_fields({"where": query.get("where") or []})
+    grouped = set(query.group_by)
+    settled = grouped | _pinned_fields(query)
     spans = _declared_name_spans(scoped, lowered, underscores=True)
     words = _LEVEL_WORD_RE.finditer(lowered)
     level = any(not any(a <= word.start() < b for a, b in spans) for word in words)
@@ -398,8 +382,8 @@ def _named_groupings_unmet(
 def _dropped_grouping_why(
     runtime: Any,
     question: str,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None = None,
+    query: Call,
+    partial_query: Call | None = None,
 ) -> dict[str, Any] | None:
     """A listed grouping that names an entity is satisfied only by that entity's own key
     dimension, or by the single declared dimension of that entity whose own words name it.
@@ -422,13 +406,13 @@ def _dropped_grouping_why(
 
     config = runtime._config
     try:
-        root = _selection_context(config, query)["root_entity"]
+        root = _selection_context(config, discovery_query(runtime, query))["root_entity"]
     except SemanticLayerError:
         root = ""
     terms = _listed_dimension_terms(config, question, query)
     grouped = [
         row
-        for item in dict.fromkeys(query.get("group_by") or [])
+        for item in dict.fromkeys(query.group_by)
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
     visible = visible_dimensions(config)
@@ -439,7 +423,7 @@ def _dropped_grouping_why(
     def reads(term: str, ids: set[str] | None, row: Any) -> bool:
         return _grouping_matches(term, row) if ids is None else row.id in ids
 
-    chosen = set((partial_query or {}).get("group_by") or [])
+    chosen = set(partial_query.group_by if partial_query else ())
 
     matches: list[list[Any]] = []
     for term, ids in zip(terms, stand_ins, strict=True):
@@ -511,7 +495,7 @@ def _dropped_grouping_why(
     # An option removes every draft grouping its term matches. When that could remove a
     # grouping another term needs, options would overwrite each other, so offer none.
     removals = [
-        {row.id for row in named} & set(query.get("group_by") or [])
+        {row.id for row in named} & set(query.group_by)
         for term, named in zip(terms, matches, strict=True)
         if term in unclear
     ]
@@ -527,31 +511,30 @@ def _dropped_grouping_why(
                 continue
             matching_ids = {row.id for row in named}
             for row in sorted(named, key=lambda row: row.id):
-                patch = {
-                    "group_by": [
-                        item for item in query.get("group_by", []) if item not in matching_ids
-                    ]
-                    + [row.id],
-                    "where": query.get("where", []),
-                    "order_by": [
-                        {**item, "field": row.id} if item.get("field") in matching_ids else item
-                        for item in query.get("order_by", [])
-                    ],
-                }
-                if _validate_query(runtime, {**query, **patch}, partial_query).get("ok"):
+                option = (
+                    QueryBuilder(config, query)
+                    .groups(
+                        [*(item for item in query.group_by if item not in matching_ids), row.id]
+                    )
+                    .orders(
+                        Order(row.id, item.direction) if item.field in matching_ids else item
+                        for item in query.order_by
+                    )
+                    .build()
+                )
+                if _validate_query(runtime, option, partial_query).get("ok"):
                     options.append(
                         {
                             "id": row.id,
                             "label": row.label,
                             "term": term,
+                            "call": option.to_call(),
                             **(
-                                patch
+                                {}
                                 if len(unclear) == 1
                                 else {
                                     "replaces": [
-                                        item
-                                        for item in query.get("group_by", [])
-                                        if item in matching_ids
+                                        item for item in query.group_by if item in matching_ids
                                     ]
                                 }
                             ),
@@ -564,9 +547,9 @@ def _dropped_grouping_why(
             }
         }
     multiple_recovery = (
-        " In best.query_ir, for each ambiguous term remove its option's replaces ids from "
-        "group_by and their entries from order_by, add the chosen id to group_by, keep group_by ids sorted, "
-        "then validate."
+        " Each option's call settles its own term; for several terms, in best.query remove each "
+        "chosen option's replaces ids from group_by and their entries from order_by, add the "
+        "chosen ids to group_by, then validate."
     )
     messages = [
         *(
@@ -585,7 +568,7 @@ def _dropped_grouping_why(
                 + "; ".join(
                     f"{row['value']!r} of {row['field']} inside {row['term']!r}" for row in inside
                 )
-                + "): the question may name only the grouping, and best.query_ir as is "
+                + "): the question may name only the grouping, and best.query as is "
                 "returns only the filtered rows, so plan doesn't call it ready, even when the "
                 "draft groups by that name."
             ]
@@ -618,7 +601,7 @@ def _dropped_grouping_why(
                 "message": (
                     (
                         "Find a dimension for each grouping with discover, add the missing ones to "
-                        "best.query_ir group_by, then validate; or ask the user which grouping they "
+                        "best.query group_by, then validate; or ask the user which grouping they "
                         "mean."
                         if lost or unclear
                         else ""
@@ -626,19 +609,19 @@ def _dropped_grouping_why(
                     + (
                         " Two groupings could replace the same draft dimension, so plan offers "
                         "no options: ask the user which dimension each grouping the question "
-                        "lists means, then make exactly those ids best.query_ir group_by and "
+                        "lists means, then make exactly those ids best.query group_by and "
                         "validate."
                         if overlap
                         else multiple_recovery
                         if len(unclear) > 1
-                        else " Apply an option's group_by, where and order_by to best.query_ir, then validate."
+                        else " Send the call of the option that is meant."
                         if unclear
                         else ""
                     )
                     + (
                         " For each details.filter_inside_grouping entry, confirm with the user that "
                         "the question asks for that value, or remove the value from that field's "
-                        "filters in best.query_ir where; make sure group_by has the grouping the "
+                        "filters in best.query where; make sure group_by has the grouping the "
                         "term names, then validate."
                         if inside
                         else ""

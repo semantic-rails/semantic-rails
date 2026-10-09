@@ -1,203 +1,111 @@
-"""The caller's partial query: merge, validate, and trim validation errors."""
+"""The caller's partial call: merge, validate, and trim validation errors."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from ..ast import is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
-from ..query_call import call_from_query
+from .call import Call, Order, QueryBuilder, Select, Time
+from .time_reference import time_policy_context
 
 
-def _merge_partial_query(
-    config: Any,
-    draft_query: dict[str, Any],
-    partial_query: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Merge a generated draft with caller-provided Query IR.
+def _merge_partial_query(config: Any, draft_query: Call, partial_query: Call | None) -> Call:
+    """Merge a generated draft with the caller's partial call.
 
-    Partial-query preservation is a hard planner invariant: no top-level
-    Query IR field supplied by the caller may silently disappear. For
-    additive list fields we append generated entries after existing
-    caller entries. For scalar/dict fields the caller wins, with ``time``
-    merged shallowly so generated temporal roles can still fill missing
-    fields. The question's values on one field form one generated filter
-    for one total or combined ranking, without adding grouping. Caller
-    rows stay as written, with only string predicate fields stripped. A caller's group_by holding
-    one dimension that stands for an entity's rows (``_entity_stand_ins``) settles how they show:
-    the draft's other stand-ins of that entity, and their order_by entries, are left out.
+    Partial-call preservation is a hard planner invariant: no field the caller supplied may
+    silently disappear. List fields put the caller's entries first and the generated ones
+    after; a scalar the caller sets wins; ``time`` merges field by field, the caller's window
+    replacing the draft's whole. A caller's group_by holding one dimension that stands for an
+    entity's rows (``_entity_stand_ins``) settles how they show: the draft's other stand-ins of
+    that entity, and their order_by entries, are left out. A generated select that computes one
+    of the caller's, or takes the column name of one, gives way to it (``_without_caller_selects``).
     """
 
     from .groupings import _entity_stand_ins  # noqa: WPS433
 
-    partial = dict(partial_query or {})
-    chosen = {str(item) for item in partial.get("group_by") or [] if isinstance(item, str)}
+    if partial_query is None:
+        return draft_query
+    partial = partial_query
+    chosen = set(partial.group_by)
     settled: set[str] = set()
     for entity in config.entities if chosen else []:
         keys, shown = _entity_stand_ins(config, entity, str(entity.label or ""))
         if chosen & {*keys, *shown}:
             settled |= {*keys, *shown} - chosen
-    # Context is validation authority, not portable Query IR. _validate_query
-    # receives it separately so every draft remains governed without asking
-    # callers to replay trusted claims in a later compile/execute request.
-    partial.pop("policy_context", None)
-    partial.pop("request_context", None)
-    partial.pop("request_id", None)
-    merged = dict(draft_query or {})
-    if settled:
-        for key in ("group_by", "order_by"):
-            rows = [
-                row
-                for row in merged.get(key) or []
-                if (row.get("field") if isinstance(row, dict) else row) not in settled
-            ]
-            if key in merged:
-                merged[key] = rows
-    if partial.get("select"):
-        merged, partial["select"] = _without_caller_selects(config, merged, partial["select"])
-    for key, value in partial.items():
-        if value in (None, "", [], {}):
-            continue
-        if key == "where":
-            value = [
-                {**row, "field": row["field"].strip()}
-                if isinstance(row, dict) and isinstance(row.get("field"), str)
-                else row
-                for row in list(value or [])
-            ]
-        if key in {"select", "where", "metric_filters", "order_by"}:
-            merged[key] = _append_unique_dicts(list(value or []), list(merged.get(key, []) or []))
-        elif key == "group_by":
-            merged[key] = list(
-                dict.fromkeys([*list(value or []), *list(merged.get(key, []) or [])])
-            )
-        elif key == "time" and isinstance(value, dict):
-            generated = dict(merged.get("time", {}) or {})
-            merged[key] = {**generated, **value}
-        else:
-            merged[key] = value
-    return merged
-
-
-def _checked_partial_query(partial_query: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The caller's partial query with ``group_by`` as dimension ids.
-
-    The merge reads its list fields as lists, so a shape it can't read
-    (``group_by: [["dimension.x"]]``) fails here as the validation error the
-    engine gives, not as an internal error.
-    """
-
-    if not partial_query:
-        return partial_query
-    for key in ("select", "where", "metric_filters", "order_by", "group_by"):
-        value = partial_query.get(key)
-        if value in (None, "", [], {}) or isinstance(value, list):
-            continue
-        raise _invalid_partial(
-            f"query.{key}",
-            type(value).__name__,
-            f"query.{key} must be a list; got {type(value).__name__}.",
-            f"Pass query.{key} as a list.",
-        )
-    group_by: list[str] = []
-    for index, item in enumerate(partial_query.get("group_by") or []):
-        dimension = item.get("dimension", item.get("field")) if isinstance(item, dict) else item
-        if not isinstance(dimension, str):
-            raise _invalid_partial(
-                f"query.group_by[{index}]",
-                type(item).__name__,
-                f"query.group_by[{index}] must be a dimension id string; "
-                f"got {type(item).__name__}.",
-                "Pass group_by as a flat list of dimension ids, e.g. "
-                '["dimension.store_name"], not [["dimension.store_name"]].',
-            )
-        group_by.append(dimension)
-    checked = {**partial_query, "group_by": group_by} if group_by else partial_query
-    # The same rewrite validate, compile and execute apply, so plan accepts what they accept.
-    return rewrite_select_shorthand(checked, partial=True)[0]
-
-
-def _invalid_partial(path: str, received: str, message: str, hint: str) -> SemanticLayerError:
-    return SemanticLayerError(
-        "INVALID_QUERY",
-        message,
-        details={
-            "path": path,
-            "received_type": received,
-            "recovery_hints": [{"kind": "fix_query_shape", "message": hint}],
-        },
+    generated, renamed = _without_caller_selects(config, draft_query.select, partial.select)
+    orders = [
+        Order(renamed.get(row.field, row.field), row.direction)
+        for row in draft_query.order_by
+        if row.field not in settled
+    ]
+    mine = QueryBuilder(config)
+    for item in partial.select:
+        mine.select(item.expression, item.alias)
+    builder = QueryBuilder(config, draft_query).selects([*mine.build().select, *generated])
+    builder.groups([*partial.group_by, *(g for g in draft_query.group_by if g not in settled)])
+    builder.filters([*partial.where, *draft_query.where])
+    builder.having(
+        [*partial.having, *(row for row in draft_query.having if row not in partial.having)]
     )
+    builder.time(_merged_time(draft_query.time, partial.time))
+    builder.orders([*partial.order_by, *orders])
+    if partial.limit is not None:
+        builder.limit(partial.limit)
+    if partial.routes:
+        builder.routes(partial.routes)
+    if partial.observation_scope:
+        builder.observation_scope(partial.observation_scope)
+    return builder.build()
+
+
+def _merged_time(draft: Time | None, caller: Time | None) -> Time | None:
+    """The caller's time fields over the draft's; the caller's window replaces the draft's."""
+
+    if caller is None or draft is None:
+        return caller or draft
+    merged = Time(
+        temporal_role=caller.temporal_role or draft.temporal_role,
+        grain=caller.grain or draft.grain,
+        fill=caller.fill or draft.fill,
+    )
+    return merged.with_window(caller.window or draft.window)
 
 
 def _without_caller_selects(
-    config: Any, query: dict[str, Any], caller_select: list[Any]
-) -> tuple[dict[str, Any], list[Any]]:
-    """Drop generated select items that compute one of the caller's.
+    config: Any, generated: tuple[Select, ...], caller: tuple[Select, ...]
+) -> tuple[list[Select], dict[str, str]]:
+    """The generated selects that compute none of the caller's, and the renames of the generated
+    order_by entries: the caller's alias names a column both compute. A generated select of a
+    caller's column name gives way too."""
 
-    The caller's alias names the column: the generated ``order_by`` follows
-    it, and a caller item without an alias takes the generated one.
-    """
-
-    caller = list(caller_select)
-    positions = {_select_key(config, item): index for index, item in enumerate(caller)}
-    # A caller's column name is the caller's: a generated item of the same name gives way.
-    named = {
-        str(item["as"]): index
-        for index, item in enumerate(caller)
-        if isinstance(item, dict) and item.get("as")
-    }
-    kept: list[Any] = []
+    keys = {_select_key(config, item): item for item in caller}
+    names = {item.alias for item in caller}
+    kept: list[Select] = []
     renamed: dict[str, str] = {}
-    for item in query.get("select") or []:
-        index = positions.get(_select_key(config, item))
-        if index is None and isinstance(item, dict):
-            index = named.get(str(item.get("as") or ""))
-        if index is None:
+    for item in generated:
+        mine = keys.get(_select_key(config, item))
+        if mine is not None:
+            renamed[item.alias] = mine.alias
+        elif item.alias not in names:
             kept.append(item)
-            continue
-        alias, mine = item.get("as") if isinstance(item, dict) else None, caller[index]
-        if alias and isinstance(mine, dict) and mine.get("as"):
-            renamed[str(alias)] = str(mine["as"])
-        elif alias and isinstance(mine, dict):
-            caller[index] = {**mine, "as": alias}
-    out = {**query, "select": kept}
-    if renamed and query.get("order_by"):
-        out["order_by"] = [
-            {**row, "field": renamed.get(str(row.get("field")), row.get("field"))}
-            if isinstance(row, dict)
-            else row
-            for row in query["order_by"]
-        ]
-    return out, caller
+    return kept, renamed
 
 
-def _select_key(config: Any, item: Any) -> str:
-    """What a select item computes: its expression, with a measure's default
-    aggregation spelled out or left implicit alike."""
+def _select_key(config: Any, item: Select) -> str:
+    """What a select item computes: a measure at its package aggregation is its id."""
 
-    import json
-
-    expression = item
-    if isinstance(item, dict):
-        expression = item.get("expression", {k: v for k, v in item.items() if k != "as"})
-    if isinstance(expression, dict) and expression.get("kind", "") in {"", "measure", "metric"}:
-        # A reference reads the same with or without its kind.
-        expression = {key: value for key, value in expression.items() if key != "kind"}
-    if isinstance(expression, dict) and set(expression) <= {"measure", "aggregation"}:
-        measure = next(
-            (row for row in config.measures if row.id == expression.get("measure")), None
-        )
-        if measure is not None:
-            aggregation = expression.get("aggregation") or measure.default_aggregation
-            expression = {"measure": measure.id, "aggregation": aggregation}
+    expression = item.expression
+    if item.ref and item.aggregation:
+        measure = next((row for row in config.measures if row.id == item.ref), None)
+        if measure is not None and item.aggregation == measure.default_aggregation:
+            expression = item.ref
     return json.dumps(expression, sort_keys=True, default=str)
 
 
 def _append_unique_dicts(
     existing: list[dict[str, Any]], additions: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    import json
-
     out = list(existing)
     seen = {json.dumps(row, sort_keys=True, default=str) for row in out}
     for row in additions:
@@ -209,39 +117,8 @@ def _append_unique_dicts(
     return out
 
 
-def _where_filters(query: dict[str, Any]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for row in list((query or {}).get("where") or []):
-        if not isinstance(row, dict):
-            continue
-        if is_child_group(row):
-            out.append(
-                {
-                    "child": str(row.get("child", "")),
-                    "match": str(row.get("match", "")),
-                    "where": _where_filters({"where": list(row.get("where") or [])}),
-                }
-            )
-            continue
-        field = row.get("field") or row.get("dimension")
-        if not field:
-            continue
-        out.append(
-            {
-                "field": str(field),
-                "op": str(row.get("op", "") or ""),
-                "value": row.get("value"),
-            }
-        )
-    return out
-
-
-def _validate_query(
-    runtime: Any,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Call ``runtime.validate`` against a pattern draft.
+def _validate_query(runtime: Any, query: Call, partial_query: Call | None = None) -> dict[str, Any]:
+    """Validate a draft as the call the plan hands back, on the request's clock and identity.
 
     Returns ``{"ok": bool, "errors": [...], "warnings": [...], "recovery_hints": [...]}``
     — a small projection of the full validate response that plan needs.
@@ -252,9 +129,7 @@ def _validate_query(
     """
 
     # Cheap structural pre-check — skip the full validate (which
-    # compiles the IR) when the draft is obviously malformed. Catches
-    # the common pattern bugs without paying compile cost. The full
-    # validator still runs on draft IRs that pass these gates.
+    # compiles the call) when the draft is obviously malformed.
     structural = _structural_precheck(query)
     if structural is not None:
         return {
@@ -263,11 +138,10 @@ def _validate_query(
             "recovery_hints": [],
         }
 
-    context = dict((partial_query or {}).get("policy_context") or {})
+    context = dict(time_policy_context() or {})
     now = context.pop("now", None)
     try:
-        # The draft validates as the call the plan hands back, read by the same front door.
-        report = runtime.validate(call_from_query(query), now=now, context=context or None)
+        report = runtime.validate(query.to_call(), now=now, context=context or None)
     except SemanticLayerError as exc:
         return {
             "ok": False,
@@ -288,42 +162,17 @@ def _validate_query(
     }
 
 
-def _structural_precheck(query: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a structured error if the draft IR is obviously bad.
+def _structural_precheck(query: Call) -> dict[str, Any] | None:
+    """Return a structured error if the draft is obviously bad: it selects nothing.
 
-    Catches the cheap failure modes without paying ``runtime.validate``'s
-    compile cost — a missing ``select``, empty selects, a select item
-    without an ``expression``. Returning ``None`` means the IR is
-    plausible and the full validator should run.
-
-    Deliberately narrow: only catches structural shape errors that no
-    legitimate pattern would produce. Catalog-membership checks
-    (does this measure id exist?) stay in the full validator where
-    they have config access.
+    Returning ``None`` means the call is plausible and the full validator should run.
     """
 
-    if not isinstance(query, dict):
-        return {
-            "code": "STRUCTURAL_NOT_A_QUERY",
-            "message": "Pattern emitted something that is not a Query IR dict.",
-        }
-    select = query.get("select")
-    if not isinstance(select, list) or not select:
+    if not query.select:
         return {
             "code": "STRUCTURAL_EMPTY_SELECT",
             "message": "Pattern emitted a draft with no select columns.",
         }
-    for index, item in enumerate(select):
-        if not isinstance(item, dict):
-            return {
-                "code": "STRUCTURAL_BAD_SELECT_ITEM",
-                "message": f"select[{index}] is not a dict.",
-            }
-        if not item.get("expression"):
-            return {
-                "code": "STRUCTURAL_MISSING_EXPRESSION",
-                "message": f"select[{index}] missing expression.",
-            }
     return None
 
 
@@ -352,7 +201,7 @@ def _trim_why_errors(errors: list[dict[str, Any]]) -> dict[str, Any]:
         why["truncated"] = {
             "dropped": overflow,
             "hint": (
-                f"+{overflow} additional validation errors; validate best.query_ir "
+                f"+{overflow} additional validation errors; validate best.query "
                 "(over MCP, execute with mode 'validate') for the full list."
             ),
         }
@@ -364,7 +213,7 @@ def _slim_validation_error(error: dict[str, Any]) -> dict[str, Any]:
 
     Full validator errors can contain path analyses, relationship
     payloads, and suggested patches. ``plan`` only needs the branching
-    signal; callers can forward ``best.query_ir`` to ``validate`` for
+    signal; callers can forward ``best.query`` to ``validate`` for
     the complete diagnostic envelope.
     """
 

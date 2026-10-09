@@ -6,7 +6,9 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
+from ..query_call import TIME_AXIS
 from ._base import _NUMBER_WORDS, _best, _dimension, _entity, _object_text, _tokens
+from .call import Condition, Order, QueryBuilder
 from .exclusions import exclusion_regions
 from .time_windows import _time_window
 from .visibility import visible_dimensions, visible_value_domains
@@ -30,21 +32,18 @@ def _dimension_for_value(config: Any, value: str, *, terms: Iterable[str] = ()) 
     return _dimension(config, [*terms, "product"])
 
 
-def _product_filter(config: Any, value: str) -> dict[str, Any] | None:
+def _product_filter(config: Any, value: str) -> Condition | None:
     dim = _dimension_for_value(config, value, terms=["product"])
     if dim is None:
         return None
-    return {"field": dim.id, "op": "is", "value": value}
+    return Condition(dim.id, "is", value)
 
 
-def _add_order(query: dict[str, Any]) -> None:
-    order_by: list[dict[str, str]] = []
-    if query.get("time"):
-        order_by.append({"field": "time", "direction": "ASC"})
-    for dim_id in list(query.get("group_by", []) or []):
-        order_by.append({"field": dim_id, "direction": "ASC"})
-    if order_by:
-        query["order_by"] = order_by
+def _add_order(builder: QueryBuilder) -> QueryBuilder:
+    """Order the rows by period, then by each grouping, ascending."""
+    call = builder.build()
+    orders = [Order(TIME_AXIS)] if call.time is not None and call.time.grain else []
+    return builder.orders([*orders, *(Order(dim_id) for dim_id in call.group_by)])
 
 
 def _threshold_value(raw: str) -> float | int:
@@ -67,10 +66,12 @@ _PERCENTILE_PHRASE_TO_P: dict[str, float] = {
 
 
 def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] | None:
+    """The threshold a qualification states, as ``(word, value)``; a population share is a
+    percentile value."""
     lowered = str(text or "").lower()
     for phrase, p in _PERCENTILE_PHRASE_TO_P.items():
         if phrase in lowered:
-            return ">=", {"kind": "percentile", "p": p}
+            return "gte", {"kind": "percentile", "p": p}
     top_percent_match = re.search(r"top\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", lowered)
     if top_percent_match:
         try:
@@ -78,7 +79,7 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
         except ValueError:
             n = 0.0
         if 0.0 < n < 100.0:
-            return ">=", {"kind": "percentile", "p": round((100.0 - n) / 100.0, 4)}
+            return "gte", {"kind": "percentile", "p": round((100.0 - n) / 100.0, 4)}
     percentile_match = re.search(
         r"(?:above|in|in the top)\s+(?:the\s+)?(\d+(?:\.\d+)?)\s*(?:st|nd|rd|th)?\s*percentile",
         lowered,
@@ -89,18 +90,18 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
         except ValueError:
             n = 0.0
         if 0.0 < n < 100.0:
-            return ">", {"kind": "percentile", "p": round(n / 100.0, 4)}
+            return "gt", {"kind": "percentile", "p": round(n / 100.0, 4)}
     percent_patterns = [
         (
             r"(?:more than|greater than|over|above|exceeded|exceeds|exceeding)\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)",
-            ">",
+            "gt",
         ),
         (
             r"(?:at least|greater than or equal to|minimum of)\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)",
-            ">=",
+            "gte",
         ),
-        (r"(?:less than|under|below)\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", "<"),
-        (r"(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", ">"),
+        (r"(?:less than|under|below)\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", "lt"),
+        (r"(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", "gt"),
     ]
     for pattern, op in percent_patterns:
         match = re.search(pattern, lowered)
@@ -109,20 +110,20 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
     patterns = [
         (
             r"(?:at least|greater than or equal to|no fewer than|minimum of)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
-            ">=",
+            "gte",
         ),
-        (r"(\d+)\s*\+", ">="),
+        (r"(\d+)\s*\+", "gte"),
         (
             r"(?:more than|greater than|over|above|exceeded|exceeds|exceeding)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
-            ">",
+            "gt",
         ),
         (
             r"(?:less than|fewer than|under|below)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
-            "<",
+            "lt",
         ),
         (
             r"(?:at most|no more than)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
-            "<=",
+            "lte",
         ),
     ]
     for pattern, op in patterns:
@@ -130,7 +131,7 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
         if match:
             return op, _threshold_value(match.group(1))
     if "activity" in lowered or "active" in lowered:
-        return ">", 0
+        return "gt", 0
     return None
 
 

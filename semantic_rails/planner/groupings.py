@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from datetime import date, timedelta
 from typing import Any
 
 from ._base import (
@@ -19,6 +18,7 @@ from ._base import (
     _strip_leading_rank_count,
     _tokens,
 )
+from .call import Call, Time
 from .time_phrases import _TIME_UNITS, _names_time_axis
 from .time_windows import _time_window
 from .visibility import visible_dimensions, visible_value_domains
@@ -58,44 +58,21 @@ def _explicit_grain(text: str, clock: str = "") -> str:
     return ""
 
 
-def _single_bucket_grain(bounds: dict[str, Any]) -> str:
-    """The finest calendar grain that holds the whole window in one bucket, or ``""``."""
+def _time_spec(role: str, text: str, clock: str = "") -> Time | None:
+    """The time block a question asks for on ``role``: the grain it names (a series it asks
+    for "over time" is monthly) and its window. A window without a grain is one total; a
+    question with neither has no time block."""
 
-    try:
-        start = date.fromisoformat(str(bounds["start"])[:10])
-        last = date.fromisoformat(str(bounds["end"])[:10]) - timedelta(days=1)
-    except (KeyError, ValueError):
-        return ""
-    if last < start:
-        return ""
-    if start.year != last.year:
-        # Whole calendar years ("in 2016 and 2017") read as one total per year.
-        whole_years = (start.month, start.day, last.month, last.day) == (1, 1, 12, 31)
-        return "year" if whole_years else ""
-    if start == last:
-        return "day"
-    if start.weekday() == 0 and last == start + timedelta(days=6):
-        return "week"
-    if start.month == last.month:
-        return "month"
-    if (start.month - 1) // 3 == (last.month - 1) // 3:
-        return "quarter"
-    return "year"
-
-
-def _time_spec(role: str, text: str, clock: str = "") -> dict[str, Any]:
+    reading = _time_window(text)
+    # A unit a window names ("last week") asks for no buckets of it.
     lowered = str(text or "").lower()
-    grain = _explicit_grain(text, clock)
-    window = _time_window(text)
-    if not grain and window.relative_unit:
-        # A relative window ("last 7 days", "yesterday") buckets at its own
-        # unit instead of the generic month default.
-        grain = window.relative_unit
-    if not grain and not _TREND_CUE_RE.search(lowered):
-        # A total over a calendar window ("revenue in 2017", "orders in the
-        # first half of 2017") needs a grain that yields one bucket.
-        grain = _single_bucket_grain(window.bounds)
-    return {"temporal_role": role, "grain": grain or "month", **window.bounds}
+    for start, end in sorted(reading.spans, reverse=True):
+        lowered = f"{lowered[:start]}{' ' * (end - start)}{lowered[end:]}"
+    grain = _explicit_grain(lowered, clock) or ("month" if _TREND_CUE_RE.search(lowered) else "")
+    window = reading.bounds
+    if not role or not (grain or window):
+        return None
+    return Time(temporal_role=role, grain=grain).with_window(window)
 
 
 # Cues that ask for a series over time even without a named grain.
@@ -183,17 +160,17 @@ def _entity_grouping(config: Any, term: str) -> tuple[Any, list[str]] | None:
 
 
 def _key_only_assumptions(
-    config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None = None
+    config: Any, question: str, query: Call, partial_query: Call | None = None
 ) -> list[str]:
     """A line for each entity the draft shows by its key alone because nothing else names its
     rows: the caller sees no display for it and no one dimension of its own names it. A
     caller's grouping needs none, nor a key the question names beyond its entity ("by store
     id")."""
 
-    caller = set((partial_query or {}).get("group_by") or [])
+    caller = set(partial_query.group_by if partial_query else ())
     grouped = [
         row
-        for item in dict.fromkeys(query.get("group_by") or [])
+        for item in dict.fromkeys(query.group_by)
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
     lines: list[str] = []
@@ -365,13 +342,8 @@ def _maybe_group_by(
     (``_entity_grouping``), never a dimension scored by its description."""
 
     lowered = str(text or "").lower()
-    terms = _runtime_composition_terms(text)
     target_set = {term for term in target_terms if term}
     group_by: list[str] = []
-    if terms & {"segment", "segments"} and ("customer" in terms or "historical" in terms):
-        dim = _object_by_id(visible_dimensions(config), "dimension.jaffle_customer_history_segment")
-        if dim is not None:
-            group_by.append(dim.id)
     if any(term in lowered for term in ("geo", "geography", "region", "parent")):
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:

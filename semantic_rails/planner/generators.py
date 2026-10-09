@@ -19,8 +19,8 @@ import re
 from typing import Any
 
 from ._base import RuntimeCompositionDraft
+from .call import Call, QueryBuilder, Time
 from .exclusions import exclusion_clauses, exclusion_regions
-from .plan_query import _append_unique_dicts
 from .visibility import (
     discovery_query,
     visible_dimensions,
@@ -36,7 +36,7 @@ def fallback_drafts(
     runtime: Any,
     *,
     intent: str,
-    partial_query: dict[str, Any] | None = None,
+    partial_query: Call | None = None,
     limit: int = 3,
 ) -> list[tuple[RuntimeCompositionDraft, str]]:
     """Return generic catalog fallback drafts for an intent.
@@ -52,7 +52,7 @@ def fallback_drafts(
         discover_payload,
     )
 
-    partial = _query_part(dict(partial_query or {}))
+    partial = partial_query or Call()
     text = str(intent or "").lower()
     out: list[tuple[RuntimeCompositionDraft, str]] = []
     seen_ids: set[str] = set()
@@ -63,7 +63,7 @@ def fallback_drafts(
         draft = _draft_for_choice(runtime, intent=text, partial_query=partial, choice=primary)
         out.append((draft, "catalog_fallback"))
         seen_ids.add(str(primary.get("id", "")))
-        seen_queries.add(json.dumps(draft.query, sort_keys=True, default=str))
+        seen_queries.add(json.dumps(draft.query.to_call(), sort_keys=True, default=str))
 
     if len(out) >= max(1, int(limit or 1)):
         return out
@@ -72,8 +72,8 @@ def fallback_drafts(
     discovery = discover_payload(
         runtime,
         terms=target_focus or intent,
-        partial_query=discovery_query(partial),
-        stage=_infer_stage(partial, "", target_focus or intent),
+        partial_query=discovery_query(runtime, partial),
+        stage=_infer_stage(discovery_query(runtime, partial), "", target_focus or intent),
         limit=max(12, int(limit or 1) * 4),
     )
     metrics, _ = _apply_intent_priority_adjustments(
@@ -98,7 +98,7 @@ def fallback_drafts(
         if not object_id or object_id in seen_ids or choice.get("blocked_reason"):
             continue
         draft = _draft_for_choice(runtime, intent=text, partial_query=partial, choice=choice)
-        query_key = json.dumps(draft.query, sort_keys=True, default=str)
+        query_key = json.dumps(draft.query.to_call(), sort_keys=True, default=str)
         if query_key in seen_queries:
             continue
         out.append((draft, "catalog_fallback"))
@@ -129,29 +129,21 @@ def _draft_for_choice(
     runtime: Any,
     *,
     intent: str,
-    partial_query: dict[str, Any],
+    partial_query: Call | None,
     choice: dict[str, Any],
 ) -> RuntimeCompositionDraft:
-    from ..metadata import _select_expr_for_choice
     from ..metadata_parts.object_metadata import _public_object_type  # noqa: WPS433
 
-    query = _query_part(partial_query)
-    query.setdefault("version", 1)
-    existing_select = list(query.get("select", []) or [])
-    planned_select = _select_expr_for_choice(runtime, choice)
-    query["select"] = _append_unique_dicts(existing_select, [planned_select])
-
-    existing_group_by = list(query.get("group_by", []) or [])
-    inferred_group_by = _choose_group_dimensions(runtime, query, intent)
-    group_by = list(dict.fromkeys([*existing_group_by, *inferred_group_by]))
-    if group_by:
-        query["group_by"] = group_by
-
-    if "time" not in query:
-        query = _apply_time_from_text(runtime, query, intent, [str(choice["id"])])
-
+    config = runtime._config
+    builder = QueryBuilder(config, partial_query)
+    if str(choice["id"]) not in {item.ref for item in builder.build().select}:
+        builder.select(str(choice["id"]))
+    builder.group(*_choose_group_dimensions(runtime, builder.build(), intent))
+    if builder.build().time is None:
+        builder.time(_time_from_text(runtime, intent, [str(choice["id"])]))
+    query = builder.build()
     query = _normalize_value_filters(
-        query, _matched_value_rows(runtime, query, intent), text=intent, config=runtime._config
+        query, _matched_value_rows(runtime, query, intent), text=intent, config=config
     )
 
     resolved = [
@@ -177,49 +169,42 @@ def _draft_for_choice(
 
 
 def _normalize_value_filters(
-    query: dict[str, Any],
+    query: Call,
     matched_values: list[dict[str, Any]] | None = None,
     *,
     text: str = "",
-    config: Any = None,
-) -> dict[str, Any]:
+    config: Any,
+) -> Call:
     """Fold one contiguous value phrase; preserve separate clauses and caller filters.
 
-    Given the ``config``, a value an exclusion names is dropped with ``IS DISTINCT FROM``,
-    which keeps rows with no recorded value, and no other value an exclusion clause mentions
-    is filtered on.
+    The values an exclusion names on one dimension are left out with one ``not`` (a list for
+    several), which keeps rows with no recorded value; no other value an exclusion clause
+    mentions is filtered on.
     """
 
-    where = [
-        {**row, "field": row["field"].strip()}
-        if isinstance(row, dict) and isinstance(row.get("field"), str)
-        else row
-        for row in list(query.get("where", []) or [])
-    ]
     from .time_windows import _time_window  # noqa: WPS433
 
+    builder = QueryBuilder(config, query)
     window = _time_window(text)
-    clauses = exclusion_clauses(config, text, window) if config is not None else []
+    clauses = exclusion_clauses(config, text, window)
     items = [(item.binding, item.span) for clause in clauses for item in clause.items]
     regions = exclusion_regions(text, window.spans) if clauses else []
     kept: list[dict[str, Any]] = []
+    excluded: dict[str, list[Any]] = {}
     for row in matched_values or []:
         span = row.get("matched_span")
-        excluded = any(
+        if any(
             binding == (row["dimension_id"].strip(), row["value"])
             and (span is None or (start <= span[0] and span[1] <= end))
             for binding, (start, end) in items
-        )
-        if excluded:
-            normalized = {
-                "field": row["dimension_id"].strip(),
-                "op": "not",
-                "value": row["value"],
-            }
-            if normalized not in where:
-                where.append(normalized)
+        ):
+            values = excluded.setdefault(row["dimension_id"].strip(), [])
+            if row["value"] not in values:
+                values.append(row["value"])
         elif span is None or not any(start <= span[0] < end for start, end in regions):
             kept.append(row)
+    for field_id, values in excluded.items():
+        builder.where(field_id, "not", values)
     named: dict[str, list[dict[str, Any]]] = {}
     for row in kept:
         rows = named.setdefault(row["dimension_id"].strip(), [])
@@ -246,17 +231,12 @@ def _normalize_value_filters(
                 for before, after in zip(ordered, ordered[1:], strict=False)
             )
         for value in [values] if fold else values:
-            normalized = {"field": field, "op": "is", "value": value}
-            if normalized not in where:
-                where.append(normalized)
-    result = dict(query)
-    if where:
-        result["where"] = where
-    return result
+            builder.where(field, "is", value)
+    return builder.build()
 
 
 def _choose_object_for_terms(
-    runtime: Any, terms: str, partial_query: dict[str, Any], *, prefer_metric: bool = False
+    runtime: Any, terms: str, partial_query: Call, *, prefer_metric: bool = False
 ) -> dict[str, Any]:
     """Pick the most plausible governed metric/measure for free-form terms."""
 
@@ -273,8 +253,8 @@ def _choose_object_for_terms(
     discovery = discover_payload(
         runtime,
         terms=search_terms,
-        partial_query=discovery_query(partial_query),
-        stage=_infer_stage(partial_query, "", search_terms),
+        partial_query=discovery_query(runtime, partial_query),
+        stage=_infer_stage(discovery_query(runtime, partial_query), "", search_terms),
         limit=15,
     )
 
@@ -379,9 +359,24 @@ def _target_focus_text(intent: str) -> str:
     ranking does not let qualification words overpower the target slot.
     """
 
+    from .time_phrases import _PERIOD_SHIFT_TRIGGERS  # noqa: WPS433
+    from .time_windows import _time_window  # noqa: WPS433
+
     lowered = str(intent or "").lower()
     if not lowered.strip():
         return ""
+    # A time window, or the periods a comparison shifts by, names no part of the measure
+    # ("revenue this month", "revenue month over month").
+    spans = [
+        *_time_window(lowered).spans,
+        *(
+            match.span()
+            for pattern, _unit in _PERIOD_SHIFT_TRIGGERS
+            for match in re.finditer(pattern, lowered)
+        ),
+    ]
+    for start, end in sorted(spans, reverse=True):
+        lowered = f"{lowered[:start]}{' ' * (end - start)}{lowered[end:]}"
     top_by_match = re.search(
         rf"^\s*(?:top|bottom)\s+(?:{_RANK_COUNT_RE}\s+)?[a-z0-9 _-]+?\s+by\s+([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
         lowered,
@@ -482,7 +477,7 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
 
 
 def _grouping_term_matches(
-    runtime: Any, query: dict[str, Any], term: str, *, limit: int = 5
+    runtime: Any, query: Call, term: str, *, limit: int = 5
 ) -> list[str] | None:
     """Return discovery's matched dimension IDs, or None for a skipped grouping term."""
 
@@ -496,7 +491,7 @@ def _grouping_term_matches(
     dim_discovery = discover_payload(
         runtime,
         terms=term,
-        partial_query=discovery_query(query),
+        partial_query=discovery_query(runtime, query),
         kinds=["dimension"],
         stage="post_measure",
         limit=limit,
@@ -515,7 +510,7 @@ def _grouping_term_matches(
 
 
 def _choose_group_dimensions(
-    runtime: Any, query: dict[str, Any], text: str, chosen_group_dim: str = ""
+    runtime: Any, query: Call, text: str, chosen_group_dim: str = ""
 ) -> list[str]:
     from ..metadata import (  # noqa: WPS433 - shared metadata helpers
         _availability_for_object,
@@ -528,7 +523,7 @@ def _choose_group_dimensions(
         return [chosen_group_dim]
     from .groupings import _entity_grouping  # noqa: WPS433
 
-    selection = _selection_context(runtime._config, query)
+    selection = _selection_context(runtime._config, discovery_query(runtime, query))
     group_dims: list[str] = []
     for term in _requested_grouping_terms(text):
         # A term naming an entity is its stand-ins, never a dimension discovery scores.
@@ -554,9 +549,8 @@ def _choose_group_dimensions(
     return list(dict.fromkeys(group_dims))
 
 
-def _apply_time_from_text(
-    runtime: Any, query: dict[str, Any], text: str, chosen_ids: list[str]
-) -> dict[str, Any]:
+def _time_from_text(runtime: Any, text: str, chosen_ids: list[str]) -> Time | None:
+    """The time block a fallback draft takes from the question, on the choice's clock."""
     from ..metadata import _object_card  # noqa: WPS433 - shared metadata helper
     from .groupings import _time_spec
     from .time_windows import _time_bounds_from_text
@@ -590,20 +584,17 @@ def _apply_time_from_text(
         )
     ) or bool(time_bounds)
     if not wants_time:
-        return query
+        return None
     role = ""
     for object_id in chosen_ids:
         card = _object_card(runtime, object_id)
         role = str(card.get("default_temporal_role", "") or "")
         if role:
             break
-    if not role:
-        return query
-    query["time"] = _time_spec(role, text)
-    return query
+    return _time_spec(role, text) if role else None
 
 
-def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[dict[str, Any]]:
+def _matched_value_rows(runtime: Any, query: Call, text: str) -> list[dict[str, Any]]:
     from ..catalog_search import tokenize_search_value  # noqa: WPS433
     from ..metadata import (  # noqa: WPS433
         _availability_for_object,
@@ -620,13 +611,12 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
     lowered_text = str(text or "").lower()
     maps = _config_maps(runtime._config)
     maps = {**maps, "dimensions": {row.id: row for row in dimensions}}
-    selection = _selection_context(runtime._config, query)
+    engine = discovery_query(runtime, query)
+    selection = _selection_context(runtime._config, engine)
     selected_text_parts: list[str] = []
-    for select in list(query.get("select", []) or []):
-        selected_text_parts.append(str(select.get("as", "") or ""))
-        expression = dict(select.get("expression", {}) or {})
-        object_id = str(expression.get("metric", expression.get("measure", "")) or "")
-        selected = maps["metric_recipes"].get(object_id) or maps["measures"].get(object_id)
+    for select in query.select:
+        selected_text_parts.append(select.alias)
+        selected = maps["metric_recipes"].get(select.ref) or maps["measures"].get(select.ref)
         if selected is not None:
             selected_text_parts.extend(
                 [
@@ -741,7 +731,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
         value_discovery = discover_payload(
             runtime,
             terms=filter_term,
-            partial_query=discovery_query(query),
+            partial_query=engine,
             kinds=["dimension_value"],
             stage="post_dimension",
             limit=5,
@@ -888,16 +878,6 @@ def _intent_match_signal(
     # Both ranking callers break equal scores by discovery score and object id.
     # A randomized hash here would reorder candidates before those stable ties.
     return max(0.0, min(1.0, score))
-
-
-def _query_part(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return only the Query IR part of a mixed request envelope."""
-
-    out = dict(payload or {})
-    out.pop("policy_context", None)
-    out.pop("request_context", None)
-    out.pop("request_id", None)
-    return out
 
 
 __all__ = ["blocked_object_not_found", "fallback_drafts"]
