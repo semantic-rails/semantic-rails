@@ -304,11 +304,9 @@ tests:
     code: INVALID_QUERY
 
   fiscal_calendar_on_gregorian_role_without_fill_rejected:
-    # `calendar_id: fiscal` on a Gregorian-bound temporal role must
-    # either pair with `fill: true` (route through the calendar
-    # entity) or use a fiscal-bound role outright. Without those, the
-    # planner would emit Gregorian SQL silently — INCOMPATIBLE_CALENDAR
-    # forces the user to be explicit.
+    # Authored non-default calendars are refused in this release, with or
+    # without `fill: true`; Gregorian SQL under fiscal labels would be a
+    # silently wrong answer.
     kind: validate_fails_with_code
     query:
       version: 1
@@ -319,4 +317,4 @@ tests:
         temporal_role: temporal_role.jaffle_order_time
         grain: quarter
         calendar_id: fiscal
-    code: INCOMPATIBLE_CALENDAR
+    code: REWRITE_NOT_SUPPORTED

@@ -82,17 +82,23 @@ that file nor a relation pipeline. It doesn't pre-tick `_cents` columns as money
 amounts: as currency they would print cents as dollars. Publish them in dollars
 with a measure such as `amount_cents / 100.0`.
 
-Rolling windows, prior periods and growth fill empty periods from a calendar. At
-query time a package without one uses the engine's implicit Gregorian calendar
-(QUERY_IR_SCHEMA "Which calendar fills"); author one for fiscal or custom periods,
-Sunday weeks, or a ClickHouse package. `author metric` offers these metrics only
-once the package has a calendar. A calendar
-is a model whose graph entity has `kind: time`: one row per day in a `date_day`
-column, plus `week_start`, `month_start`, `quarter_start` and `year_start` date
-columns for the coarser units (see `models/core/calendar.yml` in the bundled
-package). An authored default calendar replaces the implicit one for every grain,
-so a grain whose column it lacks is refused. `author calendar` writes it from your
-date-spine table.
+Rolling windows, prior periods and growth fill empty periods from the engine's
+implicit Gregorian calendar (QUERY_IR_SCHEMA "Which calendar fills"), whether or
+not the package authors a calendar; ClickHouse has none, so it refuses them.
+`author metric` offers these metrics only once the package has a calendar. A
+calendar is a model whose graph entity has `kind: time`: one row per day in a
+`date_day` column, plus `week_start`, `month_start`, `quarter_start` and
+`year_start` date columns (see `models/core/calendar.yml` in the bundled package).
+`author calendar` writes it from your date-spine table. Its columns are ordinary
+dimensions: an authored default calendar's `date_day` and `week_start` to
+`year_start` columns are not used for bucketing, so weeks are ISO Monday weeks
+even if its `week_start` names Sundays.
+
+Fiscal and other non-default calendars (a `calendar_id` other than `default`) are
+not supported in this release. A query that names one, or that sets a `grain` on a
+time whose model is bound to one, refuses with `REWRITE_NOT_SUPPORTED`
+(`details.reason: calendar_not_supported_yet`); authored fiscal calendars return in
+a later release.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh
@@ -2397,10 +2403,9 @@ Routing is conservative in the MVP:
   rollup row. The rollup must have one row per time bucket and dimension columns
   (and per key of any `grain.entities`); an `IN` list or a range on a rollup
   dimension that isn't grouped runs on the base tables.
-- A time role whose `column_timezone` differs from its `timezone`, and a query
-  with a non-default `calendar_id`, run on the base tables: the rollup path
-  buckets the stored column's clock, without the role's zone conversion, on the
-  default calendar.
+- A time role whose `column_timezone` differs from its `timezone` runs on the
+  base tables: the rollup path buckets the stored column's clock, without the
+  role's zone conversion.
 - A dimension column pre-joined from another model (for example `region` from
   customers) uses its full dimension ID in the variant's `columns:` and declares
   the relationships it was built along: `columns: {dimension.region: {column: region, path:

@@ -5,13 +5,15 @@ dialect in supported_warehouses(), swapping package.warehouse, and writes
 {dialect: {metric_id: {"sql": ..., "column_mapping": [...]}}} as sorted JSON.
 The column mapping is how the dialect's final preparation renamed result
 columns (Postgres identifier shortening, BigQuery field names). A statement
-that fails to compile is recorded as {"error": "<code>: <message>"}. Nothing
-connects to a warehouse. A pure code move must leave every statement
-byte-identical.
+that fails to compile is recorded as {"error": "<code>: <message>"}. A
+documented refusal listed in EXPECTED_REFUSALS is recorded the same way but is
+not a failure; a listed refusal that does not occur is. Nothing connects to a
+warehouse. A pure code move must leave every statement byte-identical.
 
-Exit status: a capture exits 1 when any statement failed to compile (the file
-is still written); --compare exits 1 when a statement changed or either file
-records a failure.
+Exit status: a capture exits 1 when any statement failed to compile outside
+EXPECTED_REFUSALS, or a listed refusal did not occur (the file is still
+written); --compare exits 1 when a statement changed or either file records a
+failure.
 
 Usage:
     uv run python scripts/dev/capture_dialect_sql.py /tmp/dialect_sql_golden.json
@@ -34,6 +36,14 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 
 Capture = dict[str, dict[str, dict[str, Any]]]
+
+# (dialect, metric id) -> error code of a documented refusal: ClickHouse has no
+# implicit calendar, so time.fill, rolling and prior_period refuse there.
+EXPECTED_REFUSALS: dict[tuple[str, str], str] = {
+    ("clickhouse", "metric.sales.month_over_month_revenue_growth"): "REWRITE_NOT_SUPPORTED",
+    ("clickhouse", "metric.sales.prior_week_revenue_direct"): "REWRITE_NOT_SUPPORTED",
+    ("clickhouse", "metric.sales.rolling_7d_revenue_direct"): "REWRITE_NOT_SUPPORTED",
+}
 
 
 def _payloads() -> list[dict[str, Any]]:
@@ -72,13 +82,25 @@ def capture() -> Capture:
     return golden
 
 
+def _expected_refusal(dialect: str, metric_id: str, row: dict[str, Any]) -> bool:
+    code = EXPECTED_REFUSALS.get((dialect, metric_id))
+    return code is not None and str(row.get("error", "")).startswith(f"{code}: ")
+
+
 def failures(captured: Capture) -> list[str]:
-    return sorted(
+    """Compile errors outside EXPECTED_REFUSALS, and listed refusals that did not occur."""
+    failed = [
         f"{dialect}: {metric_id}: {row['error']}"
         for dialect, rows in captured.items()
         for metric_id, row in rows.items()
-        if "error" in row
-    )
+        if "error" in row and not _expected_refusal(dialect, metric_id, row)
+    ]
+    failed += [
+        f"{dialect}: {metric_id}: expected {code} refusal did not occur"
+        for (dialect, metric_id), code in EXPECTED_REFUSALS.items()
+        if not _expected_refusal(dialect, metric_id, captured.get(dialect, {}).get(metric_id, {}))
+    ]
+    return sorted(failed)
 
 
 def compare(golden_path: str, after_path: str) -> int:
