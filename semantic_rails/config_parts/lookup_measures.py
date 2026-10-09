@@ -23,7 +23,6 @@ from ..schema import (
 _FIXED = frozenset(
     [
         "expr",
-        "aggregation",
         "default_agg",
         "disallowed_aggregations",
         "suggested_aggregations",

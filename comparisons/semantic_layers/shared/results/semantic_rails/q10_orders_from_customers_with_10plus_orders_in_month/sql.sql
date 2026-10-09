@@ -50,4 +50,4 @@ SELECT
   base.m1 AS orders_from_customers_with_10plus_orders_in_period
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

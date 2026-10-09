@@ -170,7 +170,7 @@ def _write_minimal_package(
             "entities": {"order": {}},
             "times": {
                 "ordered_at": {
-                    "id": "temporal_role.demo_order_time",
+                    "as": "temporal_role.demo_order_time",
                     "name": "demo.Order.ordered_at",
                     "label": "Order time",
                     "column": "ordered_at",
@@ -186,7 +186,7 @@ def _write_minimal_package(
                     "label": "Orders",
                     "description": "Order count",
                     "kind": "entity_count",
-                    "time": "ordered_at",
+                    "times": ["ordered_at"],
                 },
                 **dict(extra_measures or {}),
             },
@@ -317,7 +317,7 @@ def test_runtime_validation_does_not_repair_segment_constraints(tmp_path, constr
         {
             "segments": {
                 "orders": {
-                    "id": segment_id,
+                    "as": segment_id,
                     "entity": "entity.demo_order",
                     "basis_metric": "metric.sales.orders",
                     "membership": {"where": where},
@@ -348,7 +348,7 @@ def test_probe_combines_required_grouping_with_non_additive_grain(tmp_path):
                 "kind": "aggregate",
                 "expr": "order_id",
                 "additive": False,
-                "time": "ordered_at",
+                "times": ["ordered_at"],
                 "publish": False,
             }
         },
@@ -451,7 +451,7 @@ def test_duplicate_measure_warning_respects_constraint_identity(tmp_path, target
             "constrained_orders": {
                 "as": "measure.demo.constrained_orders",
                 "kind": "entity_count",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             }
         },
     )
@@ -466,7 +466,8 @@ def test_duplicate_measure_warning_respects_constraint_identity(tmp_path, target
     assert any("duplicates" in warning["message"] for warning in report["warnings"]) is duplicate
 
 
-def test_measure_aggregation_warning(tmp_path: Path):
+def test_measure_aggregation_is_refused(tmp_path: Path):
+    """The loader never read a measure's aggregation:, so it is an unknown key."""
     package_dir = tmp_path / "aggregation_warning_demo"
     _write_minimal_package(
         package_dir,
@@ -479,19 +480,18 @@ def test_measure_aggregation_warning(tmp_path: Path):
                 "kind": "aggregate",
                 "expr": "order_id",
                 "aggregation": "count_distinct",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             }
         },
     )
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
-    assert report["ok"] is True
+    assert report["ok"] is False
     assert any(
-        warning["message"].endswith(
-            "use kind: entity_count with entity_key for count-distinct measures"
-        )
-        for warning in report["warnings"]
+        "measure 'customer_distinct_bad' has unknown key 'aggregation'" in error["message"]
+        and "`default_agg:`" in error["message"]
+        for error in report["errors"]
     )
 
 
@@ -535,7 +535,7 @@ def _write_monolithic_package(path: Path, package_id: str) -> None:
             "entities": {"order": {}},
             "times": {
                 "ordered_at": {
-                    "id": "temporal_role.demo_order_time",
+                    "as": "temporal_role.demo_order_time",
                     "name": "demo.Order.ordered_at",
                     "label": "Order time",
                     "column": "ordered_at",
@@ -550,7 +550,7 @@ def _write_monolithic_package(path: Path, package_id: str) -> None:
                     "label": "Orders",
                     "description": "Order count",
                     "kind": "entity_count",
-                    "time": "ordered_at",
+                    "times": ["ordered_at"],
                 }
             },
         }
@@ -595,7 +595,7 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
                 },
                 "times": {
                     "order_date": {
-                        "id": "temporal_role.tpch_order_date",
+                        "as": "temporal_role.tpch_order_date",
                         "name": "tpch.Order.order_date",
                         "label": "Order date",
                         "column": "O_ORDERDATE",
@@ -611,7 +611,7 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
                         "description": "Count of TPCH orders.",
                         "kind": "entity_count",
                         "entity_key": ["O_ORDERKEY"],
-                        "time": "order_date",
+                        "times": ["order_date"],
                     },
                     "revenue": {
                         "as": "measure.tpch.revenue",
@@ -620,7 +620,7 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
                         "description": "TPCH order revenue.",
                         "kind": "aggregate",
                         "expr": {"kind": "column", "column": "O_TOTALPRICE"},
-                        "time": "order_date",
+                        "times": ["order_date"],
                     },
                 },
             }
@@ -654,7 +654,7 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
                     "temporal_role": "temporal_role.tpch_order_date",
                 },
                 "sales.average_order_value": {
-                    "id": "metric.sales.average_order_value",
+                    "as": "metric.sales.average_order_value",
                     "name": "sales.average_order_value",
                     "label": "Average order value",
                     "description": "Revenue divided by orders.",
@@ -1178,7 +1178,7 @@ def test_validate_config_warns_on_semantic_collision(tmp_path: Path):
                 "description": "Revenue computed via path A",
                 "kind": "aggregate",
                 "expr": "revenue_a",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
             "revenue_b": {
                 "as": "measure.demo.revenue_b",
@@ -1187,7 +1187,7 @@ def test_validate_config_warns_on_semantic_collision(tmp_path: Path):
                 "description": "Revenue computed via path B",
                 "kind": "aggregate",
                 "expr": "revenue_b",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
         },
     )
@@ -1227,7 +1227,7 @@ def test_validate_config_warns_on_alias_vs_canonical_name_collision(tmp_path: Pa
                 "description": "Revenue at booking time",
                 "kind": "aggregate",
                 "expr": "booked_revenue",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
             "recognized_revenue": {
                 "as": "measure.demo.recognized_revenue",
@@ -1236,7 +1236,7 @@ def test_validate_config_warns_on_alias_vs_canonical_name_collision(tmp_path: Pa
                 "description": "Revenue after recognition",
                 "kind": "aggregate",
                 "expr": "recognized_revenue",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
         },
     )
@@ -1266,7 +1266,7 @@ def test_validate_config_warns_on_single_edit_semantic_term_collision(tmp_path: 
                 "description": "Recurring revenue",
                 "kind": "aggregate",
                 "expr": "recurring_revenue",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
             "recurring_revenue_typo": {
                 "as": "measure.demo.recurring_revenue_typo",
@@ -1275,7 +1275,7 @@ def test_validate_config_warns_on_single_edit_semantic_term_collision(tmp_path: 
                 "description": "Recurring revenue from a second source",
                 "kind": "aggregate",
                 "expr": "recurring_revenue_typo",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
         },
     )
@@ -1303,7 +1303,7 @@ def test_validate_config_does_not_warn_on_qualified_semantic_siblings(tmp_path: 
                 "description": "Revenue before deductions",
                 "kind": "aggregate",
                 "expr": "gross_revenue",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
             "net_revenue": {
                 "as": "measure.demo.net_revenue",
@@ -1312,7 +1312,7 @@ def test_validate_config_does_not_warn_on_qualified_semantic_siblings(tmp_path: 
                 "description": "Revenue after deductions",
                 "kind": "aggregate",
                 "expr": "net_revenue",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
         },
     )
@@ -1343,7 +1343,7 @@ def test_validate_config_no_collision_warning_when_labels_differ(tmp_path: Path)
                 "description": "Top-line revenue before refunds",
                 "kind": "aggregate",
                 "expr": "gross_revenue",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
             },
         },
     )
@@ -1365,7 +1365,7 @@ def test_validate_config_generates_query_time_for_time_required_metrics(tmp_path
         package_dir,
         extra_metrics={
             "sales.orders_cumulative": {
-                "id": "metric.sales.orders_cumulative",
+                "as": "metric.sales.orders_cumulative",
                 "name": "sales.orders_cumulative",
                 "label": "Cumulative orders",
                 "description": "Cumulative orders",
@@ -1418,7 +1418,7 @@ def test_validation_warns_on_a_filter_value_the_data_lacks(
         },
         extra_metrics={
             "sales.completed_orders": {
-                "id": "metric.sales.completed_orders",
+                "as": "metric.sales.completed_orders",
                 "label": "Completed orders",
                 "kind": "aggregate",
                 "value_type": "number",
@@ -1465,13 +1465,13 @@ def test_validate_config_continues_after_failures_and_reports_execution_errors(t
                 "description": "Broken orders",
                 "kind": "entity_count",
                 "expr": {"kind": "column", "column": "missing_order_id"},
-                "time": "ordered_at",
+                "times": ["ordered_at"],
                 "publish": False,
             }
         },
         extra_metrics={
             "sales.orders_cumulative_broken_role": {
-                "id": "metric.sales.orders_cumulative_broken_role",
+                "as": "metric.sales.orders_cumulative_broken_role",
                 "name": "sales.orders_cumulative_broken_role",
                 "label": "Broken cumulative orders",
                 "description": "Broken cumulative orders",
@@ -1571,7 +1571,7 @@ def test_cli_validate_config_exits_nonzero_on_failure(
                 "description": "Broken orders",
                 "kind": "entity_count",
                 "expr": {"kind": "column", "column": "missing_order_id"},
-                "time": "ordered_at",
+                "times": ["ordered_at"],
                 "publish": False,
             }
         },
@@ -2773,7 +2773,7 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
     payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
     payload["segments"] = {
         "big_orders": {
-            "id": "segment.demo.big_orders",
+            "as": "segment.demo.big_orders",
             "entity": "entity.demo.order",
             "basis_metric": "metric.sales.orders",
         }
@@ -2903,7 +2903,7 @@ def test_single_file_validation_rejects_unknown_membership_keys(tmp_path: Path):
     payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
     payload["segments"] = {
         "big_orders": {
-            "id": "segment.demo.big_orders",
+            "as": "segment.demo.big_orders",
             "entity": "order",
             "basis_metric": "metric.sales.orders",
             "membership": {

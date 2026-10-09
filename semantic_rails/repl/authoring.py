@@ -922,7 +922,7 @@ def _metric_change(
     recommended_key = str(recommended_measure.get("key", "metric")) if measures else "metric"
     key, label, existing = _author_identity(project, inventory, "metric", recommended_key)
     current = dict(existing.get("spec", {}) or {}) if existing else {}
-    metric_id = str(current.get("as") or current.get("id") or "") or (
+    metric_id = str(current.get("as") or "") or (
         f"metric.{key}" if "." in key else f"metric.{_authoring_namespace(project)}.{key}"
     )
     saved = _saved_metric(current, config, metric_id) if existing else _Saved()
@@ -1712,12 +1712,12 @@ def _author_segment(
     entity_ref = str(entity.get("id") or entity.get("key", ""))
     dimension_ref = str(dimension.get("id") or dimension.get("key", ""))
     basis_ref = str(basis.get("id") or basis.get("key", ""))
-    segment_id = str(current.get("id") or "")
+    segment_id = str(current.get("as") or "")
     if not segment_id:
         segment_id = f"segment.{key}" if "." in key else f"segment.{namespace}.{key}"
     spec = {
         **current,
-        "id": segment_id,
+        "as": segment_id,
         "label": label,
         "description": description,
         "entity": entity_ref,

@@ -80,4 +80,4 @@ SELECT
   base.m2 AS large_order_revenue_usd
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

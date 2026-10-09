@@ -38,7 +38,7 @@ model:
         kind: flow
       value_type: currency
       currency: USD
-      time: delivered_at
+      times: [delivered_at]
       meta:
         owner_team: operations_analytics
         review_priority: high

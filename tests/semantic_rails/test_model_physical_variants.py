@@ -68,7 +68,7 @@ def _write_variant_package(package_dir: Path) -> None:
                 "relation": "order_fact",
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "dimension_id": "dimension.demo_order_ordered_at",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
@@ -95,14 +95,14 @@ def _write_variant_package(package_dir: Path) -> None:
                         "as": "measure.demo.revenue_usd",
                         "kind": "aggregate",
                         "expr": "order_total_cents / 100.0",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                         "rollup": "additive",
                     },
                     "order_count": {
                         "as": "measure.demo.order_count",
                         "kind": "entity_count",
                         "entity_key": "order_id",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                         "rollup": "additive",
                     },
                 },
@@ -333,13 +333,13 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         calendar["dimensions"] = {"quarter_start": {"kind": "date"}}
         _write_yaml(package_dir / "models" / "fiscal_days.yml", {"model": calendar})
     if overrides.get("fact_days"):  # a fact model whose rows repeat a day across stores
-        day = {"id": "temporal_role.day", "column": "date_day", "kind": "date", "default": True}
+        day = {"as": "temporal_role.day", "column": "date_day", "kind": "date", "default": True}
         fact = {"id": "order_days", "kind": "fact", "relation": "order_days"}
         fact |= {"time_entity": "fiscal", "time_column": "date_day"}
         fact["times"] = {"date_day": {**day, "class": "event_time"}}
         fact["dimensions"] = {"store_id": {"as": "dimension.day_store_id", "kind": "categorical"}}
         fact["measures"] = {
-            "days": {"as": "measure.days", "kind": "entity_count", "time": "date_day"}
+            "days": {"as": "measure.days", "kind": "entity_count", "times": ["date_day"]}
         }
         fact["measures"]["days"].update(overrides.get("day_measure", {}))
         fact["variants"] = variants
@@ -355,7 +355,7 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         }
         lines["dimensions"] = {"product": product}
         graph["relationships"]["lines_order"] = {
-            "id": _LINE_ORDER,
+            "as": _LINE_ORDER,
             "entities": ["line", "order"],
             "cardinality": "many_to_one",
         }
@@ -377,7 +377,7 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         graph["relationships"].update(
             {
                 key: {
-                    "id": f"relationship.orders_{key}",
+                    "as": f"relationship.orders_{key}",
                     "entities": ["order", "customer"],
                     "via": [key + "_id"],
                     "cardinality": "many_to_one",
@@ -390,9 +390,9 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         key: {"as": f"dimension.{key}", "column": key, "kind": "categorical"}
         for key in ("store_id", "customer_id")
     }
-    time = {"id": "temporal_role.t", "dimension_id": "dimension.ordered_at", "column": "ordered_at"}
+    time = {"as": "temporal_role.t", "dimension_id": "dimension.ordered_at", "column": "ordered_at"}
     time.update(overrides.get("time", {}))
-    measure = {"time": "ordered_at", "rollup": "additive"}
+    measure = {"times": ["ordered_at"], "rollup": "additive"}
     stock = {"accumulation": {"kind": "stock", "snapshot": "end_of_period"}}
     model = {
         "id": "orders",
@@ -1098,7 +1098,7 @@ def test_foreign_key_rollup_checks_its_declared_path(tmp_path: Path, fanout_path
     graph_path = package / "graph.yml"
     graph = yaml.safe_load(graph_path.read_text())
     graph["graph"]["relationships"]["lines_customer"] = {
-        "id": "relationship.lines_customer",
+        "as": "relationship.lines_customer",
         "entities": ["line", "customer"],
         "cardinality": "many_to_one",
     }

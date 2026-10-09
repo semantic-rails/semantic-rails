@@ -205,7 +205,7 @@ def _write_package(root: Path, *, decisions: list[dict[str, Any]] | None = None)
     relationships: dict[str, Any] = {}
     for name, (source, target, via, key) in _RELATIONSHIPS.items():
         relationships[name] = {
-            "id": f"relationship.{name}",
+            "as": f"relationship.{name}",
             "entities": [source, target],
             "cardinality": "many_to_one",
             "via": [via],
@@ -726,7 +726,7 @@ def test_query_switches_use_only_the_options_the_package_refusal_offered(tmp_pat
     graph["relationships"]["accounts_branch"]["label"] = "Branch"
     graph["relationships"]["accounts_other_branch"] = {
         **graph["relationships"]["accounts_branch"],
-        "id": "relationship.accounts_other_branch",
+        "as": "relationship.accounts_other_branch",
         "via": ["other_branch_id"],
     }
     seed_file = pkg / "data" / "seed.sql"

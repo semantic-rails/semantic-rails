@@ -175,7 +175,7 @@ def _write_package(
     for name in relationships:
         source, target, via, key = _RELATIONSHIPS[name]
         edges[name] = {
-            "id": f"relationship.{name}",
+            "as": f"relationship.{name}",
             "entities": [source, target],
             "cardinality": "many_to_one",
             "via": [via],

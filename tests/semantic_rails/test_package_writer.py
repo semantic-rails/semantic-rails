@@ -97,7 +97,7 @@ def test_fact_axis_default_never_gives_calendar_measures_a_clock(tmp_path, inclu
         "time_column": "day_id",
         "times": {
             "day": {
-                "id": "temporal_role.shop_sales_day",
+                "as": "temporal_role.shop_sales_day",
                 "column": "day",
                 "kind": "date",
                 "default": True,

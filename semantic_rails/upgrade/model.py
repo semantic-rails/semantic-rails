@@ -160,7 +160,13 @@ class PackageFiles:
                 )
                 entries = [(key, path, value)]
             else:
-                items = value.items() if isinstance(value, dict) else enumerate(value or [])
+                items = (
+                    value.items()
+                    if isinstance(value, dict)
+                    else enumerate(value)
+                    if isinstance(value, list)
+                    else ()
+                )
                 entries = [(key, (*path, key), row) for key, row in items if isinstance(row, dict)]
             for key, child_path, row in entries:
                 if section in {"models", "relations", "metrics", "segments"}:
@@ -189,7 +195,8 @@ class PackageFiles:
 
     def _graph(self, section: str) -> Iterator[Row]:
         for file, path, graph in self._sections("graph"):
-            for key, row in ((graph or {}).get(section) or {}).items():
+            rows = graph.get(section) if isinstance(graph, dict) else None
+            for key, row in rows.items() if isinstance(rows, dict) else ():
                 yield file, (*path, section, key), row
 
     def models(self) -> Iterator[Row]:

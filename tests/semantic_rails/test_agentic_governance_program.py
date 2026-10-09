@@ -109,7 +109,7 @@ def _write_package(
                 "relation": "order_fact",
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
                         "column": "ordered_at",
@@ -124,7 +124,7 @@ def _write_package(
                         "label": "Orders",
                         "description": "Order count",
                         "kind": "entity_count",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                         "meta": dict(measure_meta or {}),
                     },
                     **dict(extra_measures or {}),
@@ -137,7 +137,7 @@ def _write_package(
         {
             "metrics": {
                 "sales.orders": {
-                    "id": "metric.sales.orders",
+                    "as": "metric.sales.orders",
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                     "label": "Orders",
@@ -255,7 +255,7 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
                 "label": "Secret orders",
                 "description": "Hidden measure",
                 "kind": "entity_count",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
                 "publish": False,
             },
             "production_secret_orders": {
@@ -264,13 +264,13 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
                 "label": "Production secret orders",
                 "description": "Hidden only for production context",
                 "kind": "entity_count",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
                 "publish": False,
             },
         },
         extra_metrics={
             "sales.secret_orders": {
-                "id": "metric.sales.secret_orders",
+                "as": "metric.sales.secret_orders",
                 "kind": "aggregate",
                 "measure": "measure.demo.secret_orders",
                 "label": "Secret orders",
@@ -278,7 +278,7 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
                 "value_type": "number",
             },
             "sales.production_secret_orders": {
-                "id": "metric.sales.production_secret_orders",
+                "as": "metric.sales.production_secret_orders",
                 "kind": "aggregate",
                 "measure": "measure.demo.production_secret_orders",
                 "label": "Production secret orders",

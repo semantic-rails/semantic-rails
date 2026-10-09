@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.407,
-      "compile_ms": 0.22,
+      "cache_lookup_ms": 0.38,
+      "compile_ms": 0.203,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -449,7 +449,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -720,7 +720,7 @@
               "t"
             ]
           },
-          "nulls_last": false
+          "nulls_last": true
         }
       ],
       "qualify": [],
@@ -1023,7 +1023,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 2.538,
+  "timing_ms": 2.316,
   "trace": {
     "fallback": {
       "reason": "",

@@ -482,17 +482,8 @@ def _validate_split_package(
             # A model lists its entities under `entities:`, and the loader derives its keys
             # from them; a fact model declares time_entity and time_column instead.
             model_kind = str(model.get("kind", "model") or "model").strip().lower()
-            if model_kind == "fact" or ("entities" in model and model.get("keys") is None):
-                pass
-            elif model.get("keys") is None:
+            if model_kind != "fact" and "entities" not in model:
                 add_error(errors, f"{model_path} must list its entities under entities:")
-            else:
-                keys = expect_mapping(model.get("keys"), f"{model_path}.keys", errors)
-                if keys is None:
-                    continue
-                primary = expect_list(keys.get("primary"), f"{model_path}.keys.primary", errors)
-                if primary is not None and not primary:
-                    add_error(errors, f"{model_path}.keys.primary must not be empty")
 
     for entity_id, entity in entities.items():
         entity_path = f"{graph_yml}.graph.entities.{entity_id}"

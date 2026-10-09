@@ -13,7 +13,6 @@ graph:
       model: fiscal_calendar, allowed_as_root: false}
   relationships:
     order_customer_history:
-      id: relationship.order_customer_history
       entities: [order, customer_history]
       cardinality: many_to_one
       target: [customer_id]

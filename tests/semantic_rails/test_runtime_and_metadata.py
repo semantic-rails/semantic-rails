@@ -109,7 +109,7 @@ def _write_operational_package(package_dir: Path) -> None:
                 "operational_defaults": {"owner": "finance"},
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
                         "column": "ordered_at",
@@ -123,7 +123,7 @@ def _write_operational_package(package_dir: Path) -> None:
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                         "operational": {"tags": ["core"]},
                     }
                 },
@@ -136,7 +136,7 @@ def _write_operational_package(package_dir: Path) -> None:
             "metrics": {
                 "sales.orders": {
                     "value_type": "number",
-                    "id": "metric.sales.orders",
+                    "as": "metric.sales.orders",
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                     "label": "Orders",
@@ -144,7 +144,7 @@ def _write_operational_package(package_dir: Path) -> None:
                 },
                 "sales.orders_copy": {
                     "value_type": "number",
-                    "id": "metric.sales.orders_copy",
+                    "as": "metric.sales.orders_copy",
                     "name": "sales.orders_copy",
                     "label": "Orders copy",
                     "kind": "derived",
@@ -202,7 +202,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                 "relation": "demo_events",
                 "times": {
                     "event_at": {
-                        "id": "temporal_role.demo_event_time",
+                        "as": "temporal_role.demo_event_time",
                         "name": "demo.Event.event_at",
                         "label": "Event time",
                         "column": "event_at",
@@ -244,7 +244,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "label": "Sends",
                         "kind": "entity_count",
                         "entity_key": "event_id",
-                        "time": "event_at",
+                        "times": ["event_at"],
                     },
                     "capacity": {
                         "kind": "aggregate",
@@ -252,7 +252,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "name": "engagement.capacity",
                         "label": "Capacity",
                         "expr": "capacity",
-                        "time": "event_at",
+                        "times": ["event_at"],
                     },
                     "account_count": {
                         "as": "measure.demo.account_count",
@@ -260,7 +260,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "label": "Accounts",
                         "kind": "entity_count",
                         "entity_key": "account_id",
-                        "time": "event_at",
+                        "times": ["event_at"],
                     },
                 },
             }
@@ -273,7 +273,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                 **{
                     name: {
                         "value_type": "number",
-                        "id": f"metric.engagement.{name}",
+                        "as": f"metric.engagement.{name}",
                         "kind": "aggregate",
                         "measure": f"measure.demo.{measure}",
                         "label": label,
@@ -286,7 +286,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                 },
                 "engagement.utilization_rate": {
                     "value_type": "number",
-                    "id": "metric.engagement.utilization_rate",
+                    "as": "metric.engagement.utilization_rate",
                     "name": "engagement.utilization_rate",
                     "label": "Utilization rate",
                     "description": "Sends divided by available capacity.",
@@ -300,7 +300,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                 },
                 "engagement.sends_per_account": {
                     "value_type": "number",
-                    "id": "metric.engagement.sends_per_account",
+                    "as": "metric.engagement.sends_per_account",
                     "name": "engagement.sends_per_account",
                     "label": "Sends per account",
                     "description": "Sends divided by account count.",

@@ -175,7 +175,7 @@ class _Writer:
                         f"{', '.join(untimed)}; the declaring model cannot be recovered",
                     )
             time = _described(role, "temporal_class", "supported_grains", skip={"dimension"})
-            time["id"] = role.id
+            time["as"] = role.id
             if (dimension.name, dimension.label) == (role.name, role.label) and not (
                 dimension.aliases or domain
             ):  # one times entry creates the role and its dimension
@@ -219,8 +219,9 @@ class _Writer:
 
     def relationship(self, row: Any) -> tuple[str, dict[str, Any]]:
         ends = {"source_entity", "target_entity", "source_column", "target_column", *_ROLLUPS}
+        key, alias = _keyed(row.id, "relationship.")
         spec = {
-            "id": row.id,
+            **alias,
             "entities": [self.keys[row.source_entity][0], self.keys[row.target_entity][0]],
             **_described(row, "safety", skip=ends),
             "cardinality": _CARDINALITY.get(row.cardinality, row.cardinality),
@@ -228,12 +229,12 @@ class _Writer:
         rollups = {side: getattr(row, name) for name, side in _ROLLUPS.items()}
         if any(rollups.values()):
             spec["rollup_safe"] = {side: aggs for side, aggs in rollups.items() if aggs}
-        return _slug(row.id.split(".", 1)[-1]), spec
+        return key, spec
 
     def metric(self, row: Any) -> tuple[str, dict[str, Any]]:
         # The loader reads filter_spec and window_spec off the expression; aliases aren't authored.
         skip = {"expression", "filter_spec", "window_spec", "aliases"}
-        spec = {"id": row.id, "expression": expr_to_dict(row.expression)}
+        spec = {"as": row.id, "expression": expr_to_dict(row.expression)}
         spec.update(
             _described(
                 row, "kind", "value_type", skip=skip, renames={"example_entries": "examples"}
@@ -244,7 +245,7 @@ class _Writer:
         return row.id.split(".", 1)[-1], spec
 
     def segment(self, row: Any) -> tuple[str, dict[str, Any]]:
-        spec = {"id": row.id, **_described(row, "entity", "basis_metric", skip=_MEMBERSHIP)}
+        spec = {"as": row.id, **_described(row, "entity", "basis_metric", skip=_MEMBERSHIP)}
         membership = {key: getattr(row, key) for key in _MEMBERSHIP if getattr(row, key)}
         if membership:
             spec["membership"] = membership

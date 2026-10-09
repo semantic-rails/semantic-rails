@@ -74,7 +74,7 @@ EXTRA_METRIC = {
 EXTRA_SEGMENT = {
     "segments": {
         "customer.revenue": {
-            "id": SEGMENT,
+            "as": SEGMENT,
             "label": "Revenue customers",
             "description": "Customers with at least 100 USD of order revenue.",
             "entity": "entity.jaffle_customer",

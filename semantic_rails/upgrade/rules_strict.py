@@ -6,10 +6,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ..config import _ensure_list
 from ..config_parts.package_loader import _RELATIONSHIP_PASSTHROUGH, _column_list
 from ..naming import slug, title
 from ..schema import OBSERVATION_SCOPES
-from .model import Edit, Finding, Option, PackageFiles, Rule, YamlPath
+from .model import Edit, Finding, Option, PackageFiles, Rule, YamlPath, plan
 
 Graph = dict[str, tuple[str, YamlPath, dict[str, Any]]]
 
@@ -320,25 +321,45 @@ def _model_joins(files: PackageFiles) -> Iterator[Finding]:
 
 def _object_as(files: PackageFiles) -> Iterator[Finding]:
     namespace, graph = _namespace(files), _graph(files)
-    rows = [
-        (file, path, row, f"entity.{namespace}_{slug(name)}")
+    # (file, path, row, the id the loader derives; None: the id names the object's key)
+    rows: list[tuple[str, YamlPath, dict[str, Any], str | None]] = [
+        (file, path, row, f"entity.{namespace}_{slug(name)}" if namespace else "")
         for name, (file, path, row) in graph.items()
+    ]
+    rows += [
+        (file, path, row, f"relationship.{slug(str(path[-1]))}")
+        for file, path, row in files._graph("relationships")
+        if isinstance(row, dict)
     ]
     for model_id, file, path, model in _models(files):
         _, primary, _ = _primary(model_id, model, graph)
         entity = slug(primary) if primary in graph and not _fact(model) else ""
+        owner = slug(model_id) if _fact(model) else entity
         for block, derived in (
             ("dimensions", f"dimension.{namespace}_{entity}_{{}}" if entity else ""),
+            ("times", f"temporal_role.{namespace}_{owner}_{{}}" if owner else ""),
             ("measures", f"measure.{namespace}.{{}}"),
         ):
             for key, row in (model.get(block) or {}).items():
                 if isinstance(row, dict):
-                    rows.append((file, (*path, block, key), row, derived.format(slug(str(key)))))
-    for file, path, row, derived in rows:
+                    derived_id = derived.format(slug(str(key))) if namespace else ""
+                    rows.append((file, (*path, block, key), row, derived_id))
+    for section, kind in (("metrics", "metric"), ("segments", "segment")):
+        for file, path, row in files._objects(section):
+            # A file holding one spec takes its key from name:, else from this id.
+            keyed = path[-2:-1] == (section,) or "name" in row
+            key = str(path[-1] if path[-2:-1] == (section,) else row.get("name"))
+            derived = f"{kind}.{namespace}.{slug(key)}" if namespace else ""
+            rows.append((file, path, row, derived if keyed else None))
+    for file, path, row, derives in rows:
         if "id" not in row:
             continue
         key = (*path, "id")
-        redundant = "as" in row or (bool(namespace) and str(row["id"]) == derived)
+        if derives is None:
+            message = "This id keys the spec: author it under its file's map, keyed, by hand."
+            yield Finding("object-as", file, files.line(file, key), key, message)
+            continue
+        redundant = "as" in row or (bool(derives) and str(row["id"]) == derives)
         yield Finding(
             "object-as",
             file,
@@ -349,16 +370,83 @@ def _object_as(files: PackageFiles) -> Iterator[Finding]:
         )
 
 
+_DEFAULT_TIME = object()  # the model's default time
+
+
+def _clock(measure: dict[str, Any], legacy: bool) -> Any:
+    """The clock the loader reads from a measure merged over ``defaults.measure``."""
+    raw = measure.get("times") or (legacy and measure.get("time")) or _DEFAULT_TIME
+    return raw if raw is _DEFAULT_TIME else _ensure_list(raw)
+
+
+def _measure_times(files: PackageFiles) -> Iterator[Finding]:
+    """Rewrite ``time:`` so that, for every measure, the clock the old loader read from the
+    merged legacy rows (``times or time or default``) equals the clock the current loader reads
+    from the merged rewritten rows (``times or default``); where it would not, stop."""
+    defaults = [
+        (file, (*path, "measure"), row["measure"])
+        for file, path, row in files.defaults()
+        if isinstance(row, dict) and isinstance(row.get("measure"), dict)
+    ]
+    rows = [row for _, _, row in files.defaults() if isinstance(row, dict)]
+    base = _mapping({k: v for row in rows for k, v in row.items()}.get("measure"))
+    found: list[tuple[str, YamlPath, tuple[Edit, ...]]] = []
+    rewritten: dict[YamlPath, dict[str, Any]] = {}
+    for file, path, row in (*files.measures(), *defaults):
+        if "time" not in row:
+            continue
+        key, times, clock = (*path, "time"), (*path, "times"), row["time"]
+        roles = _ensure_list(clock)  # the clock the loader reads, as times: names it
+        inherited = (
+            path[-2:] != ("defaults", "measure") and "times" not in row and base.get("times")
+        )
+        rewritten[path] = {k: v for k, v in row.items() if k != "time"}
+        # The loader reads times:, defaults.measure.times, or the default time.
+        if row.get("times") or not clock or inherited:
+            edits: tuple[Edit, ...] = (Edit(file, "delete", key),)
+        elif "times" in row:
+            edits = (Edit(file, "delete", key), Edit(file, "replace", times, value=roles))
+            rewritten[path]["times"] = roles
+        else:
+            edits = (Edit(file, "rename", key, key="times"),)
+            if clock != roles:
+                edits += (Edit(file, "replace", times, value=roles),)
+            rewritten[path]["times"] = roles
+        found.append((file, path, edits))
+    new_base = next((rewritten.get(p, row) for _, p, row in defaults if row is base), base)
+    # Each measure whose clock the rewrite would move.
+    moved = {
+        path
+        for _, path, row in files.measures()
+        if _clock({**base, **row}, legacy=True)
+        != _clock({**new_base, **rewritten.get(path, row)}, legacy=False)
+    }
+    for file, path, edits in found:
+        key = (*path, "time")
+        if moved and (path in moved or path[-2:] == ("defaults", "measure")):
+            message = "defaults.measure supplies the clock; rewrite by hand."
+            edits = ()
+        else:
+            message = "Write the measure's clock as times: [<role>]."
+        yield Finding("measure-times", file, files.line(file, key), key, message, edits)
+
+
+_SPELLINGS = {"object-as", "measure-times"}
+
+
 def _loaded(files: PackageFiles) -> tuple[dict[tuple[str, str], Any], set[str]]:
     """Each measure as the loader reads it, by (model id, key), and the metric keys and ids
     authored beside it; nothing when the package won't load."""
     from ..config import _load_package_source, _parse_package, normalize_package
     from ..package_snapshot import CapturedSource
 
-    captured = CapturedSource(
-        str(files.source), files.directory, tuple(sorted(files.contents.items()))
-    )
     try:
+        # The ids and clocks a package written for an earlier release read, in current spelling.
+        spelled = plan(files, [rule for rule in RULES if rule.id in _SPELLINGS], {}).files
+        contents = {**files.contents, **{k: v for k, v in spelled.items() if v is not None}}
+        captured = CapturedSource(
+            str(files.source), files.directory, tuple(sorted(contents.items()))
+        )
         normalized = normalize_package(_load_package_source(str(files.source), captured=captured))
         config = _parse_package(deepcopy(normalized), path=str(files.source))
     except Exception:  # noqa: BLE001 - each finding stops instead
@@ -526,8 +614,17 @@ RULES = (
         "object-as",
         "0.3.2",
         "same_meaning",
-        "Rename id: to as: on graph entities, dimensions and measures.",
+        "Rename id: to as: on graph entities and relationships, dimensions, times, measures, "
+        "metrics and segments.",
         _object_as,
+        refused=True,
+    ),
+    Rule(
+        "measure-times",
+        "0.3.2",
+        "same_meaning",
+        "Write a measure's clock as times: [<role>] instead of time:.",
+        _measure_times,
         refused=True,
     ),
 )

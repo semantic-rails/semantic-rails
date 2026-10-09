@@ -170,7 +170,7 @@ Measure rules:
 
 - measures are modeled in the owning model file
 - `expr` is a typed AST mapping or simple arithmetic string parsed into AST
-- there is no `primitive:` shorthand and no separate `snapshot_policy:` field; authors declare an explicit `accumulation:` block. Authored model relations use `relation`, dimensions use `kind`, time entries use `class`, metrics use `temporal_role`, and segments use `basis_metric`; the loader refuses alternate spellings as unknown keys. For stock-like measures, the snapshot policy lives nested as `accumulation: { kind: stock, snapshot: end_of_period }`.
+- there is no `primitive:` shorthand and no separate `snapshot_policy:` field; authors declare an explicit `accumulation:` block. Authored model relations use `relation`, dimensions use `kind`, time entries use `class`, metrics use `temporal_role`, and segments use `basis_metric`; measures name their clocks with `times:` and their default aggregation with `default_agg:`, dimensions list their values with `domain:`, every object but a model keeps a public id with `as:` (never `id:`), and a model binds its primary entity through `graph.entities.<x>.model` and its `entities:` block; the loader refuses alternate spellings as unknown keys. For stock-like measures, the snapshot policy lives nested as `accumulation: { kind: stock, snapshot: end_of_period }`.
 - `accumulation: { kind: stock }` lowers to semi-additive behavior; `disallowed_aggregations:` removes any aggregation kind that does not make business sense for the measure.
 
 ### Relationship

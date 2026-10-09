@@ -120,7 +120,7 @@ def _package(root, policies):
             "time": {"kind": "time", "key": ["date_day"], "model": "calendar",
                      "allowed_as_root": False},
         },
-        "relationships": {"orders_store": {"id": "relationship.orders_store",
+        "relationships": {"orders_store": {"as": "relationship.orders_store",
                                            "entities": ["order", "store"],
                                            "cardinality": "many_to_one"}},
     }})  # fmt: skip
@@ -162,9 +162,9 @@ def _package(root, policies):
     }})  # fmt: skip
     in_s1 = [{"field": "dimension.rf_order_store_id", "op": "=", "value": "s1"}]
     put("segments/core.yml", {"segments": {
-        "order.in_s1": {"id": "segment.rf.in_s1", "entity": "order",
+        "order.in_s1": {"as": "segment.rf.in_s1", "entity": "order",
                         "basis_metric": "metric.rf.revenue", "membership": {"where": in_s1}},
-        "order.big_store": {"id": "segment.rf.big_store", "entity": "order",
+        "order.big_store": {"as": "segment.rf.big_store", "entity": "order",
                             "basis_metric": "metric.rf.revenue",
                             "membership": {"metric_filters": [BIG_STORE]}},
     }})  # fmt: skip

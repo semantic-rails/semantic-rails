@@ -16,7 +16,7 @@ compare latency, token use or cost. It runs without touching the active
   its query-time interface only. Answered, out of 8, in the pack's layer order: **Semantic Rails 8, MetricFlow 2, Cube 7
   (5 of them through SQL API workarounds), Malloy 8 and KtX 3**.
   Semantic Rails' current count uses unreleased engine commit
-  d7e67868fb93198fbe0917d7ee7c940e3c5b95bd; the latest release checked, v0.3.1, refuses to load
+  fcc659191589e6eebd85e384410707682153aa01; the latest release checked, v0.3.1, refuses to load
   this package version (INVALID_CONFIG: duplicate metric id 'metric.jaffle.revenue_usd' in
   jaffle.revenue_usd and metric 'revenue_usd'), so it has no frozen-model count.
   The competitor captures were not re-run on newer versions. Each other answer needs a model
@@ -72,7 +72,7 @@ compare latency, token use or cost. It runs without touching the active
 
 | Layer | Version | Captured (UTC) | Re-runnable from this repo |
 | --- | --- | --- | --- |
-| Semantic Rails | 0.3.2rc3, not a release (engine tree 54c6621) | 2026-10-09 | yes |
+| Semantic Rails | 0.3.2rc3, not a release (engine tree ad029f5) | 2026-10-09 | yes |
 | MetricFlow | `dbt-metricflow 0.15.0` (`metricflow 0.213.0`), `dbt-core 1.12.5`, `dbt-duckdb 1.11.0` (`metricflow/requirements.lock`) | 2026-09-26 | yes; installs the locked packages |
 | Cube | Cube Core `1.7.45` (`@cubejs-backend/server`, `@cubejs-backend/duckdb-driver`; `cube/package-lock.json`) | 2026-09-26 | yes, on darwin-arm64 (the only platform whose native binary is pinned); installs the locked packages and starts Cube locally |
 | Malloy | `@malloydata/cli 0.0.57` (`malloy/package-lock.json`) | 2026-09-26 | yes; installs the locked CLI |
@@ -86,9 +86,9 @@ can tell a capture made on other data from a real mismatch.
 
 The Semantic Rails runner also records the source trees of its engine, its package, its queries
 and runner, and the question suite, and whether the engine is exactly a tagged release. The
-committed Semantic Rails evidence ran at commit `d7e6786`: its engine
-tree is `54c6621`, and it isn't exactly a tagged release, so it is labeled
-"0.3.2rc3, not a release (engine tree 54c6621)" wherever the version is shown. The commit it
+committed Semantic Rails evidence ran at commit `fcc6591`: its engine
+tree is `ad029f5`, and it isn't exactly a tagged release, so it is labeled
+"0.3.2rc3, not a release (engine tree ad029f5)" wherever the version is shown. The commit it
 records may not survive a squash merge, but the tree hashes do.
 
 The latest release checked on 2026-10-09 was PyPI `semantic-rails==0.3.1`. An isolated
@@ -162,7 +162,7 @@ the compiled SQL is identical.
 
 | Layer | Support labels | Answered with the model frozen | What answers them, or why not |
 | --- | --- | --- | --- |
-| Semantic Rails | 8 native | 8 of 8 (unreleased engine commit `d7e67868fb93198fbe0917d7ee7c940e3c5b95bd`); v0.3.1: refuses to load this package version, no count | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
+| Semantic Rails | 8 native | 8 of 8 (unreleased engine commit `fcc659191589e6eebd85e384410707682153aa01`); v0.3.1: refuses to load this package version, no count | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
 | MetricFlow | 2 native (q23, q24), 6 requires_model_change (q17-q22) | 2 of 8 | `--where` metric filters over existing entities answer the new thresholds. A conversion window, a cumulative window, a period offset, a per-metric filter and an aggregation are each part of a metric's definition |
 | Cube | 2 native (q22, q24), 5 workaround (q18-q21, q23), 1 requires_model_change (q17) | 7 of 8 | A REST filter answers q24, and an SQL API query's `AVG` and `MAX` over the item revenue measure answer q22 (Cube pushes them down as aggregates of the measure's row expression). SQL API queries answer q18-q21 and q23 by wrapping a Cube query in SQL (a derived table, window functions, `CASE`). The 7-day window is on a declared join and the SQL API joins cubes only along declared joins, so it can narrow the window (q18) but not widen it (q17) |
 | Malloy | 8 native | 8 of 8 | Filtered and ad hoc aggregates, calculations (`sum_moving`, `lag`) and, for q17 and q18, a join the query declares on the model's source |
@@ -187,7 +187,7 @@ What this doesn't show:
   each layer's query for a variant is in its `queries/` folder.
 - **The set is small, and the Semantic Rails authors chose it.** Semantic Rails added implicit
   calendar support after v0.3.1, which q19 and q20 use on the unreleased engine commit
-  `d7e67868fb93198fbe0917d7ee7c940e3c5b95bd`. The authors knew which
+  `fcc659191589e6eebd85e384410707682153aa01`. The authors knew which
   parameters Semantic Rails composes at query time and which some other layers set in the model.
   It probes where
   each layer's frozen-model boundary lies; it isn't a ranking, and it doesn't weigh what a model

@@ -80,7 +80,7 @@ def _normalized_rows(document, iterator):
         return list(document["graph"]["entities"].values())
     if iterator == "relationships":
         rows = [
-            {**row, "id": row.get("id") or f"relationship.{slug(key)}"}
+            {**row, "id": row.get("as") or f"relationship.{slug(key)}"}
             for key, row in document["graph"].get("relationships", {}).items()
         ]
         for model_id, model in document["models"].items():

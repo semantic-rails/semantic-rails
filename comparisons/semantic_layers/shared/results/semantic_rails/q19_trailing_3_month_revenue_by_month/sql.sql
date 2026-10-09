@@ -87,4 +87,4 @@ SELECT
   SUM(base.m1) OVER (ORDER BY base.t ASC ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS trailing_3_month_revenue_usd
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

@@ -61,5 +61,5 @@ SELECT
   base.m1 AS qualifying_revenue_usd
 FROM guarded_base AS base
 ORDER BY
-  t ASC,
-  g1 ASC
+  t ASC NULLS LAST,
+  g1 ASC NULLS LAST

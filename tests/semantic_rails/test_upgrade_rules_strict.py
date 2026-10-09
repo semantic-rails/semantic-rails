@@ -164,6 +164,46 @@ def _relationship(doc):
     }
 
 
+def _graph_relationship(**keys):
+    def edit(doc):
+        _relationship(doc)
+        doc["graph"]["relationships"]["orders_customer"].update(keys)
+
+    return edit
+
+
+def _spec(section, key, **keys):
+    """A metric's or segment's keys; a segment ``key`` the starter lacks is added."""
+
+    def edit(doc):
+        rows = doc.setdefault(section, {})
+        rows.setdefault(key, {"entity": "customer", "label": "Repeat customers"}).update(keys)
+
+    return edit
+
+
+def _measure_clock(**keys):
+    def edit(doc):
+        doc["models"]["orders"]["measures"]["revenue_usd"].update(keys)
+
+    return edit
+
+
+def _defaults_measure(**keys):
+    def edit(doc):
+        doc["defaults"]["measure"] = keys
+
+    return edit
+
+
+def _both(*edits):
+    def edit(doc):
+        for each in edits:
+            each(doc)
+
+    return edit
+
+
 def _unpublished(publish):
     """A package of the default profile whose revenue measure alone publishes a metric."""
 
@@ -303,6 +343,92 @@ REWRITES = {
         ),
         _row("orders", "measures", "order_count", **{"as": "measure.shop.order_count"}),
     ),
+    "time-id-derived": (
+        "object-as",
+        _row("orders", "times", "ordered_at", id="temporal_role.shop_order_ordered_at"),
+        _current,
+    ),
+    "time-id-public": (
+        "object-as",
+        _row("orders", "times", "ordered_at", id="temporal_role.public_ordered_at"),
+        _row("orders", "times", "ordered_at", **{"as": "temporal_role.public_ordered_at"}),
+    ),
+    "relationship-id-derived": (
+        "object-as",
+        _graph_relationship(id="relationship.orders_customer"),
+        _relationship,
+    ),
+    "relationship-id-public": (
+        "object-as",
+        _graph_relationship(id="relationship.buyer"),
+        _graph_relationship(**{"as": "relationship.buyer"}),
+    ),
+    "metric-id-derived": (
+        "object-as",
+        _spec("metrics", "revenue_usd", id="metric.shop.revenue_usd"),
+        _current,
+    ),
+    "metric-id-public": (
+        "object-as",
+        _spec("metrics", "revenue_usd", id="metric.public_revenue"),
+        _spec("metrics", "revenue_usd", **{"as": "metric.public_revenue"}),
+    ),
+    "segment-id-derived": (
+        "object-as",
+        _spec("segments", "repeat", id="segment.shop.repeat"),
+        _spec("segments", "repeat"),
+    ),
+    "segment-id-public": (
+        "object-as",
+        _spec("segments", "repeat", id="segment.shop.repeat_customers"),
+        _spec("segments", "repeat", **{"as": "segment.shop.repeat_customers"}),
+    ),
+    "measure-time-scalar": (
+        "measure-times",
+        _measure_clock(time="ordered_at"),
+        _measure_clock(times=["ordered_at"]),
+    ),
+    "measure-time-list": (
+        "measure-times",
+        _measure_clock(time=["ordered_at"]),
+        _measure_clock(times=["ordered_at"]),
+    ),
+    "measure-time-beside-times": (
+        "measure-times",
+        _measure_clock(time="first_ordered_at", times=["ordered_at"]),
+        _measure_clock(times=["ordered_at"]),
+    ),
+    "measure-time-beside-empty-times": (
+        "measure-times",
+        _measure_clock(time="ordered_at", times=[]),
+        _measure_clock(times=["ordered_at"]),
+    ),
+    "measure-time-empty": ("measure-times", _measure_clock(time=None), _current),
+    "defaults-measure-time": (
+        "measure-times",
+        _defaults_measure(time="ordered_at"),
+        _defaults_measure(times=["ordered_at"]),
+    ),
+    "measure-time-under-defaults-times": (
+        "measure-times",
+        _both(_defaults_measure(times=["ordered_at"]), _measure_clock(time="first_ordered_at")),
+        _defaults_measure(times=["ordered_at"]),
+    ),
+    "measure-time-under-defaults-time": (
+        "measure-times",
+        _both(_defaults_measure(time="ordered_at"), _measure_clock(time="first_ordered_at")),
+        _both(_defaults_measure(times=["ordered_at"]), _measure_clock(times=["first_ordered_at"])),
+    ),
+    "measure-time-empty-under-defaults-time": (
+        "measure-times",
+        _both(_defaults_measure(time="ordered_at"), _measure_clock(time=None)),
+        None,
+    ),
+    "measure-times-empty-under-defaults-time": (
+        "measure-times",
+        _both(_defaults_measure(time="ordered_at"), _measure_clock(times=[])),
+        None,
+    ),
     "join-cardinality-never-read": (
         "model-joins",
         _model("orders", joins={"customer": {"to": "customer", "cardinality": "many_to_one"}}),
@@ -314,6 +440,11 @@ REWRITES = {
         _strict(_current),
     ),
     "publish-authors-metric": ("measure-auto-publish", _unpublished(GROSS), _authored),
+    "publish-reads-measure-time": (
+        "measure-auto-publish",
+        _both(_unpublished(GROSS), _measure_clock(time="ordered_at")),
+        _both(_authored, _measure_clock(time="ordered_at")),
+    ),
     "publish-topics": (
         "measure-auto-publish",
         _unpublished({**GROSS, "topics": ["sales"]}),
@@ -338,11 +469,29 @@ def test_strict_rule_golden_rewrite(tmp_path, rule, legacy, current):
     files = PackageFiles(source)
     result = plan(files, rules, {})
     if current is None:
-        (stop,) = result.pending
-        assert not stop.edits and not stop.options and not result.files
+        assert result.pending and not result.files
+        assert all(not stop.edits and not stop.options for stop in result.pending)
         return
     assert not result.pending and result.findings
     expected = write(tmp_path / "current", current)
     assert safe_load(result.files[source.name]) == safe_load(expected.read_bytes())
     upgraded = PackageFiles(source, contents={**files.contents, **result.files})
     assert not plan(upgraded, rules, {}).findings
+
+
+def test_measure_time_under_defaults_times_keeps_the_clock(tmp_path):
+    """The loader read defaults.measure.times over the measure's time:; the upgrade keeps it."""
+    source = write_single_file_package(tmp_path / "project")
+    doc = safe_load(source.read_bytes())
+    _current(doc)
+    _defaults_measure(times=["ordered_at"])(doc)
+    _measure_clock(time="first_ordered_at")(doc)
+    source.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    rules = [row for row in STRICT_RULES if row.id == "measure-times"]
+    source.write_bytes(plan(PackageFiles(source), rules, {}).files[source.name])
+    (measure,) = (
+        row
+        for row in load_package_snapshot(source).config.measures
+        if row.id == "measure.shop.revenue_usd"
+    )
+    assert measure.compatible_temporal_roles == ["temporal_role.shop_order_ordered_at"]

@@ -82,7 +82,7 @@ FILES = {
             usage: {label: Usage, key: [usage_id], model: usage}
           relationships:
             usage_account_segment:
-              id: relationship.usage_account_segment
+              as: relationship.usage_account_segment
               entities: [usage, account_segment]
               cardinality: many_to_one
               target: [account_id]
@@ -92,7 +92,7 @@ FILES = {
                 valid_to: account_segments.valid_to
             # The window is on the near table: each segment row is one version already.
             account_segment_account:
-              id: relationship.account_segment_account
+              as: relationship.account_segment_account
               entities: [account_segment, account]
               cardinality: many_to_one
               allowed_directions: [forward]
@@ -150,7 +150,7 @@ FILES = {
     **{
         f"metrics/{left}_plus_{right}.yml": f"""
         metric:
-          id: metric.hist.{left}_plus_{right}
+          as: metric.hist.{left}_plus_{right}
           label: {left.title()} plus {right}
           kind: derived
           value_type: number
@@ -644,7 +644,7 @@ def test_a_conversion_reading_a_history_dimension_without_a_time_is_refused(runt
 
     assert exc.value.code == "FANOUT_UNSAFE"
     assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
-    assert exc.value.details["relationships"] == ["relationship.order_to_customer_history"]
+    assert exc.value.details["relationships"] == ["relationship.jaffle_order_customer_history"]
     assert exc.value.details["entities"] == ["entity.jaffle_customer_history"]
 
 
