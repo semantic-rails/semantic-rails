@@ -273,10 +273,12 @@ A draft that validates can still leave out part of the question. `plan` returns
   names it by id; no other part of the request names it. When a metric reads the measure
   through a filter, it is a building block: `plan` answers with the metric when it is the only
   one that filters the measure or the question names it, and otherwise holds the draft. That
-  swap applies to every draft, whichever pattern or fallback drafted it, when the metric is
-  one aggregate of the measure through a filter, bare or inside `COALESCE(<aggregate>, 0)`,
-  and the draft has no time block (the metric is read over all time) or one on the metric's
-  clock; never to a caller's `select`. Without
+  swap applies to every single-subject draft, whichever pattern or fallback drafted it, when
+  the metric is one aggregate of the measure through a filter, bare or inside
+  `COALESCE(<aggregate>, 0)`, and the draft has no time block (the metric is read over all
+  time) or one on the metric's clock; never to a caller's `select`. A part of a compound
+  question and a semi-additive measure swap only to the bare form, and a compound part only
+  on the metric's clock. Without
   `schema_strict`, the flag also suppresses auto-publishing a metric of the measure's own name.
   When the question names no governing metric, a published measure is
   still held while a visible metric narrows its rows: an aggregate in that metric, over this

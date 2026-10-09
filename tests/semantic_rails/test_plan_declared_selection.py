@@ -4,7 +4,8 @@ The neutral package counts accounts' events and calls, and each metric keeps the
 accounts. A metric's whole synonym selects it, even beside a measure whose short name is a
 word of the metric's own names. A draft over a building-block measure answers with the one
 metric that is its governed form, the filtered aggregate bare or inside ``COALESCE(..., 0)``,
-whichever path drafted it. Gold values come from plain SQL over the seed.
+whichever path drafted it; a compound part or a balance only to the bare form. Gold values
+come from plain SQL over the seed.
 """
 
 from __future__ import annotations
@@ -409,3 +410,57 @@ def test_two_governors_that_fit_equally_swap_neither(tmp_path: Path) -> None:
         _assert_measure_held(plan, [f"metric.subscriptions.{key}" for key in governors])
     finally:
         engine.close()
+
+
+def test_a_compound_part_swaps_only_to_a_bare_governor(tmp_path: Path) -> None:
+    """A published calls measure is the "calls" part's one subject, and "Customer calls"
+    (id ``call``) governs it zero-filled: the part keeps the measure's plain metric."""
+
+    package = _package(tmp_path / "subscriptions", governors=("call",), published_calls=True)
+    engine = Runtime.from_path(str(package))
+    try:
+        plan = _plan(engine, "How many calls and how many callers last week")
+        _assert_held(plan)
+        assert plan["best"]["pattern"] == "conjoined_metrics"
+        assert [item["expression"] for item in plan["best"]["query_ir"]["select"]] == [
+            {"metric": "metric.subscriptions.calls_all"},
+            {"metric": "metric.subscriptions.callers"},
+        ]
+        assert [gap["expected"]["metrics"] for gap in _governed_gaps(plan)] == [
+            ["metric.subscriptions.call"]
+        ]
+    finally:
+        engine.close()
+
+
+def test_a_stock_swaps_only_to_a_bare_governor(tmp_path: Path) -> None:
+    """A zero-filled balance would skip the read-day shaping and the complete-day holds, so
+    today's incomplete day keeps the measure and is held."""
+
+    engine = Runtime.from_path(str(_package(tmp_path / "subscriptions", customer_mrr=True)))
+    try:
+        plan = _plan(engine, "MRR today")
+        _assert_held(plan)
+        assert _selected(plan) == {"measure": MRR_ALL}
+        assert [gap["expected"]["metrics"] for gap in _governed_gaps(plan)] == [
+            ["metric.subscriptions.customer_mrr"]
+        ]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "How many accounts and how many moved to a bigger plan last week?",
+        "What share of accounts moved to a bigger plan last week?",
+        "How many accounts moved to a bigger plan last week out of all accounts?",
+    ],
+)
+def test_a_second_subject_beside_the_synonym_is_still_held(
+    engines: dict[str, Runtime], intent: str
+) -> None:
+    """The measure "accounts" is exempt from the veto only as words of the metric's names;
+    answering with the metric alone would drop the other half of these questions."""
+
+    _assert_held(_plan(engines["zero_filled"], intent))

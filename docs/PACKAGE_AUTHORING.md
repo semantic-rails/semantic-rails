@@ -1763,11 +1763,13 @@ metrics:
 ```
 
 Any other wrapper, filler or argument is not a governed form, so `plan` keeps the measure
-and holds the draft. The swap applies to every `plan` draft, from any pattern or the catalog
-fallback, before validation and readiness, and only when the caller's `partial_query` has no
-`select`, the draft doesn't filter or group by a dimension the metric's filter reads, and the
-draft has no time block (the metric is then read over all time) or one on the metric's own
-clock. Readiness then decides the swapped draft like any other.
+and holds the draft. The swap applies to every single-subject `plan` draft, from any pattern
+or the catalog fallback, before validation and readiness, and only when the caller's
+`partial_query` has no `select`, the draft doesn't filter or group by a dimension the metric's
+filter reads, and the draft has no time block (the metric is then read over all time) or one
+on the metric's own clock. Readiness then decides the swapped draft like any other. A part of
+a compound question ("calls and callers") and a semi-additive measure swap only to the bare
+governed form, and a compound part only on the metric's own clock.
 
 ### Long-tail kind — `derived` (expression AST)
 
