@@ -21,7 +21,7 @@ from typing import Any
 import duckdb
 
 from .db_parts.duckdb_confinement import confine_duckdb
-from .db_parts.duckdb_setup import configure_duckdb_connection
+from .db_parts.duckdb_setup import connect_duckdb
 from .errors import SemanticLayerError
 from .sql_identifiers import quote_relation
 
@@ -57,7 +57,7 @@ def _probe_cli() -> None:
     path, relations = request["path"], request["relations"]
     try:
         before = _identity(path)
-        conn = configure_duckdb_connection(duckdb.connect(path, read_only=True))
+        conn = connect_duckdb(path, read_only=True)
         try:
             if request.get("confine_to"):
                 confine_duckdb(conn, request["confine_to"])
@@ -119,7 +119,7 @@ def missing_duckdb_relations(
 
 def record_seed_provenance(db_path: str, package_id: str, seed_digest: str = "") -> None:
     """Record which package and seed files built a new seed, without authorizing replacement."""
-    conn = configure_duckdb_connection(duckdb.connect(db_path))
+    conn = connect_duckdb(db_path)
     try:
         conn.execute("CREATE SCHEMA IF NOT EXISTS _semantic_rails")
         conn.execute(
