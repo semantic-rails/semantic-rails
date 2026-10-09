@@ -107,13 +107,15 @@ def test_normalize_segment_rejects_preview_dimensions_on_other_entities(package_
     segment_file.write_text(
         yaml.safe_dump(
             {
-                "segment": {
-                    "id": "segment.jaffle.invalid_customer_segment",
-                    "name": "jaffle.Customer.invalid_customer_segment",
-                    "label": "Invalid customer segment",
-                    "entity": "entity.jaffle_customer",
-                    "basis_metric": "metric.sales.customer_count",
-                    "preview_dimensions": ["dimension.jaffle_store_name"],
+                "segments": {
+                    "invalid_customer_segment": {
+                        "id": "segment.jaffle.invalid_customer_segment",
+                        "name": "jaffle.Customer.invalid_customer_segment",
+                        "label": "Invalid customer segment",
+                        "entity": "entity.jaffle_customer",
+                        "basis_metric": "metric.sales.customer_count",
+                        "preview_dimensions": ["dimension.jaffle_store_name"],
+                    }
                 }
             },
             sort_keys=False,

@@ -203,9 +203,9 @@ CONSOLIDATED = {
         ),
         "graph relationship 'orders_customer' has unknown key 'path_preference'",
     ),
-    "path-policy-key": (
-        _add("path_policy", {"max_hop": 3}),
-        "path_policy has unknown key 'max_hop'",
+    "top-level-path-policy": (
+        _add("path_policy", {"max_hops": 3}),
+        "has unknown key 'path_policy'",
     ),
     "graph-path-policy-key": (
         _set("graph", "path_policy", max_hop=3),

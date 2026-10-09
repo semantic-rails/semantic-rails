@@ -1221,15 +1221,12 @@ def _loan_answers(project):
     }
 
 
-@pytest.mark.parametrize("layout", ["top-level", "graph", "inline"])
+@pytest.mark.parametrize("layout", ["graph", "inline"])
 def test_an_explicit_shorter_row_keeps_both_answers_and_follows_the_loader(tmp_path, layout):
     pkg = _loan_package(tmp_path)
     package = yaml.safe_load((pkg / "package.yml").read_text())
     graph = yaml.safe_load((pkg / "graph.yml").read_text())
-    if layout == "top-level":
-        package["path_preferences"] = []
-        (pkg / "package.yml").write_text(yaml.safe_dump(package))
-    elif layout == "inline":
+    if layout == "inline":
         (pkg / "package.yml").write_text(yaml.safe_dump({**package, **graph}))
         (pkg / "graph.yml").unlink()
     project = ArchitectProject(pkg, workspace_root=tmp_path)
@@ -1258,9 +1255,7 @@ def test_an_explicit_shorter_row_keeps_both_answers_and_follows_the_loader(tmp_p
     assert _pairs(report["route_changes"]) == [("entity.small_owner", DISTRICT)]
     assert report["route_changes"][0]["base"] == {"refused": "PATH_NOT_FOUND"}
     destination = "graph.yml" if layout == "graph" else "package.yml"
-    holder = yaml.safe_load((pkg / destination).read_text())
-    if layout != "top-level":
-        holder = holder["graph"]
+    holder = yaml.safe_load((pkg / destination).read_text())["graph"]
     assert holder["path_preferences"] == [_pin(SMALL_ACCOUNT, DISTRICT, SMALL_BRANCH)]
     assert _loan_answers(project) == gold
     changed = project.record_route_decision(

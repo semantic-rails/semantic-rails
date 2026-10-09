@@ -149,16 +149,16 @@ FILES = {
     # Two named metrics adding the same two measures, in either order.
     **{
         f"metrics/{left}_plus_{right}.yml": f"""
-        metric:
-          id: metric.hist.{left}_plus_{right}
-          label: {left.title()} plus {right}
-          kind: derived
-          value_type: number
-          expression:
-            kind: arithmetic
-            op: add
-            left: {{measure: measure.hist.{left}}}
-            right: {{measure: measure.hist.{right}}}
+        metrics:
+          {left}_plus_{right}:
+            label: {left.title()} plus {right}
+            kind: derived
+            value_type: number
+            expression:
+              kind: arithmetic
+              op: add
+              left: {{measure: measure.hist.{left}}}
+              right: {{measure: measure.hist.{right}}}
         """
         for left, right in (("amount", "seats"), ("seats", "amount"))
     },

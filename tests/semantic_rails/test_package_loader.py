@@ -241,14 +241,16 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
     _write_yaml(
         package_dir / "metrics" / "sales" / "orders_copy.yml",
         {
-            "metric": {
-                "id": "metric.sales.orders_copy",
-                "name": "sales.orders_copy",
-                "label": "Orders copy",
-                "value_type": "number",
-                "kind": "derived",
-                "temporal_role": "temporal_role.demo_order_time",
-                "expression": {"kind": "metric", "metric": "metric.sales.orders"},
+            "metrics": {
+                "sales.orders_copy": {
+                    "id": "metric.sales.orders_copy",
+                    "name": "sales.orders_copy",
+                    "label": "Orders copy",
+                    "value_type": "number",
+                    "kind": "derived",
+                    "temporal_role": "temporal_role.demo_order_time",
+                    "expression": {"kind": "metric", "metric": "metric.sales.orders"},
+                }
             }
         },
     )
@@ -685,7 +687,7 @@ def test_loader_rejects_duplicate_entity_ids(tmp_path: Path):
     _write_yaml(graph_path, graph)
     _write_yaml(
         package_dir / "models" / "invoices.yml",
-        {"models": {"invoices": {"entities": {"invoice": {}}, "relation": "order_fact"}}},
+        {"model": {"entities": {"invoice": {}}, "relation": "order_fact"}},
     )
 
     with pytest.raises(SemanticLayerError) as exc:

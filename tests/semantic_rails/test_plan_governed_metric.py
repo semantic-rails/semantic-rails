@@ -1266,14 +1266,14 @@ def test_a_joined_class_does_not_exempt_an_own_entity_call_hold(
     [
         {
             "entities": ["team_day", "team"],
-            "cardinality": "N:1",
+            "cardinality": "many_to_one",
             "safety": "safe",
             "via": "team_id",
             "target": "team_id",
         },
         {
             "entities": ["team", "team_day"],
-            "cardinality": "1:N",
+            "cardinality": "one_to_many",
             "safety": "safe",
             "via": "team_id",
             "target": "team_id",

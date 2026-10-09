@@ -355,11 +355,8 @@ def test_removing_the_signups_model_drops_an_id_form_pin_in_the_correctness_shop
 
 
 def test_every_definition_goes_and_mentions_are_reported(workspace: Path) -> None:
-    # A one-object file after metrics/core.yml defines gross again, which loading refuses.
-    _dump(
-        workspace / "shop" / "metrics" / "z.yml",
-        {"metric": {"name": "gross", **_metric("order_count")}},
-    )
+    # A file after metrics/core.yml defines gross again, which loading refuses.
+    _dump(workspace / "shop" / "metrics" / "z.yml", {"metrics": {"gross": _metric("order_count")}})
 
     report = _project(workspace).remove_object(kind="metric", key="gross").report
 

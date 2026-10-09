@@ -1679,29 +1679,32 @@ def test_key_roles_default_and_derive_relationship_cardinality(tmp_path: Path):
         },
     )
     _write_yaml(
-        package_dir / "models" / "models.yml",
+        package_dir / "models" / "parents.yml",
         {
-            "models": {
-                "parents": {
-                    "relation": "parent_dim",
-                    "entities": {"parent": {}},
-                    "dimensions": {"parent_id": {"as": "dimension.demo_parent_id"}},
+            "model": {
+                "relation": "parent_dim",
+                "entities": {"parent": {}},
+                "dimensions": {"parent_id": {"as": "dimension.demo_parent_id"}},
+            }
+        },
+    )
+    _write_yaml(
+        package_dir / "models" / "children.yml",
+        {
+            "model": {
+                "relation": "child_fact",
+                "entities": {"child": {}, "parent": {}},
+                "dimensions": {
+                    "child_id": {"as": "dimension.demo_child_id"},
+                    "parent_id": {"as": "dimension.demo_child_parent_id"},
                 },
-                "children": {
-                    "relation": "child_fact",
-                    "entities": {"child": {}, "parent": {}},
-                    "dimensions": {
-                        "child_id": {"as": "dimension.demo_child_id"},
-                        "parent_id": {"as": "dimension.demo_child_parent_id"},
-                    },
-                    "measures": {
-                        "child_count": {
-                            "as": "measure.demo.child_count",
-                            "kind": "entity_count",
-                            "expr": {"kind": "column", "column": "child_id"},
-                            "publish": False,
-                        }
-                    },
+                "measures": {
+                    "child_count": {
+                        "as": "measure.demo.child_count",
+                        "kind": "entity_count",
+                        "expr": {"kind": "column", "column": "child_id"},
+                        "publish": False,
+                    }
                 },
             }
         },
@@ -2061,8 +2064,8 @@ def _jaffle_aov_without_value_type(package_config_factory, layout: str) -> Path:
     if layout == "metrics_dir":
         doc["metrics"]["sales.aov_usd"] = spec
     _write_yaml(source, doc)
-    if layout == "bare":
-        _write_yaml(package_dir / "metrics" / "relocated.yml", {**spec, "name": "sales.aov_usd"})
+    if layout == "folder_file":
+        _write_yaml(package_dir / "metrics" / "relocated.yml", {"metrics": {"sales.aov_usd": spec}})
     elif layout == "root_file":
         _write_yaml(package_dir / "metrics.yml", {"metrics": {"sales.aov_usd": spec}})
     elif layout == "package_yml":
@@ -2073,7 +2076,7 @@ def _jaffle_aov_without_value_type(package_config_factory, layout: str) -> Path:
     return package_dir
 
 
-@pytest.mark.parametrize("layout", ["metrics_dir", "bare", "root_file", "package_yml"])
+@pytest.mark.parametrize("layout", ["metrics_dir", "folder_file", "root_file", "package_yml"])
 def test_strict_rejects_a_missing_value_type_in_every_layout(package_config_factory, layout):
     package_dir = _jaffle_aov_without_value_type(package_config_factory, layout)
 
@@ -2973,10 +2976,8 @@ def _jaffle_with_relocated_spec(
     if extra_key:
         target = spec["membership"] if kind == "segment" else spec
         target[extra_key] = [] if kind == "segment" else "number"
-    if layout == "bare":
-        _write_yaml(package_dir / f"{kind}s" / "relocated.yml", {**spec, "name": key})
-    elif layout == "singular":
-        _write_yaml(package_dir / f"{kind}s" / "relocated.yml", {kind: {**spec, "name": key}})
+    if layout == "folder_file":
+        _write_yaml(package_dir / f"{kind}s" / "relocated.yml", {f"{kind}s": {key: spec}})
     elif layout == "root_file":
         _write_yaml(package_dir / f"{kind}s.yml", {f"{kind}s": {key: spec}})
     else:
@@ -2987,7 +2988,7 @@ def _jaffle_with_relocated_spec(
     return package_dir
 
 
-@pytest.mark.parametrize("layout", ["bare", "singular", "root_file", "package_yml"])
+@pytest.mark.parametrize("layout", ["folder_file", "root_file", "package_yml"])
 @pytest.mark.parametrize(
     ("kind", "extra_key"),
     [("segment", None), ("segment", "filters"), ("metric", None), ("metric", "valeu_type")],

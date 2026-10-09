@@ -364,45 +364,41 @@ def test_export_semantic_contract_uses_expression_columns_without_invented_names
         ),
         encoding="utf-8",
     )
-    (project / "models" / "orders.yml").write_text(
-        yaml.safe_dump(
-            {
-                "models": {
-                    "customers": {
-                        "relation": "analytics.customers",
-                        "entities": {"customer": {}},
-                        "dimensions": {},
-                        "measures": {},
-                    },
-                    "orders": {
-                        "relation": "analytics.orders",
-                        "entities": {
-                            "order": {},
-                            "customer": {"expr": {"kind": "column", "column": "customer_id"}},
-                        },
-                        "dimensions": {
-                            "order_month": {"column": "ordered_at"},
-                        },
-                        "measures": {
-                            "revenue": {
-                                "kind": "aggregate",
-                                "expr": {
-                                    "kind": "call",
-                                    "name": "coalesce",
-                                    "args": [
-                                        {"kind": "column", "column": "order_amount"},
-                                        {"kind": "literal", "value": 0},
-                                    ],
-                                },
-                            }
-                        },
+    models = {
+        "customers": {
+            "relation": "analytics.customers",
+            "entities": {"customer": {}},
+            "dimensions": {},
+            "measures": {},
+        },
+        "orders": {
+            "relation": "analytics.orders",
+            "entities": {
+                "order": {},
+                "customer": {"expr": {"kind": "column", "column": "customer_id"}},
+            },
+            "dimensions": {
+                "order_month": {"column": "ordered_at"},
+            },
+            "measures": {
+                "revenue": {
+                    "kind": "aggregate",
+                    "expr": {
+                        "kind": "call",
+                        "name": "coalesce",
+                        "args": [
+                            {"kind": "column", "column": "order_amount"},
+                            {"kind": "literal", "value": 0},
+                        ],
                     },
                 }
             },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
+        },
+    }
+    for key, model in models.items():
+        (project / "models" / f"{key}.yml").write_text(
+            yaml.safe_dump({"model": model}, sort_keys=False), encoding="utf-8"
+        )
 
     payload = export_semantic_contract(project)
     resource = next(

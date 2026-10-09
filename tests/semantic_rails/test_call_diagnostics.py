@@ -496,9 +496,11 @@ def test_supported_overloads_compile_in_queries_and_packages(
     assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
     relations = {
         "projected": {
-            "source": "numbers",
             "columns": ["id", "amount", "text_value", "placed_at"],
-            "steps": [{"select": {"columns": {"id": "id", "projected_value": expression}}}],
+            "steps": [
+                {"source": "numbers"},
+                {"select": {"columns": {"id": "id", "projected_value": expression}}},
+            ],
         }
     }
     (package / "relations.yml").write_text(yaml.safe_dump({"relations": relations}))
@@ -552,9 +554,9 @@ def test_warehouse_type_error_is_redacted_on_every_call_path(package, path):
             raw["model"]["measures"]["amount"]["expr"] = "amount"
             relations = {
                 "projected": {
-                    "source": "numbers",
                     "columns": ["id", "text_value", "amount"],
                     "steps": [
+                        {"source": "numbers"},
                         {
                             "select": {
                                 "columns": {
@@ -563,7 +565,7 @@ def test_warehouse_type_error_is_redacted_on_every_call_path(package, path):
                                     "amount": expression,
                                 }
                             }
-                        }
+                        },
                     ],
                 }
             }

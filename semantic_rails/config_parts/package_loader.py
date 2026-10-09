@@ -522,9 +522,9 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                     )
             # Authors name one of four cardinalities; the parser's notation is internal.
             cardinalities = {
-                "one_to_one": "1:1",
                 "many_to_one": "N:1",
                 "one_to_many": "1:N",
+                "one_to_one": "1:1",
                 "many_to_many": "M:N",
             }
             authored = str(spec.get("cardinality", "") or "")
