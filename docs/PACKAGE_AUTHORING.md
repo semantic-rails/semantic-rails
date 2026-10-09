@@ -1441,6 +1441,14 @@ surrogate such as `inventory_row_id` that is unique per snapshot row, and the se
 columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
 check below but still sums). Give the snapshot time `class: as_of_time`.
 
+`plan` reads such a balance on one day of that clock: the last complete day when a question
+names none ("What's our MRR?"), or the closing day of the period it names ("at the end of last
+month"); see "How plan reads a balance" in [MCP_INTERFACE.md](MCP_INTERFACE.md#plan). To have
+every query read a balance per day, declare a `metric_constraint` on the stock with
+`required_group_by: [<the clock's date dimension>]` (and `supported_grains: [day]` on the
+clock if weeks or months are never meaningful). `plan` then adds that grouping to its drafts,
+and asks which day for a question by week or month rather than drafting against the policy.
+
 The snapshot is chosen per series per period first. A grouped attribute stored on the
 snapshot rows, such as an account's plan that changes mid-week, is read from that
 snapshot, so the series counts once, under the value it holds that day, and the summed

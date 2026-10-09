@@ -169,7 +169,8 @@ CUSTOMERS = "measure.jaffle.customer_count"
             None,
             ["items"],
         ),
-        # These stock drafts need one as-of day per answer row.
+        # A stock draft reads one as-of day per answer row: the last complete day when the
+        # question names none; by month or year it is held.
         (
             "number of stores open",
             "measure.jaffle.open_store_count_eop",
@@ -206,7 +207,12 @@ def test_counting_words_name_the_count_measure(
     if question == "number of customers by store":
         assert_plan_held(plan, "PLAN_FALLBACK_SEMANTIC_DRIFT")
         return
-    if measure.endswith("_eop"):
+    if measure.endswith("_eop") and unconsumed:
+        # Read on the last complete day, the draft still leaves "items" unconsumed.
+        assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
+        assert plan["why"]["details"]["terms"] == unconsumed
+        assert plan["best"]["query_ir"]["time"]["grain"] == "day"
+    elif measure.endswith("_eop") and question.endswith(("month", "year")):
         assert_plan_held(plan, "PLAN_INTENT_COVERAGE_GAP")
         assert "stock_as_of_unrealized" in {gap["kind"] for gap in plan["why"]["details"]["gaps"]}
         unmatched = next(
