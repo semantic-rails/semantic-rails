@@ -1466,7 +1466,10 @@ check below but still sums). Give the snapshot time `class: as_of_time`.
 
 `plan` reads such a balance on one day of that clock: the last complete day when a question
 names none ("What's our MRR?"), or the closing day of the period it names ("at the end of last
-month"); see "How plan reads a balance" in [MCP_INTERFACE.md](MCP_INTERFACE.md#plan). To have
+month"); see "How plan reads a balance" in [MCP_INTERFACE.md](MCP_INTERFACE.md#plan). A metric
+that wraps a stock (`COALESCE(<filtered last_value>, 0)`, arithmetic over it, a scoped
+aggregate) is answered only for complete days: `plan` holds a draft of it that reads today, or
+an open window, with `stock_as_of_unrealized`. To have
 every query read a balance per day, declare a `metric_constraint` on the stock with
 `required_group_by: [<the clock's date dimension>]` (and `supported_grains: [day]` on the
 clock if weeks or months are never meaningful). `plan` then adds that grouping to its drafts,

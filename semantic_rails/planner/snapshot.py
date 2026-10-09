@@ -158,9 +158,9 @@ def _wrapped_balance(config: Any, query: dict[str, Any]) -> _Balance | None:
         return None
     if not stocks:
         return None
-    recipes = {row.id: row for row in config.metric_recipes}
-    labels = [str(getattr(recipes.get(key), "label", "") or "") for key in _projected_subject_ids(query)]
-    label = labels[0] if len(labels) == 1 and labels[0] else "the balance"
+    subjects = _projected_subject_ids(query)
+    metric = _object_by_id(config.metric_recipes, subjects[0]) if len(subjects) == 1 else None
+    label = str(getattr(metric, "label", "") or "") or "the balance"
     return _Balance(str(_time_block(query).get("temporal_role") or ""), "", tuple(stocks), label)
 
 
