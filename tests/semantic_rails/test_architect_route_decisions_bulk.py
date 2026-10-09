@@ -275,7 +275,7 @@ def test_keep_choice_allows_an_answer_opened_by_the_relationship_only(tmp_path):
         preserved = runtime.query(
             _query(
                 "measure.bank.membership_count",
-                where=[{"field": INVOICE_ID, "op": "=", "value": 1000}],
+                where=[{"field": INVOICE_ID, "op": "is", "value": 1000}],
             )
         )
         newly_answered = runtime.query(

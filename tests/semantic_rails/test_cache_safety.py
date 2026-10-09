@@ -162,10 +162,13 @@ def test_runtime_compile_cache_never_serves_one_attribute_value_to_another(runti
     runtime = runtime_factory("jaffle_shop")
     recording = _RecordingCache()
     runtime.set_compile_cache(recording)
-    request = {"version": 1, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
+    request = {"select": ["metric.sales.aov_usd"]}
     try:
         compiled = [
-            runtime.compile({**request, "policy_context": _host_context(customer_id=customer)})
+            runtime.compile(
+                request,
+                context=RequestContext(actor="host-user", attributes={"customer_id": customer}),
+            )
             for customer in ("c-a", "c-b", "c-a", "c-b")
         ]
         key_a, key_b = recording.get_calls[:2]

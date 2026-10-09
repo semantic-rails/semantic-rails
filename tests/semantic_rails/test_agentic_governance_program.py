@@ -351,12 +351,12 @@ def test_role_scoped_object_policy_uses_request_roles(tmp_path: Path):
             "select": ["metric.sales.orders"],
             "time": {"temporal_role": "temporal_role.demo_order_time", "grain": "day"},
         }
-        denied = runtime.validate({**base_query, "policy_context": {"roles": ["sales"]}})
+        denied = runtime.validate(base_query, context={"roles": ["sales"]})
         assert denied["ok"] is False
         assert denied["errors"][0]["code"] == "POLICY_DENIED"
         assert denied["policy_effects"][0]["roles"] == ["sales"]
 
-        allowed = runtime.validate({**base_query, "policy_context": {"roles": ["csm"]}})
+        allowed = runtime.validate(base_query, context={"roles": ["csm"]})
         assert allowed["ok"] is True
         assert allowed["policy_effects"] == []
     finally:
@@ -375,9 +375,11 @@ def test_metric_constraint_policy_restricts_role_scoped_revenue_cuts(runtime_fac
             {
                 **base_query,
                 "group_by": ["dimension.jaffle_store_name"],
-                "where": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}],
-                "policy_context": {"roles": ["sales"]},
-            }
+                "where": [
+                    {"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
+                ],
+            },
+            context={"roles": ["sales"]},
         )
         assert allowed["ok"] is True
         constraint_effect = next(
@@ -389,11 +391,8 @@ def test_metric_constraint_policy_restricts_role_scoped_revenue_cuts(runtime_fac
         assert constraint_effect["roles"] == ["sales", "csm"]
 
         denied_group = runtime.validate(
-            {
-                **base_query,
-                "group_by": ["dimension.jaffle_customer_type"],
-                "policy_context": {"roles": ["sales"]},
-            }
+            {**base_query, "group_by": ["dimension.jaffle_customer_type"]},
+            context={"roles": ["sales"]},
         )
         assert denied_group["ok"] is False
         assert denied_group["errors"][0]["code"] == "POLICY_DENIED"
@@ -404,20 +403,17 @@ def test_metric_constraint_policy_restricts_role_scoped_revenue_cuts(runtime_fac
             {
                 **base_query,
                 "where": [
-                    {"field": "dimension.jaffle_customer_type", "op": "=", "value": "repeat"}
+                    {"field": "dimension.jaffle_customer_type", "op": "is", "value": "repeat"}
                 ],
-                "policy_context": {"roles": ["csm"]},
-            }
+            },
+            context={"roles": ["csm"]},
         )
         assert denied_filter["ok"] is False
         assert denied_filter["policy_effects"][0]["violations"][0]["kind"] == "disallowed_where"
 
         unconstrained_role = runtime.validate(
-            {
-                **base_query,
-                "group_by": ["dimension.jaffle_customer_type"],
-                "policy_context": {"roles": ["finance"]},
-            }
+            {**base_query, "group_by": ["dimension.jaffle_customer_type"]},
+            context={"roles": ["finance"]},
         )
         assert unconstrained_role["ok"] is True
         assert not any(
@@ -460,8 +456,8 @@ def test_empty_window_example_checks_declared_columns(tmp_path, columns, min_row
                             "grain": "day",
                             "last": {"unit": "month", "value": 1},
                         },
-                        "policy_context": {"now": "2026-05-04"},
                     },
+                    "now": "2026-05-04",
                     "expected_shape": {"columns": columns, "min_rows": min_rows, "max_rows": 0},
                 }
             }
@@ -485,24 +481,24 @@ def test_empty_window_example_checks_declared_columns(tmp_path, columns, min_row
     ],
     ids=["nonempty", "empty-window", "wrong-columns"],
 )
-def test_minimal_verbosity_example_checks_declared_columns(tmp_path, empty_window, columns, code):
+def test_example_checks_declared_columns(tmp_path, empty_window, columns, code):
     package_dir = tmp_path / "minimal_example"
     _write_package(package_dir)
     query = {
-        "verbosity": "minimal",
         "select": ["metric.sales.orders"],
         "time": {"temporal_role": "temporal_role.demo_order_time", "grain": "day"},
     }
     row_count = 0 if empty_window else 2
+    example = {"query": query}
     if empty_window:
-        query["time"]["range"] = {"last": {"unit": "month", "value": 1}}
-        query["policy_context"] = {"now": "2026-05-04"}
+        query["time"]["last"] = {"unit": "month", "value": 1}
+        example["now"] = "2026-05-04"
     _write_yaml(
         package_dir / "examples" / "orders.yml",
         {
             "examples": {
                 "orders": {
-                    "query": query,
+                    **example,
                     "expected_shape": {
                         "columns": columns,
                         "min_rows": row_count,
@@ -669,26 +665,17 @@ def test_object_access_policy_follows_metric_recipes(runtime_factory):
     """
     runtime = runtime_factory("jaffle_shop")
     try:
-        external = {"policy_context": {"audience": "external_partner"}}
+        external = {"audience": "external_partner"}
 
         direct = runtime.validate(
-            {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}
-                ],
-                **external,
-            }
+            {"select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}]},
+            context=external,
         )
         assert direct["ok"] is False
         assert direct["errors"][0]["code"] == "POLICY_DENIED"
 
         via_metric = runtime.validate(
-            {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov"}],
-                **external,
-            }
+            {"select": [{"expression": "metric.sales.aov_usd", "as": "aov"}]}, context=external
         )
         assert via_metric["ok"] is False, (
             "metric.sales.aov_usd wraps the governed measure and must be denied too"
@@ -716,20 +703,21 @@ def test_metric_constraint_policy_follows_metric_recipes(runtime_factory):
     """The same closure applies to metric_constraint's allowed cuts."""
     runtime = runtime_factory("jaffle_shop")
     try:
-        base = {
-            "version": 1,
-            "select": [{"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov"}],
-            "policy_context": {"roles": ["sales"]},
-        }
+        base = {"select": [{"expression": "metric.sales.aov_usd", "as": "aov"}]}
+        sales = {"roles": ["sales"]}
 
-        denied = runtime.validate({**base, "group_by": ["dimension.jaffle_customer_type"]})
+        denied = runtime.validate(
+            {**base, "group_by": ["dimension.jaffle_customer_type"]}, context=sales
+        )
         assert denied["ok"] is False
         assert denied["errors"][0]["code"] == "POLICY_DENIED"
         assert denied["policy_effects"][0]["violations"][0]["kind"] == "disallowed_group_by"
 
         # The cut the policy does allow still compiles — the fix must not
         # collapse into denying every query that touches a governed measure.
-        allowed = runtime.validate({**base, "group_by": ["dimension.jaffle_store_name"]})
+        allowed = runtime.validate(
+            {**base, "group_by": ["dimension.jaffle_store_name"]}, context=sales
+        )
         assert allowed["ok"] is True
     finally:
         runtime.close()

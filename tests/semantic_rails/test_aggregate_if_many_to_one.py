@@ -24,6 +24,7 @@ import dataclasses
 import json
 import re
 import textwrap
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -372,7 +373,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "kind": "aggregate",
             "measure": "measure.shop.amount",
             "aggregation": "sum",
-            "filter": {"all": [{"field": PERIOD, "op": "=", "value": "2026-01"}]},
+            "filter": {"all": [{"field": PERIOD, "op": "is", "value": "2026-01"}]},
         },
     }
     return _write_package(
@@ -405,26 +406,47 @@ def _number(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
+def _operations(runtime: Runtime, query: dict[str, Any], context: Any = None) -> list[Any]:
+    """validate, compile and query of ``query``.
+
+    A metric filter on an inline expression has no call spelling (an entity filter's having
+    names a measure or metric), so a query holding ``metric_filters`` runs in the engine's form.
+    """
+    if "metric_filters" not in query:
+        return [
+            partial(operation, query, context=context)
+            for operation in (runtime.validate, runtime.compile, runtime.query)
+        ]
+    call = {key: value for key, value in query.items() if key != "metric_filters"}
+    payload = runtime.engine_payload(call, context=context)
+    payload["metric_filters"] = query["metric_filters"]
+    return [
+        partial(operation, payload)
+        for operation in (
+            runtime.validate_internal,
+            runtime.compile_internal,
+            runtime.query_internal,
+        )
+    ]
+
+
 def _ask(
-    runtime: Runtime, expression: dict[str, Any], *, group_by: str = "", **extra: Any
+    runtime: Runtime, expression: Any, *, group_by: str = "", context: Any = None, **extra: Any
 ) -> dict[Any, float | None]:
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": "value", "expression": expression}],
-        **extra,
-    }
+    query: dict[str, Any] = {"select": [{"as": "value", "expression": expression}], **extra}
     if group_by:
         query["group_by"] = [group_by]
     return {
         row.get(group_by) if group_by else None: _number(row["value"])
-        for row in runtime.query(query)["rows"]
+        for row in _operations(runtime, query, context)[2]()["rows"]
     }
 
 
-def _measure(name: str, aggregation: str = "") -> dict[str, Any]:
+def _measure(name: str, aggregation: str = "") -> Any:
+    measure = f"measure.shop.{name}"
     if aggregation:
-        return {"kind": "aggregate", "measure": f"measure.shop.{name}", "aggregation": aggregation}
-    return {"measure": f"measure.shop.{name}"}
+        return {"kind": "aggregate", "measure": measure, "aggregation": aggregation}
+    return measure
 
 
 # (aggregate_if, gold SQL, the filtered-measure leaf asking the same question, its where)
@@ -433,56 +455,56 @@ ONE_HOP = {
         SUM_EUR,
         f"SELECT SUM(CASE WHEN {SQL_CUR} = 'EUR' THEN t.amount END) FROM consumption AS t",
         _measure("amount"),
-        {"field": CURRENCY, "op": "=", "value": "EUR"},
+        {"field": CURRENCY, "op": "is", "value": "EUR"},
     ),
     "count": (
         _aggif("count", EUR, _col("consumption", "row_id")),
         f"SELECT COUNT(CASE WHEN {SQL_CUR} = 'EUR' THEN t.row_id END) FROM consumption AS t",
         _measure("consumption_count"),
-        {"field": CURRENCY, "op": "=", "value": "EUR"},
+        {"field": CURRENCY, "op": "is", "value": "EUR"},
     ),
     "avg": (
         _aggif("avg", EUR, AMOUNT),
         f"SELECT AVG(CASE WHEN {SQL_CUR} = 'EUR' THEN t.amount END) FROM consumption AS t",
         _measure("amount", "avg"),
-        {"field": CURRENCY, "op": "=", "value": "EUR"},
+        {"field": CURRENCY, "op": "is", "value": "EUR"},
     ),
     "count_distinct": (
         _aggif("count_distinct", EUR, _col("consumption", "customer_id")),
         "SELECT COUNT(DISTINCT CASE WHEN "
         f"{SQL_CUR} = 'EUR' THEN t.customer_id END) FROM consumption AS t",
         _measure("consuming_customers"),
-        {"field": CURRENCY, "op": "=", "value": "EUR"},
+        {"field": CURRENCY, "op": "is", "value": "EUR"},
     ),
     "one_to_one": (
         _aggif("sum", _cmp(_col("receipt", "channel"), "=", "web"), AMOUNT),
         f"SELECT SUM(CASE WHEN {SQL_CHANNEL} = 'web' THEN t.amount END) FROM consumption AS t",
         _measure("amount"),
-        {"field": "dimension.shop_receipt_channel", "op": "=", "value": "web"},
+        {"field": "dimension.shop_receipt_channel", "op": "is", "value": "web"},
     ),
     "posts_of_owners_over_65": (
         _aggif("count", OVER_65, _col("post", "post_id")),
         f"SELECT COUNT(CASE WHEN {_sql_age('owner')} > 65 THEN p.post_id END) FROM posts AS p",
         _measure("post_count"),
-        {"field": AGE, "op": ">", "value": 65},
+        {"field": AGE, "op": "gt", "value": 65},
     ),
     "views_of_owners_over_65": (
         _aggif("sum", OVER_65, _col("post", "view_count")),
         f"SELECT SUM(CASE WHEN {_sql_age('owner')} > 65 THEN p.view_count END) FROM posts AS p",
         _measure("view_count"),
-        {"field": AGE, "op": ">", "value": 65},
+        {"field": AGE, "op": "gt", "value": 65},
     ),
     "two_hops": (
         _aggif("sum", EUR, _col("order_line", "quantity")),
         f"SELECT SUM(CASE WHEN {SQL_LINE_CUR} = 'EUR' THEN l.quantity END) FROM order_lines AS l",
         _measure("quantity"),
-        {"field": CURRENCY, "op": "=", "value": "EUR"},
+        {"field": CURRENCY, "op": "is", "value": "EUR"},
     ),
     "two_hops_count": (
         _aggif("count", EUR, _col("order_line", "line_id")),
         f"SELECT COUNT(CASE WHEN {SQL_LINE_CUR} = 'EUR' THEN l.line_id END) FROM order_lines AS l",
         _measure("line_count"),
-        {"field": CURRENCY, "op": "=", "value": "EUR"},
+        {"field": CURRENCY, "op": "is", "value": "EUR"},
     ),
 }
 
@@ -499,22 +521,24 @@ def test_a_condition_across_many_to_one_hops_matches_gold_and_the_filtered_leaf(
     assert value == pytest.approx(_ask(runtime, leaf, where=[where]))
 
 
-# A metric filter that every consumption row passes. Query-time filters are contextual: its set
-# is matched on the query's grouped entities too.
+# An entity filter that every consumption row passes, on each row alone.
 EVERY_ROW = {
+    "entity": "entity.shop_consumption",
+    "having": [{"field": _measure("consumption_count"), "op": "gt", "value": 0}],
+    "over": "all_time",
+}
+# The engine's contextual metric filter, which no call spells: its set is matched on the
+# query's grouped entities too.
+EVERY_ROW_IN_CONTEXT = {
     "expression": {
         "kind": "metric_predicate",
         "entity": "entity.shop_consumption",
-        "input": _measure("consumption_count"),
+        "input": {"measure": _measure("consumption_count")},
         "op": ">",
         "value": 0,
     },
     "op": "=",
     "value": True,
-}
-EVERY_ROW_ALONE = {
-    **EVERY_ROW,
-    "expression": {**EVERY_ROW["expression"], "scope_mode": "entity_only"},
 }
 # A March row of a customer with no record (C9): it has no currency, so March reads 0.
 MARCH_ROW = "INSERT INTO consumption VALUES (10, 'C9', 8, '2026-03');\n"
@@ -540,8 +564,10 @@ def test_a_metric_filter_every_row_passes_changes_no_value(march_runtime, case, 
     expression = ONE_HOP[case][0]
 
     plain = _ask(march_runtime, expression, group_by=group_by)
-    alone = _ask(march_runtime, expression, group_by=group_by, metric_filters=[EVERY_ROW_ALONE])
-    contextual = _ask(march_runtime, expression, group_by=group_by, metric_filters=[EVERY_ROW])
+    alone = _ask(march_runtime, expression, group_by=group_by, where=[EVERY_ROW])
+    contextual = _ask(
+        march_runtime, expression, group_by=group_by, metric_filters=[EVERY_ROW_IN_CONTEXT]
+    )
 
     assert alone == plain
     if group_by == PERIOD:
@@ -617,7 +643,7 @@ def test_a_condition_a_row_with_no_match_could_satisfy_is_refused(runtime, case)
     expression = _aggif("sum", condition, AMOUNT)
 
     if not refused:
-        assert _ask(runtime, expression, metric_filters=[EVERY_ROW]) == pytest.approx(
+        assert _ask(runtime, expression, where=[EVERY_ROW]) == pytest.approx(
             _ask(runtime, expression)
         )
         return
@@ -774,7 +800,7 @@ def test_two_roles_with_no_preference_are_refused_never_picked(tmp_path):
 
 
 def _predicate(expression: dict[str, Any]) -> dict[str, Any]:
-    """A metric filter keeping the customers whose ``expression`` is over 15."""
+    """A metric filter keeping the customers whose ``expression`` is over 15 (engine form)."""
     return {
         "expression": {
             "kind": "metric_predicate",
@@ -807,7 +833,7 @@ def test_inside_a_metric_predicate_it_computes_gold_or_refuses(runtime, gold):
 
 def test_inside_a_metric_recipe_it_is_refused(runtime):
     with pytest.raises(SemanticLayerError) as raised:
-        _ask(runtime, {"metric": "metric.shop.euro_share"})
+        _ask(runtime, "metric.shop.euro_share")
 
     assert raised.value.code == "INVALID_QUERY"
     assert "aggregate_if" in str(raised.value)
@@ -857,8 +883,8 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
 def test_a_measure_reading_an_entity_two_hops_away_aggregates_after_its_joins(
     runtime, gold, expression
 ):
-    query = {"select": [{"as": "value", "expression": expression}]}
-    performance = compile_query(runtime.config, None, query)["explain"].performance_plan
+    payload = runtime.engine_payload({"select": [{"as": "value", "expression": expression}]})
+    performance = compile_query(runtime.config, None, payload)["explain"].performance_plan
 
     assert _ask(runtime, expression) == pytest.approx(gold(ONE_HOP["two_hops"][1]))
     assert performance["joins_after_aggregate"] == []
@@ -880,8 +906,8 @@ def test_a_row_filter_on_the_one_side_applies_as_it_does_to_a_where_filter(tmp_p
     )
     context = RequestContext(actor="end-user", audience="customer", attributes={"segment": "SME"})
 
-    def ask(expression: dict[str, Any], **extra: Any) -> Any:
-        return _ask(runtime, expression, policy_context=context.to_policy_context(), **extra)
+    def ask(expression: Any, **extra: Any) -> Any:
+        return _ask(runtime, expression, context=context, **extra)
 
     try:
         reasons = set()
@@ -946,6 +972,7 @@ READS_CURRENCY = {
     "two_hops": {"select": [{"as": "value", "expression": ONE_HOP["two_hops"][0]}]},
 }
 RESTRICTED = {"audience": "restricted"}
+INTERNAL = {"audience": "internal"}
 
 
 def _policy(action: str, object_id: str) -> SemanticPolicyConfig:
@@ -971,7 +998,12 @@ def _governed(package: Path, *policies: SemanticPolicyConfig, without: str = "")
 
 
 def _refusals(
-    runtime: Runtime, monkeypatch, query: dict[str, Any], *, code: str = "POLICY_DENIED"
+    runtime: Runtime,
+    monkeypatch,
+    query: dict[str, Any],
+    *,
+    context: Any = RESTRICTED,
+    code: str = "POLICY_DENIED",
 ) -> list[SemanticLayerError]:
     """validate, compile and query each refuse, before the renderer or the adapter runs."""
 
@@ -981,11 +1013,12 @@ def _refusals(
     monkeypatch.setattr("semantic_rails.compiler.render_select_for_profile", no_output)
     monkeypatch.setattr(runtime, "_compile", no_output)
     monkeypatch.setattr(runtime, "_get_adapter", no_output)
-    assert runtime.validate(query)["errors"][0]["code"] == code
+    validate, *answers = _operations(runtime, query, context)
+    assert validate()["errors"][0]["code"] == code
     refusals = []
-    for operation in (runtime.compile, runtime.query):
+    for operation in answers:
         with pytest.raises(SemanticLayerError) as raised:
-            operation(query)
+            operation()
         assert raised.value.code == code
         refusals.append(raised.value)
     return refusals
@@ -997,13 +1030,13 @@ def test_a_policy_on_a_dimension_the_condition_reads_refuses_it(
     package, monkeypatch, action, placement
 ):
     # The condition reads the dimension's column, as a where filter on it would.
-    query = {"version": 1, **READS_CURRENCY[placement]}
+    query = READS_CURRENCY[placement]
     runtime = _governed(package, _policy(action, CURRENCY))
     try:
-        allowed = {**query, "policy_context": {"audience": "internal"}}
-        assert runtime.validate(allowed)["ok"]
-        assert runtime.compile(allowed)["rendered_sql"]
-        refusals = _refusals(runtime, monkeypatch, {**query, "policy_context": RESTRICTED})
+        validate, compile_sql, _ = _operations(runtime, query, INTERNAL)
+        assert validate()["ok"]
+        assert compile_sql()["rendered_sql"]
+        refusals = _refusals(runtime, monkeypatch, query)
     finally:
         runtime.close()
 
@@ -1023,7 +1056,7 @@ def test_a_column_no_dimension_declares_is_refused_under_an_object_policy(packag
     governed = _governed(package, _policy("deny", PERIOD), without=CURRENCY)
     try:
         assert ungoverned.compile(query)["rendered_sql"]
-        refusals = _refusals(governed, monkeypatch, query)
+        refusals = _refusals(governed, monkeypatch, query, context=None)
     finally:
         ungoverned.close()
         governed.close()
@@ -1060,10 +1093,13 @@ READS_OWN_PERIOD = {
         {"select": [{"as": "value", "expression": _aggif("count", OWN_PERIOD)}]},
         4,
     ),
-    "metric_filters": (
+    "having": (
         {
-            "select": [{"as": "value", "expression": _measure("amount")}],
-            "metric_filters": [{"expression": SUM_PERIOD, "op": ">", "value": 0}],
+            "select": [
+                {"as": "value", "expression": _measure("amount")},
+                {"as": "january", "expression": SUM_PERIOD},
+            ],
+            "having": [{"field": "january", "op": "gt", "value": 0}],
         },
         1195,
     ),
@@ -1075,7 +1111,7 @@ READS_OWN_PERIOD = {
         150,
     ),
     "authored_filter": (
-        {"select": [{"as": "value", "expression": {"metric": "metric.shop.filtered_amount"}}]},
+        {"select": [{"as": "value", "expression": "metric.shop.filtered_amount"}]},
         165,
     ),
 }
@@ -1086,21 +1122,18 @@ READS_OWN_PERIOD = {
 def test_a_policy_on_a_dimension_a_single_entity_condition_reads_refuses_it(
     package, monkeypatch, action, placement
 ):
-    body, expected = READS_OWN_PERIOD[placement]
-    query = {"version": 1, **body}
+    query, expected = READS_OWN_PERIOD[placement]
     runtime = _governed(package, _policy(action, PERIOD))
     try:
-        allowed = {**query, "policy_context": {"audience": "internal"}}
-        assert runtime.validate(allowed)["ok"]
-        assert runtime.compile(allowed)["rendered_sql"]
-        [row] = runtime.query(allowed)["rows"]
+        validate, compile_sql, answer = _operations(runtime, query, INTERNAL)
+        assert validate()["ok"]
+        assert compile_sql()["rendered_sql"]
+        [row] = answer()["rows"]
         assert float(row["value"]) == expected
         # An authored metric reading the hidden period is hidden with it: unknown.
         unknown = action == "hidden" and placement == "authored_filter"
         code = "OBJECT_NOT_FOUND" if unknown else "POLICY_DENIED"
-        refusals = _refusals(
-            runtime, monkeypatch, {**query, "policy_context": RESTRICTED}, code=code
-        )
+        refusals = _refusals(runtime, monkeypatch, query, code=code)
     finally:
         runtime.close()
 
@@ -1152,13 +1185,13 @@ def test_every_dimension_on_an_own_column_is_bound(package, monkeypatch, action,
         source_path=str(package),
     )
     try:
-        allowed = {**query, "policy_context": {"audience": "internal"}}
+        allowed = runtime.engine_payload(query, context=INTERNAL)
         assert dimension.id in bind_query(runtime.config, None, allowed).object_ids
         if read == "condition":
             assert PERIOD in bind_query(runtime.config, None, allowed).object_ids
-        [row] = runtime.query(allowed)["rows"]
+        [row] = runtime.query(query, context=INTERNAL)["rows"]
         assert float(row["value"]) == (165 if read == "condition" else 1195)
-        refusals = _refusals(runtime, monkeypatch, {**query, "policy_context": RESTRICTED})
+        refusals = _refusals(runtime, monkeypatch, query)
     finally:
         runtime.close()
     if action == "hidden":
@@ -1171,10 +1204,10 @@ def test_every_dimension_on_an_own_column_is_bound(package, monkeypatch, action,
 def test_an_own_column_with_no_governed_dimension_remains_allowed(package, without):
     runtime = _governed(package, _policy("deny", CURRENCY), without=without)
     try:
-        assert _ask(runtime, SUM_PERIOD, policy_context=RESTRICTED) == {None: 165}
-        assert _ask(
-            runtime, _aggif("sum", _cmp(AMOUNT, ">", 0), AMOUNT), policy_context=RESTRICTED
-        ) == {None: 1195}
+        assert _ask(runtime, SUM_PERIOD, context=RESTRICTED) == {None: 165}
+        assert _ask(runtime, _aggif("sum", _cmp(AMOUNT, ">", 0), AMOUNT), context=RESTRICTED) == {
+            None: 1195
+        }
     finally:
         runtime.close()
 
@@ -1208,7 +1241,7 @@ def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
     }
     model_path.write_text(yaml.safe_dump(model))
     expression = {
-        "derived": {"metric": "metric.shop.conditional"},
+        "derived": "metric.shop.conditional",
         "distribution": {
             "kind": "distribution",
             "function": "avg",
@@ -1230,7 +1263,8 @@ def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
             refusals = _refusals(
                 runtime,
                 monkeypatch,
-                {**query, "policy_context": {"audience": audience}},
+                query,
+                context={"audience": audience},
                 code="OBJECT_NOT_FOUND" if unknown else code,
             )
             assert all(unknown or "aggregate_if" in str(error) for error in refusals)

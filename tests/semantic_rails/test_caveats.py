@@ -174,10 +174,10 @@ def test_entity_value_caveat_avoids_generic_revenue_spam(tmp_path: Path) -> None
         generic = runtime.validate(_revenue_query())
         grouped = runtime.validate(_revenue_query(group_by=[STORE_NAME]))
         filtered = runtime.validate(
-            _revenue_query(where=[{"field": STORE_NAME, "op": "=", "value": "Brooklyn"}])
+            _revenue_query(where=[{"field": STORE_NAME, "op": "is", "value": "Brooklyn"}])
         )
         other_store = runtime.validate(
-            _revenue_query(where=[{"field": STORE_NAME, "op": "=", "value": "Philadelphia"}])
+            _revenue_query(where=[{"field": STORE_NAME, "op": "is", "value": "Philadelphia"}])
         )
 
         assert "SEMANTIC_CAVEAT_APPLIED" not in _caveat_codes(generic)
@@ -194,10 +194,10 @@ def test_audience_and_environment_scope_suppress_caveats(tmp_path: Path) -> None
     try:
         missing_context = runtime.validate(_revenue_query())
         wrong_context = runtime.validate(
-            _revenue_query(policy_context={"audience": "external", "environment": "production"})
+            _revenue_query(), context={"audience": "external", "environment": "production"}
         )
         matching_context = runtime.validate(
-            _revenue_query(policy_context={"audience": "internal", "environment": "production"})
+            _revenue_query(), context={"audience": "internal", "environment": "production"}
         )
 
         assert "SEMANTIC_CAVEAT_APPLIED" not in _caveat_codes(missing_context)
@@ -241,9 +241,8 @@ def test_point_caveat_triggers_on_containment_and_comparison_crossing(tmp_path: 
                     {
                         "expression": {
                             "kind": "prior_period",
-                            "measure": REVENUE,
-                            "offset": -1,
-                            "grain": "month",
+                            "input": REVENUE,
+                            "offset": {"unit": "month", "value": 1},
                         },
                         "as": "prior",
                     },
@@ -268,9 +267,8 @@ def test_comparison_windows_bookending_caveat_range_trigger(tmp_path: Path) -> N
                     {
                         "expression": {
                             "kind": "prior_period",
-                            "measure": REVENUE,
-                            "offset": -2,
-                            "grain": "month",
+                            "input": REVENUE,
+                            "offset": {"unit": "month", "value": 2},
                         },
                         "as": "prior",
                     },
@@ -285,9 +283,8 @@ def test_comparison_windows_bookending_caveat_range_trigger(tmp_path: Path) -> N
                     {
                         "expression": {
                             "kind": "prior_period",
-                            "measure": REVENUE,
-                            "offset": -1,
-                            "grain": "month",
+                            "input": REVENUE,
+                            "offset": {"unit": "month", "value": 1},
                         },
                         "as": "prior",
                     },
@@ -324,7 +321,7 @@ def test_caveat_warning_cap_emits_truncation_summary(tmp_path: Path) -> None:
     rows = [_revenue_caveat(id=f"caveat.test.cap_{index}") for index in range(6)]
     runtime = _runtime_with_caveats(tmp_path, rows)
     try:
-        result = runtime.validate(_revenue_query(verbosity="compact"))
+        result = runtime.validate(_revenue_query(), verbosity="compact")
 
         assert len(_applied_caveats(result)) == 5
         assert "SEMANTIC_CAVEATS_TRUNCATED" in _caveat_codes(result)
