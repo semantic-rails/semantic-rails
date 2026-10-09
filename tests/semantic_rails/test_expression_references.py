@@ -1,4 +1,4 @@
-"""Reference coverage follows the published Query IR expression definitions."""
+"""Reference coverage follows the published query schema's expression definitions."""
 
 from __future__ import annotations
 
@@ -9,14 +9,15 @@ from typing import Any
 
 import pytest
 
-from semantic_rails import caveats, expressions, resource_access, runtime
+from semantic_rails import caveats, expressions, query_call, resource_access, runtime
 from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime_parts import responses
 from semantic_rails.schema import SemanticPolicyConfig
 
-SCHEMA = load_contract("query_ir.v1.json")
+SCHEMA = load_contract("query.v2.json")
 DEFS = SCHEMA["$defs"]
+EXPRESSION = "#/$defs/Expression"
 MEASURE = "measure.jaffle.revenue_usd"
 METRIC = "metric.sales.aov_usd"
 ENTITY = "entity.jaffle_order"
@@ -24,39 +25,57 @@ DIMENSION = "dimension.jaffle_customer_type"
 ROLE = "temporal_role.jaffle_order_time"
 REF = {"kind": "measure", "measure": MEASURE}
 LITERAL = {"kind": "literal", "value": 1}
+RESTRICTED = {"audience": "restricted", "roles": ["restricted"]}
 REFERENCE_FIELDS = {
     "measure": MEASURE,
     "metric": METRIC,
     "entity": ENTITY,
     "temporal_role": ROLE,
 }
+# The schema leaves these keys open (any JSON); a value each kind accepts.
+OPEN_VALUES: dict[str, Any] = {
+    "op": ">",
+    "aggregation": "count",
+    "function": "median",
+    "name": "abs",
+    "unit": "day",
+    "value": 1,
+    "column": "order_id",
+    "period": "day",
+    "offset": {"unit": "day", "value": 1},
+    "window": {"unit": "day", "value": 1},
+    "matching_mode": "first_converted_after_base",
+}
+KIND_OPEN_VALUES: dict[tuple[str, str], Any] = {
+    ("arithmetic", "op"): "add",
+    ("binary", "op"): "add",
+    ("boolean", "op"): "and",
+    ("date_add", "value"): LITERAL,
+}
+# Kinds a call reads only inside another expression (a condition, a value, a date): their
+# references are walked like any other, and they bind as part of their parent.
+NESTED_ONLY = frozenset({"column", "date_add", "in", "not_in"})
 
 
-def _example(spec: dict[str, Any], key: str = "") -> Any:
-    if spec.get("$ref") == "#/$defs/SelectExpression":
+def _example(spec: dict[str, Any], key: str = "", kind: str = "") -> Any:
+    if spec.get("$ref") == EXPRESSION:
         return deepcopy(LITERAL)
     if "$ref" in spec:
-        return _example(DEFS[spec["$ref"].rsplit("/", 1)[1]], key)
-    if "oneOf" in spec:
-        return _example(spec["oneOf"][0], key)
+        return _example(DEFS[spec["$ref"].rsplit("/", 1)[1]], key, kind)
     if "const" in spec:
         return spec["const"]
     if "enum" in spec:
         return spec["enum"][0]
     if key in REFERENCE_FIELDS:
         return REFERENCE_FIELDS[key]
-    kind = spec.get("type")
-    if kind == "object":
-        return {name: _example(spec["properties"][name], name) for name in spec.get("required", [])}
-    if kind == "array":
-        return [_example(spec["items"], key)]
-    if kind in ("integer", "number"):
-        return max(1, spec.get("minimum", 1))
-    if kind == "boolean":
-        return False
-    if kind == "string":
-        return {"unit": "day", "function": "median", "name": "abs", "op": ">"}.get(key, "day")
-    return 1
+    if spec.get("type") == "object":
+        return {
+            name: _example(spec["properties"][name], name, kind)
+            for name in spec.get("required", [])
+        }
+    if spec.get("type") == "array":
+        return [_example(spec["items"], key, kind)]
+    return deepcopy(KIND_OPEN_VALUES.get((kind, key), OPEN_VALUES.get(key, "day")))
 
 
 def _table_column_expression_seed():
@@ -68,159 +87,130 @@ def _table_column_expression_seed():
 
 
 def _cases():
-    """Every schema kind/alias, plus every child/ref property independently.
+    """Every schema kind, plus every child/ref property independently.
 
     Opaque scalar parameters are data, not expression-reference positions.
     """
     for name, definition in DEFS.items():
         props = definition.get("properties", {})
-        if "kind" not in props and name not in (
-            "MeasureRefKindShorthand",
-            "MetricRefKindShorthand",
-        ):
+        if "kind" not in props:
             continue
-        kinds = props.get("kind", {}).get("enum", [props.get("kind", {}).get("const")])
-        for kind in kinds:
-            example = _example(definition)
-            if kind is not None:
-                example["kind"] = kind
-            # Required arbitrary expression objects need a parseable seed.
-            for key in ("condition", "expr", "low", "high"):
-                if key in example:
-                    example[key] = deepcopy(LITERAL)
-            if kind == "call":
-                example["args"] = [deepcopy(LITERAL)]
-            if name == "PriorPeriodExprShorthand":
-                example["offset"] = -1
-            if (
-                kind
-                in {
-                    "cumulative",
-                    "rolling",
-                    "prior_period",
-                    "period_to_date",
-                    "entity_value",
-                    "metric_predicate",
+        kind = props["kind"]["const"]
+        example = _example(definition, kind=kind)
+        # Required arbitrary expression objects need a parseable seed.
+        for key in ("condition", "expr", "low", "high"):
+            if key in example:
+                example[key] = deepcopy(LITERAL)
+        if kind == "call":
+            example["args"] = [deepcopy(LITERAL)]
+        if kind in {
+            "cumulative",
+            "rolling",
+            "prior_period",
+            "period_to_date",
+            "entity_value",
+            "metric_predicate",
+        }:
+            example["input"] = deepcopy(REF)
+        if kind == "aggregate_if":
+            example.update(_table_column_expression_seed())
+        if kind == "conversion":
+            example.update(
+                {
+                    "base": {"kind": "measure", "measure": "measure.jaffle.session_starts"},
+                    "converted": {"kind": "measure", "measure": "measure.jaffle.order_count"},
+                    "entity": "entity.jaffle_customer",
+                    "window": {"unit": "day", "value": 28},
+                    "matching_mode": "first_converted_after_base",
                 }
-                and name != "PriorPeriodExprShorthand"
-            ):
-                example["input"] = deepcopy(REF)
-            if kind == "aggregate_if":
-                example.update(_table_column_expression_seed())
-            if kind == "conversion":
-                example.update(
-                    {
-                        "base": {"measure": "measure.jaffle.session_starts"},
-                        "converted": {"measure": "measure.jaffle.order_count"},
-                        "entity": "entity.jaffle_customer",
-                        "window": {"unit": "day", "value": 28},
-                        "matching_mode": "first_converted_after_base",
+            )
+        if kind == "distribution":
+            example.update(
+                {
+                    "function": "avg",
+                    "over": {"kind": "entity_value", "entity": ENTITY, "input": deepcopy(REF)},
+                }
+            )
+        if kind == "period_to_date":
+            example["period"] = "month"
+        if kind == "metric_predicate":
+            example.update({"op": ">", "value": 0})
+        for key, spec in props.items():
+            probes: list[tuple[Any, str, bool]] = []
+            if kind == "aggregate_if" and key in {"condition", "value"}:
+                column = {"kind": "column", "entity": ENTITY, "column": "order_id"}
+                value = (
+                    column
+                    if key == "value"
+                    else {
+                        "kind": "comparison",
+                        "op": ">",
+                        "left": column,
+                        "right": deepcopy(LITERAL),
                     }
                 )
-            if kind == "distribution":
-                example.update(
-                    {
-                        "function": "avg",
-                        "over": {"kind": "entity_value", "entity": ENTITY, "input": deepcopy(REF)},
-                    }
+                probes.append((value, ENTITY, True))
+            elif kind == "conversion" and key in {"base", "converted"}:
+                measure_id = (
+                    "measure.jaffle.session_starts"
+                    if key == "base"
+                    else "measure.jaffle.order_count"
                 )
-            if kind == "period_to_date":
-                example["period"] = "month"
-            if kind == "metric_predicate":
-                example.update({"op": ">", "value": 0})
-            for key, spec in props.items():
-                probes: list[tuple[Any, str, bool]] = []
-                if kind == "aggregate_if" and key in {"condition", "value"}:
-                    column = {"kind": "column", "entity": ENTITY, "column": "order_id"}
-                    value = (
-                        column
-                        if key == "value"
-                        else {
-                            "kind": "comparison",
-                            "op": ">",
-                            "left": column,
-                            "right": deepcopy(LITERAL),
-                        }
+                probes.append(({"kind": "measure", "measure": measure_id}, measure_id, True))
+            elif kind == "conversion" and key == "entity":
+                probes.append(("entity.jaffle_customer", "entity.jaffle_customer", True))
+            elif kind == "entity_value" and key == "where":
+                continue  # value predicates are scalar data, not dimension references
+            elif kind == "distribution" and key == "over":
+                probes.append(
+                    (
+                        {"kind": "entity_value", "entity": ENTITY, "input": deepcopy(REF)},
+                        MEASURE,
+                        True,
                     )
-                    probes.append((value, ENTITY, True))
-                elif kind == "conversion" and key in {"base", "converted"}:
-                    measure_id = (
-                        "measure.jaffle.session_starts"
-                        if key == "base"
-                        else "measure.jaffle.order_count"
+                )
+            elif key in REFERENCE_FIELDS:
+                probes.append((REFERENCE_FIELDS[key], REFERENCE_FIELDS[key], True))
+            elif spec.get("$ref") == EXPRESSION:
+                probes.append((deepcopy(REF), MEASURE, True))
+            elif key == "args":
+                args = [deepcopy(REF)]
+                if kind == "boolean" and example["op"] in {"and", "or"}:
+                    args.append({"kind": "literal", "value": True})
+                probes.append((args, MEASURE, True))
+            elif key == "whens":
+                for slot in ("when", "then"):
+                    row = {"when": deepcopy(LITERAL), "then": deepcopy(LITERAL)}
+                    row[slot] = deepcopy(REF)
+                    probes.append(([row], MEASURE, True))
+            elif key in ("partition_by", "constant_properties"):
+                probes.append(([DIMENSION], DIMENSION, True))
+            elif key == "where":
+                probes.append(([{"field": DIMENSION, "op": "is", "value": "new"}], DIMENSION, True))
+            elif key == "predicates":
+                predicate = {"entity": ENTITY, "measure": MEASURE, "op": "gt", "value": 0}
+                probes.append(([{**predicate, "over": "all_time"}], MEASURE, True))
+            elif key == "dimension_bindings":
+                probes.append(({DIMENSION: {"side": "base"}}, DIMENSION, True))
+            elif key == "anchor":
+                probes.append(
+                    (
+                        {"temporal_role": "temporal_role.jaffle_customer_first_order_at"},
+                        "temporal_role.jaffle_customer_first_order_at",
+                        False,
                     )
-                    probes.append(({"measure": measure_id}, measure_id, True))
-                elif kind == "conversion" and key == "entity":
-                    probes.append(("entity.jaffle_customer", "entity.jaffle_customer", True))
-                elif kind == "entity_value" and key == "where":
-                    continue  # value predicates are scalar data, not dimension references
-                elif key in REFERENCE_FIELDS:
-                    probes.append((REFERENCE_FIELDS[key], REFERENCE_FIELDS[key], True))
-                elif spec.get("$ref") == "#/$defs/SelectExpression" or key in (
-                    "condition",
-                    "expr",
-                    "low",
-                    "high",
-                ):
-                    probes.append((deepcopy(REF), MEASURE, True))
-                elif key == "over":
-                    probes.append(
-                        (
-                            {"kind": "entity_value", "entity": ENTITY, "input": deepcopy(REF)},
-                            MEASURE,
-                            True,
-                        )
-                    )
-                elif key == "args":
-                    args = [deepcopy(REF)]
-                    if kind == "boolean" and example["op"] in {"and", "or"}:
-                        args.append({"kind": "literal", "value": True})
-                    probes.append((args, MEASURE, True))
-                elif key == "whens":
-                    for slot in ("when", "then"):
-                        row = {"when": deepcopy(LITERAL), "then": deepcopy(LITERAL)}
-                        row[slot] = deepcopy(REF)
-                        probes.append(([row], MEASURE, True))
-                elif key in ("partition_by", "constant_properties"):
-                    probes.append(([DIMENSION], DIMENSION, True))
-                elif key == "where":
-                    probes.append(
-                        ([{"field": DIMENSION, "op": "=", "value": "new"}], DIMENSION, True)
-                    )
-                elif key == "predicates":
-                    probes.append(
-                        (
-                            [{"entity": ENTITY, "measure": MEASURE, "op": ">", "value": 0}],
-                            MEASURE,
-                            True,
-                        )
-                    )
-                elif key == "dimension_bindings":
-                    probes.append(({DIMENSION: {"side": "base"}}, DIMENSION, True))
-                elif key == "anchor":
-                    probes.append(
-                        (
-                            {"temporal_role": "temporal_role.jaffle_customer_first_order_at"},
-                            "temporal_role.jaffle_customer_first_order_at",
-                            False,
-                        )
-                    )
-                elif key == "value" and kind == "aggregate_if":
-                    probes.append((deepcopy(REF), MEASURE, True))
-                elif key == "value" and kind == "literal":
-                    probes.append((MEASURE, "", False))
-                elif (
-                    key != "parameters"
-                    and spec.get("type") == "object"
-                    and spec.get("additionalProperties") is True
-                ):
-                    probes.append(({"extension": [{"field": DIMENSION}]}, DIMENSION, False))
-                for index, (value, expected, normalize) in enumerate(probes):
-                    payload = deepcopy(example)
-                    payload[key] = value
-                    if key == "anchor":
-                        payload["window"] = {"unit": "day", "value": 1}
-                    yield f"{name}-{kind}-{key}-{index}", payload, expected, normalize
+                )
+            elif key == "value" and kind == "literal":
+                probes.append((MEASURE, "", False))
+            elif key in {"filter", "window"} and kind in {"aggregate", "semi_additive"}:
+                probes.append(({"extension": [{"field": DIMENSION}]}, DIMENSION, False))
+            for index, (value, expected, normalize) in enumerate(probes):
+                payload = deepcopy(example)
+                payload[key] = value
+                if key == "anchor":
+                    payload["window"] = {"unit": "day", "value": 1}
+                bound = normalize and kind not in NESTED_ONLY
+                yield f"{name}-{kind}-{key}-{index}", payload, expected, bound
 
 
 CASES = list(_cases())
@@ -268,6 +258,11 @@ def base_config():
     return load_package_config("configs/semantic_rails/jaffle_shop")
 
 
+def _engine(config, query):
+    """The compiler's own form of a call."""
+    return query_call.read_call(query, config=config)[0]
+
+
 def _schema_query(case, nested=False):
     name, raw, _, _ = case
     expression = deepcopy(raw)
@@ -286,10 +281,16 @@ def _schema_query(case, nested=False):
             expression["input"] = {
                 "kind": "ratio",
                 "numerator": expression["input"],
-                "denominator": {"measure": "measure.jaffle.order_count"},
+                "denominator": {"kind": "measure", "measure": "measure.jaffle.order_count"},
             }
-        query["select"] = [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "value"}]
-        query["metric_filters"] = [{"expression": expression, "op": "=", "value": True}]
+        # A call filters by an inline predicate as a predicate of a scoped aggregate.
+        expression.pop("kind")
+        scoped = {
+            "kind": "scoped_aggregate",
+            "measure": "measure.jaffle.order_count",
+            "predicates": [expression],
+        }
+        query["select"] = [{"expression": scoped, "as": "value"}]
     else:
         if nested and kind not in {"distribution", "entity_value"}:
             expression = {
@@ -317,9 +318,10 @@ def test_runtime_blocks_before_compile(base_config, monkeypatch, case, nested, a
 
     _, _, protected, _ = case
     query = _schema_query(case, nested)
-    unprotected = compiler.bind_query(base_config, None, query)
+    internal = _engine(base_config, query)
+    unprotected = compiler.bind_query(base_config, None, internal)
     assert protected in unprotected.object_ids
-    assert compiler.compile_query(base_config, None, query, binding=unprotected)["sql"]
+    assert compiler.compile_query(base_config, None, internal, binding=unprotected)["sql"]
     config = replace(
         base_config,
         semantic_policies=[
@@ -339,12 +341,11 @@ def test_runtime_blocks_before_compile(base_config, monkeypatch, case, nested, a
 
     monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
     monkeypatch.setattr(engine, "_get_adapter", no_output)
-    query["policy_context"] = {"audience": "restricted", "roles": ["restricted"]}
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        assert engine.validate(query, context=RESTRICTED)["errors"][0]["code"] == "POLICY_DENIED"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
-                operation(query)
+                operation(query, context=RESTRICTED)
             assert exc.value.code == "POLICY_DENIED"
             assert exc.value.details["policy_effects"][0]["action"] == action
     finally:
@@ -386,9 +387,11 @@ def test_schema_kinds_are_all_exercised():
         if kind is not None
     }
     assert {case[1].get("kind") for case in CASES} - {None} == expected
-    # Literal has separate permitted-data controls. Every other executable
-    # schema tag must have a strict bind/compile/deny probe.
-    assert {case[1].get("kind") for case in CASES if case[3]} - {None} == expected - {"literal"}
+    # Literal has separate permitted-data controls. Every other schema tag a call may select
+    # must have a strict bind/compile/deny probe.
+    assert {case[1].get("kind") for case in CASES if case[3]} - {None} == (
+        expected - {"literal"} - NESTED_ONLY
+    )
 
 
 # Tags carried as data inside expression payloads (inline thresholds and
@@ -399,8 +402,7 @@ SHAPE_DATA_TAGS = {"percentile", "value_filter"}
 def test_shape_vocabulary_follows_the_expression_parser():
     """Query, segment and config expressions share the parser's tag vocabulary.
 
-    Parser aliases that the published schema does not list (such as ``nullif``
-    and ``not_in``) must never be refused before normalization, and only data
+    Every kind the parser reads is accepted before normalization, and only data
     tags may extend the shape vocabulary beyond what the parser dispatches.
     """
     parser_kinds = set(expressions._VALID_KEYS_BY_KIND)
@@ -413,7 +415,8 @@ def test_shape_vocabulary_follows_the_expression_parser():
         if kind is not None
     }
     assert schema_kinds <= parser_kinds
-    assert {"nullif", "not_in"} <= parser_kinds - schema_kinds
+    # The schema lists every kind a call may use: all the parser's but the retired ones.
+    assert parser_kinds - schema_kinds == query_call.RETIRED_KINDS
     assert expressions._reference_expression_kinds() == parser_kinds | SHAPE_DATA_TAGS
     for kind in parser_kinds | SHAPE_DATA_TAGS:
         for spelling in (kind, f" {kind} "):
@@ -432,13 +435,17 @@ ORDER_COLUMN = {"kind": "column", "entity": ENTITY, "column": "order_id"}
 ALIAS_EXAMPLES = {
     "nullif": {
         "kind": "nullif",
-        "value": {"measure": MEASURE},
+        "value": deepcopy(REF),
         "null_value": {"kind": "literal", "value": 0},
     },
     "not_in": {
         "kind": "aggregate_if",
         "aggregation": "sum",
-        "condition": {"kind": "not_in", "expr": ORDER_COLUMN, "values": [0, 1]},
+        "condition": {
+            "kind": "not_in",
+            "expr": ORDER_COLUMN,
+            "values": [{"kind": "literal", "value": 0}, {"kind": "literal", "value": 1}],
+        },
         "value": ORDER_COLUMN,
     },
 }
@@ -454,14 +461,6 @@ ALIAS_SLOTS = [
 def _alias_query(expression, placement):
     if placement == "nested":
         expression = {"kind": "ratio", "numerator": expression, "denominator": deepcopy(LITERAL)}
-    if placement == "metric_filter":
-        # The selected measure reads neither orders nor revenue, so only the
-        # metric filter's alias slot can bind the protected object.
-        return {
-            "select": [{"expression": "measure.jaffle.customer_count", "as": "n"}],
-            "group_by": [DIMENSION],
-            "metric_filters": [{"expression": expression, "op": ">", "value": 0}],
-        }
     return {"select": [{"expression": expression, "as": "x"}]}
 
 
@@ -484,15 +483,17 @@ def _alias_dependency(alias, slot, *, protected=True):
     if alias == "nullif":
         expression = {
             "kind": "nullif",
-            "value": {"measure": "measure.jaffle.order_count"},
+            "value": {"kind": "measure", "measure": "measure.jaffle.order_count"},
             "null_value": {"kind": "literal", "value": 0},
         }
-        expression[slot] = deepcopy(REF) if protected else {"measure": "measure.jaffle.order_count"}
+        unprotected = {"kind": "measure", "measure": "measure.jaffle.order_count"}
+        expression[slot] = deepcopy(REF) if protected else unprotected
         return expression, MEASURE
     column = deepcopy(ORDER_COLUMN if protected else CUSTOMER_COLUMN)
     condition = {"kind": "not_in", "expr": deepcopy(LITERAL), "values": [column]}
     if slot == "expr":
-        condition = {"kind": "not_in", "expr": column, "values": [0, 1]}
+        values = [{"kind": "literal", "value": 0}, {"kind": "literal", "value": 1}]
+        condition = {"kind": "not_in", "expr": column, "values": values}
     expression = {
         "kind": "aggregate_if",
         "aggregation": "sum",
@@ -512,7 +513,8 @@ def _restricting_policy(protected, action, scope):
     )
 
 
-@pytest.mark.parametrize("placement", ["direct", "nested", "metric_filter", "segment"])
+# A package's metric filter (a segment's) is the one filter slot an inline expression has.
+@pytest.mark.parametrize("placement", ["direct", "nested", "segment"])
 @pytest.mark.parametrize("alias", sorted(ALIAS_EXAMPLES))
 def test_parser_aliases_validate_and_compile(base_config, alias, placement):
     expression = deepcopy(ALIAS_EXAMPLES[alias])
@@ -537,9 +539,7 @@ def test_parser_aliases_validate_and_compile(base_config, alias, placement):
 @pytest.mark.parametrize(
     "alias,slot,placement,action,scope",
     _rotate_policy(
-        (*slot, placement)
-        for slot in ALIAS_SLOTS
-        for placement in ["direct", "nested", "metric_filter"]
+        (*slot, placement) for slot in ALIAS_SLOTS for placement in ["direct", "nested"]
     ),
 )
 def test_parser_alias_dependencies_block_before_rendering(
@@ -550,10 +550,12 @@ def test_parser_alias_dependencies_block_before_rendering(
     expression, protected = _alias_dependency(alias, slot)
     query = _alias_query(expression, placement)
     control = _alias_query(_alias_dependency(alias, slot, protected=False)[0], placement)
-    assert protected not in compiler.bind_query(base_config, None, control).object_ids
-    unprotected = compiler.bind_query(base_config, None, query)
+    control_binding = compiler.bind_query(base_config, None, _engine(base_config, control))
+    assert protected not in control_binding.object_ids
+    internal = _engine(base_config, query)
+    unprotected = compiler.bind_query(base_config, None, internal)
     assert protected in unprotected.object_ids
-    assert compiler.compile_query(base_config, None, query, binding=unprotected)["sql"]
+    assert compiler.compile_query(base_config, None, internal, binding=unprotected)["sql"]
     config = replace(base_config, semantic_policies=[_restricting_policy(protected, action, scope)])
     engine = runtime.Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
 
@@ -563,12 +565,11 @@ def test_parser_alias_dependencies_block_before_rendering(
     monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
     monkeypatch.setattr(engine, "_compile", no_output)
     monkeypatch.setattr(engine, "_get_adapter", no_output)
-    query["policy_context"] = {"audience": "restricted", "roles": ["restricted"]}
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        assert engine.validate(query, context=RESTRICTED)["errors"][0]["code"] == "POLICY_DENIED"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
-                operation(query)
+                operation(query, context=RESTRICTED)
             assert exc.value.code == "POLICY_DENIED"
             assert exc.value.details["policy_effects"][0]["action"] == action
     finally:
@@ -607,52 +608,50 @@ def test_parser_alias_segment_dependencies_block_before_rendering(
 
 def test_policy_context_metadata_is_not_an_expression_position(base_config):
     note = {"kind": "annotation", "detail": {"kind": "future_expression"}}
-    count = {"measure": "measure.jaffle.order_count"}
+    count = "measure.jaffle.order_count"
     permitted = {"select": [{"expression": count, "as": "n"}]}
+    predicate = {"input": note, "entity": ENTITY, "op": "gt", "value": 0, "over": "all_time"}
+    # The call refuses an unknown kind where it reads one; a predicate's own input is read
+    # by the compiler.
     refused = [
-        {"select": [{"expression": {**note, "measure": MEASURE}, "as": "x"}]},
-        {
-            "select": [{"expression": count, "as": "n"}],
-            "metric_filters": [
-                {
-                    "expression": {"kind": "ratio", "numerator": note, "denominator": LITERAL},
-                    "op": ">",
-                    "value": 0,
-                }
-            ],
-        },
-        {
-            "select": [
-                {
-                    "expression": {
-                        "kind": "scoped_aggregate",
-                        "measure": MEASURE,
-                        "predicates": [{"input": note, "entity": ENTITY, "op": ">", "value": 0}],
-                    },
-                    "as": "x",
-                }
-            ]
-        },
+        (
+            {"select": [{"expression": {**note, "measure": MEASURE}, "as": "x"}]},
+            "INVALID_QUERY",
+        ),
+        (
+            {
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "scoped_aggregate",
+                            "measure": MEASURE,
+                            "predicates": [predicate],
+                        },
+                        "as": "x",
+                    }
+                ]
+            },
+            "INVALID_EXPRESSION_AST",
+        ),
     ]
     engine = runtime.Runtime.from_config(
         replace(base_config, semantic_policies=[]), source_path="configs/semantic_rails/jaffle_shop"
     )
+    context = {"audience": "finance", "note": deepcopy(note)}
     try:
-        for query in (permitted, *refused):
-            query["policy_context"] = {"audience": "finance", "note": deepcopy(note)}
-        assert engine.validate(permitted)["ok"]
-        assert engine.compile(permitted)["rendered_sql"]
-        for query in refused:
-            assert engine.validate(query)["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
+        assert engine.validate(permitted, context=context)["ok"]
+        assert engine.compile(permitted, context=context)["rendered_sql"]
+        for query, code in refused:
+            assert engine.validate(query, context=context)["errors"][0]["code"] == code
             with pytest.raises(SemanticLayerError) as exc:
-                engine.compile(query)
-            assert exc.value.code == "INVALID_EXPRESSION_AST"
+                engine.compile(query, context=context)
+            assert exc.value.code == code
     finally:
         engine.close()
 
 
 def _unknown_kind_request(placement):
-    count = {"measure": "measure.jaffle.order_count"}
+    count = {"kind": "measure", "measure": "measure.jaffle.order_count"}
     unknown = {"kind": "future_expression"}
     query: dict[str, Any] = {"select": [{"expression": count, "as": "n"}]}
     if placement == "unrecognized_key":
@@ -704,18 +703,41 @@ def _assert_shape_refused_before_output(
 
 
 @pytest.mark.parametrize(
-    "placement", ["unrecognized_key", "note_key", "limits", "entity_value_where"]
+    ("placement", "expected_code"),
+    [
+        ("unrecognized_key", "INVALID_QUERY"),
+        ("limits", "INVALID_QUERY"),
+        ("entity_value_where", "INVALID_EXPRESSION_AST"),
+    ],
+    ids=["unrecognized_key", "limits", "entity_value_where"],
 )
-def test_request_shapes_are_checked_before_rendering(base_config, monkeypatch, placement):
-    """Binding shape-checks every request key, including ones the IR ignores."""
-    _assert_shape_refused_before_output(base_config, monkeypatch, _unknown_kind_request(placement))
+def test_request_shapes_are_checked_before_rendering(
+    base_config, monkeypatch, placement, expected_code
+):
+    """Every key of a call is checked, the expressions it holds included."""
+    _assert_shape_refused_before_output(
+        base_config, monkeypatch, _unknown_kind_request(placement), expected_code
+    )
+
+
+def test_a_note_key_never_reaches_the_compiler(base_config):
+    """A key starting with ``_`` is a note for people: the call ignores it."""
+    engine = runtime.Runtime.from_config(
+        replace(base_config, semantic_policies=[]), source_path="configs/semantic_rails/jaffle_shop"
+    )
+    try:
+        query = _unknown_kind_request("note_key")
+        assert engine.validate(query)["ok"]
+        assert "_note" not in engine.engine_payload(query)
+    finally:
+        engine.close()
 
 
 @pytest.mark.parametrize(
     ("placement", "expected_code"),
     [
         ("select_item_policy_context", "INVALID_QUERY"),
-        ("expression_policy_context", "INVALID_EXPRESSION_AST"),
+        ("expression_policy_context", "INVALID_QUERY"),
     ],
     ids=["select_item_policy_context", "expression_policy_context"],
 )
@@ -771,11 +793,9 @@ def test_sibling_paths_and_recipe_closure(base_config, monkeypatch, action):
             # This also guards the independent membership/count SQL path.
             lambda: engine.segment_preview(segment.id, policy_context=context),
             lambda: engine.compile(
-                {
-                    "select": [{"expression": recipe.id, "as": "x"}],
-                    "policy_context": context,
-                }
+                {"select": [{"expression": recipe.id, "as": "x"}]}, context=context
             ),
+            # The metadata helper reads the engine's own form of a seed query.
             lambda: valid_values_payload(
                 engine,
                 dimension_id=DIMENSION,
@@ -860,17 +880,30 @@ def _spelling_case(base_config, spelling):
             "padded_alias": " customer_kind ",
             **SCALAR_FIELDS,
         }[spelling]
-        expression["where"] = [{"field": field, "op": "=", "value": "new"}]
+        expression["where"] = [{"field": field, "op": "is", "value": "new"}]
         protected = DIMENSION
     else:
         reference = {
             "measure": {"measure": f" {MEASURE} "},
             "metric": {"metric": f" {METRIC} "},
-            "input": {"input": {"measure": f" {MEASURE} "}},
+            "input": {"input": {"kind": "measure", "measure": f" {MEASURE} "}},
         }[spelling]
-        expression["predicates"] = [{"entity": ENTITY, **reference, "op": ">", "value": 0}]
+        expression["predicates"] = [
+            {"entity": ENTITY, **reference, "op": "gt", "value": 0, "over": "all_time"}
+        ]
         protected = MEASURE
     return config, expression, protected
+
+
+def _config_form(expression):
+    """A call's expression as a package metric writes it: a predicate states no ``over``."""
+    if "predicates" not in expression:
+        return expression
+    predicates = [
+        {**{key: value for key, value in row.items() if key != "over"}, "op": ">"}
+        for row in expression["predicates"]
+    ]
+    return {**expression, "predicates": predicates}
 
 
 @pytest.mark.parametrize(
@@ -899,7 +932,9 @@ def test_reference_spellings_denied_before_compile(
     recipe = replace(
         config.metric_recipes[0],
         id="metric.test.spelling",
-        expression=expressions.parse_semantic_expression(expression, context="config"),
+        expression=expressions.parse_semantic_expression(
+            _config_form(expression), context="config"
+        ),
     )
     config = replace(
         config,
@@ -917,9 +952,8 @@ def test_reference_spellings_denied_before_compile(
     if placement == "nested":
         expression = {"kind": "ratio", "numerator": expression, "denominator": LITERAL}
     elif placement.endswith("recipe"):
-        expression = {"metric": recipe.id}
-    context = {"audience": "restricted", "roles": ["restricted"]}
-    query = {"select": [{"expression": expression, "as": "x"}], "policy_context": context}
+        expression = recipe.id
+    query = {"select": [{"expression": expression, "as": "x"}]}
     engine = runtime.Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
 
     def no_compile(*args, **kwargs):
@@ -928,10 +962,10 @@ def test_reference_spellings_denied_before_compile(
     monkeypatch.setattr(engine, "_compile", no_compile)
     monkeypatch.setattr(engine, "_get_adapter", no_compile)
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        assert engine.validate(query, context=RESTRICTED)["errors"][0]["code"] == "POLICY_DENIED"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
-                operation(query)
+                operation(query, context=RESTRICTED)
             assert exc.value.code == "POLICY_DENIED"
         if placement.endswith("recipe"):
             access = resource_access.ResourceAccess(
@@ -944,7 +978,7 @@ def test_reference_spellings_denied_before_compile(
                 ),
             )
             with pytest.raises(SemanticLayerError) as exc:
-                access.enforce_query(query)
+                access.enforce_query(_engine(config, query))
             assert exc.value.code == "RESOURCE_ACCESS_DENIED"
     finally:
         engine.close()
@@ -962,16 +996,27 @@ def test_permitted_reference_spellings_compile(base_config, spelling):
         engine.close()
 
 
-@pytest.mark.parametrize("placement", ["direct", "nested", "predicate"])
-def test_unknown_kind_with_measure_fails_before_normalization(base_config, monkeypatch, placement):
+# The call refuses an unknown kind where it reads one; a predicate's input is the compiler's.
+@pytest.mark.parametrize(
+    ("placement", "code"),
+    [
+        ("direct", "INVALID_QUERY"),
+        ("nested", "INVALID_QUERY"),
+        ("predicate", "INVALID_EXPRESSION_AST"),
+    ],
+)
+def test_unknown_kind_with_measure_fails_before_normalization(
+    base_config, monkeypatch, placement, code
+):
     expression = {"kind": "future_expression", "measure": MEASURE, "child": REF}
     if placement == "nested":
         expression = {"kind": "ratio", "numerator": expression, "denominator": LITERAL}
     elif placement == "predicate":
+        predicate = {"input": expression, "entity": ENTITY, "op": "gt", "value": 0}
         expression = {
             "kind": "scoped_aggregate",
             "measure": MEASURE,
-            "predicates": [{"input": expression, "entity": ENTITY, "op": ">", "value": 0}],
+            "predicates": [{**predicate, "over": "all_time"}],
         }
     engine = runtime.Runtime.from_config(
         base_config, source_path="configs/semantic_rails/jaffle_shop"
@@ -979,11 +1024,11 @@ def test_unknown_kind_with_measure_fails_before_normalization(base_config, monke
     monkeypatch.setattr(engine, "_compile", lambda *a, **k: pytest.fail("unknown kind compiled"))
     query = {"select": [{"expression": expression, "as": "x"}]}
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
+        assert engine.validate(query)["errors"][0]["code"] == code
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
                 operation(query)
-            assert exc.value.code == "INVALID_EXPRESSION_AST"
+            assert exc.value.code == code
     finally:
         engine.close()
 
@@ -1013,7 +1058,7 @@ def test_recipe_filter_spec_spellings(base_config, spelling, action):
             )
         ],
     )
-    query = {"select": [{"expression": recipe.id, "as": "x"}]}
+    query = _engine(config, {"select": [{"expression": recipe.id, "as": "x"}]})
     assert protected in runtime._query_object_ids(query, config)
     access = resource_access.ResourceAccess(
         config, RequestContext(audience="restricted", metric_allowlist=(recipe.id,))
@@ -1144,18 +1189,15 @@ def test_table_column_denied_before_compile(
     if placement == "nested":
         expression = {"kind": "ratio", "numerator": expression, "denominator": LITERAL}
     elif placement == "recipe":
-        expression = {"metric": recipe.id}
-    query = {
-        "select": [{"expression": expression, "as": "x"}],
-        "policy_context": {"roles": ["restricted"], "audience": "restricted"},
-    }
+        expression = recipe.id
+    query = {"select": [{"expression": expression, "as": "x"}]}
     engine = runtime.Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     monkeypatch.setattr(engine, "_compile", lambda *a, **k: pytest.fail("table column compiled"))
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        assert engine.validate(query, context=RESTRICTED)["errors"][0]["code"] == "POLICY_DENIED"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
-                operation(query)
+                operation(query, context=RESTRICTED)
             assert exc.value.code == "POLICY_DENIED"
         if placement == "recipe":
             access = resource_access.ResourceAccess(
@@ -1165,7 +1207,7 @@ def test_table_column_denied_before_compile(
                 ),
             )
             with pytest.raises(SemanticLayerError) as exc:
-                access.enforce_query(query)
+                access.enforce_query(_engine(config, query))
             assert exc.value.code == "RESOURCE_ACCESS_DENIED"
     finally:
         engine.close()
@@ -1203,7 +1245,7 @@ def _dependency_case(base_config, form):
     query = {"select": [{"expression": deepcopy(LITERAL), "as": "x"}]}
     protected = measure.entity
     if form in {"measure", "metric", "nested_metric"}:
-        expression = deepcopy(REF) if form == "measure" else {"metric": recipe.id}
+        expression = deepcopy(REF) if form == "measure" else recipe.id
         if form == "nested_metric":
             expression = {"kind": "ratio", "numerator": expression, "denominator": LITERAL}
         query["select"][0]["expression"] = expression
@@ -1211,7 +1253,7 @@ def _dependency_case(base_config, form):
         query["group_by"] = [dimension.id]
         protected = dimension.entity
     elif form == "where":
-        query["where"] = [{"field": dimension.id, "op": "=", "value": "new"}]
+        query["where"] = [{"field": dimension.id, "op": "is", "value": "new"}]
         protected = dimension.entity
     else:
         query["time"] = {"temporal_role": role.id, "grain": "day"}
@@ -1236,7 +1278,6 @@ def test_authored_dependencies_denied_before_compile(base_config, monkeypatch, f
             )
         ],
     )
-    query["policy_context"] = {"roles": ["restricted"], "audience": "restricted"}
     engine = runtime.Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
 
     def no_compile(*args, **kwargs):
@@ -1245,10 +1286,10 @@ def test_authored_dependencies_denied_before_compile(base_config, monkeypatch, f
     monkeypatch.setattr(engine, "_compile", no_compile)
     monkeypatch.setattr(engine, "_get_adapter", no_compile)
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        assert engine.validate(query, context=RESTRICTED)["errors"][0]["code"] == "POLICY_DENIED"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
-                operation(query)
+                operation(query, context=RESTRICTED)
             assert exc.value.code == "POLICY_DENIED"
         if form == "metric":
             access = resource_access.ResourceAccess(
@@ -1260,7 +1301,7 @@ def test_authored_dependencies_denied_before_compile(base_config, monkeypatch, f
                 ),
             )
             with pytest.raises(SemanticLayerError) as exc:
-                access.enforce_query(query)
+                access.enforce_query(_engine(config, query))
             assert exc.value.code == "RESOURCE_ACCESS_DENIED"
     finally:
         engine.close()
@@ -1327,10 +1368,8 @@ def _implicit_time_case(base_config, kind, placement, override=""):
     query = {}
     if override == "expression":
         leaf["temporal_role"] = safe_role.id
-    elif override == "query":
-        query["temporal_role_overrides"] = {measure_id: safe_role.id}
     elif override == "time":
-        query["time"] = {"temporal_role": safe_role.id}
+        query["time"] = {"temporal_role": safe_role.id, "grain": "day"}
     expression = leaf
     if kind == "conversion":
         expression = {
@@ -1352,7 +1391,7 @@ def _implicit_time_case(base_config, kind, placement, override=""):
         recipe, id="metric.test.outer_time", expression=expressions.MetricRecipeRefExpr(recipe.id)
     )
     if placement == "recipe":
-        expression = {"metric": outer.id}
+        expression = outer.id
     elif placement == "nested":
         expression = {"kind": "ratio", "numerator": expression, "denominator": deepcopy(LITERAL)}
     query["select"] = [{"expression": expression, "as": "x"}]
@@ -1396,7 +1435,6 @@ def test_implicit_temporal_dependencies_block_before_compile(
             )
         ],
     )
-    query["policy_context"] = {"roles": ["restricted"], "audience": "restricted"}
     engine = runtime.Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
 
     def no_compile(*args, **kwargs):
@@ -1406,10 +1444,10 @@ def test_implicit_temporal_dependencies_block_before_compile(
     monkeypatch.setattr(engine, "_get_adapter", no_compile)
     monkeypatch.setattr(compiler, "render_select_for_profile", no_compile)
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        assert engine.validate(query, context=RESTRICTED)["errors"][0]["code"] == "POLICY_DENIED"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
-                operation(query)
+                operation(query, context=RESTRICTED)
             assert exc.value.code == "POLICY_DENIED"
         if placement == "recipe":
             access = resource_access.ResourceAccess(
@@ -1421,7 +1459,7 @@ def test_implicit_temporal_dependencies_block_before_compile(
                 ),
             )
             with pytest.raises(SemanticLayerError) as exc:
-                access.enforce_query(query)
+                access.enforce_query(_engine(config, query))
             assert exc.value.code == "RESOURCE_ACCESS_DENIED"
     finally:
         engine.close()
@@ -1429,7 +1467,7 @@ def test_implicit_temporal_dependencies_block_before_compile(
 
 @pytest.mark.parametrize("kind", ["conversion", "first_value", "last_value"])
 @pytest.mark.parametrize("placement", ["direct", "nested", "recipe"])
-@pytest.mark.parametrize("override", ["", "expression", "query", "time"])
+@pytest.mark.parametrize("override", ["", "expression", "time"])
 def test_permitted_effective_temporal_dependencies_compile(base_config, kind, placement, override):
     from semantic_rails.request_context import RequestContext
 
@@ -1446,24 +1484,24 @@ def test_permitted_effective_temporal_dependencies_compile(base_config, kind, pl
             )
         ],
     )
-    query["policy_context"] = {"roles": ["restricted" if override else "permitted"]}
+    roles = ["restricted" if override else "permitted"]
     engine = runtime.Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     try:
-        sql = engine.compile(query)["rendered_sql"]
+        sql = engine.compile(query, context={"roles": roles})["rendered_sql"]
         assert sql
         if override:
             assert "safe_time" in sql
-            assert role.id not in runtime._query_object_ids(query, config)
-        if placement == "recipe" and override != "query":
+            assert role.id not in runtime._query_object_ids(_engine(config, query), config)
+        if placement == "recipe":
             access = resource_access.ResourceAccess(
                 config,
                 RequestContext(
-                    roles=tuple(query["policy_context"]["roles"]),
+                    roles=tuple(roles),
                     metric_allowlist=("metric.test.outer_time",),
                     dimension_allowlist=(safe_role.id,),
                 ),
             )
-            access.enforce_query(query)
+            access.enforce_query(_engine(config, query))
     finally:
         engine.close()
 
@@ -1535,7 +1573,7 @@ def test_literal_reference_strings_do_not_authorize_objects(base_config):
         ]
     }
     try:
-        assert MEASURE not in runtime._query_object_ids(query, config)
+        assert MEASURE not in runtime._query_object_ids(_engine(config, query), config)
         assert engine.compile(query)["rendered_sql"]
     finally:
         engine.close()
@@ -1569,7 +1607,7 @@ def test_unimplemented_schema_anchor_has_fixed_refusal(base_config, monkeypatch)
         lambda *a, **k: pytest.fail("rendered unsupported anchor"),
     )
     with pytest.raises(SemanticLayerError) as exc:
-        compiler.bind_query(base_config, None, _schema_query(case))
+        compiler.bind_query(base_config, None, _engine(base_config, _schema_query(case)))
     assert exc.value.code == "INVALID_ANCHOR_ROLE"
 
 
@@ -1584,7 +1622,7 @@ def test_distribution_branch_dependencies_precede_rendering(
     filtered = {
         "kind": "scoped_aggregate",
         "measure": MEASURE,
-        "where": [{"field": DIMENSION, "op": "=", "value": "new"}],
+        "where": [{"field": DIMENSION, "op": "is", "value": "new"}],
     }
     distribution = {
         "kind": "distribution",
@@ -1617,14 +1655,13 @@ def test_distribution_branch_dependencies_precede_rendering(
             )
         ],
     )
-    query["policy_context"] = {"roles": ["restricted"], "audience": "restricted"}
     engine = runtime.Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     monkeypatch.setattr(engine, "_get_adapter", no_output)
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        assert engine.validate(query, context=RESTRICTED)["errors"][0]["code"] == "POLICY_DENIED"
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
-                operation(query)
+                operation(query, context=RESTRICTED)
             assert exc.value.code == "POLICY_DENIED"
     finally:
         engine.close()
