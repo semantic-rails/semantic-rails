@@ -691,7 +691,6 @@ def _author_time(
         "kind": kind,
         "class": clock_class,
         "default": make_default,
-        "default_query_axis": make_default,
     }
     updates: dict[str, Any] = {key: time_spec}
     if make_default:
@@ -701,7 +700,6 @@ def _author_time(
             updates[str(other_key)] = {
                 **dict(other_spec or {}),
                 "default": False,
-                "default_query_axis": False,
             }
     return _apply_authoring_change(
         project,

@@ -141,7 +141,7 @@ Current compiled fields:
 - `dimension`
 - `temporal_class`
 - `supported_grains`
-- `default_query_time_axis`
+- `default_query_time_axis`: true for the role marked `default: true` on its model
 - `timezone`
 
 ### Measure

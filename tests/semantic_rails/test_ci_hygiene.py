@@ -664,6 +664,67 @@ def test_backend_matrix_and_push_policy():
     )
 
 
+@pytest.mark.parametrize(
+    "event, versions",
+    [
+        ("pull_request", ["3.12"]),
+        ("merge_group", ["3.11", "3.12", "3.13", "3.14"]),
+        ("workflow_dispatch", ["3.11", "3.12", "3.13", "3.14"]),
+    ],
+)
+def test_backend_matrix_covers_versions_for_each_event(event, versions):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    matrix = jobs["backend"]["strategy"]["matrix"]
+    expression = matrix["python-version"]
+    assert expression == (
+        "${{ fromJSON(github.event_name == 'pull_request' && '[\"3.12\"]' "
+        '|| \'["3.11", "3.12", "3.13", "3.14"]\') }}'
+    )
+    # Evaluate this constrained expression with Python's equivalent boolean operators.
+    translated = (
+        expression.removeprefix("${{ ")
+        .removesuffix(" }}")
+        .replace("github.event_name", repr(event))
+        .replace("&&", "and")
+        .replace("||", "or")
+    )
+    selected = eval(translated, {"__builtins__": {}, "fromJSON": json.loads})
+    assert selected == versions
+    assert len(selected) * len(matrix["shard"]) == (4 if event == "pull_request" else 16)
+    assert jobs["all-checks"]["needs"] == [
+        "changes",
+        "backend",
+        "lint",
+        "security",
+        "docs",
+        "postgres",
+    ]
+
+
+@pytest.mark.parametrize("event", ["pull_request", "merge_group", "workflow_dispatch"])
+@pytest.mark.parametrize("result", ["success", "failure", "cancelled", "skipped"])
+def test_aggregate_requires_event_backend_matrix(event, result):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    gate = jobs["all-checks"]
+    step = gate["steps"][0]
+    script = step["run"].split("python3 - <<'EOF'\n", 1)[1].rsplit("\nEOF", 1)[0]
+    needs = {name: {"result": "success"} for name in gate["needs"]}
+    needs["backend"]["result"] = result
+    if event == "merge_group":
+        needs["changes"]["result"] = "skipped"
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "RESULTS": json.dumps(needs), "EVENT": event},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    succeeds = result == "success" or (result == "skipped" and event != "merge_group")
+    assert completed.returncode == (0 if succeeds else 1), completed.stderr
+    if not succeeds:
+        assert "backend" in completed.stderr
+
+
 def test_real_collections_have_complete_disjoint_shards(tmp_path):
     config = tmp_path / "pytest.ini"
     config.write_text("[pytest]\n")

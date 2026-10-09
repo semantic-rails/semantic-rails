@@ -51,8 +51,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.754,
-      "compile_ms": 0.712,
+      "cache_lookup_ms": 2.064,
+      "compile_ms": 0.851,
       "dialect": "duckdb",
       "physical_plan_nodes": 12
     },
@@ -981,7 +981,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,\n  CASE WHEN COUNT(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  base.m2 AS large_order_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  base.m2 AS large_order_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1154,6 +1154,18 @@
                   "distinct": false,
                   "name": "SUM"
                 }
+              },
+              {
+                "alias": "m1_rows",
+                "expression": {
+                  "args": [
+                    {
+                      "value": 1
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "COUNT"
+                }
               }
             ],
             "where": []
@@ -1259,6 +1271,18 @@
                               "distinct": false,
                               "name": "SUM"
                             }
+                          },
+                          {
+                            "alias": "m1_rows",
+                            "expression": {
+                              "args": [
+                                {
+                                  "value": 1
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "COUNT"
+                            }
                           }
                         ],
                         "where": []
@@ -1302,49 +1326,75 @@
                           {
                             "alias": "m1",
                             "expression": {
-                              "else_expr": null,
-                              "whens": [
+                              "args": [
                                 {
-                                  "condition": {
-                                    "left": {
-                                      "frame": "",
-                                      "function": {
-                                        "args": [
-                                          {
-                                            "parts": [
-                                              "base",
-                                              "m1"
-                                            ]
+                                  "parts": [
+                                    "base",
+                                    "m1"
+                                  ]
+                                },
+                                {
+                                  "else_expr": null,
+                                  "whens": [
+                                    {
+                                      "condition": {
+                                        "left": {
+                                          "left": {
+                                            "frame": "",
+                                            "function": {
+                                              "args": [
+                                                {
+                                                  "parts": [
+                                                    "base",
+                                                    "m1"
+                                                  ]
+                                                }
+                                              ],
+                                              "distinct": false,
+                                              "name": "COUNT"
+                                            },
+                                            "order_by": [],
+                                            "partition_by": []
+                                          },
+                                          "op": ">",
+                                          "right": {
+                                            "value": 0
                                           }
-                                        ],
-                                        "distinct": false,
-                                        "name": "COUNT"
+                                        },
+                                        "op": "AND",
+                                        "right": {
+                                          "left": {
+                                            "expr": {
+                                              "parts": [
+                                                "base",
+                                                "m1_rows"
+                                              ]
+                                            }
+                                          },
+                                          "op": "OR",
+                                          "right": {
+                                            "left": {
+                                              "parts": [
+                                                "base",
+                                                "m1_rows"
+                                              ]
+                                            },
+                                            "op": "=",
+                                            "right": {
+                                              "value": 0
+                                            }
+                                          }
+                                        }
                                       },
-                                      "order_by": [],
-                                      "partition_by": []
-                                    },
-                                    "op": ">",
-                                    "right": {
-                                      "value": 0
-                                    }
-                                  },
-                                  "result": {
-                                    "args": [
-                                      {
-                                        "parts": [
-                                          "base",
-                                          "m1"
-                                        ]
-                                      },
-                                      {
+                                      "result": {
                                         "value": 0
                                       }
-                                    ],
-                                    "distinct": false,
-                                    "name": "COALESCE"
-                                  }
+                                    }
+                                  ]
                                 }
-                              ]
+                              ],
+                              "distinct": false,
+                              "name": "COALESCE"
                             }
                           }
                         ],
@@ -1575,6 +1625,18 @@
                   "distinct": false,
                   "name": "SUM"
                 }
+              },
+              {
+                "alias": "m2_rows",
+                "expression": {
+                  "args": [
+                    {
+                      "value": 1
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "COUNT"
+                }
               }
             ],
             "where": []
@@ -1651,11 +1713,29 @@
                 }
               },
               {
+                "alias": "m1_rows",
+                "expression": {
+                  "parts": [
+                    "left_side",
+                    "m1_rows"
+                  ]
+                }
+              },
+              {
                 "alias": "m2",
                 "expression": {
                   "parts": [
                     "right_side",
                     "m2"
+                  ]
+                }
+              },
+              {
+                "alias": "m2_rows",
+                "expression": {
+                  "parts": [
+                    "right_side",
+                    "m2_rows"
                   ]
                 }
               }
@@ -1886,58 +1966,84 @@
                           "condition": {
                             "left": {
                               "left": {
-                                "frame": "",
-                                "function": {
-                                  "args": [
-                                    {
-                                      "parts": [
-                                        "base",
-                                        "m1"
-                                      ]
-                                    }
-                                  ],
-                                  "distinct": false,
-                                  "name": "COUNT"
-                                },
-                                "order_by": [],
-                                "partition_by": []
-                              },
-                              "op": ">",
-                              "right": {
-                                "value": 0
-                              }
-                            },
-                            "op": "AND",
-                            "right": {
-                              "left": {
                                 "left": {
-                                  "parts": [
-                                    "base",
-                                    "t"
-                                  ]
+                                  "frame": "",
+                                  "function": {
+                                    "args": [
+                                      {
+                                        "parts": [
+                                          "base",
+                                          "m1"
+                                        ]
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "COUNT"
+                                  },
+                                  "order_by": [],
+                                  "partition_by": []
                                 },
-                                "op": ">=",
+                                "op": ">",
                                 "right": {
-                                  "parts": [
-                                    "coverage_1",
-                                    "loaded_from"
-                                  ]
+                                  "value": 0
                                 }
                               },
                               "op": "AND",
                               "right": {
                                 "left": {
+                                  "left": {
+                                    "parts": [
+                                      "base",
+                                      "t"
+                                    ]
+                                  },
+                                  "op": ">=",
+                                  "right": {
+                                    "parts": [
+                                      "coverage_1",
+                                      "loaded_from"
+                                    ]
+                                  }
+                                },
+                                "op": "AND",
+                                "right": {
+                                  "left": {
+                                    "parts": [
+                                      "base",
+                                      "t"
+                                    ]
+                                  },
+                                  "op": "<=",
+                                  "right": {
+                                    "parts": [
+                                      "coverage_1",
+                                      "loaded_to"
+                                    ]
+                                  }
+                                }
+                              }
+                            },
+                            "op": "AND",
+                            "right": {
+                              "left": {
+                                "expr": {
                                   "parts": [
                                     "base",
-                                    "t"
+                                    "m1_rows"
+                                  ]
+                                }
+                              },
+                              "op": "OR",
+                              "right": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "m1_rows"
                                   ]
                                 },
-                                "op": "<=",
+                                "op": "=",
                                 "right": {
-                                  "parts": [
-                                    "coverage_1",
-                                    "loaded_to"
-                                  ]
+                                  "value": 0
                                 }
                               }
                             }
@@ -1956,49 +2062,75 @@
               {
                 "alias": "m2",
                 "expression": {
-                  "else_expr": null,
-                  "whens": [
+                  "args": [
                     {
-                      "condition": {
-                        "left": {
-                          "frame": "",
-                          "function": {
-                            "args": [
-                              {
-                                "parts": [
-                                  "base",
-                                  "m2"
-                                ]
+                      "parts": [
+                        "base",
+                        "m2"
+                      ]
+                    },
+                    {
+                      "else_expr": null,
+                      "whens": [
+                        {
+                          "condition": {
+                            "left": {
+                              "left": {
+                                "frame": "",
+                                "function": {
+                                  "args": [
+                                    {
+                                      "parts": [
+                                        "base",
+                                        "m2"
+                                      ]
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "COUNT"
+                                },
+                                "order_by": [],
+                                "partition_by": []
+                              },
+                              "op": ">",
+                              "right": {
+                                "value": 0
                               }
-                            ],
-                            "distinct": false,
-                            "name": "COUNT"
+                            },
+                            "op": "AND",
+                            "right": {
+                              "left": {
+                                "expr": {
+                                  "parts": [
+                                    "base",
+                                    "m2_rows"
+                                  ]
+                                }
+                              },
+                              "op": "OR",
+                              "right": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "m2_rows"
+                                  ]
+                                },
+                                "op": "=",
+                                "right": {
+                                  "value": 0
+                                }
+                              }
+                            }
                           },
-                          "order_by": [],
-                          "partition_by": []
-                        },
-                        "op": ">",
-                        "right": {
-                          "value": 0
-                        }
-                      },
-                      "result": {
-                        "args": [
-                          {
-                            "parts": [
-                              "base",
-                              "m2"
-                            ]
-                          },
-                          {
+                          "result": {
                             "value": 0
                           }
-                        ],
-                        "distinct": false,
-                        "name": "COALESCE"
-                      }
+                        }
+                      ]
                     }
-                  ]
+                  ],
+                  "distinct": false,
+                  "name": "COALESCE"
                 }
               }
             ],
@@ -2023,7 +2155,8 @@
             "parts": [
               "t"
             ]
-          }
+          },
+          "nulls_last": false
         }
       ],
       "qualify": [],
@@ -2539,18 +2672,18 @@
     "version": 1
   },
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,\n  CASE WHEN COUNT(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  base.m2 AS large_order_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  base.m2 AS large_order_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
   "request_context": {},
   "row_count": 12,
   "rows": [
     {
-      "large_order_revenue_usd": 2376.4999999999995,
-      "revenue_usd": 18053.279999999977,
+      "large_order_revenue_usd": 2376.5,
+      "revenue_usd": 18053.279999999988,
       "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 2642.57,
-      "revenue_usd": 21923.949999999983,
+      "large_order_revenue_usd": 2642.5700000000006,
+      "revenue_usd": 21923.95000000001,
       "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
@@ -2559,33 +2692,33 @@
       "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 3549.9199999999996,
-      "revenue_usd": 35677.599999999984,
+      "large_order_revenue_usd": 3549.9199999999987,
+      "revenue_usd": 35677.60000000003,
       "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 5175.899999999999,
-      "revenue_usd": 45017.94999999982,
+      "large_order_revenue_usd": 5175.900000000001,
+      "revenue_usd": 45017.94999999986,
       "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "large_order_revenue_usd": 4959.6900000000005,
-      "revenue_usd": 43358.11999999987,
+      "revenue_usd": 43358.11999999981,
       "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 6553.24,
-      "revenue_usd": 73950.32000000044,
+      "large_order_revenue_usd": 6553.239999999999,
+      "revenue_usd": 73950.32000000034,
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "large_order_revenue_usd": 9694.400000000005,
-      "revenue_usd": 83316.99000000172,
+      "revenue_usd": 83316.99000000139,
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "large_order_revenue_usd": 7801.520000000001,
-      "revenue_usd": 96070.35000000289,
+      "revenue_usd": 96070.3500000028,
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
@@ -2594,18 +2727,18 @@
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 12161.109999999995,
-      "revenue_usd": 94857.19000000253,
+      "large_order_revenue_usd": 12161.109999999991,
+      "revenue_usd": 94857.19000000211,
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "large_order_revenue_usd": 10629.82,
-      "revenue_usd": 107371.59000000362,
+      "revenue_usd": 107371.59000000352,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:738a3e0d5ee52d27dd5b0d9ef53e670cc3a541c155a7a5a1f20888a94e619e87",
-  "source_fingerprint": "3be89439f14f4fbad2d7b21c52678ca261ead872cf6db820220d6a0bfa6ab055",
+  "semantic_fingerprint": "sha256:aac5e6deeae332b480c8e782df0d02116bab1711e756c910af6b285efd73f4de",
+  "source_fingerprint": "92a7dc155b7dfd213985fbfb14af23e8857dab2ebcbbca2b073e4f949609d910",
   "sql_plan": {
     "ctes": [
       {
@@ -2684,6 +2817,18 @@
                 ],
                 "distinct": false,
                 "name": "SUM"
+              }
+            },
+            {
+              "alias": "m1_rows",
+              "expression": {
+                "args": [
+                  {
+                    "value": 1
+                  }
+                ],
+                "distinct": false,
+                "name": "COUNT"
               }
             }
           ],
@@ -2790,6 +2935,18 @@
                             "distinct": false,
                             "name": "SUM"
                           }
+                        },
+                        {
+                          "alias": "m1_rows",
+                          "expression": {
+                            "args": [
+                              {
+                                "value": 1
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "COUNT"
+                          }
                         }
                       ],
                       "where": []
@@ -2833,49 +2990,75 @@
                         {
                           "alias": "m1",
                           "expression": {
-                            "else_expr": null,
-                            "whens": [
+                            "args": [
                               {
-                                "condition": {
-                                  "left": {
-                                    "frame": "",
-                                    "function": {
-                                      "args": [
-                                        {
-                                          "parts": [
-                                            "base",
-                                            "m1"
-                                          ]
+                                "parts": [
+                                  "base",
+                                  "m1"
+                                ]
+                              },
+                              {
+                                "else_expr": null,
+                                "whens": [
+                                  {
+                                    "condition": {
+                                      "left": {
+                                        "left": {
+                                          "frame": "",
+                                          "function": {
+                                            "args": [
+                                              {
+                                                "parts": [
+                                                  "base",
+                                                  "m1"
+                                                ]
+                                              }
+                                            ],
+                                            "distinct": false,
+                                            "name": "COUNT"
+                                          },
+                                          "order_by": [],
+                                          "partition_by": []
+                                        },
+                                        "op": ">",
+                                        "right": {
+                                          "value": 0
                                         }
-                                      ],
-                                      "distinct": false,
-                                      "name": "COUNT"
+                                      },
+                                      "op": "AND",
+                                      "right": {
+                                        "left": {
+                                          "expr": {
+                                            "parts": [
+                                              "base",
+                                              "m1_rows"
+                                            ]
+                                          }
+                                        },
+                                        "op": "OR",
+                                        "right": {
+                                          "left": {
+                                            "parts": [
+                                              "base",
+                                              "m1_rows"
+                                            ]
+                                          },
+                                          "op": "=",
+                                          "right": {
+                                            "value": 0
+                                          }
+                                        }
+                                      }
                                     },
-                                    "order_by": [],
-                                    "partition_by": []
-                                  },
-                                  "op": ">",
-                                  "right": {
-                                    "value": 0
-                                  }
-                                },
-                                "result": {
-                                  "args": [
-                                    {
-                                      "parts": [
-                                        "base",
-                                        "m1"
-                                      ]
-                                    },
-                                    {
+                                    "result": {
                                       "value": 0
                                     }
-                                  ],
-                                  "distinct": false,
-                                  "name": "COALESCE"
-                                }
+                                  }
+                                ]
                               }
-                            ]
+                            ],
+                            "distinct": false,
+                            "name": "COALESCE"
                           }
                         }
                       ],
@@ -3106,6 +3289,18 @@
                 "distinct": false,
                 "name": "SUM"
               }
+            },
+            {
+              "alias": "m2_rows",
+              "expression": {
+                "args": [
+                  {
+                    "value": 1
+                  }
+                ],
+                "distinct": false,
+                "name": "COUNT"
+              }
             }
           ],
           "where": []
@@ -3182,11 +3377,29 @@
               }
             },
             {
+              "alias": "m1_rows",
+              "expression": {
+                "parts": [
+                  "left_side",
+                  "m1_rows"
+                ]
+              }
+            },
+            {
               "alias": "m2",
               "expression": {
                 "parts": [
                   "right_side",
                   "m2"
+                ]
+              }
+            },
+            {
+              "alias": "m2_rows",
+              "expression": {
+                "parts": [
+                  "right_side",
+                  "m2_rows"
                 ]
               }
             }
@@ -3417,58 +3630,84 @@
                         "condition": {
                           "left": {
                             "left": {
-                              "frame": "",
-                              "function": {
-                                "args": [
-                                  {
-                                    "parts": [
-                                      "base",
-                                      "m1"
-                                    ]
-                                  }
-                                ],
-                                "distinct": false,
-                                "name": "COUNT"
-                              },
-                              "order_by": [],
-                              "partition_by": []
-                            },
-                            "op": ">",
-                            "right": {
-                              "value": 0
-                            }
-                          },
-                          "op": "AND",
-                          "right": {
-                            "left": {
                               "left": {
-                                "parts": [
-                                  "base",
-                                  "t"
-                                ]
+                                "frame": "",
+                                "function": {
+                                  "args": [
+                                    {
+                                      "parts": [
+                                        "base",
+                                        "m1"
+                                      ]
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "COUNT"
+                                },
+                                "order_by": [],
+                                "partition_by": []
                               },
-                              "op": ">=",
+                              "op": ">",
                               "right": {
-                                "parts": [
-                                  "coverage_1",
-                                  "loaded_from"
-                                ]
+                                "value": 0
                               }
                             },
                             "op": "AND",
                             "right": {
                               "left": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "t"
+                                  ]
+                                },
+                                "op": ">=",
+                                "right": {
+                                  "parts": [
+                                    "coverage_1",
+                                    "loaded_from"
+                                  ]
+                                }
+                              },
+                              "op": "AND",
+                              "right": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "t"
+                                  ]
+                                },
+                                "op": "<=",
+                                "right": {
+                                  "parts": [
+                                    "coverage_1",
+                                    "loaded_to"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "op": "AND",
+                          "right": {
+                            "left": {
+                              "expr": {
                                 "parts": [
                                   "base",
-                                  "t"
+                                  "m1_rows"
+                                ]
+                              }
+                            },
+                            "op": "OR",
+                            "right": {
+                              "left": {
+                                "parts": [
+                                  "base",
+                                  "m1_rows"
                                 ]
                               },
-                              "op": "<=",
+                              "op": "=",
                               "right": {
-                                "parts": [
-                                  "coverage_1",
-                                  "loaded_to"
-                                ]
+                                "value": 0
                               }
                             }
                           }
@@ -3487,49 +3726,75 @@
             {
               "alias": "m2",
               "expression": {
-                "else_expr": null,
-                "whens": [
+                "args": [
                   {
-                    "condition": {
-                      "left": {
-                        "frame": "",
-                        "function": {
-                          "args": [
-                            {
-                              "parts": [
-                                "base",
-                                "m2"
-                              ]
+                    "parts": [
+                      "base",
+                      "m2"
+                    ]
+                  },
+                  {
+                    "else_expr": null,
+                    "whens": [
+                      {
+                        "condition": {
+                          "left": {
+                            "left": {
+                              "frame": "",
+                              "function": {
+                                "args": [
+                                  {
+                                    "parts": [
+                                      "base",
+                                      "m2"
+                                    ]
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "COUNT"
+                              },
+                              "order_by": [],
+                              "partition_by": []
+                            },
+                            "op": ">",
+                            "right": {
+                              "value": 0
                             }
-                          ],
-                          "distinct": false,
-                          "name": "COUNT"
+                          },
+                          "op": "AND",
+                          "right": {
+                            "left": {
+                              "expr": {
+                                "parts": [
+                                  "base",
+                                  "m2_rows"
+                                ]
+                              }
+                            },
+                            "op": "OR",
+                            "right": {
+                              "left": {
+                                "parts": [
+                                  "base",
+                                  "m2_rows"
+                                ]
+                              },
+                              "op": "=",
+                              "right": {
+                                "value": 0
+                              }
+                            }
+                          }
                         },
-                        "order_by": [],
-                        "partition_by": []
-                      },
-                      "op": ">",
-                      "right": {
-                        "value": 0
-                      }
-                    },
-                    "result": {
-                      "args": [
-                        {
-                          "parts": [
-                            "base",
-                            "m2"
-                          ]
-                        },
-                        {
+                        "result": {
                           "value": 0
                         }
-                      ],
-                      "distinct": false,
-                      "name": "COALESCE"
-                    }
+                      }
+                    ]
                   }
-                ]
+                ],
+                "distinct": false,
+                "name": "COALESCE"
               }
             }
           ],
@@ -3554,7 +3819,8 @@
           "parts": [
             "t"
           ]
-        }
+        },
+        "nulls_last": false
       }
     ],
     "qualify": [],

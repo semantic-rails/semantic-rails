@@ -15,6 +15,7 @@ Adding a new pattern:
 from __future__ import annotations
 
 from ._protocol import IntentPattern
+from .conjoined_metrics import PATTERN as _CONJOINED_METRICS
 from .distribution_entity_value import PATTERN as _DISTRIBUTION_ENTITY_VALUE
 from .filtered_adoption_funnel import PATTERN as _FILTERED_ADOPTION_FUNNEL
 from .inline_comparison import PATTERN as _INLINE_COMPARISON
@@ -34,6 +35,7 @@ PATTERNS: list[IntentPattern] = [
     _DISTRIBUTION_ENTITY_VALUE,
     _SCOPED_PREDICATE_RATIO,
     _RUNTIME_METRIC_ARITHMETIC,
+    _CONJOINED_METRICS,
     _INLINE_COMPARISON,
     _METRIC_BY_DIMENSION_ROLLUP,
 ]

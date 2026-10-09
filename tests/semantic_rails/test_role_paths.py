@@ -215,6 +215,7 @@ def _write_package(
               seed:
                 kind: sql_script
                 source: data/seed.sql
+              schema_strict: true
             defaults:
               dimension:
                 groupable: true
@@ -314,6 +315,25 @@ def _write_package(
                   expr: slots
                   accumulation: {kind: flow}
                   value_type: count
+            """
+        )
+    )
+    (pkg / "metrics.yml").write_text(
+        textwrap.dedent(
+            """
+            metrics:
+              seats:
+                kind: aggregate
+                label: Seats
+                measure: measure.air.seats
+                aggregation: sum
+                value_type: count
+              slots:
+                kind: aggregate
+                label: Slots
+                measure: measure.air.airport_slots
+                aggregation: sum
+                value_type: count
             """
         )
     )
