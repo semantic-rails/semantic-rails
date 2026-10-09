@@ -18,7 +18,8 @@ from datetime import date, timedelta
 from typing import Any
 
 from ..expressions import AggregateExpr
-from ._base import _object_by_id, _said_name, _semantic_token
+from ..naming import semantic_token as _semantic_token
+from ._base import _object_by_id, _said_name
 from .coverage import (
     _COMPARISON_PHRASE_RE,
     _COMPARISON_WORDS,

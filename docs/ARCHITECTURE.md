@@ -323,6 +323,9 @@ Core query rules:
   Internal branches, distribution inputs and contextual predicate sources receive
   no default ordering; explicit `order_by` still takes precedence
 - `metric_filters` are applied after projected expressions except for `metric_predicate`, which is planned semantically at entity plus contextual time/group scope
+  and requires an outer `op: "="` and `value: true`. Binding and SQL lowering both
+  reject other envelopes with `INVALID_METRIC_FILTER`; the threshold belongs inside
+  the predicate expression.
 - queries without `select` still apply aggregate `metric_filters` through their measure
   leaves. A `metric_predicate` reaching distinct-value lowering without a measure or
   conversion leaf is refused with `PREDICATE_NOT_SUPPORTED`; add a select that reads a

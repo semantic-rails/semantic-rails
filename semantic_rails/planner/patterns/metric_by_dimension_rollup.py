@@ -27,6 +27,7 @@ from ...config_parts.measure_governance import (
 )
 from ...errors import SemanticLayerError
 from ...expressions import collect_object_references
+from ...naming import semantic_token as _semantic_token
 from .._base import (
     _NAME_CONNECTORS,
     _TERM_SYNONYMS,
@@ -38,7 +39,6 @@ from .._base import (
     _preferred_metric,
     _resolved,
     _said_name,
-    _semantic_token,
     _tokens,
 )
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text

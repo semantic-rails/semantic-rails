@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from ..expressions import MeasureRefExpr, expr_to_dict
+from ..naming import last_token as _last_token
 from .visibility import visible_dimensions
 
 
@@ -205,17 +205,6 @@ def _specificity_penalty(row: Any, terms: Iterable[str]) -> int:
     return sum(2 for item in _EXTRA_QUALIFIER_TERMS if item in text and item not in term_set)
 
 
-def _measure_metric_id(config: Any, measure_id: str) -> str:
-    for recipe in config.metric_recipes:
-        expr = getattr(recipe, "expression", None)
-        if isinstance(expr, MeasureRefExpr) and expr.measure == measure_id:
-            return recipe.id
-        payload = expr_to_dict(expr) if expr is not None else {}
-        if payload.get("measure") == measure_id:
-            return recipe.id
-    return ""
-
-
 def _resolved(row: Any, *, object_type: str = "") -> dict[str, Any]:
     return {
         "id": getattr(row, "id", ""),
@@ -238,27 +227,6 @@ def _metric(config: Any, terms: Iterable[str]) -> Any | None:
 
 def _object_by_id(rows: Iterable[Any], object_id: str) -> Any | None:
     return next((row for row in rows if getattr(row, "id", "") == object_id), None)
-
-
-def _last_token(value: str) -> str:
-    return str(value or "").split(".")[-1]
-
-
-def _slug(value: str, *, fallback: str = "value") -> str:
-    raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
-    parts = [part for part in raw.split("_") if part]
-    return "_".join(parts) or fallback
-
-
-def _semantic_token(value: str, *, fallback: str = "value") -> str:
-    raw_value = str(value or "")
-    token = _last_token(value)
-    if raw_value.startswith("entity.") and "_" in token:
-        token = token.split("_", 1)[1]
-    for prefix in ("jaffle_", "entity_", "metric_recipe_", "measure_"):
-        if token.startswith(prefix):
-            token = token[len(prefix) :]
-    return _slug(token, fallback=fallback)
 
 
 def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[list[Any], Any]:
