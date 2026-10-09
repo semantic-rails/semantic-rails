@@ -128,7 +128,9 @@ tool/schema drift cannot be merged silently.
   `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
   `why.details.example_ids`. Invalid examples fall through with
   `why.details.invalid_examples`; an example that reads a hidden object is
-  invalid for that caller, as in a package without the object.
+  invalid for that caller, as in a package without the object. An example
+  that compares periods is held with `PERIOD_COMPARISON_INCOMPLETE` like any
+  other draft until each period it returns has ended.
   Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.

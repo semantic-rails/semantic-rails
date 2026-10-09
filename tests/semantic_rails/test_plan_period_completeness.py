@@ -21,6 +21,7 @@ import pytest
 
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.period_completeness import compares_periods, incomplete_period_why
+from semantic_rails.planner import examples as examples_module
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner.orchestrator import compose
 from semantic_rails.planner.plan import plan_payload
@@ -557,6 +558,31 @@ def test_an_injected_draft_goes_through_the_same_check(
     )
     assert payload["best"]["query_ir"]["select"] == _RATIO
     _assert_held(payload)
+
+
+@pytest.mark.parametrize("end", [None, "2024-07-01"])
+def test_an_authored_example_goes_through_the_same_check(
+    live: Callable[..., Runtime], monkeypatch: pytest.MonkeyPatch, end: str | None
+) -> None:
+    """A package example's certified query answers its question only over ended periods."""
+
+    runtime = live(NOW)
+    question = "Revenue growth on the month before"
+    time = {"temporal_role": ROLE, "grain": "month", **({"end": end} if end else {})}
+    example = {"question": question, "query": {"version": 1, "select": _RATIO, "time": time}}
+    monkeypatch.setattr(runtime, "_package_examples", [("growth", example)])
+    context = {"policy_context": {"now": NOW}}
+    payload = plan_payload(runtime, intent=question, partial_query=context)
+    assert payload["best"]["pattern"] == "package_example"
+    assert payload["best"]["query_ir"]["select"] == _RATIO
+    if end:
+        assert payload["status"] == "ok" and _ready(payload), payload.get("why")
+        return
+    details = _assert_held(payload)
+    assert details["incomplete_period"] == {"start": "2024-07-01", "end": "2024-08-01"}
+    # Nothing else holds it: without the check, the example was ready to execute.
+    monkeypatch.setattr(examples_module, "incomplete_period_why", lambda *args, **kwargs: None)
+    assert _ready(plan_payload(runtime, intent=question, partial_query=context))
 
 
 METRIC = "metric.sales.month_over_month_revenue_growth"

@@ -2547,7 +2547,9 @@ planning: different punctuation, plurals, numbers, signs or symbols, a different
 top-N count, or another day or time phrase. The authored query is never edited.
 The author's groupings, filters, ordering and limit count as requested, and the
 whole matched question is recorded as a consumed span. The query still passes
-the normal validation and caller visibility checks. There is no fuzzy matching.
+the normal validation and caller visibility checks, and an example that compares
+periods is held with `PERIOD_COMPARISON_INCOMPLETE` until each period it returns
+has ended at the request's `now`. There is no fuzzy matching.
 Several valid, visible examples matching the same question require clarification with
 their IDs. Invalid examples fall through to normal planning with their IDs in
 `why.details.invalid_examples`. An example referring to a hidden object, in a value

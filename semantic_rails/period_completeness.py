@@ -11,7 +11,8 @@ check reads the bounds it can and holds whatever it can't: a draft it can't pars
 non-default calendar's buckets, a ``where`` bound on a date, which can cut a period short,
 or a clock it can't read.
 
-``plan`` and the granted-metric plan both call it before offering ``ready_for: execute``.
+``plan``, the granted-metric plan and a matched package example all call it before offering
+``ready_for: execute``.
 """
 
 from __future__ import annotations
