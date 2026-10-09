@@ -180,7 +180,7 @@ Two rules apply to directory packages:
 configs/semantic_rails/<package>/    # directory name must match package.id
   package.yml          # identity, warehouse, connection, seeds, defaults
   graph.yml            # canonical entities and explicit relationships
-  defaults.yml         # optional — package-wide defaults merged before models
+  defaults.yml         # optional — package-wide defaults, instead of package.yml `defaults:`
   policies.yml         # optional — visibility / access / release labels
   caveats.yml          # optional — advisory interpretation context
   models/              # one file per warehouse table or mart
@@ -195,8 +195,25 @@ configs/semantic_rails/<package>/    # directory name must match package.id
     <test>.yml
 ```
 
-The loader merges every YAML file under `models/**`, `metrics/**`, and
-`segments/*` into a single `PackageConfig`.
+The loader merges every YAML file under `models/**`, `relations/**`, `metrics/**`
+and `segments/**` into a single `PackageConfig`. At the root it reads only
+`package.yml`, the block files `defaults.yml`, `graph.yml`, `relations.yml`,
+`metrics.yml`, `segments.yml`, `policies.yml` and `caveats.yml`, and those four
+directories; the package tools read `examples/` and `tests/`. Loading refuses any
+other root YAML file or root directory holding YAML (a `policies/` directory, a
+`notes.yml`, a `defaults.yaml`), because its contents would be silently ignored;
+write tests and examples as files under `tests/` and `examples/`, not in a root
+`tests.yml` or `examples.yml`. A name that starts with `_` or `.` stays ignored.
+
+The loader doesn't follow directory symlinks, so loading refuses one anywhere in the
+package (a `policies -> ../shared/policies` link, a symlinked `models/` or
+`models/core/`) unless its root name starts with `_` or `.`. Copy the directory or link
+its files instead: a file symlink is read like any other file.
+
+Each block and each object is read from one place. Loading refuses a block declared
+both in `package.yml` and in its own file (a `defaults:` block beside `defaults.yml`),
+and an object id defined twice (a model in `package.yml` `models:` and in a file under
+`models/`, or in two files), instead of letting one replace the other.
 
 ## What the loader does for you
 
@@ -2643,20 +2660,29 @@ set: the document top level; `package:` and `package.seed`; `defaults:` and its 
 `time`, `measure` and `relationship` entries; `graph:`, its `entities`, its `relationships`
 entries and their `rollup_safe`; both `path_policy` blocks; `semantic_caveats` rows and their
 `time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
-`dimensions`, `times`, `measures`, `joins` and `variants`, with each variant's `grain`, `time`,
-`excludes`, `selection`, `equivalence` and every `columns:` binding; metrics; segments and
-their `membership`. A `columns:` binding takes the keys of what its name resolves to: a measure
-(by key, `as:`, `id:` or a `measure.` prefix), a dimension (by key, `as:`, `id:`, a
-`dimension.` prefix, or a key or foreign-key column the loader turns into a key dimension), or,
-when it resolves to neither, the keys either takes. `relations` entries are not closed yet. A
-key that starts with `_` is an annotation.
+`dimensions`, `times`, `measures` (and each measure's `accumulation:`, which takes `kind` and
+`snapshot`, as does `defaults.measure.accumulation`), `joins` and `variants`, with each
+variant's `grain`, `time`, `excludes`, `selection`, `equivalence` and every `columns:`
+binding; metrics; segments and their `membership`. A `columns:` binding takes the keys of what
+its name resolves to: a measure (by key or by the one id the loader gives it: `as:` when set,
+else `id:`, else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
+dimension (by key, by `as:` when set, else `id:`, or a `dimension.` id, which the loader
+refuses when the package has no such dimension), or a key or foreign-key column the
+loader turns into a key dimension (including the key of a graph entity named after the model,
+which binds it by default). A name that resolves to none of them is refused, with the names it
+could mean: the loader would ignore it, and a measure it meant to bind would read the column
+named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
+`as:` value. `relations` entries are not closed yet. A key that starts
+with `_` is an annotation.
 
 In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,
 `relations.yml`, `metrics.yml` and `segments.yml` through `defaults:`, `graph:`,
 `relations:`, `metrics:` and `segments:`; a file under `models/`, `relations/`, `metrics/` or
 `segments/` through its plural or singular wrapper (`models:` or `model:`) when it has one.
 Any other root key is refused, as is a block file whose contents are not under its wrapper.
-`policies.yml` and `caveats.yml` may still hold a bare list.
+`policies.yml` and `caveats.yml` may still hold a bare list. A root file or directory the
+loader doesn't read, a block declared in two files, and an object defined twice are refused
+too (see [Directory layout](#directory-layout)).
 
 `parse-config`, `validate-config` and `check` reject a metric or segment key the
 loader doesn't read, in every layout it reads: files under `metrics/` and
