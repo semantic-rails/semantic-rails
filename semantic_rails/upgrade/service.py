@@ -154,6 +154,21 @@ def _refuse_rule(
     )
 
 
+def _unloadable(blocker: Rule | None, error: str) -> str:
+    """Why no baseline loads: a rule that rewrites the refused form without certifying it,
+    or a form no rule covers."""
+    if blocker is not None:
+        return (
+            f"Upgrade rule '{blocker.id}' rewrites a form this engine refuses at load, but the "
+            f"rule is not marked refused, so its rewrite cannot be certified: {error} "
+            "Rewrite this form by hand, and report the rule."
+        )
+    return (
+        "The package does not load after the upgrade rules for forms this engine refuses, and "
+        f"no rule covers this: {error} Fix it by hand, then upgrade again."
+    )
+
+
 def _package_directory(source: Path) -> bool:
     return (source / "package.yml").is_file()
 
@@ -240,6 +255,16 @@ def upgrade_project(
         if baseline.error is None:
             prefix = candidates[:count]
             break
+    # Without a baseline, name the first other rule whose rewrite would make the package load:
+    # it rewrites a refused form but cannot certify it. None means no rule covers the error.
+    blocker: Rule | None = None
+    if prefix is None:
+        others = [rule for rule in mechanical if rule not in candidates]
+        for count in range(1, len(others) + 1):
+            staged = _stage(transaction, files, plan(files, [*candidates, *others[:count]], {}).files)
+            if staged.error is None:
+                blocker = others[count - 1]
+                break
     after = [rule for rule in mechanical if rule not in (prefix or [])]
     final = baseline
     if prefix is not None and after:
@@ -309,6 +334,20 @@ def upgrade_project(
     tiers = {row["tier"] for row in rule_rows}
     if not dry_run:
         for row in rule_rows:
+            if row["tier"] == "unverified" and "reason" not in row and baseline.error is not None:
+                code, message = baseline.error
+                raise SemanticLayerError(
+                    "CONFIG_CONFLICT",
+                    f"{_unloadable(blocker, message)} Nothing was written.",
+                    details={
+                        "conflict_kind": "upgrade_not_equivalent",
+                        "rule": blocker.id if blocker else None,
+                        "difference": {
+                            "tier": "unverified",
+                            "load_error": {"code": code, "message": message},
+                        },
+                    },
+                )
             if row["tier"] == "unverified":
                 _refuse_rule(
                     row["id"], {"tier": "unverified"}, row.get("reason", "cannot be verified")
@@ -330,10 +369,7 @@ def upgrade_project(
     }
     next_actions = []
     if final.snapshot is None:
-        next_actions.append(
-            "The package fails to load after every upgrade rule, and no rule covers this: "
-            f"{final.error[1] if final.error else ''} Fix it by hand, then upgrade again."
-        )
+        next_actions.append(_unloadable(blocker, final.error[1] if final.error else ""))
     else:
         if undecided := route_census(final.snapshot.config)["undecided"]:
             pairs = ", ".join(

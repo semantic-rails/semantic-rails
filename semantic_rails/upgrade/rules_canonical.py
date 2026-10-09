@@ -129,6 +129,7 @@ RULES = (
         "same_meaning",
         "Flatten policy config and rationale/action aliases.",
         _flat,
+        refused=True,
     ),
     Rule(
         "policy-redact-deny",
@@ -136,5 +137,6 @@ RULES = (
         "same_meaning",
         "redact never masked values; it refused like deny. Refusals and inspect now name deny.",
         _redact,
+        refused=True,
     ),
 )
