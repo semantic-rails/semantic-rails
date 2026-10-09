@@ -15,12 +15,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 from difflib import get_close_matches
 from typing import Any
 
 from . import operators
-from .clock import UNITS, check_calendar, floor_period, largest_last, parse_now, resolve_window
+from .clock import UNITS, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
 from .schema import OBSERVATION_SCOPES, PackageConfig
 
@@ -870,9 +870,8 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
     timezone = _role_timezone(role, context.config)
     try:
         window = resolve_window(dict(raw), now=context.now, timezone=timezone)
-        check_calendar(window, [unit for unit in (grain, raw.get("this")) if unit])
     except (ValueError, OverflowError) as exc:
-        raise _off_calendar(raw, grain, context.now, timezone) from exc
+        raise _off_calendar(raw, context.now, timezone) from exc
     time: dict[str, Any] = {"temporal_role": role}
     if grain:
         time["grain"] = grain
@@ -890,28 +889,20 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
     return time
 
 
-def _off_calendar(
-    raw: Mapping[str, Any], grain: Any, now: datetime, timezone: str
-) -> SemanticLayerError:
-    """The refusal of a window that leaves the calendar (0001-01-01 to 9999-12-31)."""
-    if "last" in raw:
-        most = largest_last(raw["last"]["unit"], now, timezone)
+def _off_calendar(raw: Mapping[str, Any], now: datetime, timezone: str) -> SemanticLayerError:
+    """The refusal of a window the calendar (0001-01-01 to 9999-12-31) can't hold."""
+    if "last" not in raw:
         return refusal(
-            "time.last.value",
-            "reaches back before the calendar's first day, 0001-01-01",
-            fix=(f"Use at most {most}, or " if most > 0 else "Use ")
-            + "a dated window with start and end.",
+            "now",
+            "is too near the calendar's first or last day for the clock's time zone",
+            fix="Send a now between 0001-01-02 and 9999-12-30.",
         )
-    if "this" in raw:
-        return refusal(
-            "time.this",
-            "is a period that ends after the calendar's last day, 9999-12-31",
-            fix="Use a dated window with start and end.",
-        )
+    most = largest_last(raw["last"]["unit"], now, timezone)
     return refusal(
-        "time.end",
-        f"leaves a {grain} that ends after the calendar's last day, 9999-12-31",
-        fix=f"End the window on or before {floor_period(date.max, str(grain))}.",
+        "time.last.value",
+        "reaches back before the calendar's first day, 0001-01-01",
+        fix=(f"Use at most {most}, or " if most > 0 else "Use ")
+        + "a dated window with start and end.",
     )
 
 

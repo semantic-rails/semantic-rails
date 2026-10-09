@@ -8,7 +8,7 @@ bounds that the compiler reads; the answer reports the same window back.
 from __future__ import annotations
 
 from calendar import monthrange
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -148,7 +148,10 @@ def period_is_partial(period: Any, grain: str, now: datetime, timezone: str = "U
     start = _as_date(period)
     if start is None or grain not in UNITS:
         return False
-    end = period_end(start, grain)
+    try:
+        end = period_end(start, grain)
+    except (ValueError, OverflowError):
+        return True  # it ends after the calendar's last day, so after any now
     return datetime(end.year, end.month, end.day) > local_now(now, timezone)
 
 
@@ -223,18 +226,6 @@ def largest_last(unit: str, now: datetime, timezone: str = "UTC") -> int:
     return months // {"month": 1, "quarter": 3, "year": 12}[unit]
 
 
-def check_calendar(window: Window, units: Iterable[str]) -> None:
-    """Raise ``ValueError`` when a period of ``units`` holding the window's last instant ends
-    after the calendar's last day (9999-12-31)."""
-    try:
-        end = datetime.fromisoformat(str(window.end).replace("Z", "+00:00"))
-    except ValueError:
-        return  # no end, or not a date: nothing past the calendar
-    last = end.date() if end.time() != datetime.min.time() else end.date() - timedelta(days=1)
-    for unit in units:
-        period_end(last, unit)
-
-
 def engine_window(time: Mapping[str, Any], *, now: datetime, timezone: str = "UTC") -> Window:
     """The window an engine time block resolved, with its relative spelling kept."""
     if time.get("last_unit"):
@@ -269,10 +260,12 @@ def describe_window(window: Window, *, now: datetime, timezone: str = "UTC") -> 
         return ""
     unit = window.spec["this"]
     start = date.fromisoformat(window.start)
-    end = period_end(start, unit)
     today = local_now(now, timezone).date()
     elapsed = (today - start).days + 1
-    total = (end - start).days
+    try:
+        total = (period_end(start, unit) - start).days
+    except (ValueError, OverflowError):
+        total = (date.max - start).days + 1  # the calendar's last period ends with it
     names = {
         "day": start.isoformat(),
         "week": f"the week of {start.isoformat()}",
