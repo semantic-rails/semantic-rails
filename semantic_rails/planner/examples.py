@@ -52,10 +52,8 @@ def _engine_example(
     runtime: Any, query: dict[str, Any], partial: dict[str, Any] | None
 ) -> dict[str, Any]:
     """An authored example call in the engine's form, on the request's clock."""
-    from .plan import _engine_partial_query  # noqa: WPS433
-
     now = ((partial or {}).get("policy_context") or {}).get("now")
-    return _engine_partial_query(runtime, query, now) or {}
+    return runtime.engine_seed(query, now=now)
 
 
 def example_plan(

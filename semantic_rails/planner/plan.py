@@ -169,7 +169,7 @@ def plan_payload(
             },
         )
 
-    partial_query = _checked_partial_query(_engine_partial_query(runtime, partial_query, now))
+    partial_query = _checked_partial_query(runtime.engine_seed(partial_query, now=now))
     catalog_config = _visible_catalog(runtime._config, caller_hidden_ids(runtime._config))
     intent = _normalize_question(intent.strip(), _apostrophe_names(catalog_config))
     detail_level = str(detail or "best").lower()
@@ -191,43 +191,6 @@ def plan_payload(
         payload = _parts_payload(payload, split, plan_question, detail_level) if split else payload
     payload = _calls_of_drafts(payload, runtime._config)
     return _query_detail_payload(payload) if detail_level == "query" else payload
-
-
-# The caller's seed keys, in the engine's names (``having`` and entity filters read as
-# ``metric_filters``, ``routes`` as ``route_decisions``).
-_SEED_KEYS = {
-    "select": "select",
-    "group_by": "group_by",
-    "where": "where",
-    "having": "metric_filters",
-    "time": "time",
-    "order_by": "order_by",
-    "limit": "limit",
-    "routes": "route_decisions",
-    "observation_scope": "observation_scope",
-}
-
-
-def _engine_partial_query(
-    runtime: Any, partial_query: dict[str, Any] | None, now: Any
-) -> dict[str, Any] | None:
-    """The caller's seed call in the engine's form, with the request's identity and ``now``."""
-    seed = dict(partial_query or {})
-    context = dict(seed.pop("policy_context", None) or {})
-    instant = now if now not in (None, "") else context.pop("now", None)
-    internal = runtime.engine_payload(seed, now=instant, context=context or None, partial=True)
-    kept = {_SEED_KEYS[key] for key in seed if key in _SEED_KEYS}
-    if any(
-        "entity" in item and "having" in item
-        for item in seed.get("where") or []
-        if isinstance(item, dict)
-    ):
-        kept.add("metric_filters")
-    return {
-        key: value
-        for key, value in internal.items()
-        if key in kept or key in {"policy_context", "verbosity", "sql_profile"}
-    }
 
 
 def _calls_of_drafts(payload: Any, config: Any) -> Any:

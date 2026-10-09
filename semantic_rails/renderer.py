@@ -180,6 +180,11 @@ def _binary_precedence(op: str) -> int:
     return _OP_PRECEDENCE.get(op, 0)
 
 
+def _render_conjunct(expr: SqlExpr) -> str:
+    """One item of an AND-joined clause list: an OR inside it keeps its parentheses."""
+    return render_expr(expr, parent_precedence=_binary_precedence("AND"))
+
+
 def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlIdentifier):
         return ".".join(_quote_ident(part) for part in expr.parts)
@@ -425,13 +430,17 @@ def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
             join_sql += f" ON {render_expr(join.on)}"
         chunks.append(join_sql)
     if query.where:
-        chunks.append("WHERE\n  " + "\n  AND ".join(render_expr(item) for item in query.where))
+        chunks.append("WHERE\n  " + "\n  AND ".join(_render_conjunct(item) for item in query.where))
     if query.group_by:
         chunks.append("GROUP BY\n  " + ",\n  ".join(render_expr(item) for item in query.group_by))
     if query.having:
-        chunks.append("HAVING\n  " + "\n  AND ".join(render_expr(item) for item in query.having))
+        chunks.append(
+            "HAVING\n  " + "\n  AND ".join(_render_conjunct(item) for item in query.having)
+        )
     if query.qualify:
-        chunks.append("QUALIFY\n  " + "\n  AND ".join(render_expr(item) for item in query.qualify))
+        chunks.append(
+            "QUALIFY\n  " + "\n  AND ".join(_render_conjunct(item) for item in query.qualify)
+        )
     if query.order_by:
         chunks.append(
             "ORDER BY\n  "
