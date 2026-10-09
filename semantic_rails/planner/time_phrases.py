@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from ..clock import shift_period
 from ._base import _NUMBER_WORDS, _tokens
 
 _TIME_UNITS = ("day", "week", "month", "quarter", "year")
@@ -459,6 +460,10 @@ def _relative_window(lowered: str) -> list[tuple[tuple[int, int], dict[str, Any]
     for match in _RELATIVE_WINDOW_RE.finditer(lowered):
         unit = match.group(2)
         last = {"unit": unit, "value": _relative_window_value(match.group(1))}
+        try:
+            shift_period(date.today(), unit, -last["value"])
+        except (ValueError, OverflowError):
+            continue  # reaches past the calendar: the phrase stays unread, and held
         candidates.append((match.span(), {"last": last}, unit))
     for match in _YESTERDAY_RE.finditer(lowered):
         candidates.append((match.span(), {"last": {"unit": "day", "value": 1}}, "day"))

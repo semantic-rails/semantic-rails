@@ -292,6 +292,10 @@ _QUALIFICATION_STOP_TOKENS = frozenset(
 )
 
 
+# Words that say how a qualification counts, not what it counts.
+_COUNT_MODIFIERS = frozenset({"distinct", "unique", "different", "separate"})
+
+
 def _qualification_phrase_token_groups(text: str, target_terms: list[str]) -> list[list[str]]:
     """Return one token group per AND/OR-joined sub-qualification."""
     phrase = _qualification_phrase(text)
@@ -316,8 +320,11 @@ def _qualification_phrase_token_groups(text: str, target_terms: list[str]) -> li
         if not all_tokens:
             continue
         non_target = [token for token in all_tokens if token not in target_set]
-        if non_target:
+        if non_target and not set(non_target) <= _COUNT_MODIFIERS:
             groups.append(non_target)
+        elif non_target:
+            # "at least 4 distinct orders": the target's own noun, counted distinct.
+            groups.append(all_tokens)
         elif target_set and set(all_tokens).issubset(target_set):
             groups.append(list(target_terms))
     return groups

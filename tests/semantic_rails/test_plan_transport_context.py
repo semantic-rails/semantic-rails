@@ -119,7 +119,7 @@ def _query_irs(payload):
 def test_authenticated_plan_queries_round_trip_to_compile(governed_app, transport, detail, partial):
     arguments = {"intent": "top stores by revenue", "detail": detail, "limit": 3}
     if partial:
-        arguments["query"] = {"version": 1, "limit": 17}
+        arguments["query"] = {"limit": 17}
 
     status, plan = _call(governed_app, transport, "plan", arguments)
     assert status == 200
@@ -140,13 +140,12 @@ def test_authenticated_plan_queries_round_trip_to_compile(governed_app, transpor
     if partial:
         assert query["limit"] == 17  # The planner's alternative cap is not a query limit.
 
-    # Preserve both supported compile input shapes, including flat Query IR.
-    for body in (query, {"query": query}):
-        status, compiled = _call(governed_app, transport, "compile", body)
-        assert status == 200
-        assert compiled["ok"] is True, compiled
-        assert compiled["rendered_sql"]
-        assert compiled["request_context"]["environment"] == "development"
+    # The call compiles as the query argument.
+    status, compiled = _call(governed_app, transport, "compile", {"query": query})
+    assert status == 200
+    assert compiled["ok"] is True, compiled
+    assert compiled["rendered_sql"]
+    assert compiled["request_context"]["environment"] == "development"
 
     # A portable plan is not authority to bypass a later caller's policy.
     status, denied = _call(
@@ -162,17 +161,20 @@ def test_authenticated_plan_queries_round_trip_to_compile(governed_app, transpor
 @pytest.mark.parametrize("partial", [False, True])
 def test_plan_validates_with_trusted_policy_despite_caller_spoofs(governed_app, transport, partial):
     spoof = {"actor": "spoofed-user", "roles": ["admin"], "environment": "development"}
-    arguments = {
-        "intent": "top stores by revenue",
-        "detail": "full",
-        "limit": 3,
-        "policy_context": spoof,
-    }
+    arguments = {"intent": "top stores by revenue", "detail": "full", "limit": 3}
     if partial:
         arguments["query"] = {
-            "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
-            "policy_context": spoof,
+            "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}]
         }
+    # A request that says who is asking is refused; the credentials decide.
+    for claimed in (
+        {**arguments, "policy_context": spoof},
+        {**arguments, "query": {**arguments.get("query", {}), "policy_context": spoof}},
+    ):
+        status, refused = _call(governed_app, transport, "plan", claimed, key="test-plan-prod")
+        assert status == (400 if transport == "rest" else 200)
+        assert refused["ok"] is False
+        assert "spoofed-user" not in json.dumps(refused)
     status, plan = _call(governed_app, transport, "plan", arguments, key="test-plan-prod")
     assert status == 200
     assert_plan_held(plan, "VALIDATION_FAILED" if partial else "PLAN_FALLBACK_SEMANTIC_DRIFT")

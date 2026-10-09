@@ -88,10 +88,7 @@ def test_plan_prefers_revenue_usd_over_drink_revenue_for_generic_intent(
                     "kind": "filter_values_unrealized",
                 }
                 assert "ready_for" not in plan["next"]
-                assert (
-                    plan["best"]["query"]["select"][0]["expression"]["measure"]
-                    == "measure.jaffle.revenue_usd"
-                )
+                assert plan["best"]["query"]["select"][0] == "measure.jaffle.revenue_usd"
                 continue
             payload = plan_candidate_envelope(runtime, intent=intent, limit=10)
             candidates = list(payload.get("candidates", []) or [])

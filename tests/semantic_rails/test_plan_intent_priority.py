@@ -63,8 +63,17 @@ def _candidate_measure_id(candidate: dict[str, Any]) -> str:
     selects = list(ir.get("select", []) or [])
     if not selects:
         return ""
-    expression = dict(selects[0].get("expression", {}) or {})
-    return str(expression.get("measure") or expression.get("metric") or "")
+    return _ref(selects[0])
+
+
+def _ref(item: Any) -> str:
+    """What a select item reads: an id string, or a kind object's measure or metric."""
+    if isinstance(item, str):
+        return item
+    expression = item.get("expression")
+    if isinstance(expression, str):
+        return expression
+    return str((expression or {}).get("measure") or (expression or {}).get("metric") or "")
 
 
 def _candidate_group_by(candidate: dict[str, Any]) -> list[str]:
@@ -201,15 +210,13 @@ def test_revenue_this_month_vs_last_month_uses_revenue_usd(runtime_factory) -> N
         for row in bundle:
             patch = dict(row.get("query_patch") or {})
             for sel in patch.get("select") or []:
-                expr = dict(sel.get("expression") or {})
-                ident = str(expr.get("measure") or expr.get("metric") or "")
+                ident = _ref(sel)
                 if ident:
                     observed_ids.add(ident)
         for candidate in candidates[:1]:
             ir = dict(candidate.get("candidate_ir") or {})
             for sel in ir.get("select") or []:
-                expr = dict(sel.get("expression") or {})
-                ident = str(expr.get("measure") or expr.get("metric") or "")
+                ident = _ref(sel)
                 if ident:
                     observed_ids.add(ident)
         # The first blocked entry is the canonical draft resolution
@@ -222,8 +229,7 @@ def test_revenue_this_month_vs_last_month_uses_revenue_usd(runtime_factory) -> N
                     observed_ids.add(str(ident))
             ir = dict(blocked_row.get("candidate_ir") or {})
             for sel in ir.get("select") or []:
-                expr = dict(sel.get("expression") or {})
-                ident_ = str(expr.get("measure") or expr.get("metric") or "")
+                ident_ = _ref(sel)
                 if ident_:
                     observed_ids.add(ident_)
 
@@ -236,8 +242,7 @@ def test_revenue_this_month_vs_last_month_uses_revenue_usd(runtime_factory) -> N
             top_ir = dict(candidates[0].get("candidate_ir") or {})
             top_idents: set[str] = set()
             for sel in top_ir.get("select") or []:
-                expr = dict(sel.get("expression") or {})
-                ident = str(expr.get("measure") or expr.get("metric") or "")
+                ident = _ref(sel)
                 if ident:
                     top_idents.add(ident)
             non_derivative_top = {

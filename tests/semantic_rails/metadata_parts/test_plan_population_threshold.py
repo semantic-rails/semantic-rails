@@ -13,45 +13,31 @@ emitted shape, additional trigger phrases ("top decile of", etc.)
 and an inline percentile threshold in place of the literal scalar.
 Phase 2's parser change is what makes the dict value flow through.
 
-The planner drafts the lifetime qualifier on its own clock while the query is on the
-order clock. The engine refuses matching the two by calendar bucket, so every draft here
-is shown as ``low_confidence`` (never ready) and these tests assert the drafted IR and
-the refusal code.
+The qualifier reads every row of each customer (``over: all_time``). Lifetime spend is a
+balance, and a balance read through a predicate has no proven one-day read, so these drafts
+validate but are held (``stock_as_of_unrealized``); a count qualifier answers.
 """
 
 from __future__ import annotations
 
-import copy
+import duckdb
 
 from semantic_rails.planner import plan_payload
 
-_REFUSED = "INVALID_TEMPORAL_BINDING"
-
 
 def _drafted_best(runtime, intent):
-    """Return the best draft's IR, asserting it is refused rather than offered as ready."""
+    """Return the best draft's call, asserting it validates but is held, not offered as ready."""
     payload = plan_payload(runtime, intent=intent, detail="full", limit=3)
     assert payload["status"] == "low_confidence", payload.get("why")
     assert "ready_for" not in payload["next"]
-    best = payload["best"]
-    assert best["validation_ok"] is False
-    report = runtime.validate(best["query"])
-    assert [error["code"] for error in report["errors"]] == [_REFUSED], report["errors"]
-    return best["query"]
+    assert payload["best"]["validation_ok"] is True
+    kinds = {gap["kind"] for gap in payload["why"]["details"]["gaps"]}
+    assert "stock_as_of_unrealized" in kinds
+    return payload["best"]["query"]
 
 
-def _predicates(query_ir):
-    return query_ir["select"][0]["expression"]["predicates"]
-
-
-def _aligned(query_ir):
-    """The drafted query with every predicate opting into the query's calendar buckets."""
-    aligned = copy.deepcopy(query_ir)
-    for predicate in _predicates(aligned):
-        predicate["time_alignment"] = "same_query_period"
-    for outer in aligned.get("metric_filters", []):
-        outer["expression"]["time_alignment"] = "same_query_period"
-    return aligned
+def _predicates(query):
+    return query["select"][0]["expression"]["predicates"]
 
 
 def test_top_decile_intent_resolves_to_percentile_threshold_ir(runtime_factory):
@@ -60,11 +46,12 @@ def test_top_decile_intent_resolves_to_percentile_threshold_ir(runtime_factory):
         query_ir = _drafted_best(runtime, "revenue from top decile of customers by lifetime spend")
         (predicate,) = _predicates(query_ir)
         assert predicate["entity"] == "entity.jaffle_customer"
-        assert predicate["op"] == ">="
+        assert predicate["op"] == "gte"
+        assert predicate["over"] == "all_time"
         # Top decile = above the 90th percentile cut-off.
         assert predicate["value"] == {"kind": "percentile", "p": 0.9}
-        # The predicate names the ranking measure ("lifetime spend") from the "by" phrase.
-        assert predicate["measure"] == "measure.jaffle.lifetime_spend_before_tax_usd"
+        # The predicate reads the ranking measure ("lifetime spend") from the "by" phrase.
+        assert predicate["input"] == "measure.jaffle.lifetime_spend_usd"
     finally:
         runtime.close()
 
@@ -91,11 +78,11 @@ def test_top_quartile_intent_p_075(runtime_factory):
 
 
 def test_percentile_intent_compiles_to_threshold_cte(runtime_factory):
-    """The drafted percentile IR lowers to the threshold CTE once it asks for calendar alignment."""
+    """The drafted percentile call lowers to the threshold CTE."""
     runtime = runtime_factory("jaffle_shop")
     try:
         query_ir = _drafted_best(runtime, "revenue from top decile of customers by lifetime spend")
-        compile_result = runtime.compile(_aligned(query_ir))
+        compile_result = runtime.compile(query_ir)
         assert compile_result["ok"], compile_result.get("errors")
         sql = compile_result["rendered_sql"].lower()
         # Phase 2 lowering emits the threshold CTE + CROSS JOIN.
@@ -107,13 +94,28 @@ def test_percentile_intent_compiles_to_threshold_cte(runtime_factory):
 
 
 def test_non_percentile_qualification_still_uses_literal_value(runtime_factory):
-    """Regression: the existing "with at least N" path (which produces
-    a literal-scalar threshold) must keep working unchanged."""
+    """The "with at least N" path keeps a literal threshold, on the target's own noun counted
+    distinct, and answers: orders from customers with 4 or more orders."""
     runtime = runtime_factory("jaffle_shop")
     try:
-        query_ir = _drafted_best(runtime, "orders from customers with at least 4 distinct orders")
-        (predicate,) = _predicates(query_ir)
-        assert predicate["op"] == ">="
-        assert predicate["value"] == 4
+        plan = plan_payload(runtime, intent="orders from customers with at least 4 distinct orders")
+        assert plan["status"] == "ok", plan.get("why")
+        query = plan["best"]["query"]
+        assert query["where"] == [
+            {
+                "entity": "entity.jaffle_customer",
+                "having": [{"field": "measure.jaffle.order_count", "op": "gte", "value": 4}],
+                "over": "all_time",
+            }
+        ]
+        [row] = runtime.query(query)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            (reference,) = connection.execute(
+                "SELECT COUNT(DISTINCT order_id) FROM jaffle_order WHERE customer_id IN "
+                "(SELECT customer_id FROM jaffle_order GROUP BY 1 "
+                "HAVING COUNT(DISTINCT order_id) >= 4)"
+            ).fetchone()
     finally:
         runtime.close()
+    assert row["order_count"] == reference
+    assert reference > 0

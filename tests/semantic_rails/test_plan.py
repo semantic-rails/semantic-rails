@@ -74,27 +74,38 @@ def test_best_plan_corpus_carries_query_once(runtime_factory) -> None:
 
 
 def test_plan_drafts_a_qualified_ranking(runtime_factory) -> None:
+    """No window: every order of each store qualifies it, the one reading, so plan answers."""
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
             runtime,
             intent="top 3 stores by revenue with at least 4 distinct customers",
         )
+        assert payload["status"] == "ok", payload.get("why")
+        assert payload["best"]["pattern"] == "qualified_metric_rollup"
+        query = payload["best"]["query"]
+        [qualification] = query["where"]
+        assert qualification == {
+            "entity": "entity.jaffle_store",
+            "having": [
+                {"field": "measure.jaffle.ordering_customer_count", "op": "gte", "value": 4}
+            ],
+            "over": "all_time",
+        }
+        rows = runtime.query(query)["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            reference = connection.execute(
+                "SELECT s.store_name, SUM(o.order_total_cents / 100.0) FROM jaffle_order o "
+                "JOIN jaffle_store s USING (store_id) WHERE o.store_id IN (SELECT store_id "
+                "FROM jaffle_order GROUP BY 1 HAVING COUNT(DISTINCT customer_id) >= 4) "
+                "GROUP BY 1 ORDER BY 2 DESC LIMIT 3"
+            ).fetchall()
     finally:
         runtime.close()
-    assert payload["best"] is not None
-    assert payload["best"]["pattern"] == "qualified_metric_rollup"
-    [qualification] = payload["best"]["query"]["where"]
-    assert qualification["entity"] == "entity.jaffle_store"
-    # The question doesn't say over which rows a store's customers are counted: plan asks, with
-    # one ready-to-send call per reading.
-    assert payload["status"] == "needs_clarification"
-    assert payload["why"]["code"] == "ENTITY_FILTER_PERIOD_UNSTATED"
-    options = payload["why"]["details"]["options"]
-    # The engine reads an all-time qualification here; the call is the drafted one.
-    assert [option["over"] for option in options] == ["all_time"]
-    assert options[0]["call"] == {"$ref": "best.query"}
-    assert qualification["over"] == "all_time"
+    actual = [(row["dimension.jaffle_store_name"], row["revenue_usd"]) for row in rows]
+    assert [name for name, _ in actual] == [name for name, _ in reference]
+    assert [value for _, value in actual] == pytest.approx([value for _, value in reference])
+    assert len(reference) == 2
 
 
 @pytest.mark.parametrize(
@@ -247,8 +258,8 @@ REVENUE_SUM = {"kind": "measure", "measure": REVENUE, "aggregation": "sum"}
     ("caller", "alias", "shown"),
     [
         ({"as": "rev", "expression": REVENUE}, "rev", None),
-        # The default aggregation restated is the measure itself.
-        ({"as": "rev", "expression": REVENUE_SUM}, "rev", {"as": "rev", "expression": REVENUE}),
+        # The caller's spelling stays, the default aggregation restated too.
+        ({"as": "rev", "expression": REVENUE_SUM}, "rev", None),
         # Without an alias of its own, the caller's item takes the draft's.
         ({"expression": REVENUE}, "revenue_usd", REVENUE),
     ],
@@ -983,8 +994,9 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
         # "by revenue" after "What are the top stores" reads as a grouping it lacks.
         ("top_stores_by_revenue", "PLAN_UNMATCHED_TERMS"),
         ("inventory_levels_by_store", "PLAN_INTENT_COVERAGE_GAP"),
-        # The stores' orders and sessions are counted over rows the question doesn't say.
-        ("active_menu_snapshot_for_high_activity_stores", "ENTITY_FILTER_PERIOD_UNSTATED"),
+        # A balance summed over each month is not the snapshot asked for; that hold comes
+        # before asking over which rows the stores qualify.
+        ("active_menu_snapshot_for_high_activity_stores", "PLAN_INTENT_COVERAGE_GAP"),
         ("adversarial_fake_ids_route_to_real_revenue", "PLAN_UNMATCHED_TERMS"),
     ],
 )
