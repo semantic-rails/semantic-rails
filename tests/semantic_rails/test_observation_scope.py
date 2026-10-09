@@ -61,7 +61,8 @@ def _package(root: Path, defaults: dict[str, Any]) -> Path:
     put("package.yml", {
         "schema_version": 1,
         "package": {"id": "obs", "namespace": "obs", "name": "obs", "description": "Observation",
-                    "warehouse": "duckdb", "default_db": "obs.duckdb", "seed": {"kind": "external"}},
+                    "warehouse": "duckdb", "default_db": "obs.duckdb", "seed": {"kind": "external"},
+                    "schema_strict": True},
         "defaults": {"time": {"timezone": "UTC"}, **defaults},
     })  # fmt: skip
     put("graph.yml", {"graph": {"entities": {
@@ -86,6 +87,10 @@ def _package(root: Path, defaults: dict[str, Any]) -> Path:
         "measures": {"on_hand": {"kind": "aggregate", "expr": "on_hand", "value_type": "count",
                                  "accumulation": {"kind": "stock", "snapshot": "end_of_period"}}},
     }})  # fmt: skip
+    put("metrics.yml", {"metrics": {"qty": {
+        "kind": "aggregate", "label": "Qty", "measure": "measure.obs.qty", "aggregation": "sum",
+        "temporal_role": SOLD, "value_type": "count",
+    }}})  # fmt: skip
     put("policies.yml", {"semantic_policies": [{
         "id": "policy.obs.own_region", "kind": "row_filter", "dimension": "dimension.obs_sale_region",
         "attribute": "region", "audiences": ["regional"],
