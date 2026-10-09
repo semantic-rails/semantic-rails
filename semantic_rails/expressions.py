@@ -1872,8 +1872,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             # The input is 0 for an entity with no rows and NULL for one with no data, so a
             # null threshold would keep the wrong entities.
             hint = (
-                "A count of none is op '=' with value 0; a null test belongs inside the "
-                "input, as an aggregate_if condition."
+                "A count of none is op 'is' with value 0; a test for missing values belongs "
+                'inside the input, as {"op": "missing", "value": true} in its filter.'
             )
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",

@@ -726,17 +726,21 @@ kind names must match exactly.
   A package metric's own `filter:` is the package author's governed definition and is
   trusted: `allowed_where` checks, and `required_where` looks for, only the conditions the
   caller adds (its `where`, the conditions in its entity filters, and the filters inside
-  its inline kinds, all checked when the call is bound). To keep a caller away from a
-  metric, deny the metric (`object_access`).
+  its inline kinds, all checked when the call is bound). The same holds for cuts:
+  `allow_metric_filters: false`, `allowed_metric_filter_entities` and
+  `allowed_metric_filter_metrics` count only the cuts the caller adds, never the
+  metric's own filter, so a plain select of a filtered package metric passes them
+  while the caller's `having` or entity filter on it is still refused. To keep a
+  caller away from a metric, deny the metric (`object_access`).
   `allowed_metric_filter_entities` and `allowed_metric_filter_metrics` apply
-  to compiler-resolved cuts in `having`, in entity filters, and inside select or recipe
-  expressions, including aggregate filters and scoped predicates. Measures,
-  columns and dimensions count as their owning entities; referenced recipes
+  to compiler-resolved cuts the caller adds: in `having`, in entity filters, and inside
+  the call's own select expressions, including aggregate filters and scoped predicates.
+  Measures, columns and dimensions count as their owning entities; referenced recipes
   count even when nested. The outer query's grouping, where, time axis and
   attachment joins are excluded from these filter dependency sets. Constant
   cuts have no object reads; unresolved cut bindings are refused under these
   allowlists. A cut in `having` or an entity filter counts for every governed object in
-  the query. A cut inside a select or recipe expression counts only for the
+  the query. A cut inside a select expression counts only for the
   measures and recipes whose values it filters, so an unfiltered governed
   measure may sit beside a separately filtered one. When a cut has no single
   owner, or the governed object is read inside a cut, every cut in the query
@@ -2149,9 +2153,9 @@ relationship), and `details.fixes`:
   reads one of that name;
 - `declare_link_table`: `entities: {bridge: true}` on the crossed model;
 - `record_route`: the `graph.path_preferences` row for the pair;
-- `child_group`: ask about the crossed rows themselves, an `any`
-  [entity filter](QUERY_CALL.md#entity-filters) on the crossed entity carrying the
-  query's conditions on the target.
+- `entity_filter`, when the query has conditions on the target: ask about the
+  crossed rows themselves, an `any` [entity filter](QUERY_CALL.md#entity-filters) on
+  the crossed entity carrying those conditions.
 
 Three declarations allow the crossing, and then no warning is given: the
 crossed model's `bridge: true`; a validity window on the crossed entity (a

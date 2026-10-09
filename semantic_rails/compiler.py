@@ -5036,13 +5036,18 @@ class BoundQuery:
     # query's SQL) that say where their data ends.
     balance_edges: tuple[dict[str, Any], ...] = ()
     balance_coverage: tuple[SqlCte, ...] = ()
+    # Root leaves only package metrics' own definitions compute (:func:`_authored_leaves`).
+    authored_leaves: frozenset[str] = frozenset()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
-        """Whole-query cuts plus the cuts of leaves computing ``object_id``."""
+        """The cuts the caller added that count for ``object_id``: whole-query cuts plus the
+        cuts of leaves computing it. A package metric's own filter is its author's definition,
+        so a cut of authored leaves alone is not one."""
         return tuple(
             cut
             for cut, owners in zip(self.cuts, self.cut_owners, strict=True)
-            if self.cut_counts(object_id, owners)
+            if not (owners and owners <= self.authored_leaves)
+            and self.cut_counts(object_id, owners)
         )
 
     def cut_counts(self, object_id: str, owners: frozenset[str] | None) -> bool:
@@ -5340,6 +5345,36 @@ def read_routes(plan: LogicalPlan, route_choices: Sequence[RouteChoice]) -> list
     return list(dict.fromkeys(choices))
 
 
+def _authored_leaves(plan: LogicalPlan, config: PackageConfig) -> frozenset[str]:
+    """The filtered leaves only package metrics' own definitions compute.
+
+    A leaf's alias names its filter, so a leaf the caller's own expressions also compute is
+    the caller's, whatever a package metric says.
+    """
+    query = normalize_query(plan.query, config=config)
+    recipes = _recipe_index(config)
+    leaves: dict[bool, set[str]] = {False: set(), True: set()}
+
+    def visit(expr: Any, authored: bool) -> None:
+        if isinstance(expr, MetricRecipeRefExpr):
+            if (recipe := recipes.get(expr.metric_recipe)) is not None:
+                visit(recipe.expression, True)
+            return
+        if isinstance(expr, (AggregateExpr, ScopedAggregateExpr, ConversionExpr)):
+            leaves[authored].add(_expression_alias(expr, config))
+        for item in fields(expr) if is_dataclass(expr) else ():
+            value = getattr(expr, item.name)
+            for child in value if isinstance(value, list) else [value]:
+                visit(child, authored)
+
+    for expr in [
+        *(row.expression for row in query.select),
+        *(row.expression for row in query.metric_filters),
+    ]:
+        visit(expr, False)
+    return frozenset(leaves[True] - leaves[False])
+
+
 def _bind_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
 ) -> BoundQuery:
@@ -5389,6 +5424,7 @@ def _bind_query(
         coverage_now=clock.literal if clock.read else "",
         balance_edges=tuple(balance_edges["outputs"]),
         balance_coverage=tuple(balance_edges["ctes"].values()),
+        authored_leaves=_authored_leaves(plan, config),
     )
 
 

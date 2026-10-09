@@ -28,6 +28,7 @@ from .config_parts.route_rows import (
     walk_entities,
 )
 from .errors import SemanticLayerError
+from .query_call import call_where
 from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, PathPreferenceConfig, RelationshipConfig
 
 
@@ -223,8 +224,9 @@ def pass_through_disclosure(
     *,
     route_basis: str,
 ) -> tuple[str, dict[str, Any]] | None:
-    """A route's ``pass_through`` disclosure, a message and its details with the four fixes
-    (a child group restating ``where``, the query's conditions on the target), or None."""
+    """A route's ``pass_through`` disclosure, a message and its details with its fixes (an
+    entity filter on the crossed rows restating ``where``, the query's conditions on the
+    target, when it has any), or None."""
     crossings = pass_through(config, start, path)
     if not crossings:
         return None
@@ -236,20 +238,27 @@ def pass_through_disclosure(
     found = "`, `".join(column for column in keys if column in read)
     has = f" (its table has `{found}`)" if found else ""
     links = [{"entity": row["entity"], "entities": {"bridge": True}} for row in crossings]
-    fixes = {
+    fixes: dict[str, Any] = {
         "declare_key": {"entity": start, "target_entity": target, "columns": keys},
         "declare_link_table": links,
         "record_route": route_pin(start, target, list(path)),
-        "child_group": {"child": first, "match": "any", "where": list(where)},
     }
+    advice = [
+        f"declare the {start_label}'s own {target_label} key{has}",
+        f"declare {through} a link table (`bridge: true`)",
+        "record this route (graph.path_preferences)",
+    ]
+    if where:
+        fixes["entity_filter"] = {"entity": first, "any": call_where(where)}
+        advice.append(
+            f"ask about the {_plural(entity_label(config, first))} with an entity filter in where"
+        )
     message = (
         f"{meaning[:1].upper()}{meaning[1:]}, through {through} rows the package doesn't "
         f"declare as a link table: {'an' if start_label[:1].lower() in 'aeiou' else 'a'} "
         f"{start_label} with no {entity_label(config, first)} is left out, and one with "
-        f"several can count under several {_plural(target_label)}. Fix: declare the "
-        f"{start_label}'s own {target_label} key{has}, declare {through} a link table "
-        "(`bridge: true`), record this route (graph.path_preferences), or ask about the "
-        f"{_plural(entity_label(config, first))} with a child group."
+        f"several can count under several {_plural(target_label)}. Fix: "
+        f"{', '.join(advice[:-1])}, or {advice[-1]}."
     )
     return message, {
         "route": list(path),

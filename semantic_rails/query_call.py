@@ -727,6 +727,13 @@ def _entity_filter(
                 "is a measure or metric of the entity",
                 fix="Filter the entity's rows with any / none instead.",
             )
+        if condition.get("value") is None:
+            # An entity with no rows reads 0, so a null test would keep the wrong entities.
+            raise refusal(
+                f"{at}.value",
+                "compares the entity's aggregate, which is never tested for null",
+                fix='For an entity with none, write {"op": "is", "value": 0}.',
+            )
         word, value = operators.normalize_condition(
             condition.get("op"), condition.get("value"), path=at
         )

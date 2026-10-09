@@ -760,7 +760,12 @@ def test_a_null_threshold_is_refused(runtime, op, input_):
     with pytest.raises(SemanticLayerError) as exc:
         _run(runtime, "customer_count", [_predicate(CUSTOMER, input_, op, None)])
     assert exc.value.code == "INVALID_METRIC_PREDICATE"
-    assert exc.value.details["recovery_hints"][0]["code"] == "USE_ZERO_OR_INPUT_NULL_TEST"
+    (hint,) = exc.value.details["recovery_hints"]
+    assert hint == {
+        "code": "USE_ZERO_OR_INPUT_NULL_TEST",
+        "message": "A count of none is op 'is' with value 0; a test for missing values belongs "
+        'inside the input, as {"op": "missing", "value": true} in its filter.',
+    }
 
 
 def _by_enrolment_month(runtime: Runtime, predicate: dict) -> list[dict]:

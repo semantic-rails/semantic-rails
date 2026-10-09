@@ -409,7 +409,9 @@ not become filter dependencies merely because a cut is evaluated in their
 context. Constant cuts can resolve with no object reads; unresolved cut bindings
 are refused under filter allowlists. Each cut records the leaves it filters; a
 governed object is checked against `metric_filters` cuts plus its own leaves' cuts,
-and against every cut when ownership is ambiguous. `allow_metric_filters: false`
+and against every cut when ownership is ambiguous. A cut of leaves that only package
+metrics' own definitions compute (`BoundQuery.authored_leaves`) is the author's, never
+the caller's, so it counts for no allowlist. `allow_metric_filters: false`
 refuses the cuts that count for it. The fields of the filters the caller wrote inside
 expressions are read from the normalized query, owned by the root leaves over their
 measure under that same rule (`BoundQuery.cut_counts`), and checked against
