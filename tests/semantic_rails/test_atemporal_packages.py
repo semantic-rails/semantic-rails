@@ -41,7 +41,29 @@ from semantic_rails.runtime import Runtime
 COUNT = "measure.catalogue.item_count"
 AMOUNT = "measure.catalogue.total_amount"
 CATEGORY = "dimension.catalogue_item_category"
-BASE = {"version": 1, "select": [{"expression": {"measure": COUNT}, "as": "value"}]}
+BASE = {"select": [{"expression": COUNT, "as": "value"}]}
+
+
+def _selecting(expression) -> dict:
+    return {"select": [{"expression": expression}]}
+
+
+def _draft(runtime, query: dict) -> dict:
+    """The engine's form of a draft call, which the metadata tools read."""
+    return runtime.engine_payload(query, partial=True)
+
+
+def _category_is(value: str) -> list[dict]:
+    return [{"field": CATEGORY, "op": "is", "value": value}]
+
+
+def _items_having_count(over: str) -> dict:
+    """An entity filter on each item's own count."""
+    return {
+        "entity": "entity.catalogue_item",
+        "having": [{"field": COUNT, "op": "gt", "value": 1}],
+        "over": over,
+    }
 
 
 def _assert_no_time_plan(result) -> None:
@@ -120,21 +142,21 @@ def test_validate_and_check_package_without_dates(package_path: Path) -> None:
     ("expression", "group_by", "where", "sql"),
     [
         (
-            {"measure": COUNT},
+            COUNT,
             [CATEGORY],
             [],
             "SELECT category, COUNT(DISTINCT item_id) AS value FROM items GROUP BY category",
         ),
         (
-            {"kind": "ratio", "numerator": {"measure": AMOUNT}, "denominator": {"measure": COUNT}},
+            {"kind": "ratio", "numerator": AMOUNT, "denominator": COUNT},
             [CATEGORY],
             [],
             "SELECT category, SUM(amount) / COUNT(DISTINCT item_id) AS value FROM items GROUP BY category",
         ),
         (
-            {"measure": AMOUNT},
+            AMOUNT,
             [],
-            [{"field": CATEGORY, "op": "=", "value": "A"}],
+            _category_is("A"),
             "SELECT SUM(amount) AS value FROM items WHERE category = 'A'",
         ),
     ],
@@ -157,17 +179,12 @@ def test_non_time_answers_match_independent_sql(runtime, expression, group_by, w
 
 
 TIME_REQUESTS = [
-    {**BASE, "time": {}},
+    {**BASE, "time": {"last": {"unit": "month", "value": 1}}},
     {**BASE, "time": {"grain": "month"}},
     {**BASE, "time": {"temporal_role": "temporal_role.absent", "grain": "month"}},
-    {**BASE, "grain": "month"},
-    {**BASE, "temporal_role_overrides": {COUNT: "temporal_role.absent"}},
-    {
-        **BASE,
-        "select": [{"expression": {"measure": COUNT, "temporal_role": "temporal_role.absent"}}],
-    },
+    _selecting({"kind": "measure", "measure": COUNT, "temporal_role": "temporal_role.absent"}),
     *[
-        {**BASE, "select": [{"expression": {"kind": kind, "input": {"measure": COUNT}, **extra}}]}
+        _selecting({"kind": kind, "input": COUNT, **extra})
         for kind, extra in [
             ("cumulative", {}),
             ("prior_period", {"offset": {"unit": "month", "value": 1}}),
@@ -176,64 +193,18 @@ TIME_REQUESTS = [
             ("rolling", {"window": {"unit": "day", "value": 1}}),
         ]
     ],
-    {
-        **BASE,
-        "select": [
-            {
-                "expression": {
-                    "kind": "aggregate",
-                    "measure": COUNT,
-                    "window": {"unit": "day", "value": 7},
-                }
-            }
-        ],
-    },
-    {
-        **BASE,
-        "metric_filters": [
-            {
-                "expression": {
-                    "kind": "metric_predicate",
-                    "entity": "entity.catalogue_item",
-                    "input": {"measure": COUNT},
-                    "op": ">",
-                    "value": 1,
-                    "time_grain": "month",
-                },
-                "op": "=",
-                "value": True,
-            }
-        ],
-    },
-    {
-        **BASE,
-        "where": [
-            {
-                "expression": {
-                    "kind": "metric_predicate",
-                    "entity": "entity.catalogue_item",
-                    "input": {"measure": COUNT},
-                    "op": ">",
-                    "value": 1,
-                    "window": {"unit": "day", "value": 7},
-                }
-            }
-        ],
-    },
-    {
-        **BASE,
-        "select": [
-            {
-                "expression": {
-                    "kind": "scoped_aggregate",
-                    "measure": COUNT,
-                    "anchor": {"temporal_role": "temporal_role.absent"},
-                    "window": {"unit": "day", "value": 7},
-                }
-            }
-        ],
-    },
-    {**BASE, "select": [{"expression": {"measure": AMOUNT, "aggregation": "first_value"}}]},
+    _selecting({"kind": "aggregate", "measure": COUNT, "window": {"unit": "day", "value": 7}}),
+    {**BASE, "where": [_items_having_count("window")]},
+    {**BASE, "where": [_items_having_count("period")], "time": {"grain": "month"}},
+    _selecting(
+        {
+            "kind": "scoped_aggregate",
+            "measure": COUNT,
+            "anchor": {"temporal_role": "temporal_role.absent"},
+            "window": {"unit": "day", "value": 7},
+        }
+    ),
+    _selecting({"kind": "measure", "measure": AMOUNT, "aggregation": "first_value"}),
 ]
 
 
@@ -249,20 +220,35 @@ def test_every_time_request_refuses_with_the_same_error(runtime, operation, quer
         assert result["errors"][0]["code"] == "INVALID_TEMPORAL_ROLE"
         assert "declares no time" in result["errors"][0]["message"]
         assert result["recovery_hints"][0]["kind"] == "remove_time_or_declare_role"
-    else:
-        with pytest.raises(SemanticLayerError) as exc:
-            if operation == "nested_compile":
-                _compile_query_sql_ast(runtime._config, query)
-            elif operation in {"plan_query", "bind_query", "compile_query"}:
-                {
-                    "plan_query": plan_query,
-                    "bind_query": bind_query,
-                    "compile_query": compile_query,
-                }[operation](runtime._config, runtime.registry, query)
-            else:
-                getattr(runtime, operation)(query)
-        assert exc.value.code == "INVALID_TEMPORAL_ROLE"
-        assert "declares no time" in str(exc.value)
+        return
+    payload = runtime.engine_payload(query)
+    internal = {"plan_query": plan_query, "bind_query": bind_query, "compile_query": compile_query}
+    with pytest.raises(SemanticLayerError) as exc:
+        if operation == "nested_compile":
+            _compile_query_sql_ast(runtime._config, payload)
+        elif operation in internal:
+            internal[operation](runtime._config, runtime.registry, payload)
+        else:
+            getattr(runtime, operation)(query)
+    assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    assert "declares no time" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("query", "path"),
+    [
+        ({**BASE, "time": {}}, "time"),
+        ({**BASE, "grain": "month"}, "grain"),
+        (
+            {**BASE, "temporal_role_overrides": {COUNT: "temporal_role.absent"}},
+            "temporal_role_overrides",
+        ),
+    ],
+)
+def test_time_outside_the_call_is_refused_with_its_path(runtime, query, path) -> None:
+    error = runtime.validate(query)["errors"][0]
+    assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
+    assert error["details"]["recovery_hints"][0]["message"]
 
 
 def test_nested_authored_time_expression_cannot_bypass_guard(runtime) -> None:
@@ -272,20 +258,9 @@ def test_nested_authored_time_expression_cannot_bypass_guard(runtime) -> None:
         expression=CumulativeExpr(MeasureRefExpr(COUNT)),
     )
     config = replace(runtime._config, metric_recipes=[*runtime._config.metric_recipes, recipe])
-    query = {
-        **BASE,
-        "select": [
-            {
-                "expression": {
-                    "kind": "ratio",
-                    "numerator": {"metric": recipe.id},
-                    "denominator": {"measure": COUNT},
-                }
-            }
-        ],
-    }
+    query = _selecting({"kind": "ratio", "numerator": recipe.id, "denominator": COUNT})
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
-        compile_query(config, None, query)
+        compile_query(config, None, runtime.engine_payload(query))
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
 
 
@@ -485,7 +460,7 @@ def test_plan_time_phrase_category_values_retains_query_and_downgrades(
         _assert_no_time_plan(result)
         query = result["best"]["query_ir"]
         assert "time" not in query
-        assert query["where"] == [{"field": CATEGORY, "op": "=", "value": value}]
+        assert query["where"] == _category_is(value)
         rows = runtime.query(query)["rows"]
         assert len(rows) == 1
         assert [v for k, v in rows[0].items() if k != CATEGORY] == [2]
@@ -527,7 +502,7 @@ def test_plan_repeated_catalogue_time_phrase_downgrades(
         assert "execute" not in result.get("next", {}).get("ready_for", [])
         query = result["best"]["query_ir"]
         assert "time" not in query
-        assert query["where"] == [{"field": CATEGORY, "op": "=", "value": value}]
+        assert query["where"] == _category_is(value)
         rows = runtime.query(query)["rows"]
         assert len(rows) == 1
         assert [v for k, v in rows[0].items() if k != CATEGORY] == [2]
@@ -557,13 +532,11 @@ def test_plan_fallback_catalogue_time_phrase_downgrades(package_path, detail):
             partial_query={
                 **BASE,
                 "group_by": None,
-                "where": [{"field": CATEGORY, "op": "=", "value": "monthly"}],
+                "where": _category_is("monthly"),
             },
             detail=detail,
         )
-        assert result["best"]["query_ir"]["where"] == [
-            {"field": CATEGORY, "op": "=", "value": "monthly"}
-        ]
+        assert result["best"]["query_ir"]["where"] == _category_is("monthly")
         _assert_no_time_plan(result)
         assert "execute" not in result.get("next", {}).get("ready_for", [])
     finally:
@@ -641,7 +614,8 @@ def test_plan_drafted_time_cannot_bypass_guard(runtime, monkeypatch) -> None:
 
     result = compose(runtime, "item count")
     assert result.draft is not None
-    result = replace(result, draft=replace(result.draft, query={**BASE, "time": {}}))
+    draft = replace(result.draft, query={**result.draft.query, "time": {}})
+    result = replace(result, draft=draft)
     monkeypatch.setattr("semantic_rails.planner.plan.compose", lambda *_: result)
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
         plan_payload(runtime, intent="item count")
@@ -804,11 +778,11 @@ def test_normalized_time_expressions_refuse(runtime, variant: str, operation: st
                 runtime._config,
                 measures=[obj if row.id == obj.id else row for row in runtime._config.measures],
             )
-        expression = {variant: f" {obj.id} "}
+        expression = f" {obj.id} "
     elif variant in {"first_value", "last_value"}:
-        expression = {"measure": AMOUNT, "aggregation": f" {variant} "}
+        expression = {"kind": "measure", "measure": AMOUNT, "aggregation": f" {variant} "}
     else:
-        expression = {"kind": f" {variant} ", "input": {"measure": COUNT}}
+        expression = {"kind": f" {variant} ", "input": COUNT}
         expression.update(
             {
                 "prior_period": {"offset": {"unit": "month", "value": 1}},
@@ -816,24 +790,25 @@ def test_normalized_time_expressions_refuse(runtime, variant: str, operation: st
                 "period_to_date": {"period": "year"},
             }.get(variant, {})
         )
-    query = {**BASE, "select": [{"expression": expression}]}
+    query = _selecting(expression)
     if operation == "validate":
         result = runtime.validate(query)
         assert result["ok"] is False
         assert result["errors"][0]["code"] == "INVALID_TEMPORAL_ROLE"
         assert result["recovery_hints"][0]["kind"] == "remove_time_or_declare_role"
         return
+    draft = _draft(runtime, query)
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
         if operation == "compile":
             runtime.compile(query)
         elif operation == "inspect":
-            inspect_payload(runtime, object_id=COUNT, partial_query=query)
+            inspect_payload(runtime, object_id=COUNT, partial_query=draft)
         elif operation == "discover":
-            discover_payload(runtime, terms="item count", partial_query=query)
+            discover_payload(runtime, terms="item count", partial_query=draft)
         elif operation == "build-options":
-            build_options_payload(runtime, partial_query=query)
+            build_options_payload(runtime, partial_query=draft)
         elif operation == "valid-values":
-            valid_values_payload(runtime, dimension_id=CATEGORY, query=query)
+            valid_values_payload(runtime, dimension_id=CATEGORY, query=draft)
         else:
             plan_payload(runtime, intent="item count", partial_query=query)
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
@@ -842,7 +817,7 @@ def test_normalized_time_expressions_refuse(runtime, variant: str, operation: st
 
 def test_plan_partial_time_refuses_before_it_can_be_dropped(runtime) -> None:
     with pytest.raises(SemanticLayerError, match="declares no time"):
-        plan_payload(runtime, intent="item count", partial_query={})
+        plan_payload(runtime, intent="item count", partial_query={"time": {}})
 
 
 def test_catalog_inspect_and_builder_without_dates(runtime) -> None:
@@ -850,7 +825,7 @@ def test_catalog_inspect_and_builder_without_dates(runtime) -> None:
     assert catalog_payload(runtime)["temporal_roles"] == []
     card = inspect_payload(runtime, object_id=COUNT)["card"]
     assert card["compatible_temporal_roles"] == []
-    builder = build_options_payload(runtime, partial_query=BASE, verbosity="full")
+    builder = build_options_payload(runtime, partial_query=_draft(runtime, BASE), verbosity="full")
     assert "time" not in builder["next_legal_steps"]
     assert not any(row.get("kind") == "temporal_role" for row in builder["available"])
     plan = plan_payload(runtime, intent="item count by category")
@@ -859,12 +834,8 @@ def test_catalog_inspect_and_builder_without_dates(runtime) -> None:
 
 
 def test_literal_filter_values_and_caller_metadata_are_not_time_requests(runtime) -> None:
-    query = {
-        **BASE,
-        "where": [{"field": CATEGORY, "op": "=", "value": "last month"}],
-        "policy_context": {"note": {"time": {"grain": "month"}}},
-    }
-    assert runtime.validate(query)["ok"]
+    query = {**BASE, "where": _category_is("last month")}
+    assert runtime.validate(query, context={"note": {"time": {"grain": "month"}}})["ok"]
 
 
 @pytest.mark.parametrize("time_column", ["", "   ", "\t\n"])
@@ -894,7 +865,7 @@ def test_scaffold_whitespace_time_column_is_absent(data) -> None:
 
 @pytest.mark.parametrize("operation", ["inspect", "build-options", "discover", "valid-values"])
 def test_metadata_partial_time_refuses(runtime, operation) -> None:
-    query = {}
+    query = _draft(runtime, {"time": {}})
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
         if operation == "inspect":
             inspect_payload(runtime, object_id=COUNT, partial_query=query)
@@ -960,9 +931,10 @@ def test_non_time_lookup_matches_independent_sql(package_path) -> None:
 
 
 def test_bound_compilation_cannot_bypass_time_guard(runtime) -> None:
-    binding = bind_query(runtime._config, runtime.registry, BASE)
+    payload = runtime.engine_payload(BASE)
+    binding = bind_query(runtime._config, runtime.registry, payload)
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
-        compile_query(runtime._config, runtime.registry, {**BASE, "time": {}}, binding=binding)
+        compile_query(runtime._config, runtime.registry, {**payload, "time": {}}, binding=binding)
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
 
 
@@ -1009,7 +981,7 @@ def test_external_scaffold_can_omit_time(tmp_path) -> None:
 @pytest.mark.parametrize("field", ["step", "stage"])
 def test_builder_explicit_time_step_refuses(runtime, field) -> None:
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
-        build_options_payload(runtime, partial_query=BASE, **{field: "time"})
+        build_options_payload(runtime, partial_query=_draft(runtime, BASE), **{field: "time"})
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
 
 
@@ -1021,7 +993,7 @@ def test_authored_metric_window_cannot_bypass_guard(runtime) -> None:
     )
     config = replace(runtime._config, metric_recipes=[recipe])
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
-        compile_query(config, None, {**BASE, "select": [{"expression": {"metric": recipe.id}}]})
+        compile_query(config, None, runtime.engine_payload(_selecting(recipe.id)))
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
 
 
@@ -1030,7 +1002,7 @@ def test_mcp_time_refusal_keeps_code_and_actionable_hint(runtime, mode) -> None:
     result = SemanticLayerMCPAdapter(runtime).call_tool(
         "execute",
         {
-            "query": {**BASE, "time": {}},
+            "query": {**BASE, "time": {"grain": "month"}},
             "mode": mode,
         },
     )
@@ -1044,7 +1016,7 @@ def test_http_time_refusal_is_a_client_error(runtime) -> None:
     service = SemanticHTTPService(runtime)
     try:
         body, status = service.handle(
-            "POST", normalize_route("/api/v1/query"), {**BASE, "time": {}}
+            "POST", normalize_route("/api/v1/query"), {**BASE, "time": {"grain": "month"}}
         )
     except SemanticLayerError as exc:
         body, status = service.exception_payload(exc, stage="http")
