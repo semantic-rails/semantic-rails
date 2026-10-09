@@ -1,15 +1,20 @@
 """Pattern: ``qualified_metric_rollup``.
 
-Detects intents that ask for a metric rolled up to one entity grain
-while filtering by a count/threshold predicate evaluated at another
-("top stores by revenue with at least 4 distinct customers").
+Detects intents that ask for a metric rolled up to one entity grain while filtering by a
+count/threshold predicate evaluated at another ("top stores by revenue with at least 4
+distinct customers"). The qualification is an entity filter on the entity's aggregates,
+taken ``over`` all time ("lifetime", "ever"), the query window, or each period ("that
+month"); a question that doesn't say which asks (``ENTITY_FILTER_PERIOD_UNSTATED``), with one
+ready-to-send call per reading. A share of the population ("top decile of customers") is a
+percentile threshold on a scoped aggregate's predicate.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from ...naming import semantic_token as _semantic_token
+from ...config_parts.measure_governance import _reachable_entities
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -18,8 +23,10 @@ from .._base import (
     _preferred_metric,
     _resolved,
     _score,
+    _tied_top,
     _tokens,
 )
+from ..call import Call, Condition, EntityFilter, QueryBuilder
 from ..generators import _target_focus_text
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import (
@@ -58,35 +65,103 @@ def _predicate_metric_terms(text: str, terms: set[str], target_terms: list[str])
     return []
 
 
-def _predicate_grain(text: str, output_grain: str) -> str:
+def _predicate_grain(text: str) -> str:
+    """The period a qualification is counted in, when the question says ("that month")."""
     lowered = str(text or "").lower()
     for candidate in ("day", "week", "month", "quarter", "year"):
-        mentioned = (
-            f"that {candidate}" in lowered
-            or f"same {candidate}" in lowered
-            or f"in the {candidate}" in lowered
-            or f"in that {candidate}" in lowered
-            or f"per {candidate}" in lowered
-        )
-        if mentioned and candidate != output_grain:
+        if any(
+            cue.format(candidate) in lowered
+            for cue in ("that {}", "same {}", "in the {}", "in that {}", "per {}")
+        ):
             return candidate
     return ""
 
 
-def _predicate_input(target: Any) -> dict[str, Any]:
-    object_id = str(getattr(target, "id", ""))
-    if object_id.startswith("measure."):
-        return {"measure": object_id}
-    return {"metric": object_id}
+# "lifetime", "ever", "of all time": the entity's aggregate over every row it has.
+_ALL_TIME_RE = re.compile(r"\b(?:lifetime|ever|all[\s-]time)\b")
 
 
-_CANONICAL_PREDICATE_MEASURES: dict[str, list[str]] = {
-    "order": ["measure.jaffle.order_count"],
-    "session": ["measure.jaffle.session_starts"],
-    "customer": ["measure.jaffle.ordering_customer_count", "measure.jaffle.customer_count"],
-    "revenue": ["measure.jaffle.revenue_usd"],
-    "signup": ["measure.jaffle.signup_count"],
-}
+def _over(text: str, call: Call) -> str:
+    """How the question takes the qualifying aggregate: ``all_time``, ``period`` (its own
+    output grain), or "" when it doesn't say."""
+    if _ALL_TIME_RE.search(str(text or "").lower()):
+        return "all_time"
+    grain = _predicate_grain(text)
+    if grain and call.time is not None and call.time.grain == grain:
+        return "period"
+    return ""
+
+
+def _qualified(
+    config: Any,
+    builder_for: Any,
+    over: str,
+    entity: Any,
+    predicates: list[Any],
+    op: str,
+    value: Any,
+) -> Call:
+    """The draft with the qualification taken ``over`` the given rows."""
+    builder = builder_for()
+    if isinstance(value, dict):
+        # A population share is a percentile threshold, which only a predicate takes.
+        [item] = builder.build().select
+        measure = item.ref
+        builder.selects([])
+        builder.select(
+            {
+                "kind": "scoped_aggregate",
+                "measure": measure,
+                "aggregation": item.aggregation
+                or next(row.default_aggregation for row in config.measures if row.id == measure),
+                "predicates": [
+                    {
+                        "entity": entity.id,
+                        "input": target.id,
+                        "op": op,
+                        "value": value,
+                        "over": over,
+                    }
+                    for target in predicates
+                ],
+            },
+            item.alias,
+        )
+    else:
+        builder.filter(
+            EntityFilter(
+                entity.id,
+                "having",
+                tuple(Condition(target.id, op, value) for target in predicates),
+                over,
+            )
+        )
+    return builder.build()
+
+
+def _period_options(
+    config: Any, builder_for: Any, entity: Any, predicates: list[Any], op: str, value: Any
+) -> list[dict[str, Any]]:
+    """One ready-to-send call per reading of an unstated qualification period."""
+    base = builder_for().build()
+    words = ["all_time"]
+    if base.time is not None and base.time.window:
+        words.append("window")
+    if base.time is not None and base.time.grain:
+        words.append("period")
+    reads = {
+        "all_time": f"every row of each {entity.label or entity.id}, whatever the window",
+        "window": f"each {entity.label or entity.id}'s rows inside the query window",
+        "period": f"each {entity.label or entity.id}'s rows in each period",
+    }
+    return [
+        {
+            "over": word,
+            "reads": reads[word],
+            "call": _qualified(config, builder_for, word, entity, predicates, op, value).to_call(),
+        }
+        for word in words
+    ]
 
 
 def _preferred_predicate_target(
@@ -94,19 +169,21 @@ def _preferred_predicate_target(
     metric_terms: list[str],
     *,
     target_measure: Any,
+    entity: Any,
 ) -> Any | None:
     if not metric_terms:
         return None
     term_set = set(metric_terms)
     has_distinct = "distinct" in term_set
-
-    content_tokens = [t for t in metric_terms if t not in _QUALIFICATION_STOP_TOKENS]
-    if len(content_tokens) == 1:
-        canonical_ids = _CANONICAL_PREDICATE_MEASURES.get(content_tokens[0], [])
-        for measure_id in canonical_ids:
-            match = next((row for row in config.measures if row.id == measure_id), None)
-            if match is not None:
-                return match
+    # A measure each qualifying entity has one value of: its rows reach the entity.
+    measures = [
+        row for row in config.measures if entity.id in _reachable_entities(config, row.entity)
+    ]
+    # A measure whose whole name the qualification says ("orders" names Order count).
+    content = {term for term in metric_terms if term not in _QUALIFICATION_STOP_TOKENS}
+    _tied, named = _tied_top(measures, content, content)
+    if named is not None:
+        return named
 
     qualifier_prefixes = (
         "new_",
@@ -121,7 +198,7 @@ def _preferred_predicate_target(
     )
     measure_ranked: list[tuple[int, int, int, int, str, Any]] = []
     target_role = str(getattr(target_measure, "default_temporal_role", "") or "")
-    for row in config.measures:
+    for row in measures:
         score = _score(row, term_set)
         if score <= 0:
             continue
@@ -183,7 +260,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     predicate_term_groups = _predicate_metric_terms(text, terms, target_terms)
     for metric_terms in predicate_term_groups:
         target = _preferred_predicate_target(
-            runtime._config, metric_terms, target_measure=target_measure
+            runtime._config, metric_terms, target_measure=target_measure, entity=entity
         )
         if target is not None and getattr(target, "id", "") not in {
             getattr(row, "id", "") for row in predicate_targets
@@ -192,56 +269,49 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
 
     op, value = threshold
     time_spec = _time_spec(target_measure.default_temporal_role, text)
-    output_grain = str(time_spec.get("grain", "") or "")
-    explicit_predicate_grain = _predicate_grain(text, output_grain)
-    is_top, top_n = _top_n_intent(text)
+    # "Top decile of customers" is the population share, not a ranking of the rows.
+    is_top, top_n = _top_n_intent(text) if not isinstance(value, dict) else (False, 0)
+    config = runtime._config
+    group_by = _maybe_group_by(config, text, target_terms=target_terms)
+    product_filter = _product_filter(config, "account") if "arr" in target_terms else None
 
+    def builder_for() -> QueryBuilder:
+        builder = QueryBuilder(config).measure(
+            target_measure.id, _aggregation_from_text(text, terms, target_measure)
+        )
+        builder.time(time_spec).groups(group_by)
+        if product_filter is not None:
+            builder.filter(product_filter)
+        if is_top:
+            return builder.order(builder.build().select[0].alias, "desc").limit(top_n)
+        return _add_order(builder)
+
+    resolved = [_resolved(target_measure), *[_resolved(row) for row in predicate_targets]]
+    resolved.append(_resolved(entity))
+    if group_by and (dim := _object_by_id(config.dimensions, group_by[0])) is not None:
+        resolved.append(_resolved(dim))
+    intent = {
+        "pattern": "qualified_metric_rollup",
+        "source": "plan",
+        "target_measure": target_measure.id,
+        "predicate_metrics": [getattr(target, "id", "") for target in predicate_targets],
+        "qualifying_entity": entity.id,
+        "output_grain": time_spec.grain if time_spec is not None else "",
+        "limit": top_n if is_top else None,
+        "is_top_intent": is_top,
+    }
     if not predicate_targets:
         # Pattern matched but no predicate resolved — surface as a
         # structured blocked draft so the orchestrator can return
         # recovery hints to the agent.
         phrase_groups = _qualification_phrase_token_groups(text, target_terms)
-        unresolved_phrase = _qualification_phrase(text)
-        select_alias = (
-            f"{_semantic_token(target_measure.id)}_from_qualified_{_semantic_token(entity.id)}s"
-        )
-        placeholder_query: dict[str, Any] = {
-            "version": 1,
-            "select": [
-                {
-                    "as": select_alias,
-                    "expression": {
-                        "measure": target_measure.id,
-                        "aggregation": _aggregation_from_text(text, terms, target_measure),
-                    },
-                }
-            ],
-            "time": time_spec,
-        }
-        group_by = _maybe_group_by(runtime._config, text, target_terms=target_terms)
-        if group_by:
-            placeholder_query["group_by"] = group_by
-        if is_top:
-            placeholder_query["order_by"] = [{"field": select_alias, "direction": "DESC"}]
-            placeholder_query["limit"] = top_n
-        else:
-            _add_order(placeholder_query)
         return RuntimeCompositionDraft(
-            query=placeholder_query,
+            query=builder_for().build(),
             resolved=[_resolved(target_measure), _resolved(entity)],
             rationale=[
                 "matched qualified_metric_rollup pattern but could not resolve a predicate metric/measure for the qualification phrase",
             ],
-            interpreted_intent={
-                "pattern": "qualified_metric_rollup",
-                "source": "plan",
-                "target_measure": target_measure.id,
-                "predicate_metrics": [],
-                "qualifying_entity": entity.id,
-                "output_grain": output_grain,
-                "predicate_grain": explicit_predicate_grain or output_grain,
-                "predicate_grain_explicit": bool(explicit_predicate_grain),
-            },
+            interpreted_intent=intent,
             blocked_reason={
                 "code": "QUALIFICATION_NOT_REALIZABLE",
                 "message": (
@@ -249,7 +319,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
                     "predicate metric or measure from the qualification phrase."
                 ),
                 "details": {
-                    "qualification_phrase": unresolved_phrase,
+                    "qualification_phrase": _qualification_phrase(text),
                     "qualification_tokens": [token for group in phrase_groups for token in group],
                     "target_measure": target_measure.id,
                     "qualifying_entity": entity.id,
@@ -260,94 +330,40 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
                 ],
             },
         )
-
-    predicates: list[dict[str, Any]] = []
-    metric_filters: list[dict[str, Any]] = []
-    for target in predicate_targets:
-        input_ref = _predicate_input(target)
-        predicate: dict[str, Any] = {
-            **input_ref,
-            "entity": entity.id,
-            "scope_mode": "contextual",
-            "op": op,
-            "value": value,
-        }
-        if explicit_predicate_grain:
-            predicate["time_grain"] = explicit_predicate_grain
-        predicates.append(predicate)
-        metric_filter_expr: dict[str, Any] = {
-            "kind": "metric_predicate",
-            "entity": entity.id,
-            "scope_mode": "contextual",
-            "input": input_ref,
-            "op": op,
-            "value": value,
-        }
-        if explicit_predicate_grain:
-            metric_filter_expr["time_grain"] = explicit_predicate_grain
-        metric_filters.append({"expression": metric_filter_expr, "op": "=", "value": True})
-
-    expression: dict[str, Any] = {
-        "kind": "scoped_aggregate",
-        "measure": target_measure.id,
-        "aggregation": _aggregation_from_text(text, terms, target_measure),
-        "predicates": predicates,
-    }
-    product_filter = _product_filter(runtime._config, "account") if "arr" in target_terms else None
-    if product_filter is not None:
-        expression["where"] = [product_filter]
-
-    select_alias = (
-        f"{_semantic_token(target_measure.id)}_from_qualified_{_semantic_token(entity.id)}s"
+    over = _over(text, builder_for().build())
+    query = _qualified(
+        config, builder_for, over or "all_time", entity, predicate_targets, op, value
     )
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [
-            {
-                "as": select_alias,
-                "expression": expression,
-            }
-        ],
-        "time": time_spec,
-        "metric_filters": metric_filters,
-    }
-    group_by = _maybe_group_by(runtime._config, text, target_terms=target_terms)
-    if group_by:
-        query["group_by"] = group_by
-    if is_top:
-        query["order_by"] = [{"field": select_alias, "direction": "DESC"}]
-        query["limit"] = top_n
-    else:
-        _add_order(query)
-
-    resolved = [
-        _resolved(target_measure),
-        *[_resolved(target) for target in predicate_targets],
-        _resolved(entity),
-    ]
-    if group_by:
-        dim = _object_by_id(runtime._config.dimensions, group_by[0])
-        if dim is not None:
-            resolved.append(_resolved(dim))
+    unstated = (
+        {
+            "code": "ENTITY_FILTER_PERIOD_UNSTATED",
+            "message": (
+                f"The question qualifies each {entity.label or entity.id} by its aggregate but "
+                "doesn't say over which rows: every row it has, its rows in the query window, "
+                "or its rows in each period."
+            ),
+            "details": {
+                "clarification": {"question": "Over which rows is the qualification counted?"},
+                "options": _period_options(
+                    config, builder_for, entity, predicate_targets, op, value
+                ),
+            },
+            "recovery_hints": [
+                {"kind": "choose_over", "message": "Send the call of the reading you mean."}
+            ],
+        }
+        if not over
+        else {}
+    )
     return RuntimeCompositionDraft(
         query=query,
         resolved=resolved,
         rationale=[
-            "composed qualified metric rollup from target measure, predicate metric/measure, qualifying entity, and query-time grain",
-            "synthesized an entity filter so the call explicitly names the qualification cohort",
+            "composed a qualified rollup: the target measure, filtered to the entities whose "
+            "aggregate passes the qualification",
         ],
-        interpreted_intent={
-            "pattern": "qualified_metric_rollup",
-            "source": "plan",
-            "target_measure": target_measure.id,
-            "predicate_metrics": [getattr(target, "id", "") for target in predicate_targets],
-            "qualifying_entity": entity.id,
-            "output_grain": str(time_spec.get("grain", "") or ""),
-            "predicate_grain": explicit_predicate_grain or str(time_spec.get("grain", "") or ""),
-            "predicate_grain_explicit": bool(explicit_predicate_grain),
-            "limit": query.get("limit"),
-            "is_top_intent": is_top,
-        },
+        interpreted_intent={**intent, "over": over},
+        ask=unstated,
     )
 
 

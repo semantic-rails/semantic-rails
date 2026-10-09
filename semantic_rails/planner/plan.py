@@ -26,14 +26,12 @@ from contextlib import suppress
 from dataclasses import replace
 from typing import Any
 
-from ..ast import every_filter
 from ..errors import SemanticLayerError
-from ..naming import semantic_token as _semantic_token
-from ..query_call import call_from_query
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import _governed_target, _resolved
 from .answer_shape import _answer_shape_why
+from .call import Call, Order, QueryBuilder
 from .consumed_spans import unconsumed_terms
 from .examples import example_plan
 from .faithfulness import intent_faithfulness_why, intent_subject_why, named_subject_why
@@ -42,22 +40,20 @@ from .grouping_checks import _dropped_grouping_why
 from .groupings import _key_only_assumptions
 from .intent_holds import (
     _conversion_intent_why,
+    _define_metric_why,
     _dropped_value_why,
     _pattern_dropped_start,
     _qualifying_entity_why,
     _start_dropped_why,
     _time_assumptions,
-    _unclocked_window_why,
     _unconsumed_catalog_why,
     _unconsumed_terms_why,
     _unresolved_time_why,
-    _with_query_clock,
     _with_time_gap,
 )
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 from .plan_query import (
-    _checked_partial_query,
     _merge_partial_query,
     _slim_recovery_hints,
     _trim_why_errors,
@@ -73,7 +69,6 @@ from .plan_trace import (
 from .question_parts import MAX_PARTS, QUOTED, QuestionSplit, split_question
 from .snapshot import shape_snapshot, snapshot_read
 from .time_reference import with_time_reference
-from .time_windows import _with_fiscal_calendar
 from .unasked_groupings import _unasked_grouping_why
 from .unmatched_words import (
     unconsumed_catalog_words,
@@ -169,7 +164,7 @@ def plan_payload(
             },
         )
 
-    partial_query = _checked_partial_query(runtime.engine_seed(partial_query, now=now))
+    caller = _caller_call(runtime, partial_query, now)
     catalog_config = _visible_catalog(runtime._config, caller_hidden_ids(runtime._config))
     intent = _normalize_question(intent.strip(), _apostrophe_names(catalog_config))
     detail_level = str(detail or "best").lower()
@@ -177,40 +172,42 @@ def plan_payload(
         detail_level = "best"
 
     def plan_question(text: str) -> dict[str, Any]:
-        return _question_payload(runtime, text, partial_query, detail_level, limit, catalog_config)
+        return _question_payload(runtime, text, caller, detail_level, limit, catalog_config)
 
     payload = plan_question(intent)
     # A question asking several things that one plan can't answer is planned part by part.
     split = (
         split_question(intent, catalog_config)
-        if payload["status"] not in {"ok", "out_of_scope"} and _caller_sets_no_query(partial_query)
+        if payload["status"] not in {"ok", "out_of_scope"} and _caller_sets_no_query(caller)
         else None
     )
     # When the engine refuses a part on its own, the whole question's hold stays.
     with suppress(SemanticLayerError):
         payload = _parts_payload(payload, split, plan_question, detail_level) if split else payload
-    payload = _calls_of_drafts(payload)
     return _query_detail_payload(payload) if detail_level == "query" else payload
 
 
-def _calls_of_drafts(payload: Any) -> Any:
-    """Every draft the plan returns, written as a call."""
-    if isinstance(payload, dict):
-        return {
-            key: call_from_query(value)
-            if key == "query_ir" and isinstance(value, dict)
-            else _calls_of_drafts(value)
-            for key, value in payload.items()
-        }
-    if isinstance(payload, list):
-        return [_calls_of_drafts(item) for item in payload]
-    return payload
+def _caller_call(runtime: Any, partial_query: dict[str, Any] | None, now: Any) -> Call | None:
+    """The caller's partial call as a draft, once the front door has read it (its refusals
+    name the call's paths), with each dimension it selects lifted into group_by as the front
+    door lifts it. Identity travels beside it, in ``policy_context``."""
+
+    seed = {key: value for key, value in (partial_query or {}).items() if key != "policy_context"}
+    context = dict((partial_query or {}).get("policy_context") or {})
+    read = runtime.engine_seed(seed, now=now if now not in (None, "") else context.get("now"))
+    grouped = list(seed.get("group_by") or [])
+    lifted = [field for field in read.get("group_by") or [] if field not in grouped]
+    if lifted:
+        selects = [item for item in seed.get("select") or [] if item not in lifted]
+        seed = {**seed, "select": selects, "group_by": [*grouped, *lifted]}
+    call = Call.from_call(seed)
+    return None if call == Call() else call
 
 
 def _question_payload(
     runtime: Any,
     intent: str,
-    partial_query: dict[str, Any] | None,
+    partial_query: Call | None,
     detail_level: str,
     limit: int,
     catalog_config: Any,
@@ -309,13 +306,13 @@ def _question_payload(
         }
         return finish(payload)
 
-    validate_temporal_support(runtime._config, partial_query or {})
+    validate_temporal_support(runtime._config, partial_query.to_call() if partial_query else {})
     # compose and every fallback helper inherit the request's time reference.
     result = compose(runtime, intent)
     if result.draft is not None:
-        validate_temporal_support(runtime._config, result.draft.query)
+        validate_temporal_support(runtime._config, result.draft.query.to_call())
     intent_ir = result.intent_ir
-    require_visible_objects(runtime._config, {}, intent_ir.to_dict().get("grouping", []))
+    require_visible_objects(runtime._config, None, intent_ir.to_dict().get("grouping", []))
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []
     primary_query_keys: set[str] = set()
@@ -430,7 +427,6 @@ def _question_payload(
     time_why = (
         atemporal_why
         or _unresolved_time_why(intent_str, partial_query, read.spans if read else ())
-        or _unclocked_window_why(runtime._config, intent_str, best_draft.query, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
             or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
@@ -472,7 +468,16 @@ def _question_payload(
     )
     value_why = (
         (
-            _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            _define_metric_why(
+                runtime,
+                intent_str,
+                best_draft.query,
+                [
+                    *unconsumed_catalog_words(runtime, intent_str, best_draft.query),
+                    *unconsumed_unknown_words(runtime, intent_str, best_draft.query),
+                ],
+            )
+            or _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
             # A shared grouping needs options even when fallback discovery consumed
             # words the primary parser did not (for example "their districts").
             or (
@@ -508,8 +513,10 @@ def _question_payload(
     ready = best_ok and not (
         faithfulness_why or time_why or conversion_why or subject_why or value_why or shape_why
     )
-    # A balance compared, or asked per week or month where the package reads it per day.
-    clarify_why = best.get("clarify")
+    # A balance compared, or asked per week or month where the package reads it per day; or the
+    # question a draft asks once it is otherwise ready (``RuntimeCompositionDraft.ask``).
+    clarify_why = best.get("clarify") or (best.get("ask") if ready else None)
+    ready = ready and clarify_why is None
     # A named period with explicit readings to choose from.
     time_details = (time_why or {}).get("details")
     readings = isinstance(time_details, dict) and bool(time_details.get("possible_readings"))
@@ -565,8 +572,9 @@ def _question_payload(
         payload["why"] = value_why
     elif shape_why is not None:
         payload["why"] = shape_why
-    elif best_draft.blocked_reason.get("code") == "PLAN_INTENT_COVERAGE_GAP":
-        payload["why"] = best_draft.blocked_reason
+    elif best.get("blocked"):
+        # The pattern's own hold, as it states it.
+        payload["why"] = best_validation["errors"][0]
     elif not best_ok:
         errors = list(best_validation.get("errors") or [])
         payload["why"] = _trim_why_errors(errors)
@@ -588,7 +596,7 @@ def _question_payload(
                 "severity": "warning",
                 "message": (
                     "The draft doesn't use these words from the question: "
-                    f"{', '.join(unmatched)}. Check that best.query_ir answers what was "
+                    f"{', '.join(unmatched)}. Check that best.query answers what was "
                     "asked before executing it."
                 ),
                 "details": {"terms": unmatched},
@@ -614,21 +622,13 @@ def _question_payload(
         for warning in draft.get("warnings", []):
             if warning not in payload.setdefault("warnings", []):
                 payload["warnings"].append(warning)
-    # Every returned query runs the window plan checked, without the caller's clock.
-    for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
-        if "query_ir" in row:
-            clocked = _with_query_clock(runtime._config, row["query_ir"], partial_query)
-            if clocked is None:
-                row.pop("query_ir")
-            else:
-                row["query_ir"] = clocked
     if any(
         (why or {}).get("code") == "TIME_WINDOW_UNRESOLVED" for why in (time_why, faithfulness_why)
     ):
         # Offer no runnable draft, as ask and the REPL refuse to run one: without
         # the question's window it answers a different question.
         for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
-            row.pop("query_ir", None)
+            row.pop("query", None)
     if detail_level == "debug":
         payload["compose_hints"] = compose_hints(intent_ir)
     if detail_level == "best":
@@ -645,11 +645,15 @@ def _question_payload(
         for gap in payload.get("why", {}).get("details", {}).get("gaps", []):
             if isinstance(gap.get("actual"), dict):
                 gap["actual"] = {
-                    key: {"$ref": f"best.query_ir.{key}"}
-                    if value and value == payload["best"].get("query_ir", {}).get(key)
+                    key: {"$ref": f"best.query.{key}"}
+                    if value and value == payload["best"].get("query", {}).get(key)
                     else value
                     for key, value in gap["actual"].items()
                 }
+        for option in payload.get("why", {}).get("details", {}).get("options", []):
+            # An option that is the drafted call itself is sent as it stands.
+            if isinstance(option, dict) and option.get("call") == payload["best"].get("query"):
+                option["call"] = {"$ref": "best.query"}
     return finish(payload)
 
 
@@ -662,7 +666,7 @@ def _distinct_fallback_drafts(
     runtime: Any,
     *,
     intent: str,
-    partial_query: dict[str, Any] | None,
+    partial_query: Call | None,
     limit: int,
     excluded_query_keys: set[str],
 ) -> list[tuple[Any, str]]:
@@ -684,51 +688,57 @@ def _planned_row(
     runtime: Any,
     draft: Any,
     pattern: str,
-    partial_query: dict[str, Any] | None,
+    partial_query: Call | None,
     blocked: list[dict[str, Any]],
     intent: str,
 ) -> dict[str, Any]:
-    # A caller's time block wins the merge, so it would replace what the fiscal step
-    # chose; the draft stays Gregorian and the fiscal gap reports it instead.
-    fiscal_query = (
-        draft.query
-        if (partial_query or {}).get("time")
-        else _with_fiscal_calendar(runtime._config, intent, draft.query)
-    )
-    merged_draft = replace(
-        draft, query=_merge_partial_query(runtime._config, fiscal_query, partial_query)
-    )
-    require_visible_objects(
-        runtime._config,
-        merged_draft.query,
-        merged_draft.resolved,
-    )
+    config = runtime._config
+    try:
+        merged_draft = replace(
+            draft, query=_merge_partial_query(config, draft.query, partial_query)
+        )
+    except SemanticLayerError as exc:
+        # The caller's seed names something the merge can't build on: validation reports it.
+        error = {"code": exc.code, "message": str(exc), "details": exc.details}
+        return {
+            "status": "low_confidence",
+            "draft": draft,
+            "pattern": pattern,
+            "validation": {"ok": False, "errors": [error], "recovery_hints": []},
+            "blocked": False,
+            "start_dropped": "",
+        }
+    require_visible_objects(config, merged_draft.query, merged_draft.resolved)
     if merged_draft.blocked_reason:
-        return _blocked_row(merged_draft, pattern, dict(merged_draft.blocked_reason), blocked)
-    merged_draft = _governed_draft(runtime._config, intent, merged_draft, partial_query)
+        why = _with_ready_options(runtime, dict(merged_draft.blocked_reason), partial_query)
+        clarify = "clarification" in (why.get("details") or {})
+        return _blocked_row(merged_draft, pattern, why, blocked, clarify=clarify)
+    merged_draft = _governed_draft(config, intent, merged_draft, partial_query)
     # A balance reads the one day the question names (planner/snapshot.py).
     shaped, ask = shape_snapshot(runtime, intent, merged_draft.query, partial_query)
     if ask is not None:
         return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
     merged_draft = replace(merged_draft, query=shaped)
-    validation = _validate_query(runtime, merged_draft.query, partial_query)
+    validation = _validate_query(runtime, merged_draft.query)
     start_dropped = ""
-    time_spec = merged_draft.query.get("time")
-    caller_time = (partial_query or {}).get("time")
+    time_spec = merged_draft.query.time
+    caller_time = partial_query.time if partial_query is not None else None
     if (
         not validation["ok"]
         and _codes(validation) & _LOOKBACK_TIME_CODES
-        and isinstance(time_spec, dict)
-        and time_spec.get("start")
-        and not (isinstance(caller_time, dict) and caller_time.get("start"))
+        and time_spec is not None
+        and time_spec.start
+        and not (caller_time is not None and caller_time.start)
     ):
         # The metric looks back over earlier periods, so the engine can't
         # bound time.start. Keep the end: the draft runs, returns every
         # period up to it, and plan says so.
-        unbounded = {**time_spec}
-        start_dropped = str(unbounded.pop("start"))
-        retry = replace(merged_draft, query={**merged_draft.query, "time": unbounded})
-        retry_validation = _validate_query(runtime, retry.query, partial_query)
+        start_dropped = time_spec.start
+        unbounded = replace(time_spec, start="")
+        retry = replace(
+            merged_draft, query=QueryBuilder(config, merged_draft.query).time(unbounded).build()
+        )
+        retry_validation = _validate_query(runtime, retry.query)
         if retry_validation["ok"]:
             merged_draft, validation = retry, retry_validation
         else:
@@ -742,12 +752,23 @@ def _planned_row(
         if ask is not None:
             return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
         retry_validation = (
-            _validate_query(runtime, reshaped, partial_query)
-            if reshaped != merged_draft.query
-            else validation
+            _validate_query(runtime, reshaped) if reshaped != merged_draft.query else validation
         )
         if retry_validation["ok"]:
             merged_draft, validation = replace(merged_draft, query=reshaped), retry_validation
+    if (child_scope := _child_scope_ask(merged_draft.query, validation)) is not None:
+        # The engine asks whether filters on a child entity hold on one of its rows: each
+        # reading is the merged draft with that reading's entity filters in place of the
+        # caller's flat ones.
+        ask = _with_ready_options(runtime, child_scope)
+        if ask["details"]["options"]:
+            return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
+    # A question needs two readings the engine runs; with one, the draft is that reading.
+    ask = _with_ready_options(runtime, merged_draft.ask, partial_query) if merged_draft.ask else {}
+    if len(ask.get("details", {}).get("options") or []) < 2:
+        ask = {}
+    if ask and not validation["ok"]:
+        return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
     return {
         "status": "ok" if validation["ok"] else "low_confidence",
         "draft": merged_draft,
@@ -755,39 +776,105 @@ def _planned_row(
         "validation": validation,
         "blocked": False,
         "start_dropped": start_dropped,
+        **({"ask": ask} if ask else {}),
     }
 
 
-def _governed_draft(
-    config: Any, question: str, draft: Any, partial_query: dict[str, Any] | None
-) -> Any:
-    """The draft selecting the metric the package declares for its one measure.
+def _child_scope_ask(query: Call, validation: dict[str, Any]) -> dict[str, Any] | None:
+    """The engine's AMBIGUOUS_CHILD_SCOPE question as plan's, each option a whole call: the
+    draft with the flat conditions the option scopes replaced by its entity filters."""
+
+    errors = validation.get("errors") or []
+    if validation.get("ok") or len(errors) != 1 or errors[0].get("code") != "AMBIGUOUS_CHILD_SCOPE":
+        return None
+    clarification = (errors[0].get("details") or {}).get("clarification") or {}
+    readings = [row for row in clarification.get("options") or [] if isinstance(row, dict)]
+    scoped = [
+        condition
+        for row in readings
+        for item in row.get("where") or []
+        for key in ("any", "none")
+        for condition in (item.get(key) or [])
+    ]
+    base = query.to_call()
+    kept = [row for row in base.get("where") or [] if row not in scoped]
+    options = [
+        {
+            "id": row.get("id"),
+            "reads": row.get("meaning"),
+            "call": {**base, "where": [*kept, *(row.get("where") or [])]},
+        }
+        for row in readings
+    ]
+    return {
+        "code": "AMBIGUOUS_CHILD_SCOPE",
+        "message": str(errors[0].get("message") or ""),
+        "details": {
+            "clarification": {"question": clarification.get("question")},
+            "options": options,
+        },
+        "recovery_hints": [
+            {"kind": "choose_child_scope", "message": "Send the call of the reading you mean."}
+        ],
+    }
+
+
+def _with_ready_options(
+    runtime: Any, why: dict[str, Any], partial_query: Call | None = None
+) -> dict[str, Any]:
+    """A why whose options each carry a call the engine accepts, with the caller's own fields
+    merged in as into the draft: an option it refuses is left out, so every option offered is
+    ready to send."""
+
+    details = dict(why.get("details") or {})
+    options = details.get("options")
+    if not isinstance(options, list):
+        return why
+    ready = []
+    for option in options:
+        if not isinstance(option, dict) or "call" not in option:
+            ready.append(option)
+            continue
+        try:
+            call = _merge_partial_query(
+                runtime._config, Call.from_call(option["call"]), partial_query
+            )
+        except SemanticLayerError:
+            continue
+        if _validate_query(runtime, call)["ok"]:
+            ready.append({**option, "call": call.to_call()})
+    return {**why, "details": {**details, "options": ready}}
+
+
+def _governed_draft(config: Any, question: str, draft: Any, partial_query: Call | None) -> Any:
+    """The draft selecting the governed metric for its one measure.
 
     Every draft passes here before validation and readiness, so whichever path drafted the
-    measure, ``_governed_target`` swaps in the same metric. Never a caller's select, and
-    never onto another clock: a draft without a time block takes the metric all-time, and one
-    on another clock keeps the measure for readiness to hold.
+    measure, ``_governed_target`` swaps in the same metric. Never a caller's select, and never
+    onto another clock: a draft without a time block takes the metric all-time, and one on
+    another clock keeps the measure for readiness to hold.
     """
 
     query = draft.query
-    if "select" in (partial_query or {}):
+    if partial_query is not None and partial_query.select:
         return draft
     metric = _governed_target(config, _target_focus_text(question) or question, query)
-    time = query.get("time")
-    clock = time.get("temporal_role") if isinstance(time, dict) else time
-    if metric is None or (time and clock != metric.temporal_role):
+    time = query.time
+    if metric is None or (time is not None and time.temporal_role != metric.temporal_role):
         return draft
-    [item] = query["select"]
-    alias = _semantic_token(str(metric.id), fallback="value")
-    swapped = {**query, "select": [{"as": alias, "expression": {"metric": metric.id}}]}
-    if query.get("order_by"):
-        swapped["order_by"] = [
-            {**row, "field": alias}
-            if isinstance(row, dict) and row.get("field") == item.get("as")
-            else row
-            for row in query["order_by"]
-        ]
-    drafted = {item["expression"].get(key) for key in ("measure", "metric")} - {None}
+    [item] = query.select
+    alias = str(metric.id).split(".")[-1]
+    swapped = (
+        QueryBuilder(config, query)
+        .selects([])
+        .select(metric.id)
+        .orders(
+            Order(alias, row.direction) if row.field == item.alias else row
+            for row in query.order_by
+        )
+        .build()
+    )
+    drafted = set(item.references())
     intent = dict(draft.interpreted_intent)
     if intent.get("target") in drafted:
         intent.update(target=metric.id, target_kind="metric")
@@ -812,7 +899,7 @@ def _blocked_row(
     blocked.append(
         {
             "pattern": pattern,
-            "query_ir": draft.query,
+            "query": draft.query.to_call(),
             "resolved": draft.resolved,
             "why": why,
             "recovery_hints": list(why.get("recovery_hints", []) or []),
@@ -864,14 +951,14 @@ def _codes(validation: dict[str, Any]) -> set[str]:
     }
 
 
-def _query_key(query: Any) -> str:
+def _query_key(query: Call) -> str:
     import json
 
-    return json.dumps(query, sort_keys=True, default=str)
+    return json.dumps(query.to_call(), sort_keys=True, default=str)
 
 
-def _next_block(query: dict[str, Any], *, ready: bool) -> dict[str, Any]:
-    """Offer next steps for the canonical ``best.query_ir``."""
+def _next_block(query: Call, *, ready: bool) -> dict[str, Any]:
+    """Offer next steps for ``best.query``."""
 
     out: dict[str, Any] = {"ready_for": ["execute"]} if ready else {}
     if valid_values_calls := _valid_values_next_steps(query):
@@ -879,18 +966,16 @@ def _next_block(query: dict[str, Any], *, ready: bool) -> dict[str, Any]:
     return out
 
 
-def _valid_values_next_steps(query: dict[str, Any]) -> list[dict[str, Any]]:
-    """Offer ``valid_values`` arguments for each filtered dimension."""
+def _valid_values_next_steps(query: Call) -> list[dict[str, Any]]:
+    """Offer ``valid_values`` arguments for each filtered dimension, an entity filter's too."""
 
-    out: list[dict[str, Any]] = []
-    for filter_spec in every_filter(query.get("where")):  # a child group's conditions too
-        if not isinstance(filter_spec, dict):
-            continue
-        dim = filter_spec.get("dimension") or filter_spec.get("field")
-        if not dim:
-            continue
-        out.append({"dimension_id": dim})
-    return out
+    fields = [row.field for row in query.conditions] + [
+        row.field
+        for entity_filter in query.entity_filters
+        if entity_filter.match != "having"
+        for row in entity_filter.conditions
+    ]
+    return [{"dimension_id": field_id} for field_id in fields]
 
 
 def _out_of_scope_envelope(
@@ -922,8 +1007,7 @@ def _out_of_scope_envelope(
 
 
 # A caller's partial query merges into every draft, so a question is split only when the caller
-# sends nothing but request context: one select or window can't belong to every part.
-_REQUEST_KEYS = frozenset({"policy_context", "version", "verbosity"})
+# sends no call: one select or window can't belong to every part.
 # From ready to furthest from it: a split question has its weakest part's status.
 _STATUS_ORDER = ("ok", "needs_clarification", "low_confidence", "unrealizable", "out_of_scope")
 _PART_HOLDS = {
@@ -948,12 +1032,8 @@ _PART_HOLDS = {
 }
 
 
-def _caller_sets_no_query(partial_query: dict[str, Any] | None) -> bool:
-    return not any(
-        value not in (None, "", [], {})
-        for key, value in (partial_query or {}).items()
-        if key not in _REQUEST_KEYS
-    )
+def _caller_sets_no_query(partial_query: Call | None) -> bool:
+    return partial_query is None
 
 
 def _parts_payload(
@@ -1002,10 +1082,7 @@ def _parts_payload(
         return held(split.hold, split.held)
     planned = [plan_question(part.text) for part in split.parts]
     status = max((row["status"] for row in planned), key=_STATUS_ORDER.index)
-    if (
-        status == "ok"
-        and len({_query_key(row["best"]["query_ir"].get("where")) for row in planned}) > 1
-    ):
+    if status == "ok" and len({str(row["best"]["query"].get("where")) for row in planned}) > 1:
         # A filter one part states ("for Acme") may be meant for every part.
         return held("part_filters_differ", tuple(range(1, len(planned) + 1)))
     parts = []

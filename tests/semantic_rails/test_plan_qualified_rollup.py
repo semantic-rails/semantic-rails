@@ -1,51 +1,26 @@
-"""Plan hardening for qualified-metric rollups + inline YoY.
+"""Qualified-metric rollups and inline year-over-year questions.
 
-Phase 5 contracts (see plan ``snoopy-foraging-crescent.md``):
-
-- When ``interpreted_intent.pattern == "qualified_metric_rollup"``, the
-  produced candidate IR MUST contain a non-empty ``metric_filters``, and
-  a ``limit`` only when the question asks for the top N. If the filters
-  can't be synthesized, the candidate is dropped to ``blocked`` with code
+- A qualified rollup ("top 3 stores by order count with at least 4 distinct customers") keeps
+  the qualifying entities with an entity filter whose conditions read the predicate measure,
+  ``over`` the rows the question names; it ranks and limits only when the question asks for
+  the top N. A qualification phrase that resolves to no measure is held with
   ``QUALIFICATION_NOT_REALIZABLE``.
-
-- ``predicate_metrics`` resolution prefers measures/metrics whose
-  label/search_terms match the qualification phrase tokens
-  (e.g. "distinct customers" → ``ordering_customer_count`` or
-  ``customer_count``), and falls back to "no match" rather than
-  picking an unrelated measure (e.g. ``aov_usd``).
-
-- The produced IR validates against the version 1 schema.
-
-- "Revenue with YoY"-style intents emit the inline ``prior_period``
-  shorthand from Phase 4.
+- The predicate resolves to a measure the qualification names ("distinct customers" → a
+  customer count), never an unrelated one (e.g. ``aov_usd``).
+- "Revenue with YoY"-style questions ask whether to read the last two years as a series.
 """
 
 from __future__ import annotations
 
-import json
-import pathlib
+import duckdb
 
-import pytest
-
-try:
-    import jsonschema
-except ImportError:  # pragma: no cover - matches schema-test guard
-    jsonschema = None
-
+from semantic_rails.planner import plan_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
-from tests.semantic_rails.result_helpers import held_candidate
-
-SCHEMA_PATH = pathlib.Path(__file__).resolve().parents[2] / "schemas" / "query_ir.v1.json"
 
 
-def _validate_against_schema(query: dict) -> None:
-    if jsonschema is None:
-        pytest.skip("jsonschema is not installed in this environment")
-    jsonschema.Draft202012Validator(json.loads(SCHEMA_PATH.read_text())).validate(query)
-
-
-def _resolved_ids(candidate: dict) -> list[str]:
-    return [row.get("id", "") for row in (candidate.get("resolved", []) or [])]
+def _reference(runtime, sql: str) -> list[tuple]:
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        return connection.execute(sql).fetchall()
 
 
 def test_predicate_metric_resolves_to_customer_count_not_aov(runtime_factory) -> None:
@@ -81,64 +56,73 @@ def test_predicate_metric_resolves_to_customer_count_not_aov(runtime_factory) ->
         runtime.close()
 
 
-def test_qualified_rollup_synthesizes_metric_filters_order_by_limit(runtime_factory) -> None:
+def test_a_top_n_qualified_rollup_ranks_the_qualifying_entities(runtime_factory) -> None:
+    """No window: every order of each store qualifies it, the one reading, so plan answers."""
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_candidate_envelope(
-            runtime,
-            intent="top 3 stores by order count with at least 4 distinct customers",
-            limit=5,
-            verbosity="full",
+        plan = plan_payload(
+            runtime, intent="top 3 stores by order count with at least 4 distinct customers"
         )
-        # The draft buckets by month, which the question never asks for (it would keep the
-        # top 3 store-months), so it is held; its synthesized shape is checked here.
-        assert not payload["candidates"]
-        candidate = payload["blocked"][0]
-        assert candidate["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING"
-        query = candidate["candidate_ir"]
-        assert candidate["validation"]["ok"] is True
-        # metric_filters must be present and non-empty (phase 5 contract)
-        metric_filters = query.get("metric_filters", []) or []
-        assert metric_filters, "qualified_metric_rollup must emit metric_filters"
-        first_filter = metric_filters[0]
-        expression = first_filter["expression"]
-        assert expression["kind"] == "metric_predicate"
-        assert expression["entity"] == "entity.jaffle_store"
-        assert expression["op"] == ">="
-        assert expression["value"] == 4
-        assert ("measure" in expression["input"]) or ("metric" in expression["input"])
-        # order_by ranks the target metric descending for top-N intents.
-        order_by = query.get("order_by", []) or []
-        assert order_by, "top-N qualified rollups must emit order_by"
-        assert order_by[0]["direction"].upper() == "DESC"
-        # limit must be present and equal to the parsed top-N (3).
-        assert query.get("limit") == 3
-        # IR validates against the published schema.
-        _validate_against_schema(query)
+        assert plan["status"] == "ok", plan.get("why")
+        query = plan["best"]["query"]
+        assert query["where"] == [
+            {
+                "entity": "entity.jaffle_store",
+                "having": [
+                    {"field": "measure.jaffle.ordering_customer_count", "op": "gte", "value": 4}
+                ],
+                "over": "all_time",
+            }
+        ]
+        assert query["order_by"] == [{"field": "order_count", "direction": "desc"}]
+        assert query["limit"] == 3
+        rows = runtime.query(query)["rows"]
+        reference = _reference(
+            runtime,
+            "SELECT s.store_name, COUNT(DISTINCT o.order_id) FROM jaffle_order o "
+            "JOIN jaffle_store s USING (store_id) WHERE o.store_id IN (SELECT store_id "
+            "FROM jaffle_order GROUP BY 1 HAVING COUNT(DISTINCT customer_id) >= 4) "
+            "GROUP BY 1 ORDER BY 2 DESC LIMIT 3",
+        )
     finally:
         runtime.close()
+    assert [(row["dimension.jaffle_store_name"], row["order_count"]) for row in rows] == reference
+    assert len(reference) == 2
 
 
-def test_qualified_rollup_without_top_n_returns_every_row(runtime_factory) -> None:
-    """Without a "top N" request, a default limit would silently drop
-    every month after the first few, so the IR has none.
-    """
+def test_a_qualified_rollup_in_each_period_returns_every_row(runtime_factory) -> None:
+    """Without a "top N" request, a default limit would silently drop every month after the
+    first few, so the call has none; "in that month" qualifies each customer per period."""
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_candidate_envelope(
+        plan = plan_payload(
             runtime,
             intent="monthly order volume for customers that made more than 10 purchases in that month",
-            limit=2,
-            verbosity="full",
         )
-        candidate = held_candidate(payload, "PLAN_INTENT_COVERAGE_GAP")
-        query = candidate["candidate_ir"]
+        assert plan["status"] == "ok", plan.get("why")
+        query = plan["best"]["query"]
         assert "limit" not in query
-        assert payload["interpreted_intent"]["limit"] is None
-        assert query.get("metric_filters")
-        _validate_against_schema(query)
+        assert query["where"] == [
+            {
+                "entity": "entity.jaffle_customer",
+                "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
+                "over": "period",
+            }
+        ]
+        rows = runtime.query(query)["rows"]
+        reference = _reference(
+            runtime,
+            "WITH monthly AS (SELECT customer_id, DATE_TRUNC('month', ordered_at) AS m, "
+            "COUNT(DISTINCT order_id) AS n FROM jaffle_order GROUP BY 1, 2) "
+            "SELECT CAST(DATE_TRUNC('month', o.ordered_at) AS DATE)::VARCHAR, "
+            "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN monthly c "
+            "ON c.customer_id = o.customer_id AND c.m = DATE_TRUNC('month', o.ordered_at) "
+            "WHERE c.n > 10 GROUP BY 1 ORDER BY 1",
+        )
     finally:
         runtime.close()
+    assert [(row["period"], row["order_count"]) for row in rows] == reference
+    assert len(reference) > 2
 
 
 def test_qualification_not_realizable_drops_to_blocked(runtime_factory) -> None:
@@ -191,47 +175,28 @@ def test_qualification_not_realizable_drops_to_blocked(runtime_factory) -> None:
         runtime.close()
 
 
-def test_inline_yoy_emits_prior_period_shorthand(runtime_factory) -> None:
-    """'revenue with YoY' (and 'year over year') emit a 2-column IR
-    using the inline prior_period shorthand from Phase 4.
-    """
+def test_a_year_over_year_question_asks_for_the_series(runtime_factory) -> None:
+    """A comparison with the year before is a question in this release: plan offers the last
+    two complete years as a series, ready to send."""
     runtime = runtime_factory("jaffle_shop")
+    series = {
+        "select": ["measure.jaffle.revenue_usd"],
+        "time": {
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "grain": "year",
+            "last": {"unit": "year", "value": 2},
+        },
+        "order_by": [{"field": "period", "direction": "asc"}],
+    }
     try:
-        for intent in (
-            "revenue with YoY",
-            "revenue year over year",
-            "revenue vs last year",
-        ):
-            payload = plan_candidate_envelope(runtime, intent=intent, limit=3, verbosity="full")
-            # The draft compares each month with the same month a year before. The question
-            # asks for no month split, so the draft is held; its shape is checked here.
-            assert not payload.get("candidates"), intent
-            candidate = payload["blocked"][0]
-            assert candidate["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING", intent
-            query = candidate["candidate_ir"]
-            assert candidate["validation"]["ok"] is True, f"{intent!r} candidate must validate"
-            selects = query.get("select", []) or []
-            assert len(selects) == 2, (
-                f"{intent!r} must produce a 2-column select; got {len(selects)}"
-            )
-            kinds = []
-            for select in selects:
-                expr = select.get("expression", {}) or {}
-                kinds.append(expr.get("kind", ""))
-            assert "prior_period" in kinds, (
-                f"{intent!r} must include a prior_period expression; got {kinds}"
-            )
-            # The prior_period select uses the shorthand form.
-            prior = next(
-                select
-                for select in selects
-                if (select.get("expression", {}) or {}).get("kind") == "prior_period"
-            )["expression"]
-            assert "measure" in prior
-            assert "offset" in prior
-            assert "grain" in prior
-            assert prior["grain"] == "year"
-            assert prior["offset"] == -1
-            _validate_against_schema(query)
+        for intent in ("revenue with YoY", "revenue year over year", "revenue vs last year"):
+            plan = plan_payload(runtime, intent=intent)
+            assert plan["status"] == "needs_clarification", (intent, plan.get("why"))
+            assert plan["why"]["code"] == "PERIOD_COMPARISON", intent
+            # The one option's call is the drafted series, named by reference.
+            [option] = plan["why"]["details"]["options"]
+            assert option["call"] == {"$ref": "best.query"}, intent
+            assert plan["best"]["query"] == series, intent
+            assert runtime.validate(series, now="2026-10-09T12:00:00Z")["ok"]
     finally:
         runtime.close()

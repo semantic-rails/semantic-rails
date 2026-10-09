@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -876,37 +875,28 @@ def test_plan_exposes_contextual_and_lifetime_metric_predicate_semantics(runtime
         assert lifetime_card["predicate_context_entities"] == []
         assert lifetime_card["predicate_filter_inheritance"] == "none"
 
-        # The store is resolved; the qualifying cohort still holds the draft.
-        held_candidate(contextual, "PLAN_INTENT_COVERAGE_GAP")
-        contextual_query = contextual["blocked"][0]["candidate_ir"]
-        contextual_expr = contextual_query["select"][0]["expression"]
-        contextual_predicate = contextual_expr["predicates"][0]
-        contextual_bound = contextual["blocked"][0]["validation"]["logical_plan"]["bound_measures"][
-            0
-        ]["filter_spec"]["all"][0]["expression"]
-        assert contextual_expr["kind"] == "scoped_aggregate"
-        # Predicate carries the entity, op, value — but its input ref may
-        # be a measure OR a metric, depending on what the planner picked
-        # for the "more than 10 purchases" term. v1 measures are first-class
-        # query inputs, so both shapes are acceptable.
-        assert contextual_predicate["entity"] == "entity.jaffle_customer"
-        assert contextual_predicate["op"] == ">"
-        assert contextual_predicate["value"] == 10
-        assert "measure" in contextual_predicate or "metric" in contextual_predicate, (
-            f"predicate must carry a measure or metric input ref, got {contextual_predicate!r}"
-        )
-        assert contextual_bound["scope_mode"] == "contextual"
-        assert contextual_bound["entity"] == "entity.jaffle_customer"
+        # "In that month" qualifies each customer by its orders in each period: one entity
+        # filter over the period, beside the store grouping, ready to run.
+        [candidate] = contextual["candidates"][:1]
+        contextual_query = candidate["candidate_ir"]
+        assert candidate["validation"]["ok"] is True
+        assert contextual_query["where"] == [
+            {
+                "entity": "entity.jaffle_customer",
+                "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
+                "over": "period",
+            }
+        ]
         assert contextual_query["group_by"] == [
             "dimension.jaffle_store_id",
             "dimension.jaffle_store_name",
         ]
+        assert contextual_query["time"]["grain"] == "month"
 
-        held_candidate(daily_contextual, "PLAN_INTENT_COVERAGE_GAP")
-        daily_query = daily_contextual["blocked"][0]["candidate_ir"]
-        daily_predicate = daily_query["select"][0]["expression"]["predicates"][0]
-        assert daily_query["time"]["grain"] == "day"
-        assert daily_predicate["time_grain"] == "month"
+        # Each day's orders from customers qualified over a month: no call reads a month
+        # inside a day, so the draft is held.
+        assert not daily_contextual["candidates"]
+        assert daily_contextual["blocked"]
     finally:
         runtime.close()
 
@@ -933,7 +923,8 @@ def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime_factory)
             )
             holds = {
                 "end-of-month inventory levels by store": "PLAN_INTENT_COVERAGE_GAP",
-                "monthly revenue from customers with at least 10 orders by store": "PLAN_INTENT_COVERAGE_GAP",
+                # Per month or over each customer's every order: plan asks which.
+                "monthly revenue from customers with at least 10 orders by store": "ENTITY_FILTER_PERIOD_UNSTATED",
             }
             if intent in holds:
                 held_candidate(result, holds[intent])
@@ -1060,41 +1051,34 @@ def test_plan_supports_guided_query_building(runtime_factory):
         assert planned["candidates"][0]["validation"]["ok"] is True
         assert planned["candidates"][0]["resolved"]
         assert "assumptions" in planned["candidates"][0]
-        held_candidate(contextual, "PLAN_INTENT_COVERAGE_GAP")
-        held_candidate(revenue_qualified, "PLAN_INTENT_COVERAGE_GAP")
-        held_candidate(daily_qualified, "PLAN_INTENT_COVERAGE_GAP")
-        contextual_query = contextual["blocked"][0]["candidate_ir"]
+        # Each month's orders from customers with more than 10 purchases that month.
+        [candidate] = contextual["candidates"][:1]
         assert contextual["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-        assert contextual_query["select"][0]["expression"]["kind"] == "scoped_aggregate"
-        # The predicate carries the customer entity, op, and value — the
-        # input ref may be a measure or a metric depending on which scored
-        # higher in discovery for the predicate term.
-        contextual_predicate = contextual_query["select"][0]["expression"]["predicates"][0]
-        assert contextual_predicate["entity"] == "entity.jaffle_customer"
-        assert contextual_predicate["op"] == ">"
-        assert contextual_predicate["value"] == 10
-        assert "measure" in contextual_predicate or "metric" in contextual_predicate
-        assert any(
-            row["id"] == "entity.jaffle_customer" for row in contextual["blocked"][0]["resolved"]
-        )
-        assert contextual["blocked"][0]["validation"]["ok"] is True
+        assert candidate["validation"]["ok"] is True
+        assert candidate["candidate_ir"]["where"] == [
+            {
+                "entity": "entity.jaffle_customer",
+                "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
+                "over": "period",
+            }
+        ]
+        # "With at least 10 orders" beside "monthly" doesn't say over which rows: plan asks.
+        held_candidate(revenue_qualified, "ENTITY_FILTER_PERIOD_UNSTATED")
         revenue_query = revenue_qualified["blocked"][0]["candidate_ir"]
-        revenue_expr = revenue_query["select"][0]["expression"]
         assert revenue_qualified["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-        assert revenue_expr["measure"] == "measure.jaffle.revenue_usd"
-        # Predicate input may be measure or metric; assert the cohort fields.
-        revenue_predicate = revenue_expr["predicates"][0]
-        assert revenue_predicate["entity"] == "entity.jaffle_customer"
-        assert revenue_predicate["op"] == ">="
-        assert revenue_predicate["value"] == 10
-        assert "measure" in revenue_predicate or "metric" in revenue_predicate
+        assert revenue_query["select"] == ["measure.jaffle.revenue_usd"]
+        [cohort] = revenue_query["where"]
+        assert cohort["entity"] == "entity.jaffle_customer"
+        assert cohort["having"] == [
+            {"field": "measure.jaffle.order_count", "op": "gte", "value": 10}
+        ]
         assert revenue_query["group_by"] == [
             "dimension.jaffle_store_id",
             "dimension.jaffle_store_name",
         ]
-        daily_expr = daily_qualified["blocked"][0]["candidate_ir"]["select"][0]["expression"]
-        assert daily_expr["predicates"][0]["time_grain"] == "month"
-        assert "time_alignment" not in daily_expr["predicates"][0]
+        # A month's qualification inside each day is held.
+        assert not daily_qualified["candidates"]
+        assert daily_qualified["blocked"]
         assert conversion["candidates"]
         assert conversion["candidates"][0]["validation"]["ok"] is True
     finally:
@@ -1111,21 +1095,13 @@ def test_plan_generic_multi_dimension_and_current_month_bounds(tmp_path: Path):
             intent="sends per account by product and send type for current month",
             limit=1,
         )
-        today = date.today()
-        month_start = today.replace(day=1)
-        next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
-
         assert planned["candidates"]
         query = planned["candidates"][0]["candidate_ir"]
         assert planned["candidates"][0]["validation"]["ok"] is True
         assert query["select"] == ["metric.engagement.sends_per_account"]
         assert query["group_by"] == ["dimension.demo_product", "dimension.demo_send_type"]
-        assert query["time"] == {
-            "temporal_role": "temporal_role.demo_event_time",
-            "grain": "month",
-            "start": month_start.isoformat(),
-            "end": next_month.isoformat(),
-        }
+        # A relative phrase is spelled relative: the month so far, one total.
+        assert query["time"] == {"temporal_role": "temporal_role.demo_event_time", "this": "month"}
     finally:
         runtime.close()
 
@@ -1149,9 +1125,9 @@ def test_plan_generic_q4_bounds_and_paying_filter_not_group_by(tmp_path: Path):
         assert query["where"] == [
             {"field": "dimension.demo_account_status", "op": "is", "value": "paying"}
         ]
+        # No grain asked: one total over the quarter.
         assert query["time"] == {
             "temporal_role": "temporal_role.demo_event_time",
-            "grain": "quarter",
             "start": "2025-10-01",
             "end": "2026-01-01",
         }
@@ -1214,33 +1190,10 @@ def test_plan_supports_comparison_candidates_and_legal_alternatives(runtime_fact
             select = food_vs_drink["candidates"][0]["candidate_ir"]["select"]
             assert len(select) == 2
 
-        assert ordered_vs_delivered["candidates"] or ordered_vs_delivered["blocked"]
-        if ordered_vs_delivered["blocked"]:
-            assert ordered_vs_delivered["blocked"][0]["closest_legal_alternatives"]
-            assert ordered_vs_delivered["comparison_bundle"]
-            resolved_ids = {
-                row["id"]
-                for row in ordered_vs_delivered["blocked"][0]["resolved"]
-                if isinstance(row, dict) and row.get("id")
-            }
-            # Wrappers metric.sales.delivered_revenue / metric.sales.revenue_usd
-            # were dropped; comparison machinery now anchors to the underlying
-            # measures with the same comparison_family.
-            assert "measure.jaffle.delivered_revenue_usd" in resolved_ids
-            assert "measure.jaffle.revenue_usd" in resolved_ids
-            bundle_roles = {
-                row["query_patch"]["time"]["temporal_role"]
-                for row in ordered_vs_delivered["comparison_bundle"]
-                if row.get("query_patch", {}).get("time")
-            }
-            assert bundle_roles == {
-                "temporal_role.jaffle_lifecycle_delivered_at",
-                "temporal_role.jaffle_order_time",
-            }
-            assert all(
-                row["query_patch"]["time"]["grain"] == "month"
-                for row in ordered_vs_delivered["comparison_bundle"]
-            )
+        # Orders and deliveries each read their own clock: no single call compares them, so
+        # the draft is held, never offered.
+        assert not ordered_vs_delivered["candidates"]
+        assert ordered_vs_delivered["blocked"]
     finally:
         runtime.close()
 

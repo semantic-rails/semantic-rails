@@ -30,4 +30,4 @@ def test_inline_comparison_fires_from_plan(runtime_factory, intent: str) -> None
     assert interpreted["left"]["id"]
     assert interpreted["right"]["id"]
     assert interpreted["left"]["id"] != interpreted["right"]["id"]
-    assert len(result.draft.query["select"]) == 2
+    assert len(result.draft.query.select) == 2

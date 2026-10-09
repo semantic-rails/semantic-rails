@@ -11,18 +11,18 @@ of those exact released bytes, not an independently edited registry.
 |---|---|---|
 | `architect_mcp.v1.json` | Engine | Stable Architect tools, schemas, annotations, and transaction semantics |
 | `package.v1.json` | Engine | Stable project/package major |
-| `query_ir.v1.json` | Engine | Stable Query IR v1 (the only supported version) |
+| `query.v2.json` | Engine | The query call, generated from the parser's own tables (see [QUERY_CALL.md](QUERY_CALL.md)); it replaces `query_ir.v1.json` |
 | `metric_portability.v1.json` | Engine | Stable read-only metric catalog for BI bindings |
 | `semantic_contract.v1.json` | Engine | Stable framework-neutral validation payload |
 | `validation_report.v1.json` | Engine | Stable cross-validator report envelope |
 | `http_api.v1.openapi.json` | Engine | Stable `/api/v1` operations and envelope |
 | `query_mcp.v2.json` | Engine | Stable query-MCP tools, resources, prompts, schemas, and annotations (the only interface; v1 was removed) |
 
-The Python distribution version, package schema, Query IR, HTTP API, query MCP,
+The Python distribution version, package schema, query call, HTTP API, query MCP,
 semantic contract, and validation-report format are separate version
 identities. A release may add behavior without advancing every contract.
 
-The [result-value contract](QUERY_IR_SCHEMA.md#result-values) defines JSON rows and `column_types`.
+The [result-value contract](QUERY_CALL.md#result-values) defines JSON rows and `column_types`.
 
 ## Semantic validation ownership
 
@@ -137,7 +137,7 @@ must additionally retain their authenticated tenant/package selector.
 never metric IDs or access tokens.
 
 Definitions are projections of the engine's loaded metric and measure models.
-The contract references the existing Query IR v1 expression and query schemas;
+The contract references the query call schema (`query.v2.json`) for its query templates;
 it does not introduce a second expression language or authorize evaluation
 outside the engine. `query_template` requests a metric by reference. Candidate
 grouping/filter dimensions and temporal grains describe loaded capabilities;

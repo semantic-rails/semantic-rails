@@ -675,7 +675,7 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
         )
         assert valid_values["values"][0]["value"] == "beverage"
         assert planned["status"] == "ok"
-        assert "query_ir" in planned["best"]
+        assert "query" in planned["best"]
         assert comparison["best"]
         assert ordered_vs_delivered["best"]
         assert conversion_plan["status"] == "ok"

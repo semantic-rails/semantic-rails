@@ -129,12 +129,12 @@ def test_customer_grouping_uses_the_customer_key_and_matches_reference_sql(
         assert "low_relevance" not in payload
         assert payload["status"] == "ok", payload.get("why")
         assert payload["next"]["ready_for"] == ["execute"]
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["group_by"] == ["dimension.jaffle_customer_id"]
         if window:
+            # No grain asked: one total per customer over the quarter.
             assert query["time"] == {
                 "temporal_role": "temporal_role.jaffle_order_time",
-                "grain": "quarter",
                 "start": "2017-01-01",
                 "end": "2017-04-01",
             }

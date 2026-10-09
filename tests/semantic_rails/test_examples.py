@@ -20,10 +20,12 @@ exercise validate/compile against the runtime.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import opened
@@ -149,3 +151,152 @@ def test_first_run_revenue_by_store_example_executes_as_store_rollup(runtime_fac
     assert query.get("time") is None
     assert result["row_count"] == 2
     assert list(result["rows"][0]) == ["dimension.jaffle_store_name", "revenue_usd"]
+
+
+# --- Query calls in the docs -------------------------------------------------------------
+#
+# Every query call a doc shows is a call the engine reads: a ```json block (or a REST body or
+# tool arguments holding one under "query"), a call dict in a ```python block, a JSON call in a
+# ```bash command, and a package example or test `query:` in a ```yaml block. Each one must
+# satisfy schemas/query.v2.json and pass the front door; a call whose ids are all jaffle_shop
+# objects must also validate on jaffle_shop. A ```json call followed by a ```jsonc block that
+# opens with `// <CODE>` shows a refusal or clarification: it must be refused with that code.
+# Other ```jsonc blocks are annotated illustrations (answers, options) and are not read.
+
+DOCS = (
+    "README.md",
+    "examples/README.md",
+    "docs/QUERY_CALL.md",
+    "docs/QUERY_API.md",
+    "docs/MCP_INTERFACE.md",
+    "docs/AGENT_QUICKSTART.md",
+    "docs/AGENT_API_PATH.md",
+    "docs/EMBEDDING.md",
+    "docs/CONTRACTS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/PACKAGE_AUTHORING.md",
+    "docs/CAPABILITIES.md",
+)
+DOC_NOW = "2017-09-04T12:00:00Z"
+_FENCE = re.compile(r"^```(\w*)[^\n]*\n(.*?)^```", re.M | re.S)
+_IDS = re.compile(r"\b(?:measure|metric|dimension|entity|temporal_role|relationship)\.[\w.]+")
+_REFUSED = re.compile(r"\A\s*//\s*([A-Z][A-Z_]+[A-Z])\b")
+
+
+def _is_call(node: Any) -> bool:
+    from semantic_rails.query_call import FIELDS, IGNORED
+
+    return (
+        isinstance(node, dict)
+        and bool(node)
+        and all(key in FIELDS or key in IGNORED or str(key).startswith("_") for key in node)
+        and any(key in node for key in ("select", "group_by", "time"))
+    )
+
+
+def _calls_in(node: Any) -> list[dict[str, Any]]:
+    """The calls a parsed example holds: itself, or any call nested in it (a ``query``)."""
+    if _is_call(node):
+        return [node]
+    values = node.values() if isinstance(node, dict) else node if isinstance(node, list) else []
+    return [call for value in values for call in _calls_in(value)]
+
+
+def _python_calls(source: str) -> list[dict[str, Any]]:
+    import ast
+
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Dict):
+            try:
+                value = ast.literal_eval(node)
+            except ValueError:
+                continue
+            out.extend([value] if _is_call(value) else [])
+    return out
+
+
+def _bash_calls(source: str) -> list[dict[str, Any]]:
+    out = []
+    for text in re.findall(r"'(\{.*?\})'", source, re.S):
+        try:
+            out.extend(_calls_in(json.loads(text)))
+        except ValueError:
+            continue
+    return out
+
+
+def _doc_calls() -> list[tuple[str, dict[str, Any], str]]:
+    """``(doc:line, call, refusal code or "")`` for every call the docs show."""
+    found: list[tuple[str, dict[str, Any], str]] = []
+    for doc in DOCS:
+        text = (REPO_ROOT / doc).read_text(encoding="utf-8")
+        fences = list(_FENCE.finditer(text))
+        for index, match in enumerate(fences):
+            language, body = match.group(1), match.group(2)
+            line = text.count("\n", 0, match.start()) + 1
+            code = ""
+            if language == "json":
+                calls = _calls_in(json.loads(body))
+                after = fences[index + 1] if index + 1 < len(fences) else None
+                if after is not None and after.group(1) == "jsonc":
+                    refused = _REFUSED.match(after.group(2))
+                    code = refused.group(1) if refused else ""
+            elif language == "yaml":
+                calls = _calls_in(yaml.safe_load(body))
+            elif language == "python":
+                calls = _python_calls(body)
+            elif language == "bash":
+                calls = _bash_calls(body)
+            else:
+                continue
+            found.extend((f"{doc}:{line}", call, code) for call in calls)
+    return found
+
+
+DOC_CALLS = _doc_calls()
+
+
+def test_query_call_reference_shows_its_calls() -> None:
+    shown = [where for where, _, _ in DOC_CALLS if where.startswith("docs/QUERY_CALL.md")]
+    assert len(shown) >= 25, shown
+
+
+@pytest.mark.parametrize(
+    ("where", "call", "code"), DOC_CALLS, ids=[where for where, _, _ in DOC_CALLS]
+)
+def test_doc_call_is_a_valid_call(
+    runtime: Runtime, where: str, call: dict[str, Any], code: str
+) -> None:
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.query_call import read_call
+
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(SCHEMA_PATH.read_text())
+    errors = list(jsonschema.Draft202012Validator(schema).iter_errors(call))
+    assert not errors, f"{where}: {[(list(e.absolute_path), e.message[:120]) for e in errors[:3]]}"
+    try:
+        read_call(call, now=DOC_NOW)
+    except SemanticLayerError as exc:
+        assert exc.code == code, f"{where}: {exc.code}: {exc}"
+        return
+    config = runtime.package_config
+    known = {
+        row.id
+        for rows in (
+            config.measures,
+            config.metric_recipes,
+            config.dimensions,
+            config.entities,
+            config.temporal_roles,
+            config.relationships,
+        )
+        for row in rows
+    }
+    if not set(_IDS.findall(json.dumps(call))) <= known:
+        return
+    report = runtime.validate(call, now=DOC_NOW)
+    if code:
+        assert [error["code"] for error in report["errors"]][:1] == [code], where
+    else:
+        assert report.get("ok") is True, f"{where}: {report.get('errors')!r}"

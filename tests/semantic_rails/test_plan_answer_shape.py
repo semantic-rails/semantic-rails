@@ -28,6 +28,7 @@ import pytest
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.planner import answer_shape, intent_holds, plan_payload
 from semantic_rails.planner import plan as plan_module
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import typed_rows
@@ -45,8 +46,8 @@ ORDER_NUMBER = "dimension.jaffle_order_customer_order_number"
 STORE_ID = "dimension.jaffle_store_id"
 STORE_NAME = "dimension.jaffle_store_name"
 STORE_TAX_RATE = "dimension.jaffle_store_tax_rate"
-ORDERS = {"measure": "measure.jaffle.order_count"}
-REVENUE = {"measure": "measure.jaffle.revenue_usd"}
+ORDERS = "measure.jaffle.order_count"
+REVENUE = "measure.jaffle.revenue_usd"
 LAST_WEEK = "WHERE ordered_at >= TIMESTAMP '2017-08-14' AND ordered_at < TIMESTAMP '2017-08-21'"
 COMPARED = "Orders by store name last week compared with the week ?"
 STORE_REVENUE_LAST_MONTH = (
@@ -56,7 +57,7 @@ STORE_REVENUE_LAST_MONTH = (
 )
 
 
-def _selects(*expressions: dict[str, Any]) -> dict[str, Any]:
+def _selects(*expressions: Any) -> dict[str, Any]:
     return {
         "select": [
             {"as": f"value_{index}", "expression": expression}
@@ -156,7 +157,7 @@ def test_one_value_never_answers_a_question_asking_for_more(
     assert (gap["kind"], gap["clause"]) == (kind, clause)
     assert clause in gap["message"]
     # The draft stays for inspection, unchanged: one value.
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert len(query["select"]) == 1
     assert not query.get("group_by")
     assert gap["actual"]["select_count"] == 1
@@ -192,7 +193,7 @@ def test_a_caller_group_by_gives_who_its_rows(jaffle: Runtime) -> None:
     )
 
     assert payload["status"] == "ok"
-    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_ID, CUSTOMER_NAME]
+    assert payload["best"]["query"]["group_by"] == [CUSTOMER_ID, CUSTOMER_NAME]
 
 
 BOTH = "How many orders and how much revenue last week?"
@@ -235,13 +236,7 @@ NARROWER = [
     # first one again, and two values don't say what the question compares.
     (
         COMPARED,
-        _selects(ORDERS, {"kind": "measure", **ORDERS}),
-        "comparison_unrealized",
-        '"compared"',
-    ),
-    (
-        COMPARED,
-        _selects(ORDERS, {"kind": "measure_ref", **ORDERS}),
+        _selects(ORDERS, {"kind": "measure", "measure": ORDERS}),
         "comparison_unrealized",
         '"compared"',
     ),
@@ -253,31 +248,41 @@ NARROWER = [
     # Order cost (one word of its name), nor revenue on the order clock ("Order time").
     (
         BOTH,
-        _selects({**REVENUE, "aggregation": "sum"}, {**REVENUE, "aggregation": "sum"}),
+        _selects(
+            {"kind": "measure", "measure": REVENUE, "aggregation": "sum"},
+            {"kind": "measure", "measure": REVENUE, "aggregation": "sum"},
+        ),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects(REVENUE, {**REVENUE, "aggregation": "sum"}),
+        _selects(REVENUE, {"kind": "measure", "measure": REVENUE, "aggregation": "sum"}),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({"measure": "measure.jaffle.tax_paid_usd"}, REVENUE),
+        _selects("measure.jaffle.tax_paid_usd", REVENUE),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({"measure": "measure.jaffle.order_cost_usd"}, REVENUE),
+        _selects("measure.jaffle.order_cost_usd", REVENUE),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({**REVENUE, "temporal_role": "temporal_role.jaffle_order_time"}, REVENUE),
+        _selects(
+            {
+                "kind": "measure",
+                "measure": REVENUE,
+                "temporal_role": "temporal_role.jaffle_order_time",
+            },
+            REVENUE,
+        ),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
@@ -345,7 +350,7 @@ def test_a_list_hold_names_the_listed_entitys_key_dimensions(
 
     [gap] = _gaps(payload)
     assert gap["expected"] == {"answer": "rows", "key_dimensions": keys}
-    assert payload["best"]["query_ir"].get("group_by") == group_by
+    assert payload["best"]["query"].get("group_by") == group_by
 
 
 @pytest.mark.parametrize(
@@ -368,7 +373,7 @@ def test_only_the_listed_entitys_key_lists_its_rows(
 
     partial = {"group_by": group_by}
     why = answer_shape._answer_shape_why(
-        jaffle, question, {**_selects(REVENUE), **partial}, partial
+        jaffle, question, Call.from_call({**_selects(REVENUE), **partial}), Call.from_call(partial)
     )
 
     assert (why is None) is listed
@@ -408,7 +413,7 @@ def test_a_category_that_declares_no_values_lists_no_rows(
         "list_unrealized",
         {"answer": "rows", "key_dimensions": [CUSTOMER_ID]},
     )
-    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_TYPE]
+    assert payload["best"]["query"]["group_by"] == [CUSTOMER_TYPE]
     # Only the shape check holds it.
     assert unchecked["status"] == "ok"
 
@@ -423,8 +428,6 @@ STAY_OK = [
     "Revenue for each store last month",
     "Show orders by store name last week.",
     "Show me orders by week for the last 4 weeks.",
-    # A prior-period select is a value to compare with.
-    "Monthly revenue vs prior year",
     # "who" after a noun is a relative pronoun: the total of a filtered set.
     "Revenue from customers who are new",
 ]
@@ -437,6 +440,17 @@ def test_an_answer_of_the_asked_shape_stays_ready(jaffle: Runtime, question: str
 
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
+
+
+def test_a_prior_period_comparison_asks_which_reading(jaffle: Runtime) -> None:
+    """A comparison with the prior year isn't ready as one draft: plan asks which reading to
+    run, and the why names the comparison."""
+
+    payload = plan_payload(jaffle, intent="Monthly revenue vs prior year")
+
+    assert payload["status"] == "needs_clarification"
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
+    assert "ready_for" not in payload["next"]
 
 
 @pytest.mark.parametrize(
@@ -564,7 +578,7 @@ def test_a_ready_answer_equals_its_reference(
             if not isinstance(value, datetime)
         )
 
-    rows = typed_rows(jaffle.query({**payload["best"]["query_ir"], "policy_context": NOW}))
+    rows = typed_rows(jaffle.query(payload["best"]["query"], now=NOW["now"]))
     values = sorted(plain(row.values()) for row in rows)
     assert values == sorted(plain(row) for row in _reference(jaffle, sql))
     assert values
@@ -579,7 +593,7 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
     )
     assert payload["status"] == "ok", payload.get("why")
 
-    rows = typed_rows(jaffle.query({**payload["best"]["query_ir"], "policy_context": NOW}))
+    rows = typed_rows(jaffle.query(payload["best"]["query"], now=NOW["now"]))
     listed = sorted((row[CUSTOMER_ID], row[CUSTOMER_NAME]) for row in rows)
     assert listed == sorted(
         _reference(jaffle, "SELECT customer_id, customer_name FROM jaffle_customer")
@@ -635,7 +649,7 @@ def test_a_contraction_is_expanded_before_any_check(jaffle: Runtime, question: s
 
     retry = plan_payload(jaffle, intent=_without(question, ["s"]))
     assert retry["status"] == "ok"
-    assert retry["best"]["query_ir"] == plan["best"]["query_ir"]
+    assert retry["best"]["query"] == plan["best"]["query"]
 
 
 @pytest.mark.parametrize(
@@ -698,8 +712,6 @@ def test_a_shape_word_inside_a_declared_name_asks_nothing(
         runtime.close()
 
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query_ir"]["select"] == [
-        {"as": "comparison_cost", "expression": {"metric": "metric.upkeep.comparison_cost"}}
-    ]
+    assert payload["best"]["query"]["select"] == ["metric.upkeep.comparison_cost"]
     # Read outside the name, the same word would hold the one value.
     assert [gap["kind"] for gap in _gaps(unnamed)] == ["comparison_unrealized"]

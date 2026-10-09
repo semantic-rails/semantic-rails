@@ -26,8 +26,6 @@ from ..config_parts.measure_governance import (
 )
 from ..visible_view import base_of, hidden_on_its_own
 from ._base import (
-    _canonical_measure,
-    _canonical_metric,
     _name_fit,
     _name_matches,
     _named_metric,
@@ -37,11 +35,12 @@ from ._base import (
     _tied_top,
     _tokens,
 )
+from .call import Call
 from .coverage import (
     _PRIOR_PERIOD_RE,
     CoverageGap,
     _coverage_why,
-    _dict_nodes,
+    _expression_nodes,
     _projected_subject_ids,
     _query_contains_prior_period,
     _referenced_ids,
@@ -214,8 +213,8 @@ def intent_faithfulness_why(
     *,
     question: str,
     intent_ir: IntentIR,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None = None,
+    query: Call,
+    partial_query: Call | None = None,
 ) -> dict[str, Any] | None:
     """Return a structured downgrade reason for high-confidence coverage gaps.
 
@@ -245,7 +244,7 @@ def intent_faithfulness_why(
             )
         )
     reported, subjects = (named[0].id if named else ""), [term.id for term in intent_ir.subjects]
-    caller = partial_query or {}
+    caller = partial_query or Call()
     gaps.extend(_governed_metric_gaps(runtime._config, question, query, caller, reported, subjects))
     partition_match = _PARTITIONED_RANK_RE.search(text)
     if (
@@ -263,17 +262,17 @@ def intent_faithfulness_why(
                 ),
                 expected={"ranking_scope": "partitioned"},
                 actual={
-                    "group_by": list(query.get("group_by") or []),
-                    "order_by": list(query.get("order_by") or []),
-                    "limit": query.get("limit"),
+                    "group_by": list(query.group_by),
+                    "order_by": [row.to_call() for row in query.order_by],
+                    "limit": query.limit,
                     "partition_by": [],
                 },
                 recovery_hint={
                     "kind": "author_partitioned_ranking",
                     "message": (
                         "Do not execute this as within-group top-N. Author an explicitly "
-                        "partitioned ranking through a supported call or relation shape, or "
-                        "run one governed query per parent group."
+                        "partitioned ranking through a supported call shape, or run one "
+                        "governed query per parent group."
                     ),
                 },
             )
@@ -301,8 +300,8 @@ def intent_faithfulness_why(
             )
         )
 
-    # Every exclusion clause holds: the planner doesn't answer exclusions yet.
-    window = _time_window(text, policy_context=query.get("policy_context"))
+    # An exclusion holds unless every value it names is left out with ``not``.
+    window = _time_window(text)
     gaps.extend(exclusion_gaps(runtime._config, text, query, window))
 
     requested_subjects = _conjoined_subjects(runtime, text)
@@ -333,18 +332,12 @@ def intent_faithfulness_why(
     role_window_why = _role_window_why(runtime, text, query)
     if role_window_why is not None:
         return role_window_why
-    caller_time = (partial_query or {}).get("time")
+    caller_time = partial_query.time if partial_query is not None else None
     # A balance read on the closing day of the question's window answers that window.
     read = snapshot_read(runtime, question, query)
-    if isinstance(caller_time, dict) and any(
-        caller_time.get(key) for key in ("start", "end", "range")
-    ):
-        # The window must agree in the planning zone. Existing holds read it in UTC, and the
-        # planning zone must not admit an explicit interval they held.
-        gaps.extend(
-            _caller_window_gaps(runtime, text, query)
-            or _caller_window_gaps(runtime, text, query, timezone="UTC")
-        )
+    if caller_time is not None and caller_time.window:
+        # The window must agree with the question's, read on the call's clock.
+        gaps.extend(_caller_window_gaps(runtime, text, query))
     elif read is None:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
@@ -353,15 +346,12 @@ def intent_faithfulness_why(
     # independent completion/subject checks still apply, including to caller windows.
     stock_gaps = (
         _stock_as_of_gaps(runtime._config, query)
-        if (
-            read is not None
-            or not _time_window(question, policy_context=query.get("policy_context")).as_of
-        )
+        if (read is not None or not _time_window(question).as_of)
         else []
     )
     gaps.extend(stock_gaps or snapshot_day_gaps(runtime, question, query, partial_query))
     gaps.extend(_ranking_gaps(runtime, text, query, partial_query))
-    gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
+    gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or Call()))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
     if contradictions:
@@ -395,9 +385,7 @@ def intent_faithfulness_why(
     return why
 
 
-def _ambiguous_grouping_gaps(
-    text: str, query: dict[str, Any], partial_query: dict[str, Any]
-) -> list[CoverageGap]:
+def _ambiguous_grouping_gaps(text: str, query: Call, partial_query: Call) -> list[CoverageGap]:
     """Refuse when the draft adds a grouping beside the caller's ``group_by``.
 
     Whether the question's grouping phrase restates a caller dimension or asks
@@ -407,8 +395,8 @@ def _ambiguous_grouping_gaps(
 
     from .generators import _requested_grouping_terms  # noqa: WPS433
 
-    authored = set(partial_query.get("group_by") or [])
-    added = set(query.get("group_by") or []) - authored
+    authored = set(partial_query.group_by)
+    added = set(query.group_by) - authored
     if not authored or not added:
         return []
     return [
@@ -428,8 +416,8 @@ def _ambiguous_grouping_gaps(
 def _governed_metric_gaps(
     config: Any,
     question: str,
-    query: dict[str, Any],
-    partial_query: dict[str, Any],
+    query: Call,
+    partial_query: Call,
     reported: str,
     subjects: list[str],
 ) -> list[CoverageGap]:
@@ -443,24 +431,8 @@ def _governed_metric_gaps(
     request names one. ``reported`` already has its own gap.
     """
 
-    choices = partial_query.get("select")
-    caller = {
-        node[key]
-        for item in (choices if isinstance(choices, list) else [])
-        if isinstance(item, dict)
-        for node in (item, item.get("expression"))
-        if isinstance(node, dict)
-        for key in ("measure", "metric")
-        if isinstance(node.get(key), str)
-    }
-    selected = list(
-        dict.fromkeys(
-            node[key]
-            for node in _dict_nodes(list(query.get("select") or []))
-            for key in ("measure", "metric")
-            if isinstance(node.get(key), str)
-        )
-    )
+    caller = {ref for item in partial_query.select for ref in item.references()}
+    selected = list(dict.fromkeys(ref for item in query.select for ref in item.references()))
     # Governance is enforcement: it reads the whole package, not the caller's view.
     try:
         unoffered: frozenset[str] | None = unoffered_measures(base_of(config))
@@ -523,14 +495,15 @@ def _governed_metric_gaps(
 
 
 def _population_hold(
-    config: Any, measure_id: str, query: dict[str, Any], skipped: list[str], subjects: list[str]
+    config: Any, measure_id: str, query: Call, skipped: list[str], subjects: list[str]
 ) -> dict[str, Any] | None:
     """The gap's ``expected`` for whole-package metrics narrowing the measure's rows that the
     draft neither selects (``skipped``) nor filters or groups by, else ``None``. Fails closed.
     A metric hidden in its own right counts for nothing; ``expected`` names only the view."""
 
-    filters = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
-    drafted = set(_referenced_ids(filters))
+    drafted = set(
+        _referenced_ids(Call(group_by=query.group_by, where=query.where, having=query.having))
+    )
     try:
         governors = population_governors(base_of(config), measure_id)
     except Exception:  # noqa: BLE001 — an unreadable metric cannot make a draft ready
@@ -549,12 +522,12 @@ def _population_hold(
 
 
 def named_subject_why(
-    runtime: Any, question: str, partial_query: dict[str, Any] | None = None
+    runtime: Any, question: str, partial_query: Call | None = None
 ) -> dict[str, Any] | None:
     """A shared whole name cannot be settled by the ranking's label or score."""
 
     parts = _conjoined_subjects(runtime, question)
-    projected = set(_projected_subject_ids(partial_query or {}))
+    projected = set(_projected_subject_ids(partial_query or Call()))
     rows = []
     for part in parts:
         rows = _selectable_subjects(runtime._config, part["candidate_ids"])
@@ -590,8 +563,8 @@ def intent_subject_why(
     *,
     question: str,
     intent_ir: IntentIR,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None = None,
+    query: Call,
+    partial_query: Call | None = None,
 ) -> dict[str, Any] | None:
     """A coverage gap when the ranking tied the draft's one subject with others
     and neither the question nor the caller's ``partial_query`` names that
@@ -612,16 +585,14 @@ def intent_subject_why(
     subjects = _projected_subject_ids(query)
     measure = bool(subjects) and subjects[0].startswith("measure.")
     terms = set(intent_ir.target_measure_terms)
-    canonical = (_canonical_measure if measure else _canonical_metric)(config, terms)
     if (
         len(subjects) != 1
-        or subjects[0] in _projected_subject_ids(partial_query or {})
-        or getattr(canonical, "id", None) == subjects[0]
+        or subjects[0] in _projected_subject_ids(partial_query or Call())
         or _named_metric(config, text)
     ):
         return None
     rows = config.measures if measure else config.metric_recipes
-    words = set(_tokens(_target_focus_text(text))) or terms
+    words = set(_tokens(_target_focus_text(text))) | terms
     grouped = {
         form
         for term in _asked_grouping_terms(config, text)
@@ -650,8 +621,8 @@ def intent_subject_why(
     return _coverage_why([gap])
 
 
-def _query_has_partitioned_ranking(query: dict[str, Any]) -> bool:
-    for node in _dict_nodes(query):
+def _query_has_partitioned_ranking(query: Call) -> bool:
+    for node in _expression_nodes(query):
         partition = node.get("partition_by")
         if partition not in (None, "", [], {}):
             kind = str(node.get("kind", "") or "").casefold()
@@ -662,18 +633,8 @@ def _query_has_partitioned_ranking(query: dict[str, Any]) -> bool:
     return False
 
 
-def _selected_expression_kinds(query: dict[str, Any]) -> list[str]:
-    kinds: list[str] = []
-    for item in list(query.get("select") or []):
-        expression = item.get("expression") if isinstance(item, dict) else None
-        if not isinstance(expression, dict):
-            continue
-        kind = str(expression.get("kind", "") or "")
-        if not kind:
-            kind = "metric" if expression.get("metric") else "measure"
-        if kind and kind not in kinds:
-            kinds.append(kind)
-    return kinds
+def _selected_expression_kinds(query: Call) -> list[str]:
+    return list(dict.fromkeys(item.kind for item in query.select if item.kind))
 
 
 def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:

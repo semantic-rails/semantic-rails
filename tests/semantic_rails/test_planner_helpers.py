@@ -3,6 +3,7 @@
 import pytest
 
 from semantic_rails.naming import last_token, semantic_token
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.coverage import _projected_subject_ids as coverage_subjects
 from semantic_rails.planner.plan_trace import _projected_subject_ids as trace_subjects
 
@@ -31,20 +32,26 @@ def test_semantic_sql_names_preserve_prefixes_unicode_and_fallbacks(value, tail,
     ("select", "coverage", "trace"),
     [
         ([], [], []),
-        ([None, {}, {"expression": "measure.a"}], [], []),
+        (["measure.a", {"expression": "measure.a", "as": "a_again"}], ["measure.a"], ["measure.a"]),
+        (["metric.a", "measure.b"], ["metric.a", "measure.b"], ["metric.a", "measure.b"]),
         (
-            [{"expression": {"metric": "metric.a", "measure": "measure.b"}}],
-            ["metric.a"],
-            ["metric.a"],
+            [{"expression": {"kind": "measure", "measure": "measure.a", "aggregation": "avg"}}] * 2,
+            ["measure.a"],
+            ["measure.a"],
         ),
-        ([{"expression": {"measure": "measure.a"}}] * 2, ["measure.a"], ["measure.a"]),
-        ([{"expression": {"input": {"measure": "measure.a"}}}], [], []),
-        ([{"expression": {"metric": "", "measure": "measure.a"}}], ["measure.a"], ["measure.a"]),
-        ([{"expression": {"metric": 7, "measure": "measure.a"}}], [], ["7"]),
-        ([{"expression": {"measure": True}}], [], ["True"]),
+        (
+            [{"expression": {"kind": "cumulative", "input": "measure.a"}, "as": "running"}],
+            [],
+            [],
+        ),
+        (
+            [{"expression": {"kind": "measure", "measure": ""}, "as": "blank"}, "measure.a"],
+            ["measure.a"],
+            ["measure.a"],
+        ),
     ],
 )
 def test_projected_subject_readers_preserve_their_distinct_type_handling(select, coverage, trace):
-    query = {"select": select}
+    query = Call.from_call({"select": select})
     assert coverage_subjects(query) == coverage
     assert trace_subjects(query) == trace

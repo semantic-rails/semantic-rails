@@ -50,7 +50,7 @@ def test_plan_route_preserves_partial_query(runtime_factory) -> None:
         runtime.close()
     assert status == 200
     assert payload["status"] == "ok"
-    assert "dimension.jaffle_store_name" in payload["best"]["query_ir"]["group_by"]
+    assert "dimension.jaffle_store_name" in payload["best"]["query"]["group_by"]
 
 
 def test_plan_route_full_detail_returns_alternatives(runtime_factory) -> None:

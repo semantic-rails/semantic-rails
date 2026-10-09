@@ -62,7 +62,7 @@ def test_fallback_refusal_is_independent_of_hashes(
         assert payload["status"] == "low_confidence"
         assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
         assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
-        assert payload["best"]["query_ir"]["group_by"] == [
+        assert payload["best"]["query"]["group_by"] == [
             "dimension.jaffle_store_id",
             "dimension.jaffle_store_name",
         ]

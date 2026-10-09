@@ -1,14 +1,17 @@
 """Pattern: ``inline_period_shift``.
 
-Detects YoY/MoM/WoW/QoQ comparisons and emits a 2-column IR using the
-``prior_period`` shorthand from the Phase 4 schema.
+Detects YoY/MoM/WoW/QoQ comparisons. A side-by-side comparison of periods needs a read
+widened by the lookback, which this release doesn't make, so the plan asks: its option is the
+two complete periods as one series. A comparison whose period isn't over yet holds
+(``PERIOD_COMPARISON_INCOMPLETE``).
 """
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
-from ...naming import semantic_token as _semantic_token
+from ...clock import parse_now, shift_period
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -17,15 +20,17 @@ from .._base import (
     _resolved,
     _tokens,
 )
+from ..call import QueryBuilder, Time
 from ..generators import _target_focus_text
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import _add_order, _target_measure_terms, _threshold_from_text
 from ..time_phrases import _period_shift_grain
+from ..time_reference import time_policy_context
 from ._protocol import IntentPattern
 
 
 def _is_implicit_active_threshold(threshold: tuple[str, Any], target_terms: list[str]) -> bool:
-    """Return True when the threshold is the ``(">", 0)`` fallback that
+    """Return True when the threshold is the ``("gt", 0)`` fallback that
     ``_threshold_from_text`` emits for the words "active" / "activity",
     AND the resolved target measure already encodes that activeness
     (e.g. ``active_menu_count_eop``). In that case the "threshold" is
@@ -33,7 +38,7 @@ def _is_implicit_active_threshold(threshold: tuple[str, Any], target_terms: list
     """
 
     op, value = threshold
-    if op != ">" or value != 0:
+    if op != "gt" or value != 0:
         return False
     return "active" in target_terms
 
@@ -49,7 +54,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if governed_metric is not None and ("growth" in terms or "rate" in terms):
         return None
     # Avoid stealing the qualified rollup path — those carry a threshold.
-    # ``_threshold_from_text`` falls back to an implicit ``(">", 0)`` when
+    # ``_threshold_from_text`` falls back to an implicit ``("gt", 0)`` when
     # the intent contains "active"/"activity"; for snapshot measures like
     # ``active_menu_count_eop`` that's the measure name, not a
     # qualification threshold, so the period-shift pattern still applies.
@@ -60,73 +65,68 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if measure is None or not measure.default_temporal_role:
         return None
 
-    time_spec = _time_spec(measure.default_temporal_role, text)
-    # The compiler rejects bounded starts on inline window expressions
-    # because they can truncate the rows required for the lookback. Keep
-    # the upper bound from phrases like "this month", but let the
-    # prior_period expression own its lookback window. A relative range
-    # ("last 6 months") expands to a bounded start too, so it is dropped
-    # for the same reason.
-    time_spec.pop("start", None)
-    time_spec.pop("range", None)
-    requested_grain = str(time_spec.get("grain", "") or "")
-    if not requested_grain or requested_grain == shift_grain:
-        finer_map = {
-            "year": "month",
-            "quarter": "month",
-            "month": "month",
-            "week": "day",
-            "day": "day",
+    config = runtime._config
+    role = measure.default_temporal_role
+    asked = _time_spec(role, text)
+    window = asked.window if asked is not None else {}
+    grain = (asked.grain if asked is not None else "") or shift_grain
+    # The periods compared, as one series: the comparison itself, side by side, needs a read
+    # widened by the lookback, which this release doesn't make. A dated window the question
+    # states is widened back by one period, so the series keeps it.
+    start, end = str(window.get("start") or ""), str(window.get("end") or "")
+    if start and end:
+        before = shift_period(date.fromisoformat(start[:10]), shift_grain, -1).isoformat()
+        series = Time(temporal_role=role, grain=grain, start=before, end=end)
+        reads = f"{before} to {end} (the {shift_grain} before included), by {grain}"
+    else:
+        series = Time(temporal_role=role, grain=grain, last=(shift_grain, 2))
+        reads = f"the last two complete {shift_grain}s, by {grain}"
+    builder = QueryBuilder(config).measure(measure.id, _aggregation_from_text(text, terms, measure))
+    builder.time(series).groups(_maybe_group_by(config, text))
+    query = _add_order(builder).build()
+    option = {"call": query.to_call(), "reads": reads}
+    now = parse_now((time_policy_context() or {}).get("now"))
+    incomplete = bool(window) and Time(temporal_role=role).with_window(window).resolved(now).partial
+    why = (
+        {
+            "code": "PERIOD_COMPARISON_INCOMPLETE",
+            "message": (
+                f"The question compares a {shift_grain} that isn't over yet with a complete one, "
+                "so the two don't cover the same days."
+            ),
+            "details": {"window": window, "options": [option]},
+            "recovery_hints": [
+                {
+                    "kind": "compare_complete_periods",
+                    "message": f"Compare complete {shift_grain}s: send the option's call.",
+                }
+            ],
         }
-        time_spec["grain"] = finer_map.get(shift_grain, "month")
-
-    base_alias = _semantic_token(measure.id, fallback="measure")
-    base_aggregation = _aggregation_from_text(text, terms, measure)
-    prior_alias = f"{base_alias}_prior_{shift_grain}"
-
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [
-            {
-                "as": base_alias,
-                "expression": {
-                    "measure": measure.id,
-                    "aggregation": base_aggregation,
-                },
+        if incomplete
+        else {
+            "code": "PERIOD_COMPARISON",
+            "message": (
+                f"A {shift_grain}-over-{shift_grain} comparison side by side isn't answered in "
+                f"this release; the {shift_grain}s compared can be read as one series."
+            ),
+            "details": {
+                "clarification": {"question": f"Read the {shift_grain}s compared as one series?"},
+                "options": [option],
             },
-            {
-                "as": prior_alias,
-                "expression": {
-                    "kind": "prior_period",
-                    "measure": measure.id,
-                    "offset": -1,
-                    "grain": shift_grain,
-                    "aggregation": base_aggregation,
-                },
-            },
-        ],
-        "time": time_spec,
-    }
-    group_by = _maybe_group_by(runtime._config, text)
-    if group_by:
-        query["group_by"] = group_by
-    _add_order(query)
-
+            "recovery_hints": [{"kind": "read_the_series", "message": "Send the option's call."}],
+        }
+    )
     return RuntimeCompositionDraft(
         query=query,
         resolved=[_resolved(measure)],
-        rationale=[
-            f"composed inline {shift_grain}-over-{shift_grain} comparison via the prior_period shorthand",
-        ],
+        rationale=[f"read a {shift_grain}-over-{shift_grain} comparison as its two periods"],
         interpreted_intent={
             "pattern": "inline_period_shift",
             "source": "plan",
             "measure": measure.id,
             "shift_grain": shift_grain,
-            "shift_offset": -1,
-            "current_alias": base_alias,
-            "prior_alias": prior_alias,
         },
+        blocked_reason=why,
     )
 
 
