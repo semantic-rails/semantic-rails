@@ -686,3 +686,82 @@ def test_issue_builder_removes_only_duplicate_nested_hints(severity, duplicate) 
     else:
         assert issue["details"]["recovery_hints"] == nested
     assert details["recovery_hints"] == nested
+
+
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+def test_an_ambiguous_route_offers_one_ready_to_send_call_per_option(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from semantic_rails.runtime import Runtime
+    from tests.semantic_rails import test_route_clarification as routes
+
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
+    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(routes._write_package(tmp_path))))
+    call = {"select": ["measure.bank.balance"], "group_by": ["dimension.bank_district_name"]}
+    try:
+        refused = adapter.call_tool("execute", {"query": call, "mode": mode, "verbosity": "full"})
+        error = refused["errors"][0]
+        assert error["code"] == "AMBIGUOUS_PATH", refused
+        options = error["details"]["clarification"]["options"]
+        assert [option["query"]["routes"] for option in options] == [
+            [{"from": routes.ACCOUNT, "to": routes.DISTRICT, "via": route}]
+            for route in (routes.BRANCH_ROUTE, routes.OWNER_ROUTE)
+        ]
+        assert "send that option's query" in error["details"]["hint"]
+        for option in options:
+            assert {key: value for key, value in option["query"].items() if key != "routes"} == call
+            answered = adapter.call_tool("execute", {"query": option["query"], "mode": mode})
+            assert answered["ok"], answered
+    finally:
+        adapter.close()
+
+
+LAST_MONTH = {
+    "select": ["measure.jaffle.order_count"],
+    "time": {"last": {"unit": "month", "value": 1}},
+}
+FEBRUARY_2017 = {
+    "select": ["measure.jaffle.order_count"],
+    "time": {"start": "2017-02-01", "end": "2017-03-01"},
+}
+
+
+def test_now_pins_a_relative_window_on_execute_and_rest(v2: SemanticLayerMCPAdapter) -> None:
+    from semantic_rails.http_core import SemanticHTTPService
+
+    expected = v2.call_tool("execute", {"query": FEBRUARY_2017})["rows"]
+    pinned = v2.call_tool("execute", {"query": LAST_MONTH, "now": "2017-03-15"})
+    assert pinned["ok"] and pinned["rows"] == expected, pinned
+    service = SemanticHTTPService(v2.runtime)
+    rest, status = service.handle(
+        "POST", "/query", {"query": LAST_MONTH, "options": {"now": "2017-03-15"}}
+    )
+    assert status == 200 and rest["rows"] == expected, rest
+
+
+def test_plan_takes_now_on_mcp_and_rest(
+    v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import semantic_rails.http_core as http_core
+    import semantic_rails.mcp as mcp
+
+    seen: list[Any] = []
+
+    def plan(*_args: Any, now: Any = None, **_kwargs: Any) -> dict[str, Any]:
+        seen.append(now)
+        return {"status": "ok", "best": None}
+
+    monkeypatch.setattr(mcp, "plan_payload", plan)
+    monkeypatch.setattr(http_core, "plan_payload", plan)
+    v2.call_tool("plan", {"intent": "orders last month", "now": "2017-03-15"})
+    http_core.SemanticHTTPService(v2.runtime).handle(
+        "POST", "/plan", {"intent": "orders last month", "options": {"now": "2017-03-16"}}
+    )
+    assert seen == ["2017-03-15", "2017-03-16"]
+
+
+def test_discover_takes_no_now() -> None:
+    tools = {tool["name"]: tool for tool in load_contract("query_mcp.v2.json")["tools"]}
+    assert "now" not in tools["discover"]["inputSchema"]["properties"]
+    assert {"now"} <= set(tools["execute"]["inputSchema"]["properties"])
+    assert {"now"} <= set(tools["plan"]["inputSchema"]["properties"])
