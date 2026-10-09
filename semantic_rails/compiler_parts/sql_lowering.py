@@ -1425,8 +1425,8 @@ def _distribution_metric_filters(plan: LogicalPlan) -> list[dict[str, Any]]:
     ):
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
-            "Comparison metric_filters beside a distribution cannot be evaluated at the "
-            "returned group's grain. Run the group-level filter without the distribution first.",
+            "A having filter beside a distribution cannot be evaluated at the returned "
+            "group's grain. Run the group-level filter without the distribution first.",
         )
     return filters
 
@@ -1470,7 +1470,7 @@ def _distribution_select(
             raise SemanticLayerError(
                 "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
                 "A distribution's per-entity grouping cannot inherit this contextual predicate. "
-                "Use scope_mode: 'entity_only' or a where filter.",
+                "Use over: all_time or a where filter.",
             )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
@@ -3839,9 +3839,9 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
     if _query_metric_predicates(plan):
         raise SemanticLayerError(
             "PREDICATE_NOT_SUPPORTED",
-            "A metric_predicate filter requires a measure or conversion leaf; "
-            "add a select that reads a measure, or remove metric_filters.",
-            details={"path": "metric_filters", "reason": "distinct_values_without_leaf"},
+            "An entity filter on an aggregate needs a measure or conversion leaf; "
+            "add a select that reads a measure, or remove the entity filter.",
+            details={"path": "where", "reason": "distinct_values_without_leaf"},
         )
     entities = _entity_index(config)
     dimensions = _dimension_index(config)

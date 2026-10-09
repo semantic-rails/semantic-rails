@@ -351,7 +351,7 @@ def _route_decision_required(
             "clarification": clarification,
             "hint": (
                 "Which route is meant is a business definition. Ask which option the question "
-                "means, then resend the query with that option's decision in route_decisions "
+                "means, then send the call with that option's route in routes "
                 "(this query only), or record it as the package default with "
                 "record_route_decision (a graph.path_preferences row)."
             ),

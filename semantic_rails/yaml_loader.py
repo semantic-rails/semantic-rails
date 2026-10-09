@@ -49,19 +49,22 @@ def load_yaml_file(path: str | Path) -> Any:
 
 
 def load_named_entries(
-    root: Path, *, plural_key: str, singular_key: str
+    root: Path, *, plural_key: str, singular_key: str, defaults: tuple[str, ...] = ()
 ) -> list[tuple[str, dict[str, Any]]]:
+    """Each named entry of the files under ``root``; a ``defaults`` key at a file's top level
+    applies to that file's entries that do not set it."""
     entries: list[tuple[str, dict[str, Any]]] = []
     if not root.is_dir():
         return entries
     for file_path in sorted([*root.rglob("*.yml"), *root.rglob("*.yaml")]):
         raw = dict(safe_load(file_path.read_text(encoding="utf-8")) or {})
+        shared = {key: raw[key] for key in defaults if key in raw}
         mapping = raw.get(plural_key)
         if isinstance(mapping, dict):
             for entry_id, spec in mapping.items():
-                entries.append((str(entry_id), dict(spec or {})))
+                entries.append((str(entry_id), {**shared, **dict(spec or {})}))
             continue
         single = raw.get(singular_key)
         if isinstance(single, dict):
-            entries.append((str(single.get("id", file_path.stem)), dict(single)))
+            entries.append((str(single.get("id", file_path.stem)), {**shared, **dict(single)}))
     return entries

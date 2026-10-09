@@ -23,7 +23,6 @@ from typing import Any
 
 import pytest
 
-import semantic_rails.cli.app as cli_app
 import semantic_rails.cli.commands.project as project_commands
 import semantic_rails.cli.common as common
 import semantic_rails.cli.interpretation as interpretation
@@ -318,11 +317,11 @@ def test_ask_json_reports_an_exact_row_limit(nowhere: dict[str, str]) -> None:
 
     assert cut["package"]["bundled"] is True
     assert (cut["result"]["row_count"], cut["result"]["truncated"]) == (2, True)
-    assert (cut["result"]["row_limit"], cut["result"]["planned_row_limit"]) == (2, None)
-    assert (default["result"]["row_limit"], default["result"]["planned_row_limit"]) == (20, None)
+    assert cut["result"]["row_limit"] == 2
+    assert default["result"]["row_limit"] == 20
     assert full["result"]["truncated"] is False
     assert full["result"]["row_count"] > 2
-    assert (full["result"]["row_limit"], full["result"]["planned_row_limit"]) == (0, None)
+    assert full["result"]["row_limit"] == 0
 
 
 def test_top_level_help_describes_package_selection(nowhere: dict[str, str]) -> None:
@@ -343,8 +342,8 @@ class _StubRuntime:
     def __init__(self) -> None:
         self.queries: list[dict[str, Any]] = []
 
-    def query(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.queries.append(payload)
+    def query(self, payload: dict[str, Any], **options: Any) -> dict[str, Any]:
+        self.queries.append({**payload, **options})
         return {
             "ok": True,
             "rows": [{"orders": 3}],
@@ -364,7 +363,7 @@ def test_ask_limits_sql_to_one_extra_row_and_fences_at_the_limit(
     monkeypatch: pytest.MonkeyPatch, planned: dict[str, int], sent: int
 ) -> None:
     runtime = _StubRuntime()
-    query = {"select": [{"expression": {"measure": "measure.orders"}}], **planned}
+    query = {"select": ["measure.orders"], **planned}
     monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: runtime)
     monkeypatch.setattr(
         reports, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
@@ -381,10 +380,10 @@ def test_ask_limits_sql_to_one_extra_row_and_fences_at_the_limit(
 class _LimitingRuntime(_StubRuntime):
     """Twelve matching rows; honours the SQL limit and the row fence like the engine."""
 
-    def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def query(self, payload: dict[str, Any], **options: Any) -> dict[str, Any]:
         self.queries.append(payload)
         rows = [{"orders": index} for index in range(12)][: payload.get("limit") or 12]
-        fence = dict(payload.get("limits", {}) or {}).get("max_rows")
+        fence = dict(options.get("limits", {}) or {}).get("max_rows")
         truncated = fence is not None and len(rows) > fence
         rows = rows[:fence] if truncated else rows
         return {"ok": True, "rows": rows, "row_count": len(rows), "truncated": truncated}
@@ -434,7 +433,7 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     plan = {
         "ok": True,
         "best": {
-            "query_ir": {"select": [{"expression": {"measure": "measure.orders"}}]},
+            "query_ir": {"select": ["measure.orders"]},
             "resolved": [{"id": "measure.orders", "label": "Orders"}],
         },
         "warnings": [unmatched],
@@ -473,7 +472,7 @@ def test_ask_prints_the_readings_the_plan_took_of_the_window(
     plan = {
         "ok": True,
         "best": {
-            "query_ir": {"select": [{"expression": {"measure": "measure.orders"}}]},
+            "query_ir": {"select": ["measure.orders"]},
             "resolved": [{"id": "measure.orders", "label": "Orders"}],
         },
         "assumptions": [reading],
@@ -503,16 +502,16 @@ def test_ask_prints_a_warning_repeated_for_each_measure_once(
     }
 
     class _RatioRuntime(_StubRuntime):
-        def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+        def query(self, payload: dict[str, Any], **options: Any) -> dict[str, Any]:
             return {
-                **super().query(payload),
+                **super().query(payload, **options),
                 "warnings": [
                     {**aligned, "object_ids": ["measure.revenue"]},
                     {**aligned, "object_ids": ["measure.order_count"]},
                 ],
             }
 
-    plan = {"ok": True, "best": {"query_ir": {"select": [{"expression": {"metric": "m.aov"}}]}}}
+    plan = {"ok": True, "best": {"query_ir": {"select": ["metric.m.aov"]}}}
     monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: _RatioRuntime())
     monkeypatch.setattr(reports, "plan_payload", lambda *_a, **_k: plan)
     monkeypatch.setattr(interpretation, "resolve_catalog", lambda *_a, **_k: {})
@@ -708,49 +707,19 @@ def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str
 
 def test_day_or_coarser_time_buckets_print_as_dates_and_labels_keep_acronyms(
     runtime_factory,
-    monkeypatch,
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
-    role = next(
-        role
-        for role in runtime._config.temporal_roles
-        if role.id == "temporal_role.jaffle_order_time"
-    )
-    role.supported_grains.append("hour")
+    query = {
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+    }
     try:
-        for grain in ("month", "hour"):
-            result = runtime.query(
-                {
-                    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-                    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": grain},
-                    "limit": 2,
-                }
-            )
-            _header, _rule, *cells = cli_output._table_lines(
-                result["rows"], result["output_columns"], result["column_types"]
-            )
-            for row, cell in zip(result["rows"], cells, strict=True):
-                value = row[f"temporal_role.jaffle_order_time__{grain}"]
-                displayed = cell.split(" | ")[0].strip()
-                assert displayed == (value[:10] if grain == "month" else value.replace("T", " "))
-        for grain in ("month", "hour"):
-            field = f"temporal_role.jaffle_order_time__{grain}"
-            monkeypatch.setattr(
-                "semantic_rails.runtime._adapter_query",
-                lambda *args, field=field, **kwargs: [
-                    {field: "2016-09-01T00:00:00.000000001", "orders": 1}
-                ],
-            )
-            result = runtime.query(
-                {
-                    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-                    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": grain},
-                }
-            )
-            cells = cli_output._table_lines(
-                result["rows"], result["output_columns"], result["column_types"]
-            )
-            assert cells[2].split(" | ")[0].strip() == "2016-09-01 00:00:00.000000001"
+        result = runtime.query({**query, "limit": 2})
+        _header, _rule, *cells = cli_output._table_lines(
+            result["rows"], result["output_columns"], result["column_types"]
+        )
+        for row, cell in zip(result["rows"], cells, strict=True):
+            assert cell.split(" | ")[0].strip() == row["period"][:10]
         assert common._title("revenue_mom_growth") == "Revenue MoM Growth"
         assert common._title("orders_ytd") == "Orders YTD"
     finally:
@@ -868,9 +837,9 @@ def test_long_duplicate_labels_stay_distinct_after_shortening() -> None:
 
 
 def test_table_headers_show_time_grain_and_disambiguate_duplicate_labels() -> None:
-    rows = [{"t__month": "2017-01-01", "a": 1.0, "b": 2.0}]
+    rows = [{"period": "2017-01-01", "a": 1.0, "b": 2.0}]
     columns = [
-        {"field": "t__month", "display_label": "Order time", "type": "time"},
+        {"field": "period", "display_label": "Order time", "type": "time", "grain": "month"},
         {"field": "a", "display_label": "Revenue", "type": "number"},
         {"field": "b", "display_label": "Revenue", "type": "number"},
     ]
@@ -878,66 +847,3 @@ def test_table_headers_show_time_grain_and_disambiguate_duplicate_labels() -> No
     header = cli_output._table_lines(rows, columns)[0]
 
     assert header.split(" | ") == ["Order time (month)", "a", "b"]
-
-
-@pytest.mark.parametrize(
-    ("limit", "count", "cap_source"),
-    [
-        (None, 5, "planned"),
-        ("0", 5, "planned"),
-        ("2", 2, "cli"),
-        ("20", 5, "planned"),
-    ],
-)
-def test_cli_with_a_planned_row_fence_uses_real_execution_and_reports_the_binding_cap(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    limit: str | None,
-    count: int,
-    cap_source: str,
-) -> None:
-    # The current planner does not emit limits.max_rows. Add one to its real
-    # plan so the rest of the CLI path and DuckDB execution remain real.
-    planner = reports.plan_payload
-
-    def plan_with_fence(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        plan = planner(*args, **kwargs)
-        best = dict(plan["best"])
-        best["query_ir"] = {**best["query_ir"], "limits": {"max_rows": 5}}
-        return {**plan, "best": best}
-
-    monkeypatch.setattr(reports, "plan_payload", plan_with_fence)
-    args = [
-        "semantic-rails",
-        "ask",
-        "--package",
-        "jaffle_shop",
-        "monthly revenue by store",
-        "--run",
-    ]
-    if limit is not None:
-        args.extend(["--limit", limit])
-
-    monkeypatch.setattr(sys, "argv", [*args, "--json"])
-    cli_app.main()
-    payload = json.loads(capsys.readouterr().out)
-    result = payload["result"]
-    assert payload["ok"] is True
-    assert (result["row_count"], len(result["rows"]), result["truncated"]) == (
-        count,
-        count,
-        True,
-    )
-    assert (result["row_limit"], result["planned_row_limit"]) == (count, 5)
-    assert payload["query"]["limits"] == {"max_rows": 5}
-
-    monkeypatch.setattr(sys, "argv", args)
-    cli_app.main()
-    output = capsys.readouterr().out
-    if cap_source == "planned":
-        assert "Rows: 5 (stopped at the planned query's own 5-row cap; more rows match)" in output
-        assert "To lift the" not in output
-    else:
-        assert "Rows: 2 (stopped at the 2-row limit; more rows match)" in output
-        assert "To lift the 2-row cap" in output
-        assert "the planned query's own 5-row cap still applies" in output

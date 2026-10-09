@@ -15,11 +15,10 @@ First batch — three reviewer complaints:
 
 Second batch (recovery-hint papercuts) — four extensions:
 
-4. Nested parameter schemas (``percentile`` takes ``{p}``) surface
-   in ``INVALID_EXPRESSION_KEY`` recovery hints.
-5. Cross-position key mismatches (``where`` got ``field``;
-   ``order_by`` got ``dimension``) emit a ``use_canonical_key_for_position``
-   hint pointing at the right slot.
+4. A misnamed ``parameters`` key is refused with the hint to write
+   ``parameters``; a percentile without ``p`` discloses the parameter schema.
+5. A ``dimension`` key in a ``where`` or ``order_by`` item is refused with
+   the hint to write ``field``.
 6. ``OBJECT_NOT_FOUND`` for an id with no semantic neighbours returns
    empty ``closest_matches`` and a ``call_discover_to_locate`` handoff.
 7. Execute returning zero rows with a time filter attaches a
@@ -107,12 +106,8 @@ def test_counterpart_visibility_uses_one_package_snapshot(package_config_factory
         else:
             response = SemanticLayerMCPAdapter(proxy).call_tool(
                 "execute",
-                {
-                    "query": {"select": [{"expression": {"metric": missing_id}}]},
-                    "mode": "sql",
-                    "policy_context": {"audience": "external"},
-                    "verbosity": "full",
-                },
+                {"query": {"select": [missing_id]}, "mode": "sql", "verbosity": "full"},
+                request_context=RequestContext(audience="external"),
             )
         assert response["ok"] is False
         assert response["errors"][0]["code"] == "OBJECT_NOT_FOUND"
@@ -129,9 +124,8 @@ def test_counterpart_visibility_uses_one_package_snapshot(package_config_factory
 @pytest.mark.parametrize("missing_kind", ["metric", "measure"])
 @pytest.mark.parametrize("mode", ["run", "validate", "sql"])
 @pytest.mark.parametrize("with_policy", [False, True], ids=["public", "hidden"])
-@pytest.mark.parametrize("context_source", ["outer", "nested", "host"])
 def test_missing_counterpart_suggestions_follow_request_visibility(
-    package_config_factory, missing_kind, mode, with_policy, context_source
+    package_config_factory, missing_kind, mode, with_policy
 ):
     from semantic_rails.request_context import RequestContext
 
@@ -139,24 +133,11 @@ def test_missing_counterpart_suggestions_follow_request_visibility(
     config, hidden_id, fuzzy_id = _counterpart_config(config, missing_kind, with_policy)
     runtime = Runtime.from_config(config, source_path=str(package))
     try:
-        query = {
-            "select": [{"expression": {missing_kind: f"{missing_kind}.synthetic.private_fee"}}],
-        }
-        arguments = {"query": query, "mode": mode, "verbosity": "full"}
-        context = {"audience": "external"}
-        if context_source == "nested":
-            query["policy_context"] = context
-        else:
-            arguments["policy_context"] = context
-        if context_source == "host":
-            # Trusted transport context must win over caller-supplied visibility.
-            arguments["policy_context"] = {"audience": "internal"}
+        query = {"select": [f"{missing_kind}.synthetic.private_fee"]}
         response = SemanticLayerMCPAdapter(runtime).call_tool(
             "execute",
-            arguments,
-            request_context=RequestContext(audience="external")
-            if context_source == "host"
-            else None,
+            {"query": query, "mode": mode, "verbosity": "full"},
+            request_context=RequestContext(audience="external"),
         )
         assert response["ok"] is False
         issue = response["errors"][0]
@@ -209,6 +190,7 @@ def test_unavailable_visibility_cannot_add_a_counterpart(
     package_config_factory, monkeypatch, missing_kind, mode
 ):
     from semantic_rails import visible_view
+    from semantic_rails.request_context import RequestContext
 
     config, package = package_config_factory("jaffle_shop")
     config, hidden_id, _ = _counterpart_config(config, missing_kind, True)
@@ -221,15 +203,8 @@ def test_unavailable_visibility_cannot_add_a_counterpart(
     try:
         response = SemanticLayerMCPAdapter(runtime).call_tool(
             "execute",
-            {
-                "query": {
-                    "select": [
-                        {"expression": {missing_kind: f"{missing_kind}.synthetic.private_fee"}}
-                    ]
-                },
-                "mode": mode,
-                "policy_context": {"audience": "external"},
-            },
+            {"query": {"select": [f"{missing_kind}.synthetic.private_fee"]}, "mode": mode},
+            request_context=RequestContext(audience="external"),
         )
         # Unresolved visibility refuses before binding, naming nothing.
         assert response["errors"][0]["code"] == "POLICY_DENIED"
@@ -239,8 +214,12 @@ def test_unavailable_visibility_cannot_add_a_counterpart(
         runtime.close()
 
 
-@pytest.mark.parametrize("op", ["is_null", "unknown"])
-def test_where_operator_refusal_names_query_operators_and_null_form(runtime_factory, op):
+@pytest.mark.parametrize(
+    "op,hint", [("is_null", '"op": "missing", "value": true'), ("unknown", "use the words")]
+)
+def test_where_operator_refusal_names_the_words_and_the_missing_form(runtime_factory, op, hint):
+    from semantic_rails.operators import WORDS
+
     runtime = runtime_factory("jaffle_shop")
     try:
         adapter = SemanticLayerMCPAdapter(runtime)
@@ -250,28 +229,12 @@ def test_where_operator_refusal_names_query_operators_and_null_form(runtime_fact
         }
         response = adapter.call_tool("execute", {"query": query, "mode": "validate"})
         issue = response["errors"][0]
-        assert issue["code"] == "INVALID_EXPRESSION_AST"
-        allowed = [
-            "=",
-            "!=",
-            "<",
-            "<=",
-            ">",
-            ">=",
-            "IN",
-            "NOT IN",
-            "LIKE",
-            "NOT LIKE",
-            "IS NULL",
-            "IS NOT NULL",
-        ]
-        assert issue["details"]["allowed"] == allowed
-        hint = issue["recovery_hints"][0]
-        assert hint["allowed"] == allowed
-        assert "op 'IS NULL' or 'IS NOT NULL' and omit value" in hint["message"]
-        assert "SQL" not in hint["message"]
-        for null_op in ("IS NULL", "IS NOT NULL"):
-            query["where"][0]["op"] = null_op
+        assert issue["code"] == "INVALID_QUERY"
+        assert issue["details"]["path"] == "where[0].op"
+        assert issue["details"]["allowed"] == list(WORDS)
+        assert hint in issue["recovery_hints"][0]["message"]
+        for missing in (True, False):
+            query["where"][0].update(op="missing", value=missing)
             assert adapter.call_tool("execute", {"query": query, "mode": "validate"})["ok"]
     finally:
         runtime.close()
@@ -289,7 +252,7 @@ def test_inline_prior_period_with_offset_alias_returns_authored_alternative(runt
                     {
                         "expression": {
                             "kind": "prior_period",
-                            "measure": "measure.jaffle.revenue_usd",
+                            "input": "measure.jaffle.revenue_usd",
                             "offset": {"unit": "month", "n": 1},
                         },
                         "as": "prev",
@@ -314,7 +277,8 @@ def test_inline_prior_period_with_offset_alias_returns_authored_alternative(runt
         hint_kinds = {hint.get("kind") for hint in (first.get("recovery_hints") or [])}
         assert "use_authored_prior_period_metric" in hint_kinds
         assert "fix_prior_period_offset_shape" in hint_kinds
-        assert "use_prior_period_shorthand" in hint_kinds
+        shape = next(h for h in first["recovery_hints"] if h["kind"] == "use_prior_period_ir_shape")
+        assert shape["shape"]["input"] == "measure.jaffle.revenue_usd"
     finally:
         runtime.close()
 
@@ -412,13 +376,11 @@ def test_plan_minimal_strips_heavy_validation_payload(runtime_factory):
 # ---------- Phase 1 — recovery-hint papercut tests ----------
 
 
-def test_parameter_schema_disclosed_for_percentile_unknown_key(runtime_factory):
+def test_misnamed_parameters_key_points_at_parameters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        # Reviewer's footgun: agent typo'd ``aggregation_params`` for
-        # ``parameters``. The existing recovery hint told them to use
-        # ``parameters`` but didn't reveal that ``parameters`` is
-        # ``{p: float in [0, 1]}`` for percentile — two round-trips.
+        # An agent typed ``aggregation_params`` for ``parameters``: the refusal names the
+        # key and the one to write instead.
         result = runtime.validate(
             {
                 "select": [
@@ -434,48 +396,31 @@ def test_parameter_schema_disclosed_for_percentile_unknown_key(runtime_factory):
                 ],
             }
         )
-        errors = result.get("errors") or []
-        assert errors, f"expected INVALID_EXPRESSION_KEY, got {result!r}"
-        first = errors[0]
-        assert first["code"] == "INVALID_EXPRESSION_KEY"
-        hints = first.get("recovery_hints") or []
-        schema_hints = [h for h in hints if h.get("kind") == "disclose_parameters_schema"]
-        assert schema_hints, f"expected disclose_parameters_schema hint, got {hints!r}"
-        schema = schema_hints[0].get("parameters_schema") or {}
-        assert schema.get("p"), f"expected p key in parameters_schema, got {schema!r}"
+        first = result["errors"][0]
+        assert first["code"] == "INVALID_QUERY"
+        assert first["details"]["path"] == "select[0].expression.aggregation_params"
+        assert first["recovery_hints"] == [
+            {"code": "FIX_QUERY_CALL", "message": "Use 'parameters'."}
+        ]
     finally:
         runtime.close()
 
 
-def test_cross_position_key_suggestion_on_order_by_with_dimension(runtime_factory):
+@pytest.mark.parametrize("position", ["order_by", "where"])
+def test_dimension_key_points_at_field(runtime_factory, position):
     runtime = runtime_factory("jaffle_shop")
     try:
-        # The agent used ``dimension`` (the ``where`` canonical key)
-        # inside an ``order_by`` entry. Recovery hint should tell them
-        # the canonical key here is ``field`` and that ``dimension``
-        # belongs in ``where``.
-        result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": "measure.jaffle.order_count",
-                        "as": "orders",
-                    }
-                ],
-                "order_by": [{"dimension": "orders", "direction": "DESC"}],
-            }
+        # ``order_by`` and ``where`` items name their column with ``field``.
+        item = (
+            {"dimension": "orders", "direction": "desc"}
+            if position == "order_by"
+            else {"dimension": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
         )
-        errors = result.get("errors") or []
-        assert errors, f"expected INVALID_EXPRESSION, got {result!r}"
-        first = errors[0]
-        assert first["code"] == "INVALID_EXPRESSION"
-        hints = first.get("recovery_hints") or []
-        cross_hints = [h for h in hints if h.get("kind") == "use_canonical_key_for_position"]
-        assert cross_hints, f"expected use_canonical_key_for_position hint, got {hints!r}"
-        cross = cross_hints[0]
-        assert cross.get("expected_key_here") == "field"
-        assert cross.get("received_canonical_key") == "dimension"
-        assert cross.get("received_canonical_key_belongs_to") == "where"
+        result = runtime.validate({"select": ["measure.jaffle.order_count"], position: [item]})
+        first = result["errors"][0]
+        assert first["code"] == "INVALID_QUERY"
+        assert first["details"]["path"] == f"{position}[0].dimension"
+        assert first["recovery_hints"] == [{"code": "FIX_QUERY_CALL", "message": "Use 'field'."}]
     finally:
         runtime.close()
 
@@ -588,11 +533,8 @@ def test_path_not_found_envelope_lists_compatible_dimensions(runtime_factory):
 
 
 def test_dict_in_where_value_is_rejected_with_structured_envelope(runtime_factory):
-    """Round-two Phase 2 widened ``metric_predicate.value`` to accept a
-    percentile expression. ``where[].value`` was never widened — the
-    9 other SqlLiteral wrap sites would silently stringify a dict.
-    Round-three Phase 1E rejects this at validate-time with the right
-    pointer to ``metric_filters``."""
+    """A ``where[].value`` is a scalar or a list: a dict (an expression) is refused at the
+    front door, naming the path, instead of being stringified into SQL."""
     runtime = runtime_factory("jaffle_shop")
     try:
         result = runtime.validate(
@@ -620,11 +562,9 @@ def test_dict_in_where_value_is_rejected_with_structured_envelope(runtime_factor
         assert errors, f"expected INVALID_QUERY envelope, got {result!r}"
         first = errors[0]
         assert first["code"] == "INVALID_QUERY"
-        details = first.get("details") or {}
-        assert "where" in details.get("path", "")
-        # The hint must point the agent at metric_filters / scoped_aggregate
-        # where dict-shaped values are accepted.
-        assert "metric" in details.get("why_invalid", "").lower()
+        assert first["details"]["path"] == "where[0].value"
+        # The hint says how to filter by a computed threshold.
+        assert "own query" in first["recovery_hints"][0]["message"]
     finally:
         runtime.close()
 
@@ -900,65 +840,7 @@ def test_empty_time_window_reports_diagnostics_warning_and_data_coverage(runtime
         runtime.close()
 
 
-def test_where_uses_field_key_and_rejects_legacy_dimension_key(runtime_factory):
-    """Round five standardized on ``field`` for both ``where[]`` and
-    ``order_by[]``. The legacy ``dimension`` key on ``where[]`` items
-    is no longer accepted; the error names the unsupported item key."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # Canonical shape: ``field`` works.
-        ok_result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                        },
-                        "as": "rev",
-                    }
-                ],
-                "where": [
-                    {"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
-                ],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            }
-        )
-        assert ok_result.get("ok") is True, (
-            f"field key must validate: errors={ok_result.get('errors')!r}"
-        )
-        # Legacy ``dimension`` key is now rejected with a clear error
-        # pointing at the canonical key.
-        bad_result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                        },
-                        "as": "rev",
-                    }
-                ],
-                "where": [
-                    {"dimension": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}
-                ],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            }
-        )
-        errors = bad_result.get("errors") or []
-        assert errors, "legacy dimension key should fail validation"
-        assert errors[0]["code"] == "INVALID_QUERY"
-        assert errors[0]["details"]["path"] == "where[0]"
-        assert errors[0]["details"]["unsupported_keys"] == ["dimension"]
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("outer_verbosity", [None, "minimal", "compact"])
-def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory, outer_verbosity):
+def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory):
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
     runtime = runtime_factory("jaffle_shop")
@@ -987,14 +869,7 @@ def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory, outer_verbosity)
     }
     try:
         responses = [
-            adapter.call_tool(
-                "execute",
-                {
-                    "query": {**query, "verbosity": verbosity},
-                    "mode": "run",
-                    "verbosity": outer_verbosity or verbosity,
-                },
-            )
+            adapter.call_tool("execute", {"query": query, "mode": "run", "verbosity": verbosity})
             for verbosity in ("minimal", "compact", "full")
         ]
         minimal, compact, full = responses
