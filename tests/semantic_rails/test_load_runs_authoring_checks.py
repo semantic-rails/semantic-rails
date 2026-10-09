@@ -31,6 +31,27 @@ def _add(key, value):
     return lambda doc: doc.update({key: value})
 
 
+def _all(*edits):
+    return lambda doc: [edit(doc) for edit in edits]
+
+
+def _rollup(**columns):
+    """A monthly rollup of orders that binds ``columns``."""
+    return _set(
+        "models",
+        "orders",
+        "variants",
+        "monthly",
+        relation="shop_order_monthly",
+        grain={"time": "month", "entities": []},
+        time={"role": "ordered_at", "column": "month_start"},
+        columns=columns,
+    )
+
+
+_ORDER_CUSTOMER = "relationship.orders_customer"
+
+
 # name: (edit of the starter package, what the refusal names)
 REFUSED = {
     "measure-kind": (
@@ -87,6 +108,37 @@ REFUSED = {
         "defaults has unknown key 'observation_scop'",
     ),
     "top-level-key": (_add("rollups", {}), "shop/package.yml has unknown key 'rollups'"),
+    "model-defaults": (
+        _set("models", "orders", defaults={"time": {"timezone": "America/New_York"}}),
+        "model 'orders' has unknown key 'defaults'",
+    ),
+    # A rollup binding is checked whatever its name resolves to; the loader reads it either way.
+    "measure-id-binding-key": (
+        _all(
+            _set("models", "orders", "measures", "revenue_usd", id="rev_total"),
+            _rollup(rev_total={"column": "rev", "agregation": "max"}),
+        ),
+        "variant 'monthly' column 'rev_total' has unknown key 'agregation'",
+    ),
+    "foreign-key-binding-key": (
+        _rollup(customer_id={"column": "customer_id", "pth": [_ORDER_CUSTOMER]}),
+        "variant 'monthly' column 'customer_id' has unknown key 'pth'",
+    ),
+    "key-column-binding-measure-key": (
+        _rollup(order_id={"column": "order_id", "rollup": "additive"}),
+        "variant 'monthly' column 'order_id' has unknown key 'rollup'",
+    ),
+    "dimension-id-binding-key": (
+        _all(
+            _set("models", "orders", "dimensions", "channel", id="order_channel"),
+            _rollup(order_channel={"column": "channel", "pth": [_ORDER_CUSTOMER]}),
+        ),
+        "variant 'monthly' column 'order_channel' has unknown key 'pth'",
+    ),
+    "unresolved-binding-key": (
+        _rollup(mystery={"column": "mystery", "agregation": "max"}),
+        "variant 'monthly' column 'mystery' has unknown key 'agregation'",
+    ),
 }
 # Refused before too, each by a check of its own; now by the one check, in its words.
 CONSOLIDATED = {
@@ -154,6 +206,17 @@ def test_underscore_keys_stay_annotations(tmp_path):
     Runtime.from_path(str(_package(tmp_path, _add("_notes", {"owner": "analytics"})))).close()
 
 
+def test_key_column_binding_with_path_loads(tmp_path):
+    customer = {"column": "customer_id", "path": [_ORDER_CUSTOMER]}
+    source = _package(tmp_path, _rollup(revenue_usd="revenue_usd", customer_id=customer))
+    runtime = Runtime.from_path(str(source))
+    try:
+        (rollup,) = runtime._config.aggregate_relations
+        assert rollup.dimension_columns["dimension.shop_order_customer_id"] == "customer_id"
+    finally:
+        runtime.close()
+
+
 def test_validate_config_lists_each_error_once(tmp_path):
     names = ("graph-relationship-key", "measure-kind")
     source = _package(tmp_path, *(REFUSED[name][0] for name in names))
@@ -191,3 +254,73 @@ def test_every_entry_point_refuses_the_same_package(tmp_path):
             "'cardinality'?",
         )
     }
+
+
+def _directory(tmp_path: Path, files: dict) -> Path:
+    """The bundled directory package, each ``files`` entry rebuilt from its current document."""
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    for name, build in files.items():
+        target = package / name
+        doc = yaml.safe_load(target.read_text(encoding="utf-8")) if target.exists() else None
+        target.write_text(yaml.safe_dump(build(doc), sort_keys=False), encoding="utf-8")
+    return package
+
+
+_ORDERS_FILE = "models/core/orders.yml"
+_NO_WRAPPER = {"defaults.yml": lambda _: {"time": {"timezone": "America/New_York"}}}
+_GRAPH_ALIASES = {"graph.yml": lambda doc: {**doc, "aliases": {"buyer": "customer"}}}
+_MODEL_METRICS = {
+    _ORDERS_FILE: lambda doc: {
+        **doc,
+        "metrics": {"orders_total": {"kind": "aggregate", "measure": "order_count"}},
+    }
+}
+# name: (files rewritten in the directory package, what the refusal names)
+DIRECTORY_REFUSED = {
+    "block-file-without-wrapper": (
+        _NO_WRAPPER,
+        "defaults.yml has unknown key 'time' — unknown keys are ignored by the loader, so this "
+        "would silently change behavior; write this file's contents under a top-level "
+        "'defaults' key",
+    ),
+    "block-file-sibling": (
+        _GRAPH_ALIASES,
+        "graph.yml has unknown key 'aliases' — unknown keys are ignored by the loader, so this "
+        "would silently change behavior; the loader reads only 'graph' from this file",
+    ),
+    "model-file-sibling": (
+        _MODEL_METRICS,
+        "orders.yml has unknown key 'metrics' — unknown keys are ignored by the loader, so this "
+        "would silently change behavior; the loader reads only 'model' from this file",
+    ),
+}
+
+
+@pytest.mark.parametrize(("files", "expected"), DIRECTORY_REFUSED.values(), ids=DIRECTORY_REFUSED)
+def test_directory_refuses_root_keys_the_loader_drops(tmp_path, files, expected):
+    package = _directory(tmp_path, files)
+    with pytest.raises(SemanticLayerError) as refused:
+        Runtime.from_path(str(package))
+    assert refused.value.code == "INVALID_CONFIG"
+    (error,) = refused.value.details["errors"]
+    assert error.startswith(str(package)) and error.endswith(expected)
+    # validate-config's split-layout check also names a top-level aliases registry.
+    assert [row for row in validate_runtime_package(package) if "aliases registry" not in row] == [
+        error
+    ]
+
+
+def test_directory_lists_each_dropped_root_key(tmp_path):
+    package = _directory(tmp_path, {**_NO_WRAPPER, **_GRAPH_ALIASES, **_MODEL_METRICS})
+    errors = [row for row in validate_runtime_package(package) if " has unknown key " in row]
+    assert [error.split(" has unknown key ")[1].split(" ")[0] for error in errors] == [
+        "'time'",
+        "'aliases'",
+        "'metrics'",
+    ]
+
+
+def test_directory_underscore_root_keys_stay_annotations(tmp_path):
+    notes = {"_notes": {"owner": "analytics"}}
+    files = {name: lambda doc: {**doc, **notes} for name in ("graph.yml", _ORDERS_FILE)}
+    Runtime.from_path(str(_directory(tmp_path, files))).close()

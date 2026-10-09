@@ -512,6 +512,21 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
             "INVALID_CONFIG", f"Package directory '{path}' is missing package.yml"
         )
 
+    # Each file is read through one wrapper key; record every other root key it would drop.
+    errors: list[str] = []
+
+    def drops(filename: str, doc: dict[str, Any], wrappers: tuple[str, ...], fix: str) -> None:
+        for key in sorted(str(k) for k in doc if str(k) not in wrappers):
+            if not key.startswith("_"):
+                errors.append(
+                    f"{filename} has unknown key {key!r} — unknown keys are ignored by the "
+                    f"loader, so this would silently change behavior; {fix}"
+                )
+
+    def drops_beside_wrapper(filename: str, doc: dict[str, Any], *wrappers: str) -> None:
+        if wrapper := next((name for name in wrappers if name in doc), None):
+            drops(filename, doc, (wrapper,), f"the loader reads only {wrapper!r} from this file")
+
     raw = load(package_path)
     merged: dict[str, Any] = dict(raw)
     merged.setdefault("defaults", {})
@@ -534,6 +549,10 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         if is_file(full):
             doc = load(full)
             list_keys = {"semantic_policies", "semantic_caveats"}
+            if key in doc:
+                drops_beside_wrapper(full, doc, key)
+            elif key not in list_keys:
+                drops(full, doc, (), f"write this file's contents under a top-level {key!r} key")
             value = doc.get(key, doc if key in list_keys else {})
             # `semantic_policies:` and `semantic_caveats:` are lists; every other
             # block is a mapping. Don't wrap a list in `dict(...)` — that
@@ -564,6 +583,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         models = dict(merged.get("models", {}) or {})
         for file_path in _yaml_files(models_dir):
             doc = load(file_path)
+            drops_beside_wrapper(file_path, doc, "models", "model")
             if "models" in doc:
                 model_docs = dict(doc.get("models", {}) or {})
             else:
@@ -587,6 +607,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         relations = dict(merged.get("relations", {}) or {})
         for file_path in _yaml_files(relations_dir):
             doc = load(file_path)
+            drops_beside_wrapper(file_path, doc, "relations", "relation")
             if "relations" in doc:
                 relation_docs = dict(doc.get("relations", {}) or {})
             else:
@@ -612,6 +633,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         metrics = dict(merged.get("metrics", {}) or {})
         for file_path in _yaml_files(metrics_dir):
             doc = load(file_path)
+            drops_beside_wrapper(file_path, doc, "metrics", "metric")
             if "metrics" in doc:
                 metric_docs = dict(doc.get("metrics", {}) or {})
             else:
@@ -631,6 +653,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         segments = dict(merged.get("segments", {}) or {})
         for file_path in _yaml_files(segments_dir):
             doc = load(file_path)
+            drops_beside_wrapper(file_path, doc, "segments", "segment")
             if "segments" in doc:
                 segment_docs = dict(doc.get("segments", {}) or {})
             else:
@@ -644,6 +667,8 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
             for segment_key, segment_raw in segment_docs.items():
                 segments[str(segment_key)] = dict(segment_raw or {})
         merged["segments"] = segments
+    if errors:
+        raise SemanticLayerError("INVALID_CONFIG", "\n".join(errors), details={"errors": errors})
     return merged
 
 

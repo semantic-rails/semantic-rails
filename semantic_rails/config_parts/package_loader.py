@@ -336,7 +336,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             )
         model.setdefault("id", model_id)
         model.setdefault("entity", entity_key)
-        model.setdefault("defaults", {})
 
         dimensions = dict(model.get("dimensions", {}) or {})
         for dim_key, dim_raw in list(dimensions.items()):

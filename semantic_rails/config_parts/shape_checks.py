@@ -208,7 +208,6 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "freshness_source",
         "freshness_sla_seconds",
         "freshness_as_of",
-        "defaults",
         "time_entity",
         "time_column",
         "variants",
@@ -442,9 +441,40 @@ def _expect_value_list(value: Any, *, label: str, errors: list[str]) -> None:
     )
 
 
-def _binding_keys(name: str, model: dict[str, Any]) -> frozenset[str] | None:
-    """The keys a rollup ``columns:`` entry may hold: a measure's binding, a dimension's, or what
-    both take when the name is both. None when it names neither."""
+def _key_columns(model_id: str, model: dict[str, Any], graph_entities: dict[str, Any]) -> set[str]:
+    """The key and foreign-key columns the loader turns into ``kind: id`` dimensions."""
+    entities = model.get("entities")
+    names = {
+        *(str(name) for name in (entities if isinstance(entities, dict) else ())),
+        str(model.get("entity", "") or ""),
+        *(
+            str(name)
+            for name, entity in graph_entities.items()
+            if isinstance(entity, dict) and str(entity.get("model", "") or "").strip() == model_id
+        ),
+    }
+    columns: set[str] = set()
+    for name in names - {"", "bridge"}:
+        override = entities.get(name) if isinstance(entities, dict) else None
+        if isinstance(override, dict) and override.get("expr") is not None:
+            columns.update(_column_list(override["expr"]))
+        entity = graph_entities.get(name)
+        if isinstance(entity, dict):
+            columns.update(_column_list(entity.get("key")))
+    keys = model.get("keys")
+    if isinstance(keys, dict):
+        columns.update(_column_list(keys.get("primary")))
+        foreign = keys.get("foreign")
+        for spec in foreign.values() if isinstance(foreign, dict) else ():
+            columns.update(_column_list(spec))
+    return columns
+
+
+def _binding_keys(
+    name: str, model_id: str, model: dict[str, Any], graph_entities: dict[str, Any]
+) -> frozenset[str]:
+    """The keys a rollup ``columns:`` entry may hold: a measure's binding, a dimension's, what
+    both take when the name is both, and either's when it names neither (never none)."""
     allowed: frozenset[str] | None = None
     for block, prefix, keys in (
         ("measures", "measure.", _MEASURE_BINDING_KEYS),
@@ -454,11 +484,19 @@ def _binding_keys(name: str, model: dict[str, Any]) -> frozenset[str] | None:
         rows = rows if isinstance(rows, dict) else {}
         names = {
             *map(str, rows),
-            *(str(r["as"]) for r in rows.values() if isinstance(r, dict) and r.get("as")),
+            *(
+                str(r[field])
+                for r in rows.values()
+                if isinstance(r, dict)
+                for field in ("as", "id")
+                if r.get(field)
+            ),
         }
+        if block == "dimensions":
+            names |= _key_columns(model_id, model, graph_entities)
         if name in names or name.startswith(prefix):
             allowed = keys if allowed is None else allowed & keys
-    return allowed
+    return allowed if allowed is not None else _MEASURE_BINDING_KEYS | _DIMENSION_BINDING_KEYS
 
 
 def _check_model_shape(
@@ -572,11 +610,10 @@ def _check_model_shape(
                     )
             columns = variant_raw.get("columns")
             for column_key, binding in columns.items() if isinstance(columns, dict) else ():
-                binding_keys = _binding_keys(str(column_key), model)
-                if isinstance(binding, dict) and binding_keys is not None:
+                if isinstance(binding, dict):
                     _unknown_key_errors(
                         binding,
-                        binding_keys,
+                        _binding_keys(str(column_key), model_id, model, graph_entities or {}),
                         label=f"{variant_label} column '{column_key}'",
                         errors=errors,
                     )
