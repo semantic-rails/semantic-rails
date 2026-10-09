@@ -67,9 +67,10 @@ arguments beside it:
 | CLI | `semantic-rails query --query-json '<call>'` | `--now`, `--environment`, `--audience`, `--verbosity`, `--sql-profile` |
 | Package examples and tests | `query:` | `now:` (per entry or at the file's top level), `context:` |
 
-An HTTP body is `{"query": <call>, "options": {...}}`, or the call itself; any other key beside
-`query` and `options` is refused. A tool argument sent inside the call (`"now"`, `"max_rows"`, `"verbosity"`,
-...) is refused with "pass it beside `query`". MCP also reads a `query` sent as a JSON string.
+An HTTP body is `{"query": <call>, "options": {...}}`, or the call itself; any other key
+beside `query` and `options` is refused. A tool argument sent inside the call (`"now"`,
+`"max_rows"`, `"verbosity"`, ...) is refused with "pass it beside `query`". MCP also reads a
+`query` sent as a JSON string.
 
 ```bash
 uv run semantic-rails query --package jaffle_shop --now 2017-09-04T12:00:00Z \
@@ -138,15 +139,16 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
 - Without `select`, a call with `group_by` lists the distinct rows:
 
 ```json
-{"group_by": ["dimension.jaffle_store_name", "dimension.jaffle_store_tax_rate"]}
+{"group_by": ["dimension.jaffle_store_name", "dimension.jaffle_store_tax_rate"],
+ "order_by": [{"field": "dimension.jaffle_store_name", "direction": "asc"}]}
 ```
 
 ```jsonc
 {"rows": [{"dimension.jaffle_store_name": "Brooklyn", "dimension.jaffle_store_tax_rate": 0.04},
-          {"dimension.jaffle_store_name": "San Francisco", "dimension.jaffle_store_tax_rate": 0.075},
           {"dimension.jaffle_store_name": "Chicago", "dimension.jaffle_store_tax_rate": 0.0625},
+          {"dimension.jaffle_store_name": "New Orleans", "dimension.jaffle_store_tax_rate": 0.04},
           {"dimension.jaffle_store_name": "Philadelphia", "dimension.jaffle_store_tax_rate": 0.06},
-          {"dimension.jaffle_store_name": "New Orleans", "dimension.jaffle_store_tax_rate": 0.04}]}
+          {"dimension.jaffle_store_name": "San Francisco", "dimension.jaffle_store_tax_rate": 0.075}]}
 ```
 
 ## `group_by`
