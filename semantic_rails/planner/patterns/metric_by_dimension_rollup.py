@@ -33,12 +33,14 @@ from .._base import (
     _TERM_SYNONYMS,
     RuntimeCompositionDraft,
     _aggregation_from_text,
+    _declared_name_forms,
     _named_metric,
     _object_by_id,
     _preferred_measure,
     _preferred_metric,
     _resolved,
     _said_name,
+    _singular,
     _tokens,
 )
 from ..coverage import CoverageGap, _coverage_why
@@ -212,6 +214,19 @@ _TIME_SERIES_PHRASES = (
     "end-of-month",
     "end of month",
 )
+
+
+def _named_by_rows(target: Any, noun: str, question: str) -> bool:
+    """Whether the only words naming the subject are the ranked rows' noun.
+
+    "top 5 customers" and "the 5 customers who spent the most" name no value to rank by: the
+    word that picked Customers to count names the rows, and every row counts one.
+    """
+
+    rows = {_singular(word) for word in _tokens(noun)}
+    said = {_singular(word) for word in _tokens(question)} - _FALLBACK_STOPWORDS
+    names = {_singular(word) for name in _declared_name_forms(target) for word in _tokens(name)}
+    return bool(names & said) and names & said <= rows
 
 
 def _listed(
@@ -412,7 +427,8 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         is_top, direction = True, str(request["direction"])
         top_n = request["limit"] if request["limit"] is not None else top_n
         ranked = _entity_grouping(config, str(request["noun"]))
-        group_by = list(dict.fromkeys([*group_by, *(ranked[1] if ranked is not None else [])]))
+        if ranked is not None and not _named_by_rows(target, str(request["noun"]), question):
+            group_by = list(dict.fromkeys([*group_by, *ranked[1]]))
     listed, ask = ([], None) if is_top else _listed(config, question, query)
     group_by = list(dict.fromkeys([*group_by, *listed]))
     if group_by:
