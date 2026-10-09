@@ -164,6 +164,38 @@ def _relationship(doc):
     }
 
 
+def _graph_relationship(**keys):
+    def edit(doc):
+        _relationship(doc)
+        doc["graph"]["relationships"]["orders_customer"].update(keys)
+
+    return edit
+
+
+def _spec(section, key, **keys):
+    """A metric's or segment's keys; a segment ``key`` the starter lacks is added."""
+
+    def edit(doc):
+        rows = doc.setdefault(section, {})
+        rows.setdefault(key, {"entity": "customer", "label": "Repeat customers"}).update(keys)
+
+    return edit
+
+
+def _measure_clock(**keys):
+    def edit(doc):
+        doc["models"]["orders"]["measures"]["revenue_usd"].update(keys)
+
+    return edit
+
+
+def _defaults_measure(**keys):
+    def edit(doc):
+        doc["defaults"]["measure"] = keys
+
+    return edit
+
+
 def _unpublished(publish):
     """A package of the default profile whose revenue measure alone publishes a metric."""
 
@@ -302,6 +334,72 @@ REWRITES = {
             **{"as": "measure.shop.order_count"},
         ),
         _row("orders", "measures", "order_count", **{"as": "measure.shop.order_count"}),
+    ),
+    "time-id-derived": (
+        "object-as",
+        _row("orders", "times", "ordered_at", id="temporal_role.shop_order_ordered_at"),
+        _current,
+    ),
+    "time-id-public": (
+        "object-as",
+        _row("orders", "times", "ordered_at", id="temporal_role.public_ordered_at"),
+        _row("orders", "times", "ordered_at", **{"as": "temporal_role.public_ordered_at"}),
+    ),
+    "relationship-id-derived": (
+        "object-as",
+        _graph_relationship(id="relationship.orders_customer"),
+        _relationship,
+    ),
+    "relationship-id-public": (
+        "object-as",
+        _graph_relationship(id="relationship.buyer"),
+        _graph_relationship(**{"as": "relationship.buyer"}),
+    ),
+    "metric-id-derived": (
+        "object-as",
+        _spec("metrics", "revenue_usd", id="metric.shop.revenue_usd"),
+        _current,
+    ),
+    "metric-id-public": (
+        "object-as",
+        _spec("metrics", "revenue_usd", id="metric.public_revenue"),
+        _spec("metrics", "revenue_usd", **{"as": "metric.public_revenue"}),
+    ),
+    "segment-id-derived": (
+        "object-as",
+        _spec("segments", "repeat", id="segment.shop.repeat"),
+        _spec("segments", "repeat"),
+    ),
+    "segment-id-public": (
+        "object-as",
+        _spec("segments", "repeat", id="segment.shop.repeat_customers"),
+        _spec("segments", "repeat", **{"as": "segment.shop.repeat_customers"}),
+    ),
+    "measure-time-scalar": (
+        "measure-times",
+        _measure_clock(time="ordered_at"),
+        _measure_clock(times=["ordered_at"]),
+    ),
+    "measure-time-list": (
+        "measure-times",
+        _measure_clock(time=["ordered_at"]),
+        _measure_clock(times=["ordered_at"]),
+    ),
+    "measure-time-beside-times": (
+        "measure-times",
+        _measure_clock(time="first_ordered_at", times=["ordered_at"]),
+        _measure_clock(times=["ordered_at"]),
+    ),
+    "measure-time-beside-empty-times": (
+        "measure-times",
+        _measure_clock(time="ordered_at", times=[]),
+        _measure_clock(times=["ordered_at"]),
+    ),
+    "measure-time-empty": ("measure-times", _measure_clock(time=None), _current),
+    "defaults-measure-time": (
+        "measure-times",
+        _defaults_measure(time="ordered_at"),
+        _defaults_measure(times=["ordered_at"]),
     ),
     "join-cardinality-never-read": (
         "model-joins",

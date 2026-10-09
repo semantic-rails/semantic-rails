@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ..config import _ensure_list
 from ..config_parts.package_loader import _RELATIONSHIP_PASSTHROUGH, _column_list
 from ..naming import slug, title
 from ..schema import OBSERVATION_SCOPES
@@ -320,25 +321,45 @@ def _model_joins(files: PackageFiles) -> Iterator[Finding]:
 
 def _object_as(files: PackageFiles) -> Iterator[Finding]:
     namespace, graph = _namespace(files), _graph(files)
-    rows = [
-        (file, path, row, f"entity.{namespace}_{slug(name)}")
+    # (file, path, row, the id the loader derives; None: the id names the object's key)
+    rows: list[tuple[str, YamlPath, dict[str, Any], str | None]] = [
+        (file, path, row, f"entity.{namespace}_{slug(name)}" if namespace else "")
         for name, (file, path, row) in graph.items()
+    ]
+    rows += [
+        (file, path, row, f"relationship.{slug(str(path[-1]))}")
+        for file, path, row in files._graph("relationships")
+        if isinstance(row, dict)
     ]
     for model_id, file, path, model in _models(files):
         _, primary, _ = _primary(model_id, model, graph)
         entity = slug(primary) if primary in graph and not _fact(model) else ""
+        owner = slug(model_id) if _fact(model) else entity
         for block, derived in (
             ("dimensions", f"dimension.{namespace}_{entity}_{{}}" if entity else ""),
+            ("times", f"temporal_role.{namespace}_{owner}_{{}}" if owner else ""),
             ("measures", f"measure.{namespace}.{{}}"),
         ):
             for key, row in (model.get(block) or {}).items():
                 if isinstance(row, dict):
-                    rows.append((file, (*path, block, key), row, derived.format(slug(str(key)))))
+                    derived_id = derived.format(slug(str(key))) if namespace else ""
+                    rows.append((file, (*path, block, key), row, derived_id))
+    for section, kind in (("metrics", "metric"), ("segments", "segment")):
+        for file, path, row in files._objects(section):
+            # A file holding one spec takes its key from name:, else from this id.
+            keyed = path[-2:-1] == (section,) or "name" in row
+            key = str(path[-1] if path[-2:-1] == (section,) else row.get("name"))
+            derived = f"{kind}.{namespace}.{slug(key)}" if namespace else ""
+            rows.append((file, path, row, derived if keyed else None))
     for file, path, row, derived in rows:
         if "id" not in row:
             continue
         key = (*path, "id")
-        redundant = "as" in row or (bool(namespace) and str(row["id"]) == derived)
+        if derived is None:
+            message = "This id keys the spec: author it under its file's map, keyed, by hand."
+            yield Finding("object-as", file, files.line(file, key), key, message)
+            continue
+        redundant = "as" in row or (bool(derived) and str(row["id"]) == derived)
         yield Finding(
             "object-as",
             file,
@@ -347,6 +368,29 @@ def _object_as(files: PackageFiles) -> Iterator[Finding]:
             "Delete id: the key derives it." if redundant else "Rename id to as.",
             (Edit(file, "delete", key) if redundant else Edit(file, "rename", key, key="as"),),
         )
+
+
+def _measure_times(files: PackageFiles) -> Iterator[Finding]:
+    defaults = [
+        (file, (*path, "measure"), row["measure"])
+        for file, path, row in files.defaults()
+        if isinstance(row, dict) and isinstance(row.get("measure"), dict)
+    ]
+    for file, path, row in (*files.measures(), *defaults):
+        if "time" not in row:
+            continue
+        key, times, clock = (*path, "time"), (*path, "times"), row["time"]
+        roles = _ensure_list(clock)  # the clock the loader reads, as times: names it
+        if row.get("times") or not clock:  # the loader reads times:, or the default time
+            edits: tuple[Edit, ...] = (Edit(file, "delete", key),)
+        elif "times" in row:
+            edits = (Edit(file, "delete", key), Edit(file, "replace", times, value=roles))
+        else:
+            edits = (Edit(file, "rename", key, key="times"),)
+            if clock != roles:
+                edits += (Edit(file, "replace", times, value=roles),)
+        message = "Write the measure's clock as times: [<role>]."
+        yield Finding("measure-times", file, files.line(file, key), key, message, edits)
 
 
 def _loaded(files: PackageFiles) -> tuple[dict[tuple[str, str], Any], set[str]]:
@@ -526,8 +570,16 @@ RULES = (
         "object-as",
         "0.3.2",
         "same_meaning",
-        "Rename id: to as: on graph entities, dimensions and measures.",
+        "Rename id: to as: on graph entities and relationships, dimensions, times, measures, "
+        "metrics and segments.",
         _object_as,
         refused=True,
+    ),
+    Rule(
+        "measure-times",
+        "0.3.2",
+        "same_meaning",
+        "Write a measure's clock as times: [<role>] instead of time:.",
+        _measure_times,
     ),
 )
