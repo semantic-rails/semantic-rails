@@ -353,9 +353,7 @@ def test_a_catalog_fallback_draft_over_the_measure_takes_the_same_swap(
         plan = _plan(engine, "How many calls last week?")
         _assert_ok(plan)
         assert plan["best"]["pattern"] == "catalog_fallback"
-        assert plan["best"]["query"]["select"] == [
-            {"as": "calls", "expression": {"metric": CALLS}}
-        ]
+        assert plan["best"]["query"]["select"] == [{"as": "calls", "expression": {"metric": CALLS}}]
         assert plan["best"]["resolved"][0]["id"] == CALLS
         assert _value(engine, plan["best"]["query"]) == _calls_gold(customers=True, week=True)
     finally:

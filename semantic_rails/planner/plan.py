@@ -188,11 +188,17 @@ def plan_payload(
 
 def _caller_call(runtime: Any, partial_query: dict[str, Any] | None, now: Any) -> Call | None:
     """The caller's partial call as a draft, once the front door has read it (its refusals
-    name the call's paths). Identity travels beside it, in ``policy_context``."""
+    name the call's paths), with each dimension it selects lifted into group_by as the front
+    door lifts it. Identity travels beside it, in ``policy_context``."""
 
     seed = {key: value for key, value in (partial_query or {}).items() if key != "policy_context"}
     context = dict((partial_query or {}).get("policy_context") or {})
-    runtime.engine_seed(seed, now=now if now not in (None, "") else context.get("now"))
+    read = runtime.engine_seed(seed, now=now if now not in (None, "") else context.get("now"))
+    grouped = list(seed.get("group_by") or [])
+    lifted = [field for field in read.get("group_by") or [] if field not in grouped]
+    if lifted:
+        selects = [item for item in seed.get("select") or [] if item not in lifted]
+        seed = {**seed, "select": selects, "group_by": [*grouped, *lifted]}
     call = Call.from_call(seed)
     return None if call == Call() else call
 
@@ -497,8 +503,10 @@ def _question_payload(
     ready = best_ok and not (
         faithfulness_why or time_why or conversion_why or subject_why or value_why or shape_why
     )
-    # A balance compared, or asked per week or month where the package reads it per day.
-    clarify_why = best.get("clarify")
+    # A balance compared, or asked per week or month where the package reads it per day; or the
+    # question a draft asks once it is otherwise ready (``RuntimeCompositionDraft.ask``).
+    clarify_why = best.get("clarify") or (best.get("ask") if ready else None)
+    ready = ready and clarify_why is None
     # A named period with explicit readings to choose from.
     time_details = (time_why or {}).get("details")
     readings = isinstance(time_details, dict) and bool(time_details.get("possible_readings"))
@@ -738,6 +746,10 @@ def _planned_row(
         )
         if retry_validation["ok"]:
             merged_draft, validation = replace(merged_draft, query=reshaped), retry_validation
+    if merged_draft.ask:
+        ask = _with_ready_options(runtime, merged_draft.ask)
+        if not validation["ok"]:
+            return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
     return {
         "status": "ok" if validation["ok"] else "low_confidence",
         "draft": merged_draft,
@@ -745,6 +757,7 @@ def _planned_row(
         "validation": validation,
         "blocked": False,
         "start_dropped": start_dropped,
+        **({"ask": ask} if merged_draft.ask else {}),
     }
 
 

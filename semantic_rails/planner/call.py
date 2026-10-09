@@ -165,8 +165,9 @@ def _window_fields(window: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def time_of(raw: Mapping[str, Any] | None) -> Time | None:
-    """A time block in the call's spelling as a :class:`Time`."""
-    if not raw:
+    """A time block in the call's spelling as a :class:`Time`; an empty block stays one, for
+    validation to refuse rather than the draft to drop."""
+    if raw is None:
         return None
     return Time(
         temporal_role=str(raw.get("temporal_role") or ""),

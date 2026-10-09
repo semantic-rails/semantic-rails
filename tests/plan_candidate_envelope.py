@@ -131,7 +131,7 @@ def _candidate_from_row(
     verbosity: str,
     intent: str,
 ) -> dict[str, Any]:
-    query = dict(row.get("query_ir") or {})
+    query = dict(row.get("query") or {})
     validation = runtime.validate(query) if query else {"ok": False, "errors": []}
     candidate: dict[str, Any] = {
         "candidate_ir": query,
@@ -202,7 +202,7 @@ def _blocked_from_plan_row(
 ) -> dict[str, Any]:
     why = dict(row.get("why") or {})
     full = {
-        "candidate_ir": dict(row.get("query_ir") or {}),
+        "candidate_ir": dict(row.get("query") or {}),
         "resolved": list(row.get("resolved") or []),
         "resolved_objects": [
             str(item.get("id", ""))
@@ -253,7 +253,7 @@ def _compact_blocked(row: dict[str, Any]) -> dict[str, Any]:
 def _comparison_bundle(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows[1:3]:
-        query = dict(row.get("query_ir") or {})
+        query = dict(row.get("query") or {})
         resolved = list(row.get("resolved") or [])
         if not query or not resolved:
             continue
@@ -269,7 +269,7 @@ def _comparison_bundle(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _assumptions_for_row(row: dict[str, Any], intent: str) -> list[str]:
-    query = dict(row.get("query_ir") or {})
+    query = dict(row.get("query") or {})
     grouped = " ".join(str(item).lower() for item in list(query.get("group_by") or []))
     lowered = str(intent or "").lower()
     assumptions: list[str] = []

@@ -736,7 +736,7 @@ def test_the_planner_keeps_a_history_filter_when_the_question_gives_a_time(runti
     runtime = runtime_factory("jaffle_shop")
     try:
         plan = plan_payload(runtime, intent="revenue from high_value customers by month")
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         report = runtime.validate(query)
     finally:
         runtime.close()

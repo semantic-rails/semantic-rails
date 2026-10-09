@@ -465,7 +465,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Draft one best query call from a natural-language intent; call it before 'execute' instead of writing a call from scratch. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are no warnings.",
+      "description": "Draft one best query call from a natural-language intent; call it before 'execute' instead of writing a call from scratch. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query' to 'execute' only when status is 'ok' and there are no warnings.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {

@@ -572,7 +572,7 @@ CREATE = [
         {}, {"Metric recipe": "Filtered", "Measure to publish": "revenue - ", "Values": ["completed", "placed"]},
         {"kind": "aggregate", "measure": ABSENT, "expression": {
             "kind": "aggregate", "measure": REVENUE, "aggregation": "sum",
-            "filter": _one_filter("dimension.shop_order_status", "IN", ["placed", "completed"])}},
+            "filter": _one_filter("dimension.shop_order_status", "is", ["placed", "completed"])}},
         {"Filter by": "status - [dimension] Status - orders", "Keep the rows where it": "is one of"},
         [10.0, 0.0, 30.0], id="filtered",
     ),
@@ -707,7 +707,7 @@ def _authored_metric(recipe: str, ref: str, *, count: str, status: str) -> dict[
         "aggregate": {"kind": "aggregate", **named},
         "filtered": {
             "kind": "aggregate",
-            "expression": {**avg, "filter": _one_filter(status, "NOT IN", ["completed"])},
+            "expression": {**avg, "filter": _one_filter(status, "not", ["completed"])},
         },
         "ratio": {
             "kind": "ratio",
@@ -930,14 +930,14 @@ def test_an_explicit_clock_replaces_a_saved_temporal_role(tmp_path: Path) -> Non
 
 FILTERS = [
     # dimension, values picked or typed, operator, stored values, total, what Enter offers again
-    ("status", ["completed", "placed"], "IN", ["placed", "completed"], 40.0, ["0", "1"]),
-    ("stage", ["Completed orders (completed)"], "IN", ["completed"], 10.0, ["1"]),
-    ("channel", "phone, store", "NOT IN", ["phone", "store"], 10.0, "phone, store"),
-    ("code", "001, true", "IN", ["001", "true"], 30.0, "001, true"),
-    ("is_priority", ["true"], "IN", [True], 40.0, ["0"]),
-    ("tier", "001", "IN", [1], 30.0, "1"),
+    ("status", ["completed", "placed"], "is", ["placed", "completed"], 40.0, ["0", "1"]),
+    ("stage", ["Completed orders (completed)"], "is", ["completed"], 10.0, ["1"]),
+    ("channel", "phone, store", "not", ["phone", "store"], 10.0, "phone, store"),
+    ("code", "001, true", "is", ["001", "true"], 30.0, "001, true"),
+    ("is_priority", ["true"], "is", [True], 40.0, ["0"]),
+    ("tier", "001", "is", [1], 30.0, "1"),
 ]
-OPERATORS = {"IN": "is one of", "NOT IN": "is not one of"}
+OPERATORS = {"is": "is one of", "not": "is not one of"}
 
 
 @pytest.mark.parametrize(("dimension", "given", "op", "stored", "total", "offered"), FILTERS)
@@ -985,7 +985,7 @@ def test_a_boolean_filter_offers_true_and_false_and_a_mistyped_value_is_asked_ag
         project, {"Metric key": "m", "Filter by": "is_priority - ", "Values": ["true"]}
     )
 
-    assert metric["expression"]["filter"] == _one_filter("dimension.shop_order_tier", "IN", [2])
+    assert metric["expression"]["filter"] == _one_filter("dimension.shop_order_tier", "is", [2])
     assert (
         "Integer filter value '1.5' is not numeric. Enter other values" in capsys.readouterr().out
     )
@@ -1019,7 +1019,7 @@ def test_another_filter_dimension_or_measure_asks_for_new_values(tmp_path: Path)
         },
     )
     assert metric["expression"]["filter"] == _one_filter(
-        "dimension.shop_order_status", "IN", ["completed"]
+        "dimension.shop_order_status", "is", ["completed"]
     )
     assert _values(project, "m") == [10.0, 0.0, 0.0]
     _repl(project, "undo", None, undo)

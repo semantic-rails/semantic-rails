@@ -362,7 +362,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             "aggregate passes the qualification",
         ],
         interpreted_intent={**intent, "over": over},
-        blocked_reason=unstated,
+        ask=unstated,
     )
 
 

@@ -312,7 +312,7 @@ def test_plan_drafts_disclose_the_routes_they_validate(teams, detail, surface):
     assert _pass_through(out)
     assert _pass_through(out["best"])
     for draft in drafts:
-        expected = _codes(runtime.validate(draft["query_ir"]), "ROUTE_PASS_THROUGH")
+        expected = _codes(runtime.validate(draft["query"]), "ROUTE_PASS_THROUGH")
         actual = [row for row in draft.get("warnings", []) if row["code"] == "ROUTE_PASS_THROUGH"]
         assert actual == expected
         assert all(
@@ -322,7 +322,7 @@ def test_plan_drafts_disclose_the_routes_they_validate(teams, detail, surface):
             )
             for warning in expected
         )
-    assert _values(runtime.query(out["best"]["query_ir"])) == teams.reference("members_by_tier")
+    assert _values(runtime.query(out["best"]["query"])) == teams.reference("members_by_tier")
 
 
 def test_the_key_fix_names_a_column_the_start_already_reads(teams):

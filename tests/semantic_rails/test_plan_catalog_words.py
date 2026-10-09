@@ -354,12 +354,11 @@ def test_es_does_not_invent_short_or_unrelated_catalog_names(jaffle: Runtime) ->
     ) as runtime:
         payload = plan_payload(runtime, intent="revenue by store uses ones")
         assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-        assert (
-            unconsumed_catalog_words(runtime, payload["intent"], payload["best"]["query"]) == []
-        )
-        assert unconsumed_unknown_words(
-            runtime, payload["intent"], payload["best"]["query"]
-        ) == ["uses", "ones"]
+        assert unconsumed_catalog_words(runtime, payload["intent"], payload["best"]["query"]) == []
+        assert unconsumed_unknown_words(runtime, payload["intent"], payload["best"]["query"]) == [
+            "uses",
+            "ones",
+        ]
 
 
 @pytest.mark.parametrize(

@@ -648,7 +648,9 @@ def test_plan_asks_about_a_comparison_of_complete_periods(runtime_factory) -> No
             "AND ordered_at < DATE '2017-08-01' GROUP BY 1 ORDER BY 1"
         ).fetchall()
     assert [row["period"] for row in rows] == [str(day) for day, _value in reference]
-    assert [row["revenue_usd"] for row in rows] == pytest.approx([value for _day, value in reference])
+    assert [row["revenue_usd"] for row in rows] == pytest.approx(
+        [value for _day, value in reference]
+    )
 
 
 def test_plan_preserves_explicitly_blocked_primary_over_generic_fallback(

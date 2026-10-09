@@ -34,6 +34,10 @@ class RuntimeCompositionDraft:
     # ``qualified_metric_rollup`` when no predicate metric resolves from
     # the qualification phrase).
     blocked_reason: dict[str, Any] = field(default_factory=dict)
+    # A question plan asks only once the draft is otherwise ready, with the same envelope plus
+    # ``details.clarification`` and ``details.options``: each option is another reading of the
+    # question, and the draft is the first. A draft another check holds keeps that hold.
+    ask: dict[str, Any] = field(default_factory=dict)
     # Confidence the pattern is the right match for this intent, on
     # [0, 1]. Used by the orchestrator's score-based selection to pick
     # between competing patterns. Defaults to 1.0 (the pattern is

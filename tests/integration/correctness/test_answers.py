@@ -227,17 +227,17 @@ def assert_planner_outcome(runtime, spec, plan):
         error = (why.get("errors") or [why])[0]
         assert error["code"] == spec["code"], plan
         if plan["best"]:
-            query = plan["best"]["query_ir"]
+            query = plan["best"]["query"]
             report = runtime.validate(query, **call_arguments(spec))
             assert not report["ok"], report
             assert report["errors"][0]["code"] == spec["code"], report
         if spec["expect"] == "clarify":
             assert error["why_invalid"].strip(), error
-            assert_clarification(runtime, spec, plan["best"]["query_ir"])
+            assert_clarification(runtime, spec, plan["best"]["query"])
         return
     assert plan["status"] == "ok", plan
     assert "execute" in plan["next"].get("ready_for", []), plan
-    actual = runtime.query(plan["best"]["query_ir"], **call_arguments(spec))
+    actual = runtime.query(plan["best"]["query"], **call_arguments(spec))
     expected = encode(runtime, spec)
     ordered = bool(spec["query"].get("order_by"))
     assert comparable(actual, positional=True, ordered=ordered) == comparable(
