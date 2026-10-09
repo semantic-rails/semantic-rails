@@ -551,9 +551,9 @@ Supported `op` values (all compile end-to-end):
 `IS DISTINCT FROM` with a scalar excludes one value and keeps rows with no
 value: "signups excluding web" is `{"field": "dimension.shop_customer_channel",
 "op": "IS DISTINCT FROM", "value": "web"}`, which counts the signups with no
-channel. `!=` and `NOT IN` drop those rows too. `plan` drafts an exclusion this
-way and holds one that uses `!=` or `NOT IN` (see
-[Plan](MCP_INTERFACE.md#plan)).
+channel. `!=` and `NOT IN` drop those rows too. A hand-written query with this
+filter runs; `plan` drafts an exclusion this way but holds every question that
+excludes values for now (see [Plan](MCP_INTERFACE.md#plan)).
 
 `value` rules:
 

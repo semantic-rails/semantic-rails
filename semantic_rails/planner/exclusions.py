@@ -1,5 +1,5 @@
-"""Exclusion clauses: the one reader of "excluding X" text, and the check that a draft drops
-exactly what each clause names.
+"""Exclusion clauses: the one reader of "excluding X" text, and the hold on every question that
+excludes values.
 
 A marker from a closed list ("excluding", "except", "without", "not", "but not", "other than",
 "apart from", "aside from", "minus", "outside of", "all … but") opens a list,
@@ -16,11 +16,9 @@ is an ``unknown`` item, and a clause with no item gets one. A marker or "includi
 quoted string or a declared name ("Including Top"), or a marker inside a grouping phrase ("by
 store excluding Brooklyn"), leaves the whole question unread.
 
-``unrealized`` holds every item to its own predicate: a value item is realized only by an outer
-``IS DISTINCT FROM`` filter on its one bound dimension, since an exclusion keeps rows with no
-recorded value and ``!=`` or ``NOT IN`` drop them. Beside an exclusion the draft, whoever
-supplied it, carries only a closed list of parts (``_excess``); anything else holds. Query IR
-has no window complement, so a time item is never realized.
+``unrealized`` holds every clause, whatever the draft carries: the planner doesn't answer
+exclusions yet. An exclusion keeps rows with no recorded value, which ``!=`` and ``NOT IN``
+drop, so a hand-written Query IR excludes a value with ``IS DISTINCT FROM``.
 """
 
 from __future__ import annotations
@@ -30,7 +28,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..ast import is_child_group
-from ._base import _name_matches
 from .coverage import CoverageGap, _is_number
 from .visibility import visible_value_domains
 
@@ -504,19 +501,6 @@ def exclusion_clauses(config: Any, text: str, window: Any) -> list[ExclusionClau
     return clauses
 
 
-def _declared_values(config: Any, *, limit: int = 25) -> dict[str, list[Any]]:
-    """Each dimension's declared values (at most ``limit`` each), for a gap to list."""
-
-    out: dict[str, list[Any]] = {}
-    for domain in visible_value_domains(config):
-        for dimension in (str(item) for item in domain.dimensions):
-            values = out.setdefault(dimension, [])
-            for value in list(domain.values or []):
-                if len(values) < limit and not _contains_literal(values, value.value):
-                    values.append(value.value)
-    return out
-
-
 def _contains_literal(literals: list[Any] | tuple[Any, ...], canonical: Any) -> bool:
     """SQL string equality has no catalog-label, case or punctuation rewrite."""
 
@@ -524,299 +508,44 @@ def _contains_literal(literals: list[Any] | tuple[Any, ...], canonical: Any) -> 
 
 
 _KEEPING = frozenset({"=", "==", "IN"})
-_DROPPING = frozenset({"!=", "<>", "NOT IN"})
-_KEEPS_UNRECORDED = "IS DISTINCT FROM"
 
 
-def _read_filter(row: dict[str, Any]) -> tuple[str, list[Any]] | None:
-    """An exact scalar comparison or membership as (op, literals); anything else is None."""
+def _keeps(row: Any, field_id: str, canonical: Any) -> bool:
+    """A top-level ``=`` or ``IN`` filter on ``field_id`` that keeps ``canonical``."""
 
+    if not isinstance(row, dict) or is_child_group(row) or row.get("field") != field_id:
+        return False
     op = " ".join(str(row.get("op") or "=").upper().split())
     raw = row.get("value")
-    if op in {"IN", "NOT IN"}:
-        literals = raw if isinstance(raw, list) else [raw]
-    elif op in _KEEPING | _DROPPING | {_KEEPS_UNRECORDED}:
-        literals = [raw]
-    else:
-        return None
-    if not literals or any(
-        item is None or isinstance(item, (list, tuple, dict)) for item in literals
-    ):
-        return None
-    return op, literals
-
-
-def _plain_filter(node: Any) -> bool:
-    """A top-level ``where`` filter on a field, not a child group or a compound condition."""
-
-    return (
-        isinstance(node, dict) and not is_child_group(node) and isinstance(node.get("field"), str)
-    )
-
-
-# Draft keys that change no number: syntax, context and ordering, with any value.
-_INERT_KEYS = frozenset(
-    {
-        *("version", "policy_context", "request_context", "request_id", "verbosity"),
-        *("sql_profile", "debug", "explain", "order_by"),
-    }
-)
-_BOUNDS = frozenset({"start", "end", "range"})
-
-
-def _by_id(rows: Any, object_id: Any) -> Any:
-    return next((row for row in list(rows or []) if getattr(row, "id", None) == object_id), None)
-
-
-def _named_subjects(config: Any, text: str, regions: list[Span]) -> set[str]:
-    """The measures and metrics whose declared name the question says whole outside every
-    exclusion ("signups excluding web")."""
-
-    rows = [
-        *(getattr(config, "measures", None) or []),
-        *(getattr(config, "metric_recipes", None) or []),
-    ]
-    return {
-        str(row.id)
-        for row in rows
-        if any(
-            not any(start < stop and begin < end for begin, stop in regions)
-            for _size, start, end in _name_matches(row, str(text or ""))
-        )
-    }
-
-
-def _plain_ref(config: Any, item: Any, subjects: set[str]) -> bool:
-    """A select item that is one plain reference to a subject the question names: ``{metric}``,
-    or ``{measure}`` at the measure's own default aggregation, ``kind`` absent or the same."""
-
-    if not isinstance(item, dict) or not set(item) <= {"expression", "as"}:
-        return False
-    expression = item.get("expression")
-    if not isinstance(expression, dict):
-        return False
-    parts = set(expression) - {"kind"}
-    if parts == {"metric"}:
-        named = str(expression["metric"]) in subjects
-        return named and expression.get("kind", "metric") == "metric"
-    if parts not in ({"measure"}, {"measure", "aggregation"}):
-        return False
-    named = str(expression["measure"]) in subjects
-    if not named or expression.get("kind", "measure") != "measure":
-        return False
-    if "aggregation" not in expression:
-        return True
-    measure = _by_id(getattr(config, "measures", None), expression["measure"])
-    default = getattr(measure, "default_aggregation", None)
-    return default is not None and expression["aggregation"] == default
-
-
-def _clocks(config: Any, select: Any) -> set[str]:
-    """Each selected subject's own clock, the one ``plan`` reads the question's window on."""
-
-    from ..metadata import _compatible_temporal_roles_for_expr  # noqa: WPS433
-
-    clocks: set[str] = set()
-    for item in select if isinstance(select, list) else []:
-        expression = item.get("expression") if isinstance(item, dict) else None
-        if not isinstance(expression, dict):
-            continue
-        measure = _by_id(getattr(config, "measures", None), expression.get("measure"))
-        recipe = _by_id(getattr(config, "metric_recipes", None), expression.get("metric"))
-        if measure is not None:
-            roles = list(getattr(measure, "compatible_temporal_roles", None) or [])
-        elif recipe is not None and getattr(recipe, "temporal_role", None):
-            roles = [recipe.temporal_role]
-        elif recipe is not None:
-            roles = _compatible_temporal_roles_for_expr(config, recipe.expression)
-        else:
-            continue
-        clocks.update(str(role) for role in roles[:1])
-    return clocks
-
-
-def _drops_a_named_value(row: Any, named: dict[str, list[Any]]) -> bool:
-    """Exactly ``{field, op: IS DISTINCT FROM, value}`` on a value an item names."""
-
-    if not _plain_filter(row) or set(row) != {"field", "op", "value"}:
-        return False
-    read = _read_filter(row)
-    return (
-        read is not None
-        and read[0] == _KEEPS_UNRECORDED
-        and _contains_literal(named.get(row["field"], []), read[1][0])
-    )
-
-
-def _filter_entry(path: str, row: Any) -> dict[str, Any]:
-    if not _plain_filter(row):
-        return {"path": path, "value": row}
-    return {
-        "path": path,
-        "field": row["field"],
-        "op": row.get("op", "="),
-        "value": row.get("value"),
-    }
-
-
-def _excess(
-    config: Any,
-    query: dict[str, Any],
-    named: dict[str, list[Any]],
-    window: dict[str, Any],
-    subjects: set[str],
-) -> list[dict[str, Any]]:
-    """Every part of the draft outside a closed list, each with its path.
-
-    Admitted: the inert keys and ``_`` annotations; ``group_by``, since the unasked-grouping
-    check holds any grouping or grain the question doesn't trace to; one ``select`` item that
-    plainly references one of the question's named ``subjects``; ``where`` rows that drop a
-    value an item names; and a ``time`` block of the selected subject's own clock, a grain and
-    the bounds of the question's ``window``. Every other key, value or node is excess by its
-    key alone, a new key included.
-    """
-
-    out: list[dict[str, Any]] = []
-    for key, value in query.items():
-        if key in _INERT_KEYS or key == "group_by" or str(key).startswith("_"):
-            continue
-        if key == "select" and isinstance(value, list):
-            out += [
-                {"path": f"select[{index}]", "value": item}
-                for index, item in enumerate(value)
-                if index or not _plain_ref(config, item, subjects)
-            ]
-        elif key == "where" and isinstance(value, list):
-            out += [
-                _filter_entry(f"where[{index}]", row)
-                for index, row in enumerate(value)
-                if not _drops_a_named_value(row, named)
-            ]
-        elif key == "time" and isinstance(value, dict):
-            clocks = _clocks(config, query.get("select"))
-            out += [
-                {"path": f"time.{part}", "value": item}
-                for part, item in value.items()
-                if not (
-                    part == "grain"
-                    or (part == "temporal_role" and item in clocks)
-                    or (part in _BOUNDS and item == window.get(part))
-                )
-            ]
-        else:
-            out.append({"path": str(key), "value": value})
-    return out
+    literals = raw if op == "IN" and isinstance(raw, list) else [raw]
+    return op in _KEEPING and _contains_literal(literals, canonical)
 
 
 def exclusion_gaps(config: Any, text: str, query: dict[str, Any], window: Any) -> list[CoverageGap]:
-    """The question's exclusion clauses that the draft doesn't realize item by item."""
+    """One gap for each exclusion clause of the question."""
 
-    clauses = exclusion_clauses(config, text, window)
-    if not clauses:
-        return []
-    return unrealized(
-        clauses,
-        query,
-        config=config,
-        window=dict(window.bounds),
-        subjects=_named_subjects(config, text, exclusion_regions(text, window.spans)),
-        valid_values=_declared_values(config),
-    )
+    return unrealized(exclusion_clauses(config, text, window), query)
 
 
-def unrealized(
-    clauses: list[ExclusionClause],
-    query: dict[str, Any],
-    *,
-    config: Any = None,
-    window: dict[str, Any] | None = None,
-    subjects: set[str] | None = None,
-    valid_values: dict[str, list[Any]] | None = None,
-) -> list[CoverageGap]:
-    """One gap for each clause the draft doesn't realize item by item.
+def unrealized(clauses: list[ExclusionClause], query: dict[str, Any]) -> list[CoverageGap]:
+    """One gap for every clause, whatever the draft carries: exclusions aren't answered yet.
 
-    Each value item needs a top-level ``IS DISTINCT FROM`` filter on its value and its one
-    bound dimension. Beside an exclusion the draft, whoever supplied it (the caller's
-    ``partial_query`` included), carries only what ``_excess`` admits: those filters, one
-    plain reference to a measure or metric the question names (``subjects``), the subject's
-    own clock with the question's own time ``window``, a grain, grouping, ordering and inert
-    context. Anything else is ``excess``.
+    The gap is ``negation_reversed`` when a top-level ``=`` or ``IN`` filter keeps a value the
+    clause excludes, otherwise ``negation_unrealized``.
     """
 
-    if not clauses:
-        return []
     where = list(query.get("where") or [])
-    named: dict[str, list[Any]] = {}
-    for clause in clauses:
-        for item in clause.items:
-            if item.binding is not None:
-                named.setdefault(item.binding[0], []).append(item.binding[1])
-    filters = [
-        (f"where[{index}]", row, _read_filter(row))
-        for index, row in enumerate(where)
-        if _plain_filter(row)
+    return [_clause_gap(clause, where) for clause in clauses]
+
+
+def _clause_gap(clause: ExclusionClause, where: list[Any]) -> CoverageGap:
+    positive = [
+        row
+        for item in clause.items
+        if item.binding is not None
+        for row in where
+        if _keeps(row, *item.binding)
     ]
-    excess = _excess(config, query, named, window or {}, subjects or set())
-    gaps: list[CoverageGap] = []
-    for number, clause in enumerate(clauses):
-        report: dict[str, list[Any]] = {
-            "matched": [],
-            "missing": [],
-            "unresolved": [],
-            "drops_rows_without_a_value": [],
-            "positive_matches": [],
-        }
-        fields: set[str] = set()
-        for item in clause.items:
-            if item.binding is None:
-                reason = "ambiguous" if item.kind == "value" else item.kind
-                report["unresolved"].append({"text": item.text, "reason": reason})
-                continue
-            field_id, canonical = item.binding
-            fields.add(field_id)
-            rows = [(path, row, read) for path, row, read in filters if row["field"] == field_id]
-            if any(read is None for _path, _row, read in rows):
-                report["missing"].append(item.text)
-                continue
-            readable = [(path, row, *read) for path, row, read in rows if read is not None]
-            keeping = [(row, literals) for _p, row, op, literals in readable if op in _KEEPING]
-            on_value = [
-                (path, op)
-                for path, _row, op, literals in readable
-                if _contains_literal(literals, canonical)
-            ]
-            dropped = [path for path, op in on_value if op in _DROPPING]
-            realized = [path for path, op in on_value if op == _KEEPS_UNRECORDED]
-            kept = bool(keeping) and all(_contains_literal(lits, canonical) for _r, lits in keeping)
-            if kept and not (dropped or realized):
-                # Every filter that keeps values keeps this one: the request reversed.
-                report["positive_matches"] += [row for row, _literals in keeping]
-            elif dropped:
-                report["drops_rows_without_a_value"] += dropped
-            elif realized:
-                report["matched"] += realized
-            else:
-                report["missing"].append(item.text)
-        # A filter rides on the clause naming its field; any other excess on the first one.
-        extra = [
-            row
-            for row in excess
-            if row.get("field") in fields or (number == 0 and row.get("field") not in named)
-        ]
-        if not (extra or any(report[key] for key in report if key != "matched")):
-            continue
-        gaps.append(_clause_gap(clause, where, report, extra, valid_values))
-    return gaps
-
-
-def _clause_gap(
-    clause: ExclusionClause,
-    where: list[Any],
-    report: dict[str, list[Any]],
-    excess: list[dict[str, Any]],
-    valid_values: dict[str, list[str]] | None,
-) -> CoverageGap:
-    reasons = {row["reason"] for row in report["unresolved"]}
     expected: dict[str, Any] = {
         "filter_polarity": "negative",
         "excluded_text": clause.text,
@@ -827,33 +556,23 @@ def _clause_gap(
         ],
         "rows_without_a_value": "kept",
     }
-    hints = [
-        "Exclude each named value with its own where filter {field, op: 'IS DISTINCT FROM', "
-        "value}; it keeps rows with no recorded value, which '!=' and 'NOT IN' drop. Exclude "
-        "nothing the question doesn't name."
-    ]
-    if "time" in reasons:
-        hints.append(
-            "Query IR has no window complement: ask for the windows before and after the "
-            "excluded period instead."
-        )
-    if reasons & {"unknown", "ambiguous"}:
-        hints.append("Name each excluded value as valid_values spells it.")
-        if valid_values:
-            expected["valid_values"] = valid_values
-    positive = bool(report["positive_matches"])
+    message = "The question excludes values, and this release doesn't answer exclusions yet."
+    if positive:
+        message += " The draft keeps the excluded value with a positive filter."
     return CoverageGap(
         kind="negation_reversed" if positive else "negation_unrealized",
         clause=clause.text,
-        message=(
-            "The excluded value is encoded by a positive filter, reversing the request."
-            if positive
-            else "The draft doesn't exclude exactly what the exclusion names, each value with "
-            "a filter that keeps rows with no recorded value."
-        ),
+        message=message,
         expected=expected,
-        actual={"where": where, **report, "excess": excess},
-        recovery_hint={"kind": "provide_negative_filter", "message": " ".join(hints)},
+        actual={"where": where, "positive_matches": positive},
+        recovery_hint={
+            "kind": "ask_for_breakdown",
+            "message": (
+                "This release doesn't answer questions that exclude values yet. Ask for the "
+                'breakdown by the excluded dimension or period instead ("signups by channel"), '
+                "which shows each value and the rows with no recorded value."
+            ),
+        },
     )
 
 

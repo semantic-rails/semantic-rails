@@ -1,14 +1,14 @@
-"""Every item an exclusion names needs its own exact predicate, and a time exclusion holds.
+"""Every item an exclusion names is read, and every question that excludes values holds.
 
-An exclusion keeps rows with no recorded value, so only ``IS DISTINCT FROM`` realizes it:
-"signups excluding web" counts the store signups and the one with no channel. Ready plans are
-compared with independent DuckDB SQL by the customers they select and by their total.
+The planner doesn't answer exclusions yet, whatever the draft carries. An exclusion keeps rows
+with no recorded value, so a hand-written ``IS DISTINCT FROM`` filter is its executable form:
+"signups excluding web" counts the store signups and the one with no channel. That form is
+compared with independent DuckDB SQL.
 """
 
 from __future__ import annotations
 
 import itertools
-import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -18,7 +18,7 @@ import duckdb
 import pytest
 
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner.exclusions import _INERT_KEYS, exclusion_clauses, exclusion_gaps
+from semantic_rails.planner.exclusions import exclusion_clauses, exclusion_gaps
 from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
@@ -92,23 +92,19 @@ def _plan(runtime: Runtime, question: str, where: list[dict[str, Any]] | None = 
     return plan_payload(runtime, intent=question, partial_query=partial)
 
 
-def _assert_ready(runtime: Runtime, payload: dict[str, Any], expected: set[int]) -> None:
-    """The plan executes, selecting exactly the reference's customers, and totals them."""
+def _selected(runtime: Runtime, query: dict[str, Any]) -> tuple[set[int], int]:
+    """The customers ``query`` selects, and its total."""
 
-    assert payload["status"] == "ok", payload.get("why")
-    assert payload["next"]["ready_for"] == ["execute"]
-    query = payload["best"]["query_ir"]
     total = sum(row["signup_count"] for row in runtime.query(query)["rows"])
     by_customer = {**query, "group_by": [*query.get("group_by", []), CUSTOMER]}
-    selected = {row[CUSTOMER] for row in runtime.query(by_customer)["rows"]}
-    assert (selected, total) == (expected, len(expected))
+    return {row[CUSTOMER] for row in runtime.query(by_customer)["rows"]}, total
 
 
-def _assert_held(payload: dict[str, Any]) -> None:
+def _assert_held(payload: dict[str, Any], kind: str = "negation_unrealized") -> None:
     assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
     assert "execute" not in payload["next"].get("ready_for", [])
     kinds = {gap["kind"] for gap in payload["why"]["details"]["gaps"]}
-    assert kinds & {"negation_unrealized", "negation_reversed"}, kinds
+    assert kind in kinds, kinds
 
 
 def _items(runtime: Runtime, question: str) -> list[tuple[str, str]]:
@@ -169,10 +165,11 @@ SPELLINGS = [("web", "Top", "Top"), ("Web", '"Top"', '"Top"'), ("the web", "stor
 def test_every_list_form_reads_each_item(shop, marker, form, spelling):
     question = marker.format(form.format(*spelling[:2]))
     assert [kind for kind, _text in _items(shop, question)] == ["value", "value"], question
-    gaps = _gaps(shop, question, {"where": _drops("web", "store")})
-    assert gaps == [], question
-    [gap] = _gaps(shop, question, {"where": _drops("web")})
-    assert gap.actual["missing"] == [spelling[2]]
+    # Even the exact null-keeping exclusion of both items holds.
+    [gap] = _gaps(shop, question, {"where": _drops("web", "store")})
+    assert gap.kind == "negation_unrealized"
+    assert [item["value"] for item in gap.expected["items"]] == ["web", "store"]
+    assert gap.expected["items"][1]["text"] == spelling[2]
 
 
 @pytest.mark.parametrize(
@@ -240,9 +237,10 @@ def test_short_and_symbol_names_are_items(tmp_path, monkeypatch, label, question
     try:
         assert [kind for kind, _text in _items(runtime, question)] == ["value", "value"]
         assert len(_gaps(runtime, question, {"where": _drops("web")})) == 1
-        # The planner drafts the second item too.
+        # The planner drafts the second item too, and holds.
         payload = _plan(runtime, question, _drops("web"))
-        _assert_ready(runtime, payload, _reference(runtime, "channel IS NULL"))
+        assert payload["best"]["query_ir"]["where"] == _drops("web", "store")
+        _assert_held(payload)
         _draft_plan(monkeypatch, _signups(_drops("web")))
         _assert_held(_plan(runtime, question))
     finally:
@@ -313,12 +311,10 @@ def test_an_unread_list_character_holds(tmp_path, monkeypatch, label, question):
 
 
 @pytest.mark.parametrize("question", ["signups excluding web.", "signups excluding web?"])
-def test_the_questions_final_mark_keeps_it_ready(shop, monkeypatch, question):
-    expected = _reference(shop, "channel IS DISTINCT FROM 'web'")
-    assert len(expected) == 4
-    _assert_ready(shop, _plan(shop, question), expected)
+def test_a_question_ending_in_a_mark_holds(shop, monkeypatch, question):
+    _assert_held(_plan(shop, question))
     _draft_plan(monkeypatch, _signups(_drops("web")))
-    _assert_ready(shop, _plan(shop, question), expected)
+    _assert_held(_plan(shop, question))
 
 
 @pytest.mark.parametrize("label", ["Including Top", "Includes Top", "Include", "All but Web"])
@@ -351,45 +347,32 @@ def test_a_name_spans_a_separator_only_when_it_contains_it(tmp_path, monkeypatch
             ("value", "mall"),
         ]
         assert _items(runtime, "signups excluding web mall") == [("value", "web mall")]
-        _assert_ready(
-            runtime,
-            _plan(runtime, "signups excluding web, mall", _drops("web", "store")),
-            _reference(runtime, "channel IS NULL"),
-        )
+        _assert_held(_plan(runtime, "signups excluding web, mall", _drops("web", "store")))
         _draft_plan(monkeypatch, _signups(_drops("wm")))
         _assert_held(_plan(runtime, "signups excluding web, mall"))
     finally:
         runtime.close()
 
 
-# --- what realizes an exclusion -------------------------------------------------
+# --- every draft beside an exclusion holds --------------------------------------
 
 DRAFTS = {
-    "exact": (_drops("web", "store"), True),
-    "exact, reordered": (_drops("store", "web"), True),
-    "!=": (_drops("web", "store", op="!="), False),
-    "NOT IN": ([{"field": CHANNEL, "op": "NOT IN", "value": ["web", "store"]}], False),
-    "superset": (_drops("web", "store", "partner"), False),
-    "one item": (_drops("web"), False),
-    "other value": (_drops("partner"), False),
-    "other dimension": (
-        [{"field": CUSTOMER, "op": KEEPS, "value": "web"}, *_drops("store")],
-        False,
-    ),
-    "case": (_drops("Web", "store"), False),
-    "reversed": ([{"field": CHANNEL, "op": "=", "value": "web"}, *_drops("store")], False),
-    "kept": (
-        [{"field": CHANNEL, "op": "IN", "value": ["partner"]}, *_drops("web", "store")],
-        False,
-    ),
-    "none": ([], False),
-    "child scope": (
-        [
-            *_drops("web"),
-            {"child": "entity.shop_order", "match": "any", "where": _drops("store")},
-        ],
-        False,
-    ),
+    "exact": _drops("web", "store"),
+    "exact, reordered": _drops("store", "web"),
+    "!=": _drops("web", "store", op="!="),
+    "NOT IN": [{"field": CHANNEL, "op": "NOT IN", "value": ["web", "store"]}],
+    "superset": _drops("web", "store", "partner"),
+    "one item": _drops("web"),
+    "other value": _drops("partner"),
+    "other dimension": [{"field": CUSTOMER, "op": KEEPS, "value": "web"}, *_drops("store")],
+    "case": _drops("Web", "store"),
+    "reversed": [{"field": CHANNEL, "op": "=", "value": "web"}, *_drops("store")],
+    "kept": [{"field": CHANNEL, "op": "IN", "value": ["partner"]}, *_drops("web", "store")],
+    "none": [],
+    "child scope": [
+        *_drops("web"),
+        {"child": "entity.shop_order", "match": "any", "where": _drops("store")},
+    ],
 }
 QUESTIONS = [
     "signups excluding web and Top",
@@ -401,17 +384,16 @@ QUESTIONS = [
 
 
 @pytest.mark.parametrize(("question", "draft"), list(itertools.product(QUESTIONS, DRAFTS)))
-def test_only_an_exact_null_keeping_drop_of_every_item_is_ready(shop, question, draft):
-    where, ready = DRAFTS[draft]
-    gaps = _gaps(shop, question, {"where": where, "policy_context": NOW})
-    assert (gaps == []) is ready
-    if ready:
-        window = f" AND {JUNE_2024}" if "June" in question else ""
-        expected = _reference(
-            shop,
-            "channel IS DISTINCT FROM 'web' AND channel IS DISTINCT FROM 'store'" + window,
-        )
-        _assert_ready(shop, _plan(shop, question, where), expected)
+def test_every_clause_holds_whatever_the_draft(shop, question, draft):
+    # A positive filter that keeps an excluded value reverses the request.
+    kind = "negation_reversed" if draft == "reversed" else "negation_unrealized"
+    gaps = _gaps(shop, question, {"where": DRAFTS[draft], "policy_context": NOW})
+    clauses = exclusion_clauses(shop._config, question, _time_window(question, policy_context=NOW))
+    assert len(gaps) == len(clauses) >= 1
+    assert gaps[0].kind == kind
+    assert {gap.recovery_hint["kind"] for gap in gaps} == {"ask_for_breakdown"}
+    if draft in {"exact", "reversed"}:
+        _assert_held(_plan(shop, question, DRAFTS[draft]), kind)
 
 
 @pytest.mark.parametrize(
@@ -435,9 +417,12 @@ def test_a_time_exclusion_always_holds(shop, question, where):
     payload = _plan(shop, question, where)
     _assert_held(payload)
     gap = next(g for g in payload["why"]["details"]["gaps"] if g["kind"] == "negation_unrealized")
+    assert "time" in {item["kind"] for item in gap["expected"]["items"]}
+    # The windows before and after the excluded one would drop rows with no time: the hold
+    # suggests a breakdown, never a list of what to keep.
     hints = " ".join(hint["message"] for hint in payload["why"]["recovery_hints"])
-    assert "before and after" in hints
-    assert gap["actual"]["unresolved"]
+    assert "breakdown" in hints
+    assert "before and after" not in hints
 
 
 # --- the questions that were answered with a wrong number -----------------------
@@ -465,11 +450,10 @@ def test_a_time_exclusion_always_holds(shop, question, where):
 def test_a_partly_dropped_list_holds(tmp_path, monkeypatch, question, second):
     runtime = _open(tmp_path, _values("A" if '"A"' in question else "Top"))
     try:
-        # The planner drafts every item; the caller's '!=' still drops rows with no channel.
-        expected = _reference(
-            runtime, f"channel IS DISTINCT FROM 'web' AND channel IS DISTINCT FROM '{second}'"
-        )
-        _assert_ready(runtime, _plan(runtime, question, _drops("web")), expected)
+        # The planner drafts every item, and holds; so does the caller's '!='.
+        payload = _plan(runtime, question, _drops("web"))
+        assert payload["best"]["query_ir"]["where"] == _drops("web", second)
+        _assert_held(payload)
         _assert_held(_plan(runtime, question, _drops("web", op="!=")))
         # A draft that drops only the first item holds, though it validates.
         _draft_plan(monkeypatch, _signups(_drops("web")))
@@ -490,28 +474,30 @@ def test_a_partly_dropped_list_holds(tmp_path, monkeypatch, question, second):
         'signups excluding web and "Top"',
     ],
 )
-def test_a_list_dropped_exactly_is_ready(shop, question):
-    _assert_ready(
-        shop, _plan(shop, question, _drops("web", "store")), _reference(shop, "channel IS NULL")
-    )
+def test_a_list_dropped_exactly_holds(shop, question):
+    _assert_held(_plan(shop, question, _drops("web", "store")))
 
 
 def test_an_excluded_value_named_top_is_no_ranking(shop):
     # Read as "top 5", it drafted a limit, which truncates a grouped answer.
     payload = _plan(shop, "signups excluding web and Top")
     assert "limit" not in payload["best"]["query_ir"]
-    _assert_ready(shop, payload, _reference(shop, BOTH))
+    assert payload["best"]["query_ir"]["where"] == _drops("web", "store")
+    _assert_held(payload)
 
 
-def test_the_planner_drafts_the_null_keeping_exclusion(shop):
+def test_the_held_draft_is_the_null_keeping_exclusion(shop):
+    # The held draft shows the executable form, and it runs as reference SQL counts.
     payload = _plan(shop, "signups excluding web")
+    _assert_held(payload)
     assert payload["best"]["query_ir"]["where"] == _drops("web")
-    _assert_ready(shop, payload, _reference(shop, "channel IS DISTINCT FROM 'web'"))
+    expected = _reference(shop, "channel IS DISTINCT FROM 'web'")
+    assert _selected(shop, payload["best"]["query_ir"]) == (expected, 4)
     windowed = _plan(shop, "signups excluding web in June 2024")
+    _assert_held(windowed)
     expected = _reference(shop, f"channel IS DISTINCT FROM 'web' AND {JUNE_2024}")
-    assert expected == {107}
-    _assert_ready(shop, windowed, expected)
-    # A plain '!=' drops the signup with no channel.
+    assert _selected(shop, windowed["best"]["query_ir"]) == (expected, 1) == ({107}, 1)
+    # A plain '!=' holds too.
     _assert_held(_plan(shop, "signups excluding web", _drops("web", op="!=")))
 
 
@@ -528,295 +514,26 @@ def test_an_exclusion_keeps_rows_with_no_recorded_value(tmp_path):
     )
     runtime = _open(tmp_path, _values(), seed)
     try:
+        # A hand-written Query IR with IS DISTINCT FROM runs and keeps the 2 with no channel;
+        # '!=' drops them.
         expected = _reference(runtime, "channel IS DISTINCT FROM 'web'")
         assert len(expected) == 5
-        _assert_ready(runtime, _plan(runtime, "signups excluding web", _drops("web")), expected)
-        held = _plan(runtime, "signups excluding web", _drops("web", op="!="))
-        _assert_held(held)
-        assert runtime.query(held["best"]["query_ir"])["rows"] == [{"signup_count": 3}]
-        gap = held["why"]["details"]["gaps"][0]
-        assert gap["actual"]["drops_rows_without_a_value"] == ["where[0]"]
-        assert any("IS DISTINCT FROM" in hint["message"] for hint in held["why"]["recovery_hints"])
+        assert _selected(runtime, _signups(_drops("web"))) == (expected, 5)
+        assert runtime.query(_signups(_drops("web", op="!=")))["rows"] == [{"signup_count": 3}]
+        for op in (KEEPS, "!="):
+            _assert_held(_plan(runtime, "signups excluding web", _drops("web", op=op)))
     finally:
         runtime.close()
 
 
 def test_a_caller_constraint_never_discharges_an_item(shop):
     question = "signups excluding web"
-    gaps = _gaps(shop, question, {"where": _drops("store")})
-    assert [gap.actual["missing"] for gap in gaps] == [["web"]]
+    [gap] = _gaps(shop, question, {"where": _drops("store")})
+    assert gap.kind == "negation_unrealized"
     _assert_held(_plan(shop, question, _drops("store")))
 
 
-def test_an_exclusion_inside_a_selected_expression_is_no_evidence(shop):
-    question = "signups excluding web and Top"
-    scoped = {
-        "as": "signup_count",
-        "expression": {
-            "kind": "scoped_aggregate",
-            "measure": "measure.shop.signup_count",
-            "where": _drops("store"),
-        },
-    }
-    [gap] = _gaps(shop, question, {"select": [scoped], "where": _drops("web")})
-    assert "Top" in gap.actual["missing"]
-
-
-# Scopes no exclusion names, each beside an exact exclusion draft.
-NO_STORE_B = {
-    "child": "entity.shop_order",
-    "match": "none",
-    "where": [{"field": "dimension.shop_order_store_id", "op": "=", "value": "b"}],
-}
-SCOPES = {
-    # Drops the customers with a store-b order: 2 for "signups excluding web", not 4.
-    "child group": ({"where": [NO_STORE_B]}, "where[{}]"),
-    "or node": (
-        {
-            "where": [
-                {
-                    "op": "OR",
-                    "args": [
-                        {"field": CUSTOMER, "op": "=", "value": 102},
-                        {"field": CUSTOMER, "op": "=", "value": 104},
-                    ],
-                }
-            ]
-        },
-        "where[{}]",
-    ),
-    # Drops customer 102 inside the measure: 3, not 4.
-    "filtered selected expression": (
-        {
-            "select": [
-                {
-                    "as": "signup_count",
-                    "expression": {
-                        "kind": "scoped_aggregate",
-                        "measure": "measure.shop.signup_count",
-                        "where": [{"field": CUSTOMER, "op": "!=", "value": 102}],
-                    },
-                }
-            ]
-        },
-        "select[0]",
-    ),
-}
-READY = {
-    "signups excluding web": _drops("web"),
-    **{question: _drops("web", "store") for question in QUESTIONS},
-}
-
-
-@pytest.mark.parametrize(("question", "scope"), list(itertools.product(READY, SCOPES)))
-def test_adding_an_unrelated_scope_never_keeps_readiness(shop, monkeypatch, question, scope):
-    where = READY[question]
-    assert _gaps(shop, question, _signups(where)) == []
-    change, path = SCOPES[scope]
-    draft = _signups([*where, *change.get("where", [])])
-    draft["select"] = change.get("select", draft["select"])
-    excess = [row for gap in _gaps(shop, question, draft) for row in gap.actual["excess"]]
-    assert [row["path"] for row in excess] == [path.format(len(where))]
-    _draft_plan(monkeypatch, draft)
-    payload = _plan(shop, question)
-    assert "execute" not in payload["next"].get("ready_for", [])
-    if scope != "or node":  # A compound node also fails validation.
-        _assert_held(payload)
-
-
 SIGNUPS = {"measure": "measure.shop.signup_count"}
-SIGNED_UP = "temporal_role.shop_customer_signed_up_at"
-FOUR = {"kind": "literal", "value": 4}
-# Every select expression kind but a plain measure or metric reference, with its parts.
-KINDS = {
-    "measure_ref": SIGNUPS,
-    "aggregate": SIGNUPS,
-    "semi_additive": SIGNUPS,
-    "scoped_aggregate": {**SIGNUPS, "where": [{"field": CUSTOMER, "op": "!=", "value": 102}]},
-    "aggregate_if": {
-        "aggregation": "count",
-        "condition": {
-            "kind": "comparison",
-            "op": "!=",
-            "left": {"kind": "column", "column": "channel", "entity": "entity.shop_customer"},
-            "right": {"kind": "literal", "value": "web"},
-        },
-    },
-    "arithmetic": {"op": "+", "left": SIGNUPS, "right": FOUR},
-    "binary": {"op": "-", "left": SIGNUPS, "right": FOUR},
-    "ratio": {"numerator": SIGNUPS, "denominator": SIGNUPS},
-    "literal": {"value": 4},
-    "prior_period": {"input": SIGNUPS, "offset": {"unit": "month", "value": 1}},
-    "rolling": {"input": SIGNUPS, "window": {"unit": "day", "value": 7}},
-    "cumulative": {"input": SIGNUPS},
-    "period_to_date": {"input": SIGNUPS, "period": "month"},
-    "conversion": {
-        "base": SIGNUPS,
-        "converted": SIGNUPS,
-        "entity": "entity.shop_customer",
-        "window": {"unit": "day", "value": 7},
-        "matching_mode": "first_converted_after_base",
-    },
-    "distribution": {
-        "function": "avg",
-        "over": {"kind": "entity_value", "entity": "entity.shop_customer", "input": SIGNUPS},
-    },
-    "call": {"name": "abs", "args": [SIGNUPS]},
-    "between": {"expr": SIGNUPS, "low": FOUR, "high": FOUR},
-    "not_between": {"expr": SIGNUPS, "low": FOUR, "high": FOUR},
-}
-# One part beyond an exact exclusion each, as (the draft's key, the part, its excess path).
-# Beside "signups excluding web" (4) each one changed the answer or could.
-EXTRA = {
-    "keeping, other dimension": (
-        "where",
-        {"field": CUSTOMER, "op": "=", "value": 102},  # 1
-        "where[1]",
-    ),
-    "unreadable, other dimension": (
-        "where",
-        {"field": CUSTOMER, "op": ">", "value": 105},  # 1
-        "where[1]",
-    ),
-    "keeping, excluded dimension": (
-        "where",
-        {"field": CHANNEL, "op": "=", "value": "store"},
-        "where[1]",
-    ),
-    "dropping another value": (
-        "where",
-        {"field": CHANNEL, "op": "!=", "value": "partner"},
-        "where[1]",
-    ),
-    "NOT IN the excluded value": (  # 3: drops the signup with no channel
-        "where",
-        {"field": CHANNEL, "op": "NOT IN", "value": ["web"]},
-        "where[1]",
-    ),
-    "null-keeping drop of another value": ("where", _drops("partner")[0], "where[1]"),
-    "child group": ("where", NO_STORE_B, "where[1]"),  # 2
-    "metric filter": (  # no rows
-        "metric_filters",
-        {"expression": SIGNUPS, "op": "<", "value": 4},
-        "metric_filters",
-    ),
-    "window the question doesn't state": (
-        "time",
-        {"temporal_role": SIGNED_UP, "start": "2024-01-01"},
-        "time.start",
-    ),
-    "another clock": (
-        "time",
-        {"temporal_role": "temporal_role.shop_order_ordered_at"},
-        "time.temporal_role",
-    ),
-    "dense rows": ("time", {"fill": True}, "time.fill"),
-    "another calendar": ("time", {"calendar_id": "fiscal"}, "time.calendar_id"),
-    "case": (  # 0
-        "select",
-        {
-            "kind": "case",
-            "whens": [
-                {
-                    "when": {"kind": "comparison", "op": ">", "left": SIGNUPS, "right": FOUR},
-                    "then": SIGNUPS,
-                }
-            ],
-            "else": {"kind": "literal", "value": 0},
-        },
-        "select[0]",
-    ),
-    "other aggregation": ("select", {**SIGNUPS, "aggregation": "count"}, "select[0]"),
-    # Plain references to subjects the question doesn't name: 5, and a conversion rate.
-    "other measure": ("select", {"measure": "measure.shop.order_count"}, "select[0]"),
-    "other metric": ("select", {"metric": "metric.shop.signup_to_order_7d"}, "select[0]"),
-    **{
-        f"{kind} expression": ("select", {"kind": kind, **parts}, "select[0]")
-        for kind, parts in KINDS.items()
-    },
-    "limit 0": ("limit", 0, "limit"),  # no rows
-    "limit 1": ("limit", 1, "limit"),
-    "limits": ("limits", {"max_rows": 1}, "limits"),
-    "temporal role overrides": (
-        "temporal_role_overrides",
-        {SIGNUPS["measure"]: SIGNED_UP},
-        "temporal_role_overrides",
-    ),
-    "observation scope": ("observation_scope", "query", "observation_scope"),
-    "export": ("export", True, "export"),
-    "route decisions": (
-        "route_decisions",
-        [
-            {
-                "source_entity": "entity.shop_customer",
-                "target_entity": "entity.shop_order",
-                "relationship_path": ["relationship.shop_order_customer"],
-            }
-        ],
-        "route_decisions",
-    ),
-    "unknown key": ("rows_per_group", 1, "rows_per_group"),
-}
-# Rows whose draft fails Query IR validation on this package for some question or source,
-# before the exclusion check is reported.
-REFUSED = {
-    *("another clock", "dense rows", "another calendar", "other aggregation", "other measure"),
-    *(f"{kind} expression" for kind in ("aggregate_if", "prior_period", "rolling")),
-    *(f"{kind} expression" for kind in ("cumulative", "period_to_date", "conversion")),
-    *("distribution expression", "route decisions", "unknown key"),
-}
-VALIDATION_FAILED = {"VALIDATION_FAILED", "PLAN_FALLBACK_SEMANTIC_DRIFT"}
-
-
-def _with(query: dict[str, Any], key: str, part: Any) -> dict[str, Any]:
-    """``query`` with ``part``: merged into ``time``, in place of the selected expression,
-    appended to a list, or set."""
-
-    if key == "time":
-        return {**query, "time": {**query.get("time", {}), **part}}
-    if key == "select":
-        return {**query, "select": [{**query["select"][0], "expression": part}]}
-    if key in {"where", "metric_filters"}:
-        return {**query, key: [*query.get(key, []), part]}
-    return {**query, key: part}
-
-
-def _caller(key: str, part: Any, added: dict[str, Any]) -> Any:
-    """The caller's ``partial_query`` value at ``key`` that the planner merges into ``added``."""
-
-    if key == "select":
-        return [{"as": "caller_signups", "expression": part}]
-    if key in {"where", "metric_filters"}:
-        return [part]
-    return added[key]
-
-
-@pytest.mark.parametrize("source", ["generator", "caller"])
-@pytest.mark.parametrize("extra", EXTRA)
-@pytest.mark.parametrize(
-    "question", ["signups excluding web", "signups excluding web in June 2024"]
-)
-def test_any_other_part_beside_an_exclusion_holds(shop, monkeypatch, question, extra, source):
-    window = f" AND {JUNE_2024}" if "June" in question else ""
-    exact = _plan(shop, question)
-    _assert_ready(shop, exact, _reference(shop, "channel IS DISTINCT FROM 'web'" + window))
-    query = exact["best"]["query_ir"]
-    key, part, path = EXTRA[extra]
-    added = _with(query, key, part)
-    [gap] = _gaps(shop, question, added)
-    assert path in [row["path"] for row in gap.actual["excess"]], gap.actual
-    if source == "generator":
-        _draft_plan(monkeypatch, added)
-        payload = _plan(shop, question)
-    else:
-        partial = {"policy_context": NOW, key: _caller(key, part, added)}
-        payload = plan_payload(shop, intent=question, partial_query=partial)
-    if payload["why"]["code"] in VALIDATION_FAILED:
-        assert extra in REFUSED, payload["why"]
-        assert payload["status"] != "ok"
-        assert "execute" not in payload["next"].get("ready_for", [])
-    else:
-        _assert_held(payload)
 
 
 @pytest.mark.parametrize(
@@ -826,47 +543,19 @@ def test_any_other_part_beside_an_exclusion_holds(shop, monkeypatch, question, e
         lambda query: {**query, "order_by": [{"field": "signup_count", "direction": "DESC"}]},
         lambda query: {**query, "_note": "drafted for a test"},
         lambda query: {**query, "verbosity": "minimal"},
-        lambda query: _with(query, "select", {"kind": "measure", **SIGNUPS}),
+        lambda query: {
+            **query,
+            "select": [{**query["select"][0], "expression": {"kind": "measure", **SIGNUPS}}],
+        },
     ],
     ids=["canonical", "order by the alias", "annotation", "verbosity", "kind measure"],
 )
 @pytest.mark.parametrize(
     "question", ["signups excluding web", "signups excluding web in June 2024"]
 )
-def test_what_changes_no_number_beside_an_exclusion_stays_ready(
-    shop, monkeypatch, question, control
-):
-    window = f" AND {JUNE_2024}" if "June" in question else ""
-    expected = _reference(shop, "channel IS DISTINCT FROM 'web'" + window)
+def test_an_exact_exclusion_draft_holds(shop, monkeypatch, question, control):
     _draft_plan(monkeypatch, control(_plan(shop, question)["best"]["query_ir"]))
-    _assert_ready(shop, _plan(shop, question), expected)
-
-
-def test_every_query_ir_key_and_expression_kind_is_classified():
-    # A new key or kind is excess beside an exclusion until it is admitted or has a row here.
-    schema = json.loads((SHOP.parents[3] / "schemas" / "query_ir.v1.json").read_text())
-    defs = schema["$defs"]
-    rows = list(EXTRA.values())
-    admitted = {*_INERT_KEYS, "group_by", "select", "where", "time"}
-    assert set(schema["properties"]) <= admitted | {key for key, _part, _path in rows}
-    shapes = [defs[ref["$ref"].rsplit("/", 1)[-1]] for ref in defs["SelectExpression"]["oneOf"]]
-    shapes += [
-        defs[ref["$ref"].rsplit("/", 1)[-1]] for shape in shapes for ref in shape.get("oneOf", [])
-    ]
-    kinds = {
-        kind
-        for shape in shapes
-        for row in [shape.get("properties", {}).get("kind", {})]
-        for kind in row.get("enum", [row["const"]] if "const" in row else [])
-    }
-    selected = {part.get("kind") for key, part, _path in rows if key == "select"}
-    assert kinds - {"measure", "metric"} <= selected
-    time = set(defs["TimeBlock"]["properties"]) - {
-        "temporal_role",
-        "grain",
-        *("start", "end", "range"),
-    }
-    assert {f"time.{key}" for key in time} <= {path for key, _part, path in rows if key == "time"}
+    _assert_held(_plan(shop, question))
 
 
 def test_a_value_named_outside_the_exclusion_holds(shop, monkeypatch):
@@ -911,6 +600,31 @@ def test_an_exclusion_inside_a_grouping_phrase_holds(runtime_factory, question):
 
 
 @pytest.mark.parametrize(
+    ("package", "question"),
+    [
+        # One total, without the store column the question may ask for.
+        ("jaffle_shop", "revenue across stores excluding Brooklyn"),
+        ("jaffle_shop", "store revenue excluding Brooklyn"),
+        # The store column dropped, one total.
+        ("jaffle_shop", "revenue by store without Brooklyn"),
+        ("jaffle_shop", "revenue by store other than Brooklyn"),
+        ("jaffle_shop", "revenue by store but not Brooklyn"),
+        ("jaffle_shop", "revenue grouped by store excluding Brooklyn"),
+        ("shop", "signups excluding web"),
+        ("shop", "signups excluding web in June 2024"),
+    ],
+)
+def test_a_question_that_excludes_values_holds(runtime_factory, tmp_path, package, question):
+    runtime = runtime_factory(package) if package != "shop" else _open(tmp_path, _values())
+    try:
+        payload = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
+        _assert_held(payload)
+        assert "ask_for_breakdown" in {hint["kind"] for hint in payload["why"]["recovery_hints"]}
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
     ("question", "excluded"),
     [
         ("revenue excluding Brooklyn", "Brooklyn"),
@@ -918,14 +632,13 @@ def test_an_exclusion_inside_a_grouping_phrase_holds(runtime_factory, question):
         ("revenue for all stores except New Orleans", "New Orleans"),
     ],
 )
-def test_planned_store_exclusions_match_reference_sql(runtime_factory, question, excluded):
-    # These held with a reversed '=' draft; the planner now drafts the null-keeping exclusion,
-    # which keeps orders whose store has no name.
+def test_held_store_exclusion_drafts_match_reference_sql(runtime_factory, question, excluded):
+    # These hold. The held draft is the null-keeping exclusion, which keeps orders whose store
+    # has no name, and run by hand it matches reference SQL.
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=question)
-        assert payload["status"] == "ok", payload.get("why")
-        assert payload["next"]["ready_for"] == ["execute"]
+        _assert_held(payload)
         query = payload["best"]["query_ir"]
         assert query["where"] == [{"field": STORE, "op": KEEPS, "value": excluded}]
         alias = query["select"][0]["as"]

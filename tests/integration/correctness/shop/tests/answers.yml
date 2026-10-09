@@ -512,6 +512,7 @@ tests:
     cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_IR_SCHEMA.md#wherefilter]
     tags: [planner]
     intent: signups excluding web
+    known_wrong: {planner: "Questions that exclude values hold until exclusion answers ship."}
     query:
       select: &signups [{expression: {measure: measure.shop.signup_count}, as: signup_count}]
       where: &not_web [{field: dimension.shop_customer_channel, op: IS DISTINCT FROM, value: web}]
@@ -524,6 +525,7 @@ tests:
     cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, tests/integration/correctness/shop/models/signups.yml#model.times.signed_up_at, docs/QUERY_IR_SCHEMA.md#wherefilter, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [planner, time-window]
     intent: signups excluding web in June 2024
+    known_wrong: {planner: "Questions that exclude values hold until exclusion answers ship."}
     query:
       select: *signups
       time: {temporal_role: temporal_role.shop_customer_signed_up_at, grain: month, start: '2024-06-01', end: '2024-07-01'}

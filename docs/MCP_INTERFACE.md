@@ -383,50 +383,35 @@ A draft that validates can still leave out part of the question. `plan` returns
   the `PLAN_UNMATCHED_TERMS` checks below included, so it holds only a draft nothing else
   holds.
 
-An exclusion ("excluding", "except", "without", "not", "but not", "other than", "apart from",
-"aside from", "minus", "outside of", "all stores but") names a list of items: a declared value
-name (its value, label or alias, in double quotes or none), a time phrase, or any other word in
-an item's place. Commas, semicolons, slashes, "&", "and", "or", "nor", "plus", "as well as",
-"along with", "alongside", "together with", dashes, line breaks and brackets separate items; a
-separator inside a declared name ("Click & Collect") doesn't split it. The list ends at the
-first word that is neither. Every other character up to that word is an unread item, so a
-single-quoted name (`'store'`, `‘store’`) or a name with no letter or digit (`-`, `_`) holds;
-only the question's final `.`, `?` or `!` is exempt. The first time phrase after the list with
-only words between is the question's window ("signups excluding web in June 2024"); any other
-value, quoted or time mention before the next exclusion, an "including" or the question's end
-is an unread item. When an exclusion word or an "including" falls inside a quoted string or a
-declared value name ("Including Top", "All but Web"), or an exclusion word inside a grouping
-phrase ("revenue by store excluding Brooklyn", which would lose its grouping), the whole
-question is one unread item.
+`plan` doesn't answer questions that exclude values yet. An exclusion ("excluding", "except",
+"without", "not", "but not", "other than", "apart from", "aside from", "minus", "outside of",
+"all stores but") holds whatever the draft carries, the caller's `partial_query` included: each
+clause is one gap, `negation_reversed` when a top-level `=` or `IN` filter keeps a value the
+clause names, otherwise `negation_unrealized`. Its recovery hint (`ask_for_breakdown`) suggests
+asking for the breakdown by the excluded dimension instead ("signups by channel"), which shows
+each value and the rows with no recorded value; listing the values to keep would drop those
+rows. A time phrase inside an exclusion ("signups not in June 2024") is never read as the
+question's window.
 
-Every item needs its own top-level `where` filter on its one dimension,
-`{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`, which keeps rows with no recorded
-value: "signups excluding web" counts the signups with no channel. `!=` and `NOT IN` drop
-those rows, so they don't realize an exclusion, and `plan` drafts `IS DISTINCT FROM` itself.
-Beside an exclusion the draft, whether `plan` or the caller's `partial_query` supplied it,
-carries only: one `select` item that plainly references a measure (at its default
-aggregation) or a metric whose declared name the question says outside the exclusion
-("signups excluding web"); those `IS DISTINCT FROM` filters; a `time` block holding the
-selected subject's own `temporal_role`, a `grain` and only the bounds of the window the
-question states; `group_by` (a grouping the question doesn't ask for holds on its own);
-`order_by`; and `version`, context, `request_id`, `verbosity`, `sql_profile`, `debug`,
-`explain` and `_` annotations. Anything else holds as `excess`, each entry naming its `path`:
-another filter of any operator or field (`{"path", "field", "op", "value"}`), and any other
-part (`{"path", "value"}`) such as a child group or compound condition, any other selected
-expression (CASE, a scoped or conditional aggregate, a ratio, another aggregation, a measure
-or metric the question doesn't name, a second column), a metric filter, `limit` (even 0),
-`limits`, `route_decisions`, `temporal_role_overrides`, `observation_scope`, `export`,
-another clock, `time.fill`, `time.calendar_id`, a time bound the question doesn't state, or a
-key this list doesn't name. A filter inside a child group or a selected expression never
-realizes an item. An excluded value named "Top" is never read as a ranking. A question that
-both excludes and keeps values ("web signups excluding Top", "excluding Brooklyn, including
-Philadelphia") holds for now.
-Query IR has no window complement, so a time exclusion ("signups not in June 2024") always
-holds, and its phrase is reported unresolved instead of being read as the window. A clause
-that misses any of this holds with `negation_unrealized`, or `negation_reversed` when every
-filter that keeps values keeps an item. Each clause is checked on its own; its `actual` lists
-the `matched` filter paths and what is `missing`, `unresolved`, `excess` or in
-`drops_rows_without_a_value`.
+An exclusion keeps rows with no recorded value, so its executable form is one top-level `where`
+filter per excluded value, `{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`: "signups
+excluding web" counts the signups with no channel, which `!=` and `NOT IN` drop. The held
+draft uses that form, and a hand-written Query IR with it still runs through `execute`.
+
+The gap's `expected.items` lists what the clause names, each with its `kind`: a declared value
+name (its value, label or alias, in double quotes or none) with its `field` and `value`, a
+time phrase, or `unknown` for any other word in an item's place. Commas, semicolons, slashes,
+"&", "and", "or", "nor", "plus", "as well as", "along with", "alongside", "together with",
+dashes, line breaks and brackets separate items; a separator inside a declared name ("Click &
+Collect") doesn't split it. The list ends at the first word that is neither; every other
+character up to that word is an `unknown` item, except the question's final `.`, `?` or `!`.
+The first time phrase after the list with only words between is the question's window
+("signups excluding web in June 2024"); any other value, quoted or time mention before the
+next exclusion, an "including" or the question's end is an `unknown` item. When an exclusion
+word or an "including" falls inside a quoted string or a declared value name ("Including
+Top", "All but Web"), or an exclusion word inside a grouping phrase ("revenue by store
+excluding Brooklyn"), the whole question is one `unknown` item. An excluded value named "Top"
+is never read as a ranking.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),

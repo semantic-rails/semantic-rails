@@ -455,15 +455,16 @@ def test_nested_value_scopes_do_not_supply_query_level_membership(
     [
         ("item revenue for food products", PRODUCT_TYPE, "jaffle", "jaffle", "=", True),
         ("item revenue for food products", PRODUCT_TYPE, "jaffle", "Food", "=", False),
-        ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "jaffle", KEEPS, True),
+        # Every question that excludes values holds, its exact exclusion too.
+        ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "jaffle", KEEPS, False),
         ("item revenue excluding food products", PRODUCT_TYPE, "jaffle", "Food", KEEPS, False),
         ("revenue for Brooklyn", STORE, "Brooklyn", "Brooklyn", "=", True),
         ("revenue for Brooklyn", STORE, "Brooklyn", "brooklyn", "=", False),
-        ("revenue excluding Brooklyn", STORE, "Brooklyn", "Brooklyn", KEEPS, True),
+        ("revenue excluding Brooklyn", STORE, "Brooklyn", "Brooklyn", KEEPS, False),
         ("revenue excluding Brooklyn", STORE, "Brooklyn", "brooklyn", KEEPS, False),
         ("revenue for New Orleans", STORE, "New Orleans", "New Orleans", "=", True),
         ("revenue for New Orleans", STORE, "New Orleans", "New-Orleans", "=", False),
-        ("revenue excluding New Orleans", STORE, "New Orleans", "New Orleans", KEEPS, True),
+        ("revenue excluding New Orleans", STORE, "New Orleans", "New Orleans", KEEPS, False),
         ("revenue excluding New Orleans", STORE, "New Orleans", "New-Orleans", KEEPS, False),
     ],
 )
@@ -592,7 +593,8 @@ def test_named_value_guard_agrees_with_executable_predicate_results(
     finally:
         connection.close()
     assert canonical in source_values
-    should_honor = canonical not in actual if "excluding" in text else canonical in actual
+    # Every question that excludes values holds.
+    should_honor = "excluding" not in text and canonical in actual
     select = ITEM_REVENUE if field == PRODUCT_TYPE else REVENUE
     gaps = _gap_kinds(adapter, text, _query(select, where=where))
     assert (gaps == []) is should_honor
@@ -603,24 +605,19 @@ def test_question_alias_maps_to_canonical_but_draft_alias_is_not_literal() -> No
     value = runtime._config.value_domains[0].values[0]
     value.aliases.append("Big Apple")
     query = _query({"as": "revenue", "expression": {"measure": "measure.shop.revenue"}})
-    for text, op, check, kind in (
-        ("revenue in Big Apple", "=", _filter_value_gaps, "filter_values_unrealized"),
-        (
-            "revenue excluding Big Apple",
-            KEEPS,
-            lambda runtime, text, query: exclusion_gaps(
-                runtime._config, text, query, _time_window(text)
-            ),
-            "negation_unrealized",
-        ),
-    ):
-        canonical = {
-            **query,
-            "where": [{"field": "dimension.region", "op": op, "value": "New York"}],
-        }
-        alias = {**query, "where": [{"field": "dimension.region", "op": op, "value": "Big Apple"}]}
-        assert check(runtime, text, canonical) == []
-        assert [gap.kind for gap in check(runtime, text, alias)] == [kind]
+    text = "revenue in Big Apple"
+    canonical = {**query, "where": [{"field": "dimension.region", "op": "=", "value": "New York"}]}
+    alias = {**query, "where": [{"field": "dimension.region", "op": "=", "value": "Big Apple"}]}
+    assert _filter_value_gaps(runtime, text, canonical) == []
+    assert [gap.kind for gap in _filter_value_gaps(runtime, text, alias)] == [
+        "filter_values_unrealized"
+    ]
+    # An exclusion holds whichever name the draft uses.
+    excluding = "revenue excluding Big Apple"
+    for draft in (canonical, alias):
+        dropped = {**draft, "where": [{**draft["where"][0], "op": KEEPS}]}
+        gaps = exclusion_gaps(runtime._config, excluding, dropped, _time_window(excluding))
+        assert [gap.kind for gap in gaps] == ["negation_unrealized"]
 
 
 @pytest.mark.parametrize("op", ["!=", "NOT IN"])
@@ -644,8 +641,9 @@ def test_positive_requested_value_cannot_be_excluded(
     ]
     # The exclusion drops Brooklyn, but also every order with no recorded store.
     assert _gap_kinds(adapter, "revenue excluding Brooklyn", excluded) == ["negation_unrealized"]
+    # The null-keeping exclusion holds too: exclusions aren't answered yet.
     kept = _query(where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}])
-    assert _gap_kinds(adapter, "revenue excluding Brooklyn", kept) == []
+    assert _gap_kinds(adapter, "revenue excluding Brooklyn", kept) == ["negation_unrealized"]
 
 
 @pytest.mark.parametrize("op", [KEEPS, "!="])
@@ -653,9 +651,8 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
     wrong = _query(where=[{"field": STORE, "op": op, "value": "Philadelphia"}])
     [gap] = _gaps(adapter, "revenue excluding Brooklyn", wrong)
     assert gap["kind"] == "negation_unrealized"
-    assert gap["actual"]["missing"] == ["Brooklyn"]
-    assert gap["actual"]["excess"] == [
-        {"path": "where[0]", "field": STORE, "op": op, "value": "Philadelphia"}
+    assert gap["expected"]["items"] == [
+        {"text": "Brooklyn", "kind": "value", "field": STORE, "value": "Brooklyn"}
     ]
 
 
@@ -673,8 +670,8 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
         ("revenue for Brooklyn", "NOT IN", ["Brooklyn"], False),
         ("revenue for Brooklyn", "LIKE", "Brook%", False),
         ("revenue for Brooklyn", ">", "Brooklyn", False),
-        ("revenue excluding Brooklyn", KEEPS, "Brooklyn", True),
-        # These drop every row with no recorded store too.
+        # Every question that excludes values holds; these also drop rows with no store.
+        ("revenue excluding Brooklyn", KEEPS, "Brooklyn", False),
         ("revenue excluding Brooklyn", "!=", "Brooklyn", False),
         ("revenue excluding Brooklyn", "NOT IN", "Brooklyn", False),
         ("revenue excluding Brooklyn", KEEPS, ["Brooklyn"], False),
@@ -779,14 +776,10 @@ def test_explicit_inclusion_ends_exclusion_scope(
                 {"field": STORE, "op": "=", "value": "Philadelphia"},
             ]
         )
-        # Philadelphia is no excluded item, but beside an exclusion any other predicate holds:
-        # a question that both excludes and keeps values isn't read yet.
+        # Philadelphia is no excluded item, so keeping it reverses nothing; the exclusion holds.
         [gap] = _gaps(adapter, text, draft)
         assert gap["kind"] == "negation_unrealized"
-        assert gap["actual"]["missing"] == []
-        assert {"path": "where[1]", "field": STORE, "op": "=", "value": "Philadelphia"} in gap[
-            "actual"
-        ]["excess"]
+        assert [item["text"] for item in gap["expected"]["items"]] == ["Brooklyn"]
 
 
 def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAdapter) -> None:
@@ -796,7 +789,9 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
             {"field": STORE, "op": KEEPS, "value": "Philadelphia"},
         ]
     )
-    assert _gap_kinds(adapter, "revenue excluding Brooklyn, Philadelphia", draft) == []
+    [gap] = _gaps(adapter, "revenue excluding Brooklyn, Philadelphia", draft)
+    assert gap["kind"] == "negation_unrealized"
+    assert [item["value"] for item in gap["expected"]["items"]] == ["Brooklyn", "Philadelphia"]
 
 
 @pytest.mark.parametrize(
@@ -856,7 +851,7 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
             "revenue excluding Brooklyn; except New Orleans",
             [{"field": STORE, "op": KEEPS, "value": "Brooklyn"}],
             "v IS DISTINCT FROM 'Brooklyn'",
-            ["negation_unrealized"],
+            ["negation_unrealized", "negation_unrealized"],
             True,
         ),
         (
@@ -879,7 +874,7 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
                 {"field": STORE, "op": KEEPS, "value": "New Orleans"},
             ],
             "v IS DISTINCT FROM 'Brooklyn' AND v IS DISTINCT FROM 'New Orleans'",
-            [],
+            ["negation_unrealized", "negation_unrealized"],
             False,
         ),
         (
@@ -889,7 +884,7 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
                 {"field": STORE, "op": KEEPS, "value": "New Orleans"},
             ],
             "v IS DISTINCT FROM 'Brooklyn' AND v IS DISTINCT FROM 'New Orleans'",
-            [],
+            ["negation_unrealized", "negation_unrealized"],
             False,
         ),
         (
@@ -899,7 +894,7 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
                 {"field": STORE, "op": KEEPS, "value": "New Orleans"},
             ],
             "v IS DISTINCT FROM 'Brooklyn' AND v IS DISTINCT FROM 'New Orleans'",
-            [],
+            ["negation_unrealized"],
             False,
         ),
     ],
@@ -921,12 +916,10 @@ def test_each_exclusion_clause_is_checked_against_executable_predicates(
     _draft_plan(monkeypatch, draft)
     payload = adapter.call_tool("plan", {"intent": text, "detail": "query"})
     assert payload["best"]["validation_ok"] is True
-    assert payload["status"] == ("low_confidence" if expected_gaps else "ok")
-    if expected_gaps:
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert expected_gaps == [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
-    else:
-        assert payload.get("why") is None
+    # Every clause holds, an exact null-keeping exclusion of each value too.
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert expected_gaps == [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
     connection = duckdb.connect(":memory:")
     try:
         retained = {
@@ -981,7 +974,7 @@ def test_disjunctive_or_nested_exclusion_evidence_is_not_credited(
 def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, text: str) -> None:
     excluded = _query(where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}])
     included = _query(where=[{"field": STORE, "op": "=", "value": "Brooklyn"}])
-    assert _gap_kinds(adapter, text, excluded) == []
+    assert _gap_kinds(adapter, text, excluded) == ["negation_unrealized"]
     assert _gap_kinds(adapter, text, included) == ["negation_reversed"]
 
 
@@ -996,10 +989,6 @@ def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, 
                 where=[{"field": STORE, "op": "=", "value": "New Orleans"}],
                 time={"temporal_role": ORDER_TIME, "grain": "month"},
             ),
-        ),
-        (
-            "revenue for all stores except New Orleans",
-            _query(group_by=[STORE], where=[{"field": STORE, "op": KEEPS, "value": "New Orleans"}]),
         ),
         # Grouping by a value's dimension shows it as a row.
         ("revenue by product type, food vs drink", _query(ITEM_REVENUE, group_by=[PRODUCT_TYPE])),
@@ -1273,10 +1262,16 @@ def test_conjoined_along_with_stays_held_with_pattern_enabled(runtime_factory) -
             _query(where=[{"field": STORE, "op": "IN", "value": "Brooklyn"}]),
             "ok",
         ),
+        # Every question that excludes values holds, its exact exclusion too.
         (
             "revenue excluding Brooklyn",
             _query(where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}]),
-            "ok",
+            "low_confidence",
+        ),
+        (
+            "revenue for all stores except New Orleans",
+            _query(group_by=[STORE], where=[{"field": STORE, "op": KEEPS, "value": "New Orleans"}]),
+            "low_confidence",
         ),
         (
             "revenue excluding Brooklyn",
@@ -1313,7 +1308,7 @@ def test_conjoined_along_with_stays_held_with_pattern_enabled(runtime_factory) -
         (
             "revenue not include Brooklyn",
             _query(where=[{"field": STORE, "op": KEEPS, "value": "Brooklyn"}]),
-            "ok",
+            "low_confidence",
         ),
         (
             "revenue excluding Brooklyn but include Philadelphia",
