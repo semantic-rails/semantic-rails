@@ -84,10 +84,12 @@ def _namespace(files: PackageFiles) -> str:
 
 
 def _models(files: PackageFiles) -> Iterator[tuple[str, str, YamlPath, dict[str, Any]]]:
-    """Each model's id as the loader keys it, with its file, path and row."""
+    """Each model's id as the loader keys it (a ``models:`` key outside ``models/``), with its
+    file, path and row."""
     for file, path, row in files.models():
         key = path[-1] if path and path[-1] != "model" else Path(file).stem
-        yield str(row.get("id") or key), file, path, row
+        model_id = row.get("id") or key if Path(file).parts[0] == "models" else key
+        yield str(model_id), file, path, row
 
 
 def _graph(files: PackageFiles) -> Graph:
@@ -100,6 +102,11 @@ def _graph(files: PackageFiles) -> Graph:
 
 def _fact(model: dict[str, Any]) -> bool:
     return str(model.get("kind") or "model").strip().lower() == "fact"
+
+
+def _home(entity: dict[str, Any]) -> str:
+    """The model a graph entity binds, as the loader strips it."""
+    return str(entity.get("model") or "").strip()
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -121,12 +128,12 @@ def _primary(model_id: str, model: dict[str, Any], graph: Graph) -> tuple[str, s
     block = _mapping(model.get("entities"))
     grain = _column_list(model.get("grain"))
     matches = [n for n in block if n != "bridge" and _columns(model, graph, n) == grain]
-    unbound = not graph.get(model_id, ("", (), {}))[2].get("model")
+    unbound = not _home(graph.get(model_id, ("", (), {}))[2])
     how, primary = next(
         (
             (how, name)
             for how, name in (
-                ("bound", next((n for n, e in graph.items() if e[2].get("model") == model_id), "")),
+                ("bound", next((n for n, e in graph.items() if _home(e[2]) == model_id), "")),
                 ("entity", str(model.get("entity") or "").strip()),
                 ("grain", matches[0] if block and grain and len(matches) == 1 else ""),
                 ("name", model_id if (model_id in block or not block) and unbound else ""),
@@ -143,7 +150,8 @@ def _primary(model_id: str, model: dict[str, Any], graph: Graph) -> tuple[str, s
 def _model_grain(files: PackageFiles) -> Iterator[Finding]:
     graph = _graph(files)
     for model_id, file, path, model in _models(files):
-        if "grain" not in model:
+        # A model without entities: reads its row grain from grain:; model-primary-key moves it.
+        if "grain" not in model or not (_fact(model) or isinstance(model.get("entities"), dict)):
             continue
         key, grain = (*path, "grain"), _column_list(model["grain"])
         edits = [Edit(file, "delete", key)]
@@ -154,7 +162,7 @@ def _model_grain(files: PackageFiles) -> Iterator[Finding]:
         else:
             how, primary, columns = _primary(model_id, model, graph)
             entity = graph.get(primary)
-            if how == "grain" and entity and not entity[2].get("model"):
+            if how == "grain" and entity and not _home(entity[2]):
                 edits.append(Edit(entity[0], "insert", entity[1], key="model", value=model_id))
             elif how == "grain":
                 edits.append(Edit(file, "insert", path, key="entity", value=primary))
@@ -175,31 +183,39 @@ def _model_grain(files: PackageFiles) -> Iterator[Finding]:
 def _model_primary_key(files: PackageFiles) -> Iterator[Finding]:
     graph = _graph(files)
     for model_id, file, path, model in _models(files):
+        block = model.get("entities")
         keys = model.get("keys")
+        legacy = not isinstance(block, dict) and not _fact(model)
         if not (isinstance(keys, dict) and keys) and not (
-            "entity" in model and "entities" not in model
+            legacy and {"entity", "keys", "grain"} & set(model)
         ):
             continue
-        keys = keys if isinstance(keys, dict) else {}
+        keys = _mapping(keys)
         foreign = keys.get("foreign") or {}
         _, primary, _ = _primary(model_id, model, graph)
-        listed = {primary: keys.get("primary"), **(foreign if isinstance(foreign, dict) else {})}
         problem = (
             not primary or not isinstance(foreign, dict) or bool(set(keys) - {"primary", "foreign"})
         )
-        problem = problem or any(isinstance(columns, dict) for columns in listed.values())
-        if isinstance(model.get("entities"), dict):
+        rows = _column_list(model.get("grain")) or _column_list(keys.get("primary"))
+        listed = {primary: rows, **(foreign if isinstance(foreign, dict) else {})}
+        # A key with a role ({columns, role}) has no entities: spelling.
+        problem = problem or any(
+            isinstance(columns, dict) for columns in (keys.get("primary"), *listed.values())
+        )
+        if isinstance(block, dict):
             # The block derives both keys: each must say what it already does.
+            listed[primary] = keys.get("primary")
             problem = problem or any(
                 columns is not None
-                and (
-                    name not in model["entities"]
-                    or _column_list(columns) != _columns(model, graph, name)
-                )
+                and (name not in block or _column_list(columns) != _columns(model, graph, name))
                 for name, columns in listed.items()
             )
             edits: tuple[Edit, ...] = (Edit(file, "delete", (*path, "keys")),)
         else:
+            # The model's rows are keyed by grain, else keys.primary: both must agree, and
+            # some row key must exist, or the entities block would give it one.
+            primary_keys = _column_list(keys.get("primary"))
+            problem = problem or not rows or bool(primary_keys and primary_keys != rows)
             entities: dict[str, Any] = {}
             for name, columns in listed.items():
                 canonical = _columns(model, graph, name)
@@ -213,7 +229,7 @@ def _model_primary_key(files: PackageFiles) -> Iterator[Finding]:
             if foreign:
                 entities["bridge"] = False  # the legacy keys inferred no relationship
             edits = (
-                *((Edit(file, "delete", (*path, "keys")),) if "keys" in model else ()),
+                *(Edit(file, "delete", (*path, k)) for k in ("keys", "grain") if k in model),
                 Edit(file, "insert", path, key="entities", value=entities),
             )
         yield Finding(
@@ -221,7 +237,7 @@ def _model_primary_key(files: PackageFiles) -> Iterator[Finding]:
             file,
             files.line(file, path),
             path,
-            f"Model '{model_id}': its keys disagree with its entities, or name no entity; key "
+            f"Model '{model_id}': its keys disagree with its entities or name no row key; key "
             "finer rows as their own entity and list every entity under entities: by hand."
             if problem
             else f"Model '{model_id}': state its keys in its entities: block.",
@@ -242,15 +258,15 @@ _CARDINALITY = {
 def _model_joins(files: PackageFiles) -> Iterator[Finding]:
     graph = _graph(files)
     block = next(((f, p, g) for f, p, g in files._sections("graph") if isinstance(g, dict)), None)
-    names = set((block[2].get("relationships") or {}) if block else ())
+    names = set(_mapping(block[2].get("relationships")) if block else ())
     rows = []
     for model_id, file, path, model in _models(files):
         if "joins" not in model:
             continue
         _, primary, _ = _primary(model_id, model, graph)
-        home = graph.get(primary, ("", (), {}))[2].get("model")
+        home = _home(graph.get(primary, ("", (), {}))[2])
         # A graph relationship attaches to its first entity's home model.
-        problem = not block or _fact(model) or primary not in graph or home not in {None, model_id}
+        problem = not block or _fact(model) or primary not in graph or home not in {"", model_id}
         problem = bool(problem)
         specs: dict[str, dict[str, Any]] = {}
         for edge, raw in (model["joins"] if isinstance(model["joins"], dict) else {}).items():
@@ -351,8 +367,11 @@ def _loaded(files: PackageFiles) -> tuple[dict[tuple[str, str], Any], set[str]]:
         for model_id, model in normalized["models"].items()
         for key, row in (model.get("measures") or {}).items()
     }
-    metrics = normalized.get("metrics") or {}
-    return measures, {*map(str, metrics), *(str(row.get("id")) for row in metrics.values())}
+    metrics = _mapping(normalized.get("metrics"))
+    return measures, {
+        *map(str, metrics),
+        *(str(_mapping(row).get("id")) for row in metrics.values()),
+    }
 
 
 def _metric(measure: Any, publish: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:

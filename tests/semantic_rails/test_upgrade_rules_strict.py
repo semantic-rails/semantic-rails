@@ -146,9 +146,12 @@ def _row(model, block, key, **keys):
     return edit
 
 
-def _singular(doc):
-    del doc["models"]["products"]["entities"]
-    doc["models"]["products"].update(entity="product", keys={"primary": ["product_id"]})
+def _singular(**keys):
+    def edit(doc):
+        del doc["models"]["products"]["entities"]
+        doc["models"]["products"].update(entity="product", **keys)
+
+    return edit
 
 
 def _relationship(doc):
@@ -226,11 +229,17 @@ REWRITES = {
         _model("orders", keys={"foreign": {"customer": "customer_id"}}),
         _current,
     ),
-    "singular-entity": (
+    "singular-entity-keys": (
         "model-primary-key",
-        _singular,
+        _singular(keys={"primary": ["product_id"]}),
         _model("products", entity="product"),
     ),
+    "singular-entity-grain": (
+        "model-primary-key",
+        _singular(grain=["product_id"]),
+        _model("products", entity="product"),
+    ),
+    "singular-entity-no-row-key": ("model-primary-key", _singular(), None),
     "keys-primary-finer": (
         "model-primary-key",
         _model("orders", keys={"primary": ["order_id", "channel"]}),
