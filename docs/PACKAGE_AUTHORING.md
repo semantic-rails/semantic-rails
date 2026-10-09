@@ -82,17 +82,23 @@ that file nor a relation pipeline. It doesn't pre-tick `_cents` columns as money
 amounts: as currency they would print cents as dollars. Publish them in dollars
 with a measure such as `amount_cents / 100.0`.
 
-Rolling windows, prior periods and growth fill empty periods from a calendar. At
-query time a package without one uses the engine's implicit Gregorian calendar
-(QUERY_IR_SCHEMA "Which calendar fills"); author one for fiscal or custom periods,
-Sunday weeks, or a ClickHouse package. `author metric` offers these metrics only
-once the package has a calendar. A calendar
-is a model whose graph entity has `kind: time`: one row per day in a `date_day`
-column, plus `week_start`, `month_start`, `quarter_start` and `year_start` date
-columns for the coarser units (see `models/core/calendar.yml` in the bundled
-package). An authored default calendar replaces the implicit one for every grain,
-so a grain whose column it lacks is refused. `author calendar` writes it from your
-date-spine table.
+Rolling windows, prior periods and growth fill empty periods from the engine's
+implicit Gregorian calendar (QUERY_IR_SCHEMA "Which calendar fills"), whether or
+not the package authors a calendar; ClickHouse has none, so it refuses them.
+`author metric` offers these metrics only once the package has a calendar. A
+calendar is a model whose graph entity has `kind: time`: one row per day in a
+`date_day` column, plus `week_start`, `month_start`, `quarter_start` and
+`year_start` date columns (see `models/core/calendar.yml` in the bundled package).
+`author calendar` writes it from your date-spine table. Its columns are ordinary
+dimensions: an authored default calendar's `date_day` and `week_start` to
+`year_start` columns are not used for bucketing, so weeks are ISO Monday weeks
+even if its `week_start` names Sundays.
+
+Fiscal and other non-default calendars (a `calendar_id` other than `default`) are
+not supported in this release. A query that names one, or that sets a `grain` on a
+time whose model is bound to one, refuses with `REWRITE_NOT_SUPPORTED`
+(`details.reason: calendar_not_supported_yet`); authored fiscal calendars return in
+a later release.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh
@@ -174,7 +180,7 @@ Two rules apply to directory packages:
 configs/semantic_rails/<package>/    # directory name must match package.id
   package.yml          # identity, warehouse, connection, seeds, defaults
   graph.yml            # canonical entities and explicit relationships
-  defaults.yml         # optional — package-wide defaults merged before models
+  defaults.yml         # optional — package-wide defaults, instead of package.yml `defaults:`
   policies.yml         # optional — visibility / access / release labels
   caveats.yml          # optional — advisory interpretation context
   models/              # one file per warehouse table or mart
@@ -189,8 +195,25 @@ configs/semantic_rails/<package>/    # directory name must match package.id
     <test>.yml
 ```
 
-The loader merges every YAML file under `models/**`, `metrics/**`, and
-`segments/*` into a single `PackageConfig`.
+The loader merges every YAML file under `models/**`, `relations/**`, `metrics/**`
+and `segments/**` into a single `PackageConfig`. At the root it reads only
+`package.yml`, the block files `defaults.yml`, `graph.yml`, `relations.yml`,
+`metrics.yml`, `segments.yml`, `policies.yml` and `caveats.yml`, and those four
+directories; the package tools read `examples/` and `tests/`. Loading refuses any
+other root YAML file or root directory holding YAML (a `policies/` directory, a
+`notes.yml`, a `defaults.yaml`), because its contents would be silently ignored;
+write tests and examples as files under `tests/` and `examples/`, not in a root
+`tests.yml` or `examples.yml`. A name that starts with `_` or `.` stays ignored.
+
+The loader doesn't follow directory symlinks, so loading refuses one anywhere in the
+package (a `policies -> ../shared/policies` link, a symlinked `models/` or
+`models/core/`) unless its root name starts with `_` or `.`. Copy the directory or link
+its files instead: a file symlink is read like any other file.
+
+Each block and each object is read from one place. Loading refuses a block declared
+both in `package.yml` and in its own file (a `defaults:` block beside `defaults.yml`),
+and an object id defined twice (a model in `package.yml` `models:` and in a file under
+`models/`, or in two files), instead of letting one replace the other.
 
 ## What the loader does for you
 
@@ -2397,10 +2420,9 @@ Routing is conservative in the MVP:
   rollup row. The rollup must have one row per time bucket and dimension columns
   (and per key of any `grain.entities`); an `IN` list or a range on a rollup
   dimension that isn't grouped runs on the base tables.
-- A time role whose `column_timezone` differs from its `timezone`, and a query
-  with a non-default `calendar_id`, run on the base tables: the rollup path
-  buckets the stored column's clock, without the role's zone conversion, on the
-  default calendar.
+- A time role whose `column_timezone` differs from its `timezone` runs on the
+  base tables: the rollup path buckets the stored column's clock, without the
+  role's zone conversion.
 - A dimension column pre-joined from another model (for example `region` from
   customers) uses its full dimension ID in the variant's `columns:` and declares
   the relationships it was built along: `columns: {dimension.region: {column: region, path:
@@ -2631,6 +2653,37 @@ CLI `segment-*` commands) could not serve:
 
 ### Unknown keys
 
+Loading a package runs the same authoring checks as `validate-config`, so `serve`, MCP, the
+Architect and `Runtime.from_path` refuse a package `validate-config` refuses, with one
+`INVALID_CONFIG` that lists every error in `details.errors`. These blocks have a closed key
+set: the document top level; `package:` and `package.seed`; `defaults:` and its `dimension`,
+`time`, `measure` and `relationship` entries; `graph:`, its `entities`, its `relationships`
+entries and their `rollup_safe`; both `path_policy` blocks; `semantic_caveats` rows and their
+`time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
+`dimensions`, `times`, `measures` (and each measure's `accumulation:`, which takes `kind` and
+`snapshot`, as does `defaults.measure.accumulation`), `joins` and `variants`, with each
+variant's `grain`, `time`, `excludes`, `selection`, `equivalence` and every `columns:`
+binding; metrics; segments and their `membership`. A `columns:` binding takes the keys of what
+its name resolves to: a measure (by key or by the one id the loader gives it: `as:` when set,
+else `id:`, else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
+dimension (by key, by `as:` when set, else `id:`, or a `dimension.` id, which the loader
+refuses when the package has no such dimension), or a key or foreign-key column the
+loader turns into a key dimension (including the key of a graph entity named after the model,
+which binds it by default). A name that resolves to none of them is refused, with the names it
+could mean: the loader would ignore it, and a measure it meant to bind would read the column
+named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
+`as:` value. `relations` entries are not closed yet. A key that starts
+with `_` is an annotation.
+
+In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,
+`relations.yml`, `metrics.yml` and `segments.yml` through `defaults:`, `graph:`,
+`relations:`, `metrics:` and `segments:`; a file under `models/`, `relations/`, `metrics/` or
+`segments/` through its plural or singular wrapper (`models:` or `model:`) when it has one.
+Any other root key is refused, as is a block file whose contents are not under its wrapper.
+`policies.yml` and `caveats.yml` may still hold a bare list. A root file or directory the
+loader doesn't read, a block declared in two files, and an object defined twice are refused
+too (see [Directory layout](#directory-layout)).
+
 `parse-config`, `validate-config` and `check` reject a metric or segment key the
 loader doesn't read, in every layout it reads: files under `metrics/` and
 `segments/`, root `metrics.yml` and `segments.yml`, and `package.yml`. The loader
@@ -2805,6 +2858,7 @@ named definition by hand before upgrading.
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
+| `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 
 ## Reference
 

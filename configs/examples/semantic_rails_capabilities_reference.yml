@@ -179,13 +179,13 @@ active_jaffle_coverage:
     - rolling, prior-period, and PTD metrics
     - historical customer attributes
     - compound-key snapshot entities
-    - alternate fiscal calendar
     - query-time and package-authored metric_predicate usage
     - executed event-pair conversion metrics
     - median and percentile aggregations
     - package-authored semantic caveats (Brooklyn March 2017 soft launch)
   current_explicit_rejects:
     - unsupported conversion shapes outside the supported event-count model
+    - fiscal and other non-default calendars, until a later release
 
   build_options:
     method: POST

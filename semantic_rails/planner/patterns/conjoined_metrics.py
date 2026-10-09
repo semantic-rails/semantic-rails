@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from ...config_parts.measure_governance import whole_aggregate
+from ...naming import semantic_token as _semantic_token
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
     _name_matches,
     _object_by_id,
     _resolved,
-    _semantic_token,
     _tokens,
 )
 from ..coverage import CoverageGap, _coverage_why

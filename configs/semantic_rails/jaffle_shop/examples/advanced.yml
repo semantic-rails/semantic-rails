@@ -288,35 +288,6 @@ examples:
       min_rows: 1
       max_rows: 7
 
-  # Use the existing fiscal_calendar (graph entity = fiscal_calendar,
-  # calendar_id = fiscal). To route through fiscal-quarter boundaries,
-  # set `time.fill: true` so the planner joins the fiscal calendar
-  # entity and uses its quarter_start column for bucketing. Without
-  # `fill: true`, `calendar_id: fiscal` on a Gregorian-bound role is
-  # rejected with INCOMPATIBLE_CALENDAR — the parameter cannot switch
-  # the role's calendar on its own.
-  fiscal_revenue_by_quarter:
-    question: Show revenue by fiscal quarter using the fiscal calendar.
-    query:
-      version: 1
-      select:
-        - as: revenue_usd
-          expression:
-            measure: measure.jaffle.revenue_usd
-            aggregation: sum
-      time:
-        temporal_role: temporal_role.jaffle_order_time
-        calendar_id: fiscal
-        grain: quarter
-        fill: true
-        start: "2017-01-01"
-        end: "2017-12-31"
-      order_by:
-        - field: temporal_role.jaffle_order_time__quarter
-          direction: ASC
-    expected_shape:
-      min_rows: 1
-
   # Conversion metric filtered by another conversion metric — illustrates
   # that metric_predicate.input can itself be a metric reference, not
   # just a measure. Read: "show me the 28d adoption funnel only for

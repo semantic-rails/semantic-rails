@@ -108,7 +108,6 @@ def test_comparison_contexts_do_not_resolve_to_a_window(text: str) -> None:
         ("revenue by store over the last few weeks", "last few weeks"),
         ("orders in the past couple of months", "past couple of months"),
         ("revenue since 2023", "since 2023"),
-        ("orders since January", "since january"),
         ("revenue last holiday season", "last holiday"),
     ],
 )
@@ -287,3 +286,11 @@ def test_intent_ir_time_carries_resolved_relative_range(runtime_factory) -> None
     assert intent_ir.time is not None
     assert intent_ir.time["range"] == {"last": {"unit": "month", "value": 1}}
     assert intent_ir.to_dict()["time"]["range"]["last"]["unit"] == "month"
+
+
+def test_since_named_month_has_explicit_complete_day_bounds():
+    from semantic_rails.planner.time_windows import _time_window
+
+    read = _time_window("orders since January", {"now": "2026-10-05T06:00:00Z"})
+    assert read.bounds == {"start": "2026-01-01", "end": "2026-10-05"}
+    assert not read.unresolved

@@ -2,15 +2,52 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from semantic_rails.compiler import compile_query
+from semantic_rails.compiler_parts.sql_lowering import _query_metric_predicates
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.registry import Registry
+
+
+@pytest.mark.parametrize(
+    ("envelope", "accepted"),
+    [
+        ({"op": "=", "value": True}, True),
+        ({"op": " = ", "value": True}, True),
+        ({"value": True}, True),
+        ({"op": "=", "value": False}, False),
+        ({"op": "=", "value": 1}, False),
+        ({"op": "!=", "value": True}, False),
+        ({"op": "="}, False),
+    ],
+)
+def test_predicate_collection_enforces_the_envelope_when_binding_is_bypassed(envelope, accepted):
+    expression = {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_customer",
+        "input": {"measure": "measure.shop.order_count"},
+        "op": ">",
+        "value": 1,
+    }
+    plan = SimpleNamespace(query={"metric_filters": [{"expression": expression, **envelope}]})
+    if accepted:
+        assert _query_metric_predicates(plan) == [
+            parse_semantic_expression(expression, context="query")
+        ]
+    else:
+        with pytest.raises(SemanticLayerError) as exc:
+            _query_metric_predicates(plan)
+        assert exc.value.code == "INVALID_METRIC_FILTER"
+        assert exc.value.details == {
+            "op": envelope.get("op", "="),
+            "value": envelope.get("value"),
+        }
 
 
 @pytest.mark.parametrize("form", ["inline", "recipe", "input_recipe"])
@@ -261,7 +298,6 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                         "as": f"dimension.demo_{owner}_id",
                         "name": f"demo.{owner.title()}.{owner}_id",
                         "label": f"{owner.title()} id",
-                        "kind": "id",
                     }
                 },
             }
@@ -279,7 +315,6 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                         "as": f"dimension.demo_{parent}_id",
                         "name": f"demo.{parent.title()}.{parent}_id",
                         "label": f"{parent.title()} id",
-                        "kind": "id",
                     },
                     f"{parent}_name": {
                         "as": f"dimension.demo_{parent}_name",
@@ -303,13 +338,11 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                         "as": f"dimension.demo_{child}_id",
                         "name": f"demo.{child_name}.{child}_id",
                         "label": f"{child.title()} id",
-                        "kind": "id",
                     },
                     f"{parent}_id": {
                         "as": f"dimension.demo_{child}_{parent}_id",
                         "name": f"demo.{child_name}.{parent}_id",
                         "label": f"{child.title()} {parent} id",
-                        "kind": "id",
                     },
                     f"{child}_name": {
                         "as": f"dimension.demo_{child}_name",
@@ -337,19 +370,16 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                         "as": f"dimension.demo_{fact}_id",
                         "name": f"demo.{fact.title()}.{fact}_id",
                         "label": f"{fact.title()} id",
-                        "kind": "id",
                     },
                     f"{owner}_id": {
                         "as": f"dimension.demo_{fact}_{owner}_id",
                         "name": f"demo.{fact.title()}.{owner}_id",
                         "label": f"{owner.title()} id",
-                        "kind": "id",
                     },
                     f"{child}_id": {
                         "as": f"dimension.demo_{fact}_{child}_id",
                         "name": f"demo.{fact.title()}.{child}_id",
                         "label": f"{child.title()} id",
-                        "kind": "id",
                     },
                 },
                 "times": {
@@ -520,7 +550,6 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                         "as": "dimension.demo_customer_id",
                         "name": "demo.Customer.customer_id",
                         "label": "Customer id",
-                        "kind": "id",
                     }
                 },
             }
@@ -538,7 +567,6 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                         "as": "dimension.demo_plan_id",
                         "name": "demo.Plan.plan_id",
                         "label": "Plan id",
-                        "kind": "id",
                     },
                     "plan_name": {
                         "as": "dimension.demo_plan_name",
@@ -566,13 +594,11 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                         "as": "dimension.demo_customer_history_customer_id",
                         "name": "demo.CustomerHistory.customer_id",
                         "label": "Customer history customer id",
-                        "kind": "id",
                     },
                     "plan_id": {
                         "as": "dimension.demo_customer_history_plan_id",
                         "name": "demo.CustomerHistory.plan_id",
                         "label": "Plan id",
-                        "kind": "id",
                     },
                     "customer_status": {
                         "as": "dimension.demo_customer_status",
@@ -618,13 +644,11 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                         "as": "dimension.demo_order_id",
                         "name": "demo.Order.order_id",
                         "label": "Order id",
-                        "kind": "id",
                     },
                     "customer_id": {
                         "as": "dimension.demo_order_customer_id",
                         "name": "demo.Order.customer_id",
                         "label": "Customer id",
-                        "kind": "id",
                     },
                 },
                 "times": {

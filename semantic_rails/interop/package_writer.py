@@ -254,8 +254,13 @@ class _Writer:
     def documents(self) -> dict[str, dict[str, Any]]:
         config = self.config
         package = {"id": config.package.package_id, "namespace": self.ns}
+        # The loader reads observation_scope from defaults: only, written below.
         package.update(
-            _authored(config.package, ("name", "description", "schema_strict"), {"package_id"})
+            _authored(
+                config.package,
+                ("name", "description", "schema_strict"),
+                {"package_id", "observation_scope"},
+            )
         )
         graph = self.graph()
         self.dimensions()
@@ -288,7 +293,8 @@ class _Writer:
             ("semantic_caveats", "caveats.yml", ("id", "kind", "message")),
         ):
             rows = [
-                {**row.config, **_authored(row, keep, {"config"})} for row in getattr(config, name)
+                {**getattr(row, "config", {}), **_authored(row, keep, {"config"})}
+                for row in getattr(config, name)
             ]
             if rows:
                 documents[file] = {name: rows}

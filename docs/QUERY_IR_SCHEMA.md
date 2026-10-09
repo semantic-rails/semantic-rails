@@ -330,8 +330,7 @@ used safely to bound a full-history window.
 
 `period_to_date` currently supports only the default calendar. A non-default
 `time.calendar_id`, or a time role bound to a non-default calendar, refuses with
-`REWRITE_NOT_SUPPORTED`; it cannot silently reset on Gregorian periods. Query the
-authored calendar's period as exact start/end dates without `period_to_date` instead.
+`REWRITE_NOT_SUPPORTED` (see TimeBlock); it cannot silently reset on Gregorian periods.
 Default-calendar resets are unchanged.
 
 Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
@@ -784,9 +783,17 @@ case folding. Missing or ambiguous matches fail with `QUERY_EXECUTION_ERROR`.
   "end":   "2025-01-01",   // optional ISO date/timestamp; EXCLUSIVE (<)
   "range": { "last": { "unit": "day", "value": 90 } },   // alternative to start/end (object only)
   "fill":  true,            // emit dense rows for grains with no data
-  "calendar_id": "default"
+  "calendar_id": "default"  // only "default" in this release
 }
 ```
+
+**Only the default calendar is supported in this release.** Any other
+`calendar_id`, with or without `fill` or `grain`, and a `grain` on a temporal role
+(or a measure's clock) whose model is bound to a non-default calendar, refuse with
+`REWRITE_NOT_SUPPORTED` and `details.reason: "calendar_not_supported_yet"`
+(`details.calendar_id` names the calendar; `details.temporal_role` names a bound
+clock). Authored fiscal calendars return in a later release. A bound clock without a
+`grain` still answers its exact `start`/`end` window.
 
 **Bounds are half-open: `start` is inclusive (`>=`), `end` is exclusive
 (`<`).** The window is `[start, end)`. To cover calendar year 2024, use
@@ -968,14 +975,15 @@ shape — are supported in two interchangeable forms:
 }
 ```
 
-- `measure` — measure id; wrapped as an aggregate (default `sum`)
+- `measure` — measure id; read as `input: {measure: <id>, aggregation?}`
 - `offset` — signed integer. `-1` = the immediately prior period at
   `grain`. The sign communicates direction; the magnitude is the
   number of `grain` steps.
 - `grain` — one of `day`, `week`, `month`, `quarter`, `year`. The
   shorthand normalises to `offset.value = abs(offset)`,
   `offset.unit = grain` internally.
-- `aggregation` (optional) — defaults to `sum`.
+- `aggregation` (optional) — defaults to the measure's default
+  aggregation.
 
 ### Canonical IR form (what config recipes emit)
 
@@ -1334,49 +1342,43 @@ dense rows (for example, the inline `prior_period` LAG window in the
 
 ### Which calendar fills
 
-- A calendar the package authors for the requested `calendar_id` always
-  fills (the `default` one when the query names none).
-- With no authored `default` calendar, the **implicit calendar** fills a
-  `default` query: a Gregorian day spine the engine generates in SQL, bucketed
+- The **implicit calendar** fills every query, whether or not the package
+  authors a `default` calendar: a Gregorian day spine the engine generates in SQL, bucketed
   with the same truncation as the query's time column (calendar months,
   quarters and years; Monday weeks), in the temporal role's time zone. It spans
   the window for a query with `start` and `end`, and otherwise the data's first
   to last bucket, so an outlying date (say `1900-01-01`) widens the series
   rather than being dropped (a `9999-12-31` placeholder makes it millions of days long). The
   rendered SQL names it `implicit_calendar`.
-  (An authored calendar fills only the days it holds, so it must cover the data.)
-- Any other `calendar_id` (for example a fiscal calendar) needs that calendar
-  authored. Without it the query is refused; it never falls back to Gregorian
-  periods, and a `default` query never borrows another calendar's periods.
+- An authored `default` calendar takes no part in bucketing or filling: its
+  `date_day` and its `week_start`, `month_start`, `quarter_start` and `year_start`
+  columns are not read for a time bucket, so weeks are ISO Monday weeks even if
+  its `week_start` names Sundays. Its columns stay usable as ordinary dimensions.
+- Any other `calendar_id` (for example a fiscal calendar) is refused (see
+  TimeBlock); it never falls back to Gregorian periods.
 - The implicit calendar is not available on ClickHouse (it has no generated day
-  series there), and on Athena a series is capped at
-  10,000 days (about 27 years); past that the warehouse refuses the query.
-  A query whose parts compile as separate sub-queries (for example with a
-  `distribution` expression) is refused too. Author a calendar for those, for
-  Sunday weeks, and for holidays or business days.
+  series there), so `fill`, `rolling` and `prior_period` refuse on ClickHouse. On
+  Athena a series is capped at 10,000 days (about 27 years); past that the
+  warehouse refuses the query. A query whose parts compile as separate
+  sub-queries (for example a `distribution` beside a `rolling` or `prior_period`
+  window) carries the series into each part.
 
 Two consequences apply to any calendar. The first rows of a `rolling` window
 cover only the periods the series has (a 3-month window at the first month
 holds one month), and a `group_by` value (a store) is filled for periods
 before its first row too, so an additive `prior_period` there compares with 0.
 
-With an explicit `start` and `end` and a calendar `date_day` declared and stored
-as `date`, the spine holds every bucket that contains a day of the window,
-including buckets without source rows.
+With an explicit `start` and `end`, the spine holds every bucket that contains a
+day of the window, including buckets without source rows.
 So the first bucket's label can come before `start`: a week
 that begins on the Monday before a mid-week `start`, or the month of a
 mid-month `start`. Only rows inside `[start, end)` count toward any
-bucket. When `date_day` is declared as `timestamp` or absent, the calendar
-retains its original bucket-start bounds; a bucket that starts before `start`
-can therefore be absent even when it contains source rows. Timestamp metadata
-does not distinguish timezone-aware from timezone-naive storage, so changing
-its bounds without a storage-type contract could shift empty calendar days.
-For the `date` expansion, offset-bearing bounds use the temporal role's zone.
+bucket. Offset-bearing bounds use the temporal role's zone.
 The series also keeps any populated bucket selected by the source
 filter, since packages do not distinguish physical `TIMESTAMP` from
 `TIMESTAMPTZ` columns; an extra empty calendar bucket may appear when those
 two interpretations cross midnight.
-For `date` calendars, fractional-second bounds keep their full precision when
+Fractional-second bounds keep their full precision when
 deciding whether the window is empty and whether an exclusive end just after
 midnight includes that day.
 
@@ -1445,10 +1447,8 @@ Visually:
   reaches a contiguous row sequence; you do not need to set
   `fill: true` explicitly when adding a YoY/WoW/MoM column. See
   "Period shifts" above for the canonical worked example.
-- `time.calendar_id` controls which calendar the spine is generated
-  against — use it to switch between the default Gregorian calendar
-  and any package-authored fiscal calendar (`metric.sales.*` family
-  has a fiscal example).
+- `time.calendar_id` accepts only `default` in this release; a
+  package-authored fiscal calendar is refused (see TimeBlock).
 - `fill: true` is rejected with `INVALID_QUERY` (message
   `time.fill requires query.time.grain`) when no `grain` is present.
 

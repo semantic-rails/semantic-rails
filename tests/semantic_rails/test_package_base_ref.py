@@ -138,11 +138,12 @@ def test_cli_diff_impact_and_promotion_use_the_packages_repository(repo: Path) -
 
 def test_cli_and_mcp_report_a_rejected_baseline_instead_of_low_risk(repo: Path) -> None:
     package = repo / "semantic" / "shop"
-    shared = package / "shared" / "extra.yml"
+    # Loading refuses a root directory of YAML it doesn't read, unless its name starts with `_`.
+    shared = package / "_shared" / "extra.yml"
     shared.parent.mkdir()
     shared.write_text(yaml.safe_dump({"metrics": {"average_order": MARGIN}}))
     link = package / "metrics" / "extra.yml"
-    link.symlink_to("../shared/extra.yml")
+    link.symlink_to("../_shared/extra.yml")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "Symlinked metric")
     link.unlink()
@@ -263,11 +264,11 @@ def test_incomplete_baselines_fail_all_reports(
 ) -> None:
     package = repo / "semantic" / "shop"
     if entry_kind == "symlink":
-        shared = package / "shared" / "extra.yml"
+        shared = package / "_shared" / "extra.yml"
         shared.parent.mkdir()
         shared.write_text(yaml.safe_dump({"metrics": {"average_order": MARGIN}}))
         suspect = package / "metrics" / "extra.yml"
-        suspect.symlink_to("../shared/extra.yml")
+        suspect.symlink_to("../_shared/extra.yml")
     else:
         suspect = package / "metrics" / "C:core.yml"
         suspect.write_text(yaml.safe_dump({"metrics": {"average_order": MARGIN}}))

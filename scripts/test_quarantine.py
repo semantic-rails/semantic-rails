@@ -48,14 +48,33 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--validate-quarantine", action="store_true", help="check IDs in full collection"
     )
     parser.addoption("--flake-seed", type=int, help="shuffle collected tests with this shared seed")
+    parser.addoption(
+        "--flake-failures", type=Path, help="append each failed test ID to this file as it fails"
+    )
 
 
-def pytest_configure() -> None:
+class FailureLog:
+    """Record failures as they are reported, so a run killed before its report still shows them."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        if report.failed:
+            with self.path.open("a", encoding="utf-8") as log:
+                log.write(report.nodeid + "\n")
+
+
+def pytest_configure(config: pytest.Config) -> None:
     # Validate expiry on the controller before xdist starts any workers.
     try:
         load_quarantine(QUARANTINE)
     except (OSError, ValueError) as exc:
         raise pytest.UsageError(str(exc)) from exc
+    failures = config.getoption("--flake-failures")
+    # The xdist controller also receives worker crashes, which never reach a worker's own hooks.
+    if failures is not None and not hasattr(config, "workerinput"):
+        config.pluginmanager.register(FailureLog(failures))
 
 
 def collection_error(config: pytest.Config, message: str) -> None:

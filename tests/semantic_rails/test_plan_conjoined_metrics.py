@@ -58,7 +58,7 @@ model:
 model:
   id: events
   relation: events
-  entities: {event: {}, account: {column: account_id}}
+  entities: {event: {}, account: {}}
   times:
     occurred_at: {column: occurred_at, kind: date, class: event_time, default: true}
   dimensions:
@@ -70,7 +70,7 @@ model:
 model:
   id: account_day
   relation: account_day
-  entities: {account_day: {}, account: {column: account_id}}
+  entities: {account_day: {}, account: {}}
   times:
     day: {column: day, kind: date, class: as_of_time, default: true}
   dimensions:

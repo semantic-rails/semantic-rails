@@ -490,11 +490,18 @@ def _question_payload(
     )
     # A balance compared, or asked per week or month where the package reads it per day.
     clarify_why = best.get("clarify")
+    # A named period with explicit readings to choose from.
+    time_details = (time_why or {}).get("details")
+    readings = isinstance(time_details, dict) and bool(time_details.get("possible_readings"))
     payload = {
         "plan_version": _VERSION,
         "intent": intent,
         "intent_ir": intent_ir.to_dict(),
-        "status": "ok" if ready else "needs_clarification" if clarify_why else "low_confidence",
+        "status": "ok"
+        if ready
+        else "needs_clarification"
+        if clarify_why or readings
+        else "low_confidence",
         "best": _slim_best(
             best_draft,
             pattern=best["pattern"],

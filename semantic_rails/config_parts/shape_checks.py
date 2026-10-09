@@ -1,10 +1,11 @@
-"""Raw-YAML key allowlists and shape checks that ``config_validation`` runs before loading."""
+"""Raw-YAML key allowlists and the authoring check every file-based package load runs."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from .package_loader import _JOIN_KEYS, _column_list
+from ..naming import slug
+from .package_loader import _RELATIONSHIP_PASSTHROUGH, _column_list
 
 
 def add_error(errors: list[str], message: str) -> None:
@@ -64,6 +65,8 @@ _VALID_METRIC_KINDS: frozenset[str] = frozenset(
     }
 )
 _VALID_ACCUMULATION_KINDS: frozenset[str] = frozenset({"event", "flow", "stock", "population"})
+# What the loader reads from an `accumulation:` block (config.py `_normalize_accumulation`).
+_ACCUMULATION_KEYS: frozenset[str] = frozenset({"kind", "snapshot"})
 
 # Allowed-key sets for every authored spec shape. The loader ignores keys
 # it does not read, so a typo'd key (`agg:` for `default_agg:`) silently
@@ -89,6 +92,10 @@ _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "tests",
     }
 )
+# A top-level key a release retired, and where its meaning is authored now.
+_TOP_LEVEL_HINTS: dict[str, str] = {
+    "aggregate_relations": "declare rollups under the model's `variants:`",
+}
 _PACKAGE_KEYS: frozenset[str] = frozenset(
     {
         "id",
@@ -105,9 +112,62 @@ _PACKAGE_KEYS: frozenset[str] = frozenset(
     }
 )
 _SEED_KEYS: frozenset[str] = frozenset({"kind", "source", "post_sql", "null_strings"})
+_DEFAULTS_KEYS: frozenset[str] = frozenset(
+    {"dimension", "time", "measure", "relationship", "operational", "meta", "observation_scope"}
+)
 _GRAPH_KEYS: frozenset[str] = frozenset(
     {"entities", "relationships", "path_policy", "path_preferences"}
 )
+_PATH_POLICY_KEYS: frozenset[str] = frozenset({"max_hops"})
+_JOIN_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "as",
+        "to",
+        "via",
+        "target",
+        "source_key_role",
+        "target_key_role",
+        "cardinality",
+        "safety",
+        "name",
+        "label",
+        "description",
+        "traversal",
+        "allowed_directions",
+        "temporal_validity",
+        "target_key_type",
+        "join_semantics",
+        "rollup_safe_aggregations_reverse",
+        "entities",
+    }
+)
+# What the loader reads from a `graph.relationships` entry when it projects it onto a join.
+_GRAPH_RELATIONSHIP_KEYS: frozenset[str] = frozenset(_RELATIONSHIP_PASSTHROUGH) | {
+    "id",
+    "as",
+    "entities",
+    "cardinality",
+    "allowed_directions",
+    "rollup_safe",
+}
+_ROLLUP_SAFE_KEYS: frozenset[str] = frozenset({"reverse"})
+_CAVEAT_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "kind",
+        "message",
+        "object_ids",
+        "entity_values",
+        "time",
+        "audiences",
+        "environments",
+        "severity",
+        "owner",
+        "references",
+    }
+)
+_CAVEAT_TIME_KEYS: frozenset[str] = frozenset({"at", "from", "to"})
 _GRAPH_ENTITY_KEYS: frozenset[str] = frozenset(
     {
         "id",
@@ -151,7 +211,6 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "freshness_source",
         "freshness_sla_seconds",
         "freshness_as_of",
-        "defaults",
         "time_entity",
         "time_column",
         "variants",
@@ -181,6 +240,9 @@ _MODEL_VARIANT_TIME_KEYS: frozenset[str] = frozenset({"role", "column"})
 _MODEL_VARIANT_EXCLUDES_KEYS: frozenset[str] = frozenset({"entities", "dimensions", "measures"})
 _MODEL_VARIANT_SELECTION_KEYS: frozenset[str] = frozenset({"priority"})
 _MODEL_VARIANT_EQUIVALENCE_KEYS: frozenset[str] = frozenset({"kind"})
+# A rollup's `columns:` entry for a measure or a dimension; see acceleration/selection.py.
+_MEASURE_BINDING_KEYS: frozenset[str] = frozenset({"column", "rollup", "aggregation", "holds"})
+_DIMENSION_BINDING_KEYS: frozenset[str] = frozenset({"column", "path"})
 _MODEL_ENTITY_REF_KEYS: frozenset[str] = frozenset({"expr", "label"})
 _DIMENSION_KEYS: frozenset[str] = frozenset(
     {
@@ -344,24 +406,21 @@ def _unknown_key_errors(
     *,
     label: str,
     errors: list[str],
-    fuzzy_only: bool = False,
+    replaced: dict[str, str] | None = None,
 ) -> None:
-    """Flag authored keys the loader would silently ignore.
-
-    With ``fuzzy_only`` (used for the document top level, where extra
-    keys are tolerated as annotation blocks — e.g. the capabilities
-    reference artifact), only keys that closely match an allowed key are
-    flagged: those are near-certain typos, not annotations."""
+    """Flag authored keys the loader would silently ignore; keys starting with ``_`` are
+    annotations. ``replaced`` names where a retired key's meaning is authored now."""
     from difflib import get_close_matches
 
+    replaced = replaced or {}
     unknown = sorted(
         str(key) for key in spec if str(key) not in allowed and not str(key).startswith("_")
     )
     for key in unknown:
         hints = get_close_matches(key, sorted(allowed), n=2, cutoff=0.6)
-        if fuzzy_only and not hints:
-            continue
-        if hints:
+        if key in replaced:
+            hint = f"; {replaced[key]}"
+        elif hints:
             hint = f"; did you mean {' or '.join(repr(h) for h in hints)}?"
         else:
             hint = f". Allowed keys: {', '.join(sorted(allowed))}"
@@ -385,6 +444,95 @@ def _expect_value_list(value: Any, *, label: str, errors: list[str]) -> None:
     )
 
 
+def _key_columns(model_id: str, model: dict[str, Any], graph_entities: dict[str, Any]) -> set[str]:
+    """The key and foreign-key columns the loader turns into ``kind: id`` dimensions."""
+    entities = model.get("entities")
+    names = {
+        *(str(name) for name in (entities if isinstance(entities, dict) else ())),
+        str(model.get("entity", "") or ""),
+        *(
+            str(name)
+            for name, entity in graph_entities.items()
+            if isinstance(entity, dict) and str(entity.get("model", "") or "").strip() == model_id
+        ),
+    }
+    # A graph entity without `model:` binds the model of its own name.
+    named = graph_entities.get(model_id)
+    if model_id in graph_entities and not (isinstance(named, dict) and named.get("model")):
+        names.add(model_id)
+    columns: set[str] = set()
+    for name in names - {"", "bridge"}:
+        override = entities.get(name) if isinstance(entities, dict) else None
+        if isinstance(override, dict) and override.get("expr") is not None:
+            columns.update(_column_list(override["expr"]))
+        entity = graph_entities.get(name)
+        if isinstance(entity, dict):
+            columns.update(_column_list(entity.get("key")))
+    keys = model.get("keys")
+    if isinstance(keys, dict):
+        columns.update(_column_list(keys.get("primary")))
+        foreign = keys.get("foreign")
+        for spec in foreign.values() if isinstance(foreign, dict) else ():
+            columns.update(_column_list(spec))
+    return columns
+
+
+def _binding_names(
+    model_id: str, model: dict[str, Any], graph_entities: dict[str, Any], namespace: str
+) -> tuple[set[str], set[str]]:
+    """The measure and dimension names a rollup ``columns:`` entry can bind, as the loader reads
+    them: a row by its key or by the one id the loader gives it — ``as:`` when set, else ``id:``,
+    else (a measure) the id the namespace gives it — and a key or foreign-key column the loader
+    turns into a key dimension. An ``id:`` that ``as:`` replaces names nothing."""
+    found = []
+    for block in ("measures", "dimensions"):
+        rows = model.get(block)
+        rows = rows if isinstance(rows, dict) else {}
+        names = {*map(str, rows)}
+        for key, row in rows.items():
+            spec = row if isinstance(row, dict) else {}
+            resolved = next(
+                (text for field in ("as", "id") if (text := str(spec.get(field) or "").strip())),
+                f"measure.{namespace}.{slug(str(key))}" if block == "measures" else "",
+            )
+            if resolved:
+                names.add(resolved)
+        found.append(names)
+    measures, dimensions = found
+    return measures, dimensions | _key_columns(model_id, model, graph_entities)
+
+
+def _unbound_column_error(label: str, name: str, names: tuple[set[str], set[str]]) -> str:
+    """A rollup ``columns:`` entry the loader reads for nothing, and the names it could mean."""
+    from difflib import get_close_matches
+
+    candidates = sorted(names[0] | names[1])
+    hints = get_close_matches(name, candidates, n=3, cutoff=0.6)
+    fix = (
+        f"did you mean {' or '.join(repr(hint) for hint in hints)}?"
+        if hints
+        else f"bind one of: {', '.join(candidates) or 'none (the model has no measures or dimensions)'}"
+    )
+    return (
+        f"{label} names no measure, dimension or key column of the model — it is ignored by "
+        f"the loader, so this would silently change behavior; {fix}"
+    )
+
+
+def _binding_keys(name: str, measures: set[str], dimensions: set[str]) -> frozenset[str] | None:
+    """The keys a rollup ``columns:`` entry may hold: a measure's binding, a dimension's, or what
+    both take when the name is both; ``None`` when the name binds neither. A ``dimension.`` name
+    the model lacks is left to the loader, which refuses a dimension it doesn't know."""
+    allowed: frozenset[str] | None = None
+    for names, prefix, keys in (
+        (measures, None, _MEASURE_BINDING_KEYS),
+        (dimensions, "dimension.", _DIMENSION_BINDING_KEYS),
+    ):
+        if name in names or (prefix and name.startswith(prefix)):
+            allowed = keys if allowed is None else allowed & keys
+    return allowed
+
+
 def _check_model_shape(
     model_id: str,
     model: dict[str, Any],
@@ -392,6 +540,7 @@ def _check_model_shape(
     path_label: str,
     errors: list[str],
     graph_entities: dict[str, Any] | None = None,
+    namespace: str,
 ) -> None:
     """Authoring-shape checks for one model: unknown keys, list-typed
     fields, and grain ↔ entity-key consistency."""
@@ -447,6 +596,12 @@ def _check_model_shape(
         accumulation = measure_raw.get("accumulation")
         acc_kind = ""
         if isinstance(accumulation, dict):
+            _unknown_key_errors(
+                accumulation,
+                _ACCUMULATION_KEYS,
+                label=f"{measure_label} accumulation",
+                errors=errors,
+            )
             acc_kind = str(accumulation.get("kind", "") or "").strip().lower()
         elif accumulation is not None:
             acc_kind = str(accumulation or "").strip().lower()
@@ -468,6 +623,7 @@ def _check_model_shape(
 
     variants = model.get("variants")
     if isinstance(variants, dict):
+        binding_names = _binding_names(model_id, model, graph_entities or {}, namespace)
         for variant_key, variant_raw in variants.items():
             if not isinstance(variant_raw, dict):
                 add_error(
@@ -494,6 +650,16 @@ def _check_model_shape(
                         label=f"{variant_label} {nested_key}",
                         errors=errors,
                     )
+            columns = variant_raw.get("columns")
+            for column_key, binding in columns.items() if isinstance(columns, dict) else ():
+                column_label = f"{variant_label} column '{column_key}'"
+                binding_keys = _binding_keys(str(column_key), *binding_names)
+                if binding_keys is None:
+                    add_error(
+                        errors, _unbound_column_error(column_label, str(column_key), binding_names)
+                    )
+                elif isinstance(binding, dict):
+                    _unknown_key_errors(binding, binding_keys, label=column_label, errors=errors)
             grain = variant_raw.get("grain")
             if isinstance(grain, dict) and "entities" in grain:
                 _expect_value_list(
@@ -716,16 +882,53 @@ def _membership_fix(key: str) -> str:
     )
 
 
-def _check_package_shapes(
-    raw: dict[str, Any], *, path_label: str, errors: list[str], top_level: bool = True
-) -> None:
-    """Authoring-shape checks shared by single-file and directory packages:
-    unknown keys and wrong-typed fields across every authored block."""
-    if top_level:
-        # Fuzzy-only at the document top level: unmatched extra keys are
-        # tolerated as annotation blocks (the capabilities reference
-        # artifact relies on this); near-matches are near-certain typos.
-        _unknown_key_errors(raw, _TOP_LEVEL_KEYS, label=path_label, errors=errors, fuzzy_only=True)
+def authoring_errors(raw: dict[str, Any], *, path_label: str) -> list[str]:
+    """Every authoring error in a package as authored, in any layout. Loading refuses a package
+    with any, so a key the loader would ignore never changes what it serves."""
+    errors: list[str] = []
+    _check_package_shapes(raw, path_label=path_label, errors=errors)
+    models = raw.get("models")
+    if isinstance(models, dict):
+        _check_typed_field_enums(path_label, models, errors)
+    return errors
+
+
+def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[str]) -> None:
+    """Unknown keys and wrong-typed fields across every authored block."""
+    _unknown_key_errors(
+        raw, _TOP_LEVEL_KEYS, label=path_label, errors=errors, replaced=_TOP_LEVEL_HINTS
+    )
+    defaults = raw.get("defaults")
+    if isinstance(defaults, dict):
+        label = f"{path_label}: defaults"
+        _unknown_key_errors(defaults, _DEFAULTS_KEYS, label=label, errors=errors)
+        for key, allowed in (
+            ("dimension", _DIMENSION_KEYS),
+            ("time", _TIME_KEYS),
+            ("measure", _MEASURE_KEYS),
+            ("relationship", _JOIN_KEYS),
+        ):
+            if isinstance(defaults.get(key), dict):
+                _unknown_key_errors(defaults[key], allowed, label=f"{label}.{key}", errors=errors)
+        # Every measure without its own `accumulation:` takes this one.
+        measure = defaults.get("measure")
+        accumulation = measure.get("accumulation") if isinstance(measure, dict) else None
+        if isinstance(accumulation, dict):
+            _unknown_key_errors(
+                accumulation,
+                _ACCUMULATION_KEYS,
+                label=f"{label}.measure accumulation",
+                errors=errors,
+            )
+    caveats = raw.get("semantic_caveats")
+    for index, row in enumerate(caveats if isinstance(caveats, list) else ()):
+        if isinstance(row, dict):
+            label = f"{path_label}: caveat {row.get('id', index)!r}"
+            _unknown_key_errors(row, _CAVEAT_KEYS, label=label, errors=errors)
+            if isinstance(row.get("time"), dict):
+                _unknown_key_errors(
+                    row["time"], _CAVEAT_TIME_KEYS, label=f"{label} time", errors=errors
+                )
 
     package = raw.get("package")
     if isinstance(package, dict):
@@ -758,9 +961,30 @@ def _check_package_shapes(
                         label=f"{path_label}: graph entity '{entity_key}'",
                         errors=errors,
                     )
+        relationships = graph.get("relationships")
+        for name, row in relationships.items() if isinstance(relationships, dict) else ():
+            if isinstance(row, dict):
+                label = f"{path_label}: graph relationship '{name}'"
+                _unknown_key_errors(row, _GRAPH_RELATIONSHIP_KEYS, label=label, errors=errors)
+                if isinstance(row.get("rollup_safe"), dict):
+                    _unknown_key_errors(
+                        row["rollup_safe"],
+                        _ROLLUP_SAFE_KEYS,
+                        label=f"{label} rollup_safe",
+                        errors=errors,
+                    )
+    for block, label in ((raw, "path_policy"), (graph, "graph path_policy")):
+        policy = block.get("path_policy") if isinstance(block, dict) else None
+        if isinstance(policy, dict):
+            _unknown_key_errors(
+                policy, _PATH_POLICY_KEYS, label=f"{path_label}: {label}", errors=errors
+            )
 
     models = raw.get("models")
     if isinstance(models, dict):
+        # The namespace the loader derives ids from (`normalize_package`).
+        block = package if isinstance(package, dict) else {}
+        namespace = str(block.get("namespace", block.get("id", "")) or "").strip()
         for model_id, model in models.items():
             if isinstance(model, dict):
                 _check_model_shape(
@@ -769,6 +993,7 @@ def _check_package_shapes(
                     path_label=path_label,
                     errors=errors,
                     graph_entities=graph_entities,
+                    namespace=namespace,
                 )
 
     try:

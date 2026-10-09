@@ -20,6 +20,7 @@ from typing import Any
 
 from ._base import RuntimeCompositionDraft
 from .exclusions import exclusion_clauses, exclusion_regions
+from .plan_query import _append_unique_dicts
 from .visibility import (
     discovery_query,
     visible_dimensions,
@@ -131,6 +132,7 @@ def _draft_for_choice(
     partial_query: dict[str, Any],
     choice: dict[str, Any],
 ) -> RuntimeCompositionDraft:
+    from ..metadata import _select_expr_for_choice
     from ..metadata_parts.object_metadata import _public_object_type  # noqa: WPS433
 
     query = _query_part(partial_query)
@@ -367,18 +369,6 @@ def _rerank_for_text(
         ),
     )
     return tied_ranked + rest
-
-
-def _select_expr_for_choice(runtime: Any, chosen: dict[str, Any]) -> dict[str, Any]:
-    from ..metadata import _config_maps  # noqa: WPS433 - shared metadata helper
-
-    if chosen["kind"] == "metric":
-        return {"expression": {"metric": chosen["id"]}, "as": chosen["label"]}
-    measure = _config_maps(runtime._config)["measures"][chosen["id"]]
-    return {
-        "expression": {"measure": chosen["id"], "aggregation": measure.default_aggregation},
-        "as": chosen["label"],
-    }
 
 
 def _target_focus_text(intent: str) -> str:
@@ -900,20 +890,6 @@ def _query_part(payload: dict[str, Any]) -> dict[str, Any]:
     out.pop("policy_context", None)
     out.pop("request_context", None)
     out.pop("request_id", None)
-    return out
-
-
-def _append_unique_dicts(
-    existing: list[dict[str, Any]], additions: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    seen = {json.dumps(row, sort_keys=True, default=str) for row in existing}
-    out = list(existing)
-    for row in additions:
-        key = json.dumps(row, sort_keys=True, default=str)
-        if key in seen:
-            continue
-        out.append(row)
-        seen.add(key)
     return out
 
 

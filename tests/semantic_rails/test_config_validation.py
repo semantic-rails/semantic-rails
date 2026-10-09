@@ -13,7 +13,6 @@ import yaml
 
 from semantic_rails import cli as cli_module
 from semantic_rails import config as config_module
-from semantic_rails import config_validation as config_validation_module
 from semantic_rails.cli.reports import project_validation_report
 from semantic_rails.config import resolve_repo_path
 from semantic_rails.config_validation import (
@@ -1671,7 +1670,7 @@ def test_key_roles_default_and_derive_relationship_cardinality(tmp_path: Path):
                 "parents": {
                     "relation": "parent_dim",
                     "keys": {"primary": {"columns": ["parent_id"], "role": "unique"}},
-                    "dimensions": {"parent_id": {"id": "dimension.demo_parent_id", "kind": "id"}},
+                    "dimensions": {"parent_id": {"id": "dimension.demo_parent_id"}},
                 },
                 "children": {
                     "relation": "child_fact",
@@ -1681,8 +1680,8 @@ def test_key_roles_default_and_derive_relationship_cardinality(tmp_path: Path):
                     },
                     "joins": {"parent": {"to": "parent"}},
                     "dimensions": {
-                        "child_id": {"id": "dimension.demo_child_id", "kind": "id"},
-                        "parent_id": {"id": "dimension.demo_child_parent_id", "kind": "id"},
+                        "child_id": {"id": "dimension.demo_child_id"},
+                        "parent_id": {"id": "dimension.demo_child_parent_id"},
                     },
                     "measures": {
                         "child_count": {
@@ -3012,8 +3011,8 @@ def test_key_checks_cover_every_layout_the_loader_reads(
 def _jaffle_with_duplicate_metric(package_config_factory, *, typo_in: str) -> Path:
     """Define sales.aov_usd again in metrics/zz_extra.yml, with a typo in one copy.
 
-    The loader merges files in sorted path order, so metrics/zz_extra.yml wins
-    over metrics/core/core_metrics.yml.
+    The loader merges files in sorted path order, so metrics/zz_extra.yml would replace
+    metrics/core/core_metrics.yml's copy.
     """
     _, package_dir = package_config_factory("jaffle_shop")
     package_dir = Path(package_dir)
@@ -3027,15 +3026,18 @@ def _jaffle_with_duplicate_metric(package_config_factory, *, typo_in: str) -> Pa
     return package_dir
 
 
-@pytest.mark.parametrize(("typo_in", "expected_errors"), [("kept", 1), ("discarded", 0)])
-def test_key_checks_follow_the_copy_the_loader_keeps(
-    package_config_factory, typo_in, expected_errors
-):
+@pytest.mark.parametrize("typo_in", ["kept", "discarded"])
+def test_a_metric_defined_twice_is_refused_whichever_copy_is_kept(package_config_factory, typo_in):
     package_dir = _jaffle_with_duplicate_metric(package_config_factory, typo_in=typo_in)
 
     errors = validate_runtime_package(package_dir)
 
-    assert len(errors) == expected_errors, errors
+    assert len(errors) == 1, errors
+    assert "zz_extra.yml defines metric 'sales.aov_usd', which " in errors[0]
+    assert errors[0].endswith(
+        "core_metrics.yml is ignored by the loader, so this would "
+        "silently change behavior; keep one definition"
+    )
 
 
 def test_key_checks_skip_the_directories_the_loader_skips(package_config_factory):
@@ -3076,35 +3078,6 @@ def test_key_checks_accept_a_relative_package_path(package_config_factory, monke
 
     assert len(errors) == 1, errors
     assert "has 'where' outside membership:" in errors[0]
-
-
-@pytest.mark.parametrize(
-    "failure",
-    [
-        OSError("read failed"),
-        SemanticLayerError(
-            "INVALID_CONFIG", "Package sources changed during loading; retry after writes complete."
-        ),
-    ],
-    ids=["os-error", "sources-changed"],
-)
-def test_key_checks_fail_closed_when_their_merge_fails(
-    package_config_factory, monkeypatch, failure
-):
-    # Only the key checks' merge fails; the package itself still loads. The checks must
-    # not be skipped silently.
-    _, package_dir = package_config_factory("jaffle_shop")
-
-    def fail(*args, **kwargs):
-        raise failure
-
-    monkeypatch.setattr(config_validation_module, "_merge_package_dir", fail)
-
-    errors = validate_runtime_package(Path(package_dir))
-    assert len(errors) == 1, errors
-    assert "can't read the metric and segment specs to check their keys" in errors[0]
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-    assert report["ok"] is False
 
 
 def _quote_schema_version(package_dir: Path) -> None:

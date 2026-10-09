@@ -172,12 +172,15 @@ modules, prioritizing changed tests and capping the set at 20 files. Seeds and a
 omitted file count are logged. The guard uses the main run's `backend-results.xml`
 test durations divided by its worker count to trim the lowest-priority files until
 the first repetition fits its five-minute budget with 20% headroom; dropped files
-produce a notice. A repetition that cannot fit the remaining budget is inconclusive.
-Any test failure or timeout of a repetition expected to fit fails the job with
-`intermittent: investigate`, without retrying the failure away. A first-repetition
-timeout without complete duration estimates produces an inconclusive warning and
-passes, since the main step already ran every test once. Warehouse integration tests
-keep their separate CI.
+produce a notice. Each repeated test runs under a 60-second limit, unless it declares
+a longer `@pytest.mark.timeout`, and the first failure or test over its limit ends the
+repetition. Any test failure, including a test over its limit,
+fails the job with `intermittent: investigate`, without retrying the failure away,
+even when slower tests are still running as the budget ends.
+A repetition that cannot fit the remaining budget is skipped; one with no failure
+still running when the budget ends is stopped with a notice naming its files. Both
+are inconclusive and pass, since the main step already ran every test once. Warehouse
+integration tests keep their separate CI.
 
 `tests/quarantine.toml` starts empty. To temporarily quarantine a known failure,
 replace `tests = []` with `[[tests]]` entries containing the exact pytest node `id`

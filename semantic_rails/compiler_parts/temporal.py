@@ -422,68 +422,50 @@ def _allows_coarse_snapshot_alignment(
     return all(grain in role.supported_grains for role in compatible_roles if role is not None)
 
 
-def _validate_calendar_id(query: NormalizedQuery, config: PackageConfig) -> None:
-    """Reject queries that request a non-default `calendar_id` on a temporal
-    role whose underlying entity isn't bound to that calendar — UNLESS the
-    query also opts into `fill: true`, which routes through the calendar
-    entity for grain-aligned bucketing.
+def _validate_calendar_id(
+    query: NormalizedQuery, config: PackageConfig, expressions: Sequence[SemanticExpr]
+) -> None:
+    """Resolve the query's calendar: only the default (Gregorian) one is supported.
 
-    Without this check, the planner emits Gregorian SQL byte-identical to
-    `calendar_id: "default"` while the user believes they're querying
-    fiscal grains — a silently-wrong-answer failure mode.
-
-    Two valid configurations:
-
-    1. `time.temporal_role` is itself bound to the requested calendar
-       (the role's underlying entity has `calendar_id: <name>`).
-    2. `time.fill: true` is set; the planner joins the calendar entity
-       and uses its month_start/quarter_start/etc. columns for buckets.
+    Every bucket uses ``DATE_TRUNC``; no authored calendar table is read for
+    bucketing. A non-default ``calendar_id``, or a grain on a clock bound to a
+    non-default calendar, would otherwise return Gregorian buckets labelled as
+    another calendar's periods, so it refuses here, for every leaf path.
     """
     assert query.time is not None  # caller guarantees query.time is set
-    requested_calendar = (query.time.calendar_id or "default").strip().lower()
-    if requested_calendar in {"", "default"}:
+    clocks = {query.time.temporal_role}
+    for expr in expressions:
+        if not isinstance(expr, MetricPredicateExpr):
+            clocks |= _expr_compatible_temporal_roles(expr, config, query)
+    refuse_authored_calendar(query.time.calendar_id, query.time.grain, clocks, config)
+
+
+def refuse_authored_calendar(
+    calendar_id: Any, grain: Any, clocks: Iterable[str], config: PackageConfig
+) -> None:
+    """Refuse a non-default calendar, or bucketing a clock bound to one."""
+    requested = str(calendar_id or "").strip().lower() or "default"
+    details: dict[str, Any] = {"reason": "calendar_not_supported_yet", "calendar_id": requested}
+    if requested == "default" and str(grain or "").strip():
+        roles = _temporal_role_index(config)
+        dimensions = _dimension_index(config)
+        entities = {row.id: row for row in config.entities}
+        for role_id in sorted(set(clocks)):
+            role = roles.get(role_id)
+            dimension = dimensions.get(role.dimension) if role else None
+            entity = entities.get(dimension.entity) if dimension else None
+            bound = str(getattr(entity, "calendar_id", "") or "").strip().lower() or "default"
+            if bound != "default":
+                details.update(calendar_id=bound, temporal_role=role_id)
+                break
+    if details["calendar_id"] == "default":
         return
-    # Path 2: fill: true routes through the calendar entity directly.
-    if query.time.fill:
-        return
-    role = _temporal_role_index(config).get(query.time.temporal_role)
-    if role is None:
-        return  # Already raised above; defensive.
-    dim = _dimension_index(config).get(role.dimension)
-    if dim is None:
-        return
-    entity = next((row for row in config.entities if row.id == dim.entity), None)
-    role_calendar = (entity.calendar_id if entity else "").strip().lower() or "default"
-    # Path 1: the role is itself bound to the requested calendar.
-    if role_calendar == requested_calendar:
-        return
-    # Build the list of compatible roles bound to the requested calendar
-    # so the recovery hint can point users to a working alternative.
-    compatible_roles = []
-    for r in config.temporal_roles:
-        rd = _dimension_index(config).get(r.dimension)
-        if rd is None:
-            continue
-        re = next((row for row in config.entities if row.id == rd.entity), None)
-        rc = (re.calendar_id if re else "").strip().lower() or "default"
-        if rc == requested_calendar:
-            compatible_roles.append(r.id)
     raise SemanticLayerError(
-        "INCOMPATIBLE_CALENDAR",
-        (
-            f"Temporal role '{query.time.temporal_role}' is bound to calendar "
-            f"'{role_calendar}' but the query requests calendar "
-            f"'{requested_calendar}'. The calendar_id parameter does not switch "
-            f"the role's calendar on its own — pick a temporal role that's "
-            f"bound to the requested calendar, or set time.fill: true to route "
-            f"through the calendar entity's grain columns."
-        ),
-        details={
-            "requested_calendar": requested_calendar,
-            "role_calendar": role_calendar,
-            "temporal_role": query.time.temporal_role,
-            "alternative_temporal_roles": sorted(compatible_roles),
-        },
+        "REWRITE_NOT_SUPPORTED",
+        f"Calendar '{details['calendar_id']}' is not supported yet: authored fiscal calendars "
+        "return in a later release. Use the default calendar, or exact start and end dates "
+        "without a grain.",
+        details=details,
     )
 
 
@@ -713,7 +695,7 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
     if requested not in role_index:
         raise SemanticLayerError("INVALID_TEMPORAL_ROLE", f"Unknown temporal role '{requested}'")
     _validate_grain_against_temporal_role(query, role_index[requested])
-    _validate_calendar_id(query, config)
+    _validate_calendar_id(query, config, expressions)
     # Conversion metrics get their temporal pairing validated up-front so
     # the failure mode is a precise INVALID_TEMPORAL_BINDING envelope,
     # not a downstream binder error at execute time.

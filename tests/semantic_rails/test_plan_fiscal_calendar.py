@@ -1,10 +1,11 @@
-"""plan counts a fiscal question's time on the fiscal calendar, or says it can't.
+"""plan drafts a fiscal question's time on the fiscal calendar, or says it can't.
 
 "Revenue by fiscal quarter" used to come back as Gregorian quarters with status
 ok, "vs prior fiscal quarter" was dropped with status ok, and "fiscal Q2 2017"
-resolved to April through June. Now a package's one fiscal calendar buckets
-the draft; without one, or for a window only the calendar could date, plan
-reports the gap instead of answering a different question.
+resolved to April through June. Now a package's one fiscal calendar holds the
+draft (the engine refuses non-default calendars in this release); without one,
+or for a window only the calendar could date, plan reports the gap instead of
+answering a different question.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import Any
 import pytest
 import yaml
 
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.intent_ir import parse_intent
@@ -24,7 +26,7 @@ from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolv
 from semantic_rails.planner.time_windows import _time_bounds_from_text, _with_fiscal_calendar
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
-from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 REVENUE = {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -69,6 +71,14 @@ def no_fiscal(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
     yield from _runtime(tmp_path_factory, fiscal=False)
 
 
+def _assert_calendar_refused(payload: dict[str, Any]) -> None:
+    """The fiscal draft validates against the engine, which refuses it in this release."""
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "VALIDATION_FAILED"
+    assert payload["why"]["errors"][0]["code"] == "REWRITE_NOT_SUPPORTED"
+    assert "fiscal calendars return in a later release" in payload["why"]["errors"][0]["message"]
+
+
 def _gap_kinds(payload: dict[str, Any]) -> list[str]:
     return [gap["kind"] for gap in (payload.get("why") or {}).get("details", {}).get("gaps", [])]
 
@@ -83,17 +93,17 @@ def _gap_kinds(payload: dict[str, Any]) -> list[str]:
         ("revenue by store by fiscal quarter", "quarter", [STORE]),
     ],
 )
-def test_a_fiscal_series_buckets_on_the_fiscal_calendar(
+def test_a_fiscal_series_drafts_on_the_fiscal_calendar_and_is_held(
     jaffle: Runtime, question: str, grain: str, group_by: list[str] | None
 ) -> None:
     payload = plan_payload(jaffle, intent=question)
     query = payload["best"]["query_ir"]
 
     if question == "revenue by store by fiscal quarter":
-        assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+        assert payload["status"] == "low_confidence"
         group_by = ["dimension.jaffle_customer_history_preferred_store_id"]
     else:
-        assert payload["status"] == "ok", payload.get("why")
+        _assert_calendar_refused(payload)
     assert "warnings" not in payload
     assert query["time"] == {
         "temporal_role": ORDER_TIME,
@@ -105,14 +115,15 @@ def test_a_fiscal_series_buckets_on_the_fiscal_calendar(
     assert query.get("group_by") == group_by
 
 
-def test_fiscal_quarters_start_where_the_fiscal_calendar_starts_them(jaffle: Runtime) -> None:
+def test_a_fiscal_series_is_refused_not_answered_in_gregorian_quarters(
+    jaffle: Runtime,
+) -> None:
     query = plan_payload(jaffle, intent="revenue by fiscal quarter")["best"]["query_ir"]
-    rows = typed_rows(jaffle.query(query))
-    starts = [row[f"{ORDER_TIME}__quarter"] for row in rows]
+    with pytest.raises(SemanticLayerError) as refused:
+        jaffle.query(query)
 
-    # The fixture's fiscal year starts in February; Gregorian quarters start in January.
-    assert {start.month for start in starts} == {2, 5, 8, 11}
-    assert sum(row["revenue_usd"] for row in rows) == pytest.approx(745893.03, abs=0.01)
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
 @pytest.mark.parametrize(
@@ -147,24 +158,28 @@ def test_without_a_fiscal_calendar_plan_reports_the_gap(no_fiscal: Runtime, ques
 
 
 @pytest.mark.parametrize(
-    ("question", "phrase"),
+    ("question", "phrase", "fiscal_series"),
     [
-        ("revenue in fiscal Q2 2017", "q2 2017"),
-        ("revenue by fiscal quarter in 2017", "in 2017"),
-        ("revenue in fiscal 2017", "fiscal 2017"),
-        ("revenue in FY2017", "fy2017"),
-        ("revenue last fiscal quarter", "last fiscal quarter"),
-        ("revenue this fiscal year", "this fiscal year"),
-        ("revenue by fiscal month for the last 3 months", "last 3 months"),
+        ("revenue in fiscal Q2 2017", "q2 2017", False),
+        ("revenue by fiscal quarter in 2017", "in 2017", True),
+        ("revenue in fiscal 2017", "fiscal 2017", False),
+        ("revenue in FY2017", "fy2017", False),
+        ("revenue last fiscal quarter", "last fiscal quarter", False),
+        ("revenue this fiscal year", "this fiscal year", False),
+        ("revenue by fiscal month for the last 3 months", "last 3 months", True),
     ],
 )
 def test_a_fiscal_window_resolves_only_from_exact_days(
-    jaffle: Runtime, question: str, phrase: str
+    jaffle: Runtime, question: str, phrase: str, fiscal_series: bool
 ) -> None:
     assert _time_bounds_from_text(question) == {}
     assert phrase in _unresolved_time_phrases(question)
 
     payload = plan_payload(jaffle, intent=question)
+    if fiscal_series:
+        # The drafted fiscal series is refused before its window is read.
+        _assert_calendar_refused(payload)
+        return
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED" or (
         "time_window_unresolved" in _gap_kinds(payload)
@@ -278,7 +293,7 @@ def test_exact_days_bound_a_fiscal_series(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue by fiscal quarter from 2017-02-01 to 2018-01-31")
     time = payload["best"]["query_ir"]["time"]
 
-    assert payload["status"] == "ok"
+    _assert_calendar_refused(payload)
     assert (time["calendar_id"], time["start"], time["end"]) == (
         "fiscal",
         "2017-02-01",

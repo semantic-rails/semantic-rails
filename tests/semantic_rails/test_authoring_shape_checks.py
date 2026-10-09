@@ -76,8 +76,7 @@ def test_parent_rollup_measure_keys_are_unknown(
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
-    message = str(exc.value)
-    assert "unknown keys" in message and key in message
+    assert f"has unknown key {key!r}" in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -109,7 +108,7 @@ def test_removed_join_key_is_rejected_before_graph_override(
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(package))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "models.orders.joins.customer" in str(exc.value)
+    assert "model 'orders' join 'customer'" in str(exc.value)
     assert key in str(exc.value)
 
 
@@ -190,7 +189,7 @@ def test_removed_relationship_rollup_forms_fail_loading(
     relationship = {
         "graph": "orders_customer",
         "defaults": "defaults.relationship",
-        "join": "models.orders.joins.customer",
+        "join": "model 'orders' join 'customer'",
     }[location]
     assert relationship in str(exc.value)
     assert "rollup_safe" in str(exc.value)
@@ -244,16 +243,16 @@ def test_grain_does_not_select_primary_when_identity_is_authored(
     starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     expected_key = "renamed_customer_id" if key_source == "expr" else "customer_id"
     if surface == "validate":
-        assert any(
-            "grain" in error and "authored_row_id" in error and expected_key in error
-            for error in _errors(starter_package)
-        )
-        return
-    # Loading directly bypasses raw-shape validation, so the normalizer must refuse too.
-    with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(starter_package))
-    assert exc.value.code == "INVALID_CONFIG"
-    assert all(text in str(exc.value) for text in ("'customers'", "'customer'", expected_key))
+        errors = _errors(starter_package)
+    else:
+        with pytest.raises(SemanticLayerError) as exc:
+            load_package_config(str(starter_package))
+        assert exc.value.code == "INVALID_CONFIG"
+        errors = exc.value.details["errors"]
+    assert any(
+        "model 'customers' grain" in error and "authored_row_id" in error and expected_key in error
+        for error in errors
+    )
 
 
 @pytest.mark.parametrize("key_source", ["graph", "expr", "primary", "empty_block"])
@@ -311,7 +310,7 @@ def test_grain_matching_foreign_key_does_not_override_authored_primary(
     model["grain"] = ["order_id"]
     starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     assert any("grain" in error and "customer_id" in error for error in _errors(starter_package))
-    with pytest.raises(SemanticLayerError, match="primary entity 'customer'") as exc:
+    with pytest.raises(SemanticLayerError, match="the primary entity key") as exc:
         load_package_config(str(starter_package))
     assert exc.value.code == "INVALID_CONFIG"
 
