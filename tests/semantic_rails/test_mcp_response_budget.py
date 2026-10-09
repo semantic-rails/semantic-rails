@@ -373,8 +373,9 @@ def test_unsupported_expression_reports_received_kind_and_request_path(
 
 
 # tools/list was 12,728 bytes with the prose summary of the old query shapes; execute now
-# embeds the call's generated schema once. The budget is that size plus 5% and may only shrink.
-TOOLS_LIST_MAX_BYTES = 24_909  # 23,723 * 1.05
+# embeds the call's generated schema once, each kind's keys written out in one anyOf. The
+# budget is that size plus 5% and may only shrink.
+TOOLS_LIST_MAX_BYTES = 20_776  # 19,787 * 1.05
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
