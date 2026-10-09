@@ -392,6 +392,7 @@ def test_refusal_names_keys_only_when_all_are_visible(
     runtime: Runtime, package_dir: Path, with_aggregate_if: bool, mode: str, hidden_key: str | None
 ) -> None:
     from semantic_rails.mcp import SemanticLayerMCPAdapter
+    from semantic_rails.request_context import RequestContext
     from semantic_rails.schema import SemanticPolicyConfig
 
     policies = []
@@ -434,12 +435,8 @@ def test_refusal_names_keys_only_when_all_are_visible(
     try:
         response = SemanticLayerMCPAdapter(engine).call_tool(
             "execute",
-            {
-                "query": query,
-                "policy_context": {"audience": "external"},
-                "mode": mode,
-                "verbosity": "full",
-            },
+            {"query": query, "mode": mode, "verbosity": "full"},
+            request_context=RequestContext(audience="external"),
         )
         assert response["ok"] is False
         issue = response["errors"][0]

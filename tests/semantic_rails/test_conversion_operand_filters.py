@@ -162,7 +162,7 @@ def test_operand_expression_filter_clause_is_rejected_not_dropped(runtime_factor
     )
     assert report["ok"] is False
     assert report["errors"][0]["code"] == "CONVERSION_NOT_SUPPORTED"
-    assert "metric_filters" in report["errors"][0]["message"]
+    assert "entity filter in the call's where" in report["errors"][0]["message"]
 
 
 @pytest.mark.parametrize(
