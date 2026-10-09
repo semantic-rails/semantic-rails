@@ -49,6 +49,7 @@ from ..groupings import (
     _entity_stand_ins,
     _explicit_grain,
     _maybe_group_by,
+    _named_run,
     _time_spec,
 )
 from ..intent_ir import _FALLBACK_STOPWORDS
@@ -218,10 +219,11 @@ def _listed(
 ) -> tuple[list[str], dict[str, Any] | None]:
     """The stand-ins of what a clause opening with "which" or "who" lists, or why plan asks.
 
-    The entity the clause names ("which accounts"), else, for "who" naming none, the one entity
-    with a display the draft's subject reaches. Several such entities ask which; none, or a
-    term naming no single entity, lists nothing (the answer-shape check holds the draft). A
-    superlative no ranking reads ("who had the most MRR") lists nothing either.
+    "which" lists the entity named right after it ("which accounts"). "who" lists the one entity
+    with a display the draft's subject reaches, when its clause names no entity: in "who placed
+    an order" the order may be what was placed, so nothing is listed. Several such entities ask
+    which; none, or a term naming no single entity, lists nothing (the answer-shape check holds
+    the draft). A superlative no ranking reads ("who had the most MRR") lists nothing either.
     """
 
     from ..answer_shape import _clause_entity, _list_clauses  # noqa: WPS433 - imports patterns
@@ -234,10 +236,12 @@ def _listed(
     for word, clause in _list_clauses(config, question):
         if word not in {"which", "who", "whom"}:
             continue
-        term = _clause_entity(config, lowered, windows, clause)
-        if term is not None or word == "which":
-            entity = _entity_grouping(config, term) if term is not None else None
+        if word == "which":
+            run = _named_run(config, lowered, clause[0])
+            entity = _entity_grouping(config, lowered[run[0] : run[1]]) if run else None
             return (entity[1] if entity is not None else []), None
+        if _clause_entity(config, lowered, windows, clause) is not None:
+            return [], None
         entities = _display_entities(config, query)
         if len(entities) == 1:
             return [*(ids for part in _entity_stand_ins(config, entities[0]) for ids in part)], None

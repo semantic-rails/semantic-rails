@@ -205,8 +205,9 @@ def _display_entities(config: Any, query: dict[str, Any]) -> list[Any]:
 def _key_only_assumptions(
     config: Any, query: dict[str, Any], partial_query: dict[str, Any] | None = None
 ) -> list[str]:
-    """A line for each entity the draft shows by its key alone, with no other dimension of its
-    own beside it, because the caller sees no display for it. A caller's grouping needs none."""
+    """A line for each entity the draft shows by its key alone because nothing else names its
+    rows: the caller sees no display for it and no one dimension of its own names it. A
+    caller's grouping needs none."""
 
     caller = set((partial_query or {}).get("group_by") or [])
     grouped = [
@@ -219,9 +220,8 @@ def _key_only_assumptions(
         entity = _object_by_id(config.entities, row.entity)
         if (
             entity is None
-            or entity.display
             or row.id in caller
-            or list(entity.key) != [row.column]
+            or _entity_stand_ins(config, entity, str(entity.label or "")) != ([row.id], [])
             or any(other.entity == row.entity for other in grouped if other is not row)
         ):
             continue
