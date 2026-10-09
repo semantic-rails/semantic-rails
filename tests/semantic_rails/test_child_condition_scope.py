@@ -1201,7 +1201,7 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.m1 AS customer_count
+  base.m1 AS "customer_count"
 FROM guarded_base AS base
 SETTINGS join_use_nulls = 1"""
 

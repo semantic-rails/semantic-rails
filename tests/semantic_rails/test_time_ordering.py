@@ -56,7 +56,8 @@ def test_default_order_is_time_then_authored_groups(
     quote = "`" if warehouse in {"bigquery", "databricks"} else '"'
     order_sql = compiled["sql"].rsplit("\nORDER BY\n", 1)[1].split("\nLIMIT ", 1)[0]
     assert order_sql == ",\n".join(
-        [f"  {TIME} ASC"] + [f"  {quote}{aliases.get(alias, alias)}{quote} ASC" for alias in groups]
+        [f"  {quote}{TIME}{quote} ASC"]
+        + [f"  {quote}{aliases.get(alias, alias)}{quote} ASC" for alias in groups]
     )
 
 
@@ -82,7 +83,7 @@ def test_explicit_order_wins_without_extra_tiebreakers(
 def test_empty_explicit_order_uses_the_default(package_config_factory, order_by):
     config, _ = package_config_factory("jaffle_shop")
     compiled = compile_query(config, None, _query(order_by=order_by))
-    assert compiled["sql"].endswith(f"\nORDER BY\n  {TIME} ASC")
+    assert compiled["sql"].endswith(f'\nORDER BY\n  "{TIME}" ASC')
 
 
 def test_raw_time_axis_is_ordered(package_config_factory):

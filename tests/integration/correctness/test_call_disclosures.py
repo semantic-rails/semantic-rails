@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from .answer_ledger import load_entries
@@ -242,3 +244,33 @@ def test_an_entity_with_no_name_is_shown_by_its_key_and_says_so(duckdb_backend):
         runtime.query({"select": ["measure.shop.revenue"], "group_by": [STORE]})["assumptions"]
         == []
     )
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_keyword_aliases_are_names_in_every_clause(request, backend):
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    call = {
+        "select": [
+            {"expression": "measure.shop.revenue", "as": "end"},
+            {"expression": "measure.shop.order_count", "as": "user"},
+            {"expression": "measure.shop.largest_order", "as": "order"},
+            {"expression": "measure.shop.smallest_order", "as": "period"},
+        ],
+        "group_by": [STORE],
+        "order_by": [{"field": "user", "direction": "desc"}, {"field": "end"}],
+        "having": [{"field": "order", "op": "gte", "value": 6}],
+        "limit": 2,
+    }
+    reference = source.reference(
+        'SELECT store_id, SUM(amount) AS "end", COUNT(order_id) AS "user", MAX(amount) AS "order", '
+        'MIN(amount) AS "period" FROM orders GROUP BY store_id HAVING MAX(amount) >= 6 '
+        'ORDER BY "user" DESC, "end" ASC, store_id ASC NULLS LAST LIMIT 2'
+    )
+    result = runtime.query(call)
+    assert [
+        (row[STORE], *(Decimal(str(row[key])) for key in ("end", "user", "order", "period")))
+        for row in result["rows"]
+    ] == [(store, *(Decimal(str(value)) for value in values)) for store, *values in reference]
+    for alias in ("end", "user", "order", "period"):
+        assert f'AS "{alias}"' in result["rendered_sql"]
