@@ -462,3 +462,22 @@ def test_path_hints_list_every_single_route_target_in_a_large_tree(package_confi
     assert analysis.path_cache == cache_before
     for target in targets:
         resolve_path(config, start="S", target=target)
+
+
+@pytest.mark.parametrize("op", ["is", "not", "gt"])
+def test_a_null_entity_aggregate_points_at_zero_not_missing(runtime_factory, op):
+    """An entity filter compares an aggregate, which `missing` can't: none is `is 0`."""
+    runtime = runtime_factory("jaffle_shop")
+    having = {"field": "measure.jaffle.lifetime_spend_usd", "op": op, "value": None}
+    entity_filter = {"entity": "entity.jaffle_customer", "having": [having], "over": "all_time"}
+    query = {"select": ["measure.jaffle.order_count"], "where": [entity_filter]}
+    try:
+        (issue,) = runtime.validate(query)["errors"]
+        assert issue["details"]["path"] == "where[0].having[0].value"
+        assert issue["recovery_hints"][0]["message"] == (
+            'For an entity with none, write {"op": "is", "value": 0}.'
+        )
+        having.update(op="is", value=0)
+        assert runtime.validate(query)["ok"]
+    finally:
+        runtime.close()
