@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from ._base import _NUMBER_WORDS, _best, _dimension, _entity, _object_text, _tokens
+from .exclusions import exclusion_regions
 from .time_windows import _time_window
 from .visibility import visible_dimensions, visible_value_domains
 
@@ -396,10 +397,14 @@ def _top_n_intent(text: str) -> tuple[bool, int]:
     Matches both literal "top N" and the looser "which N <noun> …
     highest/most/best/largest/by" phrasing surfaced by blind-agent
     feedback ("which 3 stores have the highest revenue"). A number in a
-    time phrase ("in the last 3 months by store", "in 2017") is not a rank.
+    time phrase ("in the last 3 months by store", "in 2017") is not a rank,
+    nor is a value an exclusion names ("excluding web and Top").
     """
 
     lowered = str(text or "").lower()  # the case the time spans index
+    spans = _time_window(lowered).spans
+    for start, end in exclusion_regions(lowered, spans):
+        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     match = _TOP_N_PATTERN.search(lowered)
     if match:
         raw = match.group(1)
@@ -409,7 +414,7 @@ def _top_n_intent(text: str) -> tuple[bool, int]:
             return True, int(raw)
         except ValueError:
             return True, _DEFAULT_TOP_LIMIT
-    for start, end in _time_window(lowered).spans:
+    for start, end in spans:
         lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     rank_match = _RANK_PATTERN.search(lowered)
     if rank_match:

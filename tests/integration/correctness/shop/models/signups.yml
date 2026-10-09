@@ -7,7 +7,7 @@ model:
     signed_up_at: {label: Signup time, column: signed_up_at, kind: timestamp, class: event_time,
       supported_grains: [day, week, month, quarter, year], default: true}
   dimensions:
-    channel: {label: Signup channel, kind: categorical}
+    channel: {label: Signup channel, kind: categorical, domain: [web, store]}
   measures:
     signup_count: {label: Signups, kind: entity_count, entity_key: customer_id,
       accumulation: {kind: flow}}

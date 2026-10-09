@@ -5,7 +5,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ._base import _TERM_SYNONYMS, _last_token, _object_by_id, _singular
+from ._base import (
+    _TERM_SYNONYMS,
+    _last_token,
+    _object_by_id,
+    _requested_grouping_spans,
+    _singular,
+)
 from .consumed_spans import _TERM_RE, _name_spans
 from .coverage import (
     _COMPARISON_PHRASE_RE,
@@ -20,7 +26,7 @@ from .grouping_checks import (
     _reads_grouping,
     _time_of,
 )
-from .groupings import _listed_grouping_terms, _requested_grouping_spans
+from .groupings import _listed_grouping_terms
 from .plan_query import _select_key
 from .time_windows import _time_window
 from .unasked_groupings import _grain_splits
