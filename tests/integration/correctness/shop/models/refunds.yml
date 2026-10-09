@@ -7,13 +7,13 @@ model:
     refund_type: {label: Refund type, kind: categorical}
   measures:
     refund_count: {label: Refunds, kind: entity_count, entity_key: refund_id,
-      accumulation: {kind: flow}, time: temporal_role.shop_order_ordered_at}
+      accumulation: {kind: flow}, times: [temporal_role.shop_order_ordered_at]}
     goods_refunded: {label: Goods refunded, kind: aggregate, expr: goods_amount,
       accumulation: {kind: flow}, value_type: currency,
-      time: temporal_role.shop_order_ordered_at}
+      times: [temporal_role.shop_order_ordered_at]}
     shipping_refunded: {label: Shipping refunded, kind: aggregate, expr: shipping_amount,
       accumulation: {kind: flow}, value_type: currency,
-      time: temporal_role.shop_order_ordered_at}
+      times: [temporal_role.shop_order_ordered_at]}
     tax_refunded: {label: Tax refunded, kind: aggregate, expr: tax_amount,
       accumulation: {kind: flow}, value_type: currency,
-      time: temporal_role.shop_order_ordered_at}
+      times: [temporal_role.shop_order_ordered_at]}

@@ -1,6 +1,6 @@
 segments:
   customer.high_value:
-    id: segment.jaffle.high_value_customers
+    as: segment.jaffle.high_value_customers
     name: jaffle.Customer.high_value_customers
     label: High-value customers
     description: Customers whose lifetime spend is at least 100 USD.

@@ -83,21 +83,18 @@ graph:
   # inferred from each model's entities: block.
   relationships:
     order_items_order:
-      id: relationship.order_items_order
       entities: [item, order]
       cardinality: many_to_one
       rollup_safe:
         reverse: [count_distinct]
 
     orders_customer:
-      id: relationship.orders_customer
       entities: [order, customer]
       cardinality: many_to_one
       rollup_safe:
         reverse: [count_distinct]
 
     orders_store:
-      id: relationship.orders_store
       entities: [order, store]
       cardinality: many_to_one
       allowed_directions: [forward]
@@ -118,13 +115,11 @@ graph:
         valid_to: jaffle_customer_history.valid_to
 
     customer_history_customer:
-      id: relationship.customer_history_customer
       entities: [customer_history, customer]
       cardinality: many_to_one
       allowed_directions: [forward]
 
     customer_history_store:
-      id: relationship.customer_history_store
       entities: [customer_history, store]
       cardinality: many_to_one
       via: [preferred_store_id]
@@ -134,38 +129,32 @@ graph:
       description: Role-specific preferred store relationship; not a generic customer-store traversal.
 
     order_lifecycle_order:
-      id: relationship.order_lifecycle_order
       entities: [order_lifecycle, order]
       cardinality: many_to_one
       allowed_directions: [forward]
 
     order_lifecycle_customer:
-      id: relationship.order_lifecycle_customer
       entities: [order_lifecycle, customer]
       cardinality: many_to_one
       allowed_directions: [forward]
 
     order_lifecycle_store:
-      id: relationship.order_lifecycle_store
       entities: [order_lifecycle, store]
       cardinality: many_to_one
       allowed_directions: [forward]
 
     storefront_sessions_customer:
-      id: relationship.storefront_sessions_customer
       entities: [storefront_session, customer]
       cardinality: many_to_one
       rollup_safe:
         reverse: [count_distinct]
 
     storefront_sessions_store:
-      id: relationship.storefront_sessions_store
       entities: [storefront_session, store]
       cardinality: many_to_one
       allowed_directions: [forward]
 
     storefront_sessions_order:
-      id: relationship.storefront_sessions_order
       entities: [storefront_session, order]
       cardinality: many_to_one
       via: [converted_order_id]
