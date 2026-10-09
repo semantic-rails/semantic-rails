@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .. import operators
 from ..ast import NormalizedQuery, child_groups, refuse_child_groups
 from ..compiler_parts.bind import (
     _bound_filter_clauses,
@@ -345,11 +346,7 @@ def _select_aggregate_relation(
         time_role=leaf_time_role,
         dimensions=dimensions,
         single_valued={str(item) for item in query.group_by}
-        | {
-            str(field)
-            for field, op, value in filters
-            if str(op or "=").strip() in {"=", "=="} and not isinstance(value, (list, tuple, set))
-        },
+        | {str(field) for field, op, value in filters if operators.pinned_value(op, value)[0]},
         join_paths=_join_paths(dimensions, measure.entity, path_selections, config),
         joins_undeclared=any(item.purpose in {"measure_expr", "time"} for item in path_selections),
         # Each value of a model's single-column row key sits in one rollup row.

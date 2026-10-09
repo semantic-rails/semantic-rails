@@ -123,20 +123,17 @@
         "group_by": [
           "dimension.jaffle_store_name"
         ],
-        "metric_filters": [
+        "where": [
           {
-            "expression": {
-              "kind": "metric_predicate",
-              "entity": "entity.jaffle_store",
-              "scope_mode": "contextual",
-              "input": {
-                "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-              },
-              "op": ">",
-              "value": 0.9
-            },
-            "op": "=",
-            "value": true
+            "entity": "entity.jaffle_store",
+            "having": [
+              {
+                "field": "metric.sales.session_to_order_conversion_rate_7d_same_store",
+                "op": "gt",
+                "value": 0.9
+              }
+            ],
+            "over": "period"
           }
         ],
         "time": {
@@ -197,12 +194,9 @@
     {
       "name": "top_stores_by_revenue",
       "partial_query": {
-        "version": 1,
         "select": [
           {
-            "expression": {
-              "measure": "measure.jaffle.revenue_usd"
-            },
+            "expression": "measure.jaffle.revenue_usd",
             "as": "Revenue (USD)"
           }
         ]
@@ -219,12 +213,9 @@
     {
       "name": "average_order_value_by_customer_type",
       "partial_query": {
-        "version": 1,
         "select": [
           {
-            "expression": {
-              "metric": "metric.sales.aov_usd"
-            },
+            "expression": "metric.sales.aov_usd",
             "as": "Average order value"
           }
         ]
@@ -241,12 +232,9 @@
     {
       "name": "historical_revenue_by_customer_segment",
       "partial_query": {
-        "version": 1,
         "select": [
           {
-            "expression": {
-              "measure": "measure.jaffle.revenue_usd"
-            },
+            "expression": "measure.jaffle.revenue_usd",
             "as": "Revenue (USD)"
           }
         ]
@@ -262,42 +250,31 @@
     }
   ],
   "blocked_case": {
-    "name": "blocked_incompatible_contextual_predicate",
-    "intent": "Reject a finer-grain contextual predicate inside a monthly query.",
+    "name": "blocked_period_entity_filter_without_grain",
+    "intent": "Reject a per-period entity filter in a query with no time grain.",
     "verify_no_hallucinated_ids": true,
     "query": {
-      "version": 1,
       "select": [
         {
-          "expression": {
-            "measure": "measure.jaffle.order_count"
-          },
+          "expression": "measure.jaffle.order_count",
           "as": "Orders"
         }
       ],
-      "time": {
-        "temporal_role": "temporal_role.jaffle_order_time",
-        "grain": "month"
-      },
-      "metric_filters": [
+      "where": [
         {
-          "expression": {
-            "kind": "metric_predicate",
-            "entity": "entity.jaffle_customer",
-            "input": {
-              "measure": "measure.jaffle.order_count"
-            },
-            "op": ">",
-            "value": 10,
-            "scope_mode": "contextual",
-            "time_grain": "day"
-          },
-          "op": "=",
-          "value": true
+          "entity": "entity.jaffle_customer",
+          "having": [
+            {
+              "field": "measure.jaffle.order_count",
+              "op": "gt",
+              "value": 10
+            }
+          ],
+          "over": "period"
         }
       ]
     },
-    "expected_error": "PREDICATE_GRAIN_UNSAFE",
-    "expected_recovery_hint_kind": "adjust_predicate_scope"
+    "expected_error": "INVALID_QUERY",
+    "expected_recovery_hint_kind": "FIX_QUERY_CALL"
   }
 }

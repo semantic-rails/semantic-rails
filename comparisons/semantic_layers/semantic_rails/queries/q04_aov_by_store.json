@@ -1,12 +1,6 @@
 {
-  "version": 1,
   "select": [
-    {
-      "expression": {
-        "metric": "metric.jaffle.aov_usd"
-      },
-      "as": "aov_usd"
-    }
+    "metric.jaffle.aov_usd"
   ],
   "group_by": [
     "dimension.jaffle_store_name"
@@ -14,7 +8,7 @@
   "order_by": [
     {
       "field": "aov_usd",
-      "direction": "DESC"
+      "direction": "desc"
     }
   ]
 }

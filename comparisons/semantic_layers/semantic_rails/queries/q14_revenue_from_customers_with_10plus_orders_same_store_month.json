@@ -1,10 +1,7 @@
 {
-  "version": 1,
   "select": [
     {
-      "expression": {
-        "metric": "metric.jaffle.revenue_from_customers_with_10plus_orders_in_period"
-      },
+      "expression": "metric.jaffle.revenue_from_customers_with_10plus_orders_in_period",
       "as": "qualifying_revenue_usd"
     }
   ],
@@ -17,12 +14,12 @@
   },
   "order_by": [
     {
-      "field": "temporal_role.jaffle_order_time__month",
-      "direction": "ASC"
+      "field": "period",
+      "direction": "asc"
     },
     {
       "field": "dimension.jaffle_store_name",
-      "direction": "ASC"
+      "direction": "asc"
     }
   ]
 }
