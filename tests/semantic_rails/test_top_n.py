@@ -33,7 +33,7 @@ def test_compiled_top_n_prepares_one_extra_row(package_config_factory, warehouse
     )
     assert compiled["limit_order_keys"] == ("orders",)
     assert [term.direction for term in compiled["sql_ast"].order_by] == ["DESC", "ASC"]
-    assert [term.nulls_last for term in compiled["sql_ast"].order_by] == [False, True]
+    assert [term.nulls_last for term in compiled["sql_ast"].order_by] == [True, True]
     assert "ASC NULLS LAST" in compiled["sql"]
     assert "LIMIT 2" in compiled["prepared_query"].sql
     assert "LIMIT 3" in compiled["limit_probe"].sql
