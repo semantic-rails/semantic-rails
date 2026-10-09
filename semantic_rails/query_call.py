@@ -103,6 +103,61 @@ _PREDICATE_RETIRED = ("scope_mode", "time_grain", "time_alignment")
 _SQL_COMPARISON = {"is": "=", "not": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
 V2_POINTER = f"See the query schema at {SCHEMA_ID}."
 
+# Inline kinds a call may not use, and keys of a kind that left the call.
+RETIRED_KINDS: frozenset[str] = frozenset({"metric", "measure_ref"})
+RETIRED_KIND_KEYS: dict[str, frozenset[str]] = {
+    "prior_period": frozenset({"measure", "grain", "aggregation"}),
+    "metric_predicate": frozenset(_PREDICATE_RETIRED),
+}
+ADDED_KIND_KEYS: dict[str, frozenset[str]] = {"metric_predicate": frozenset({"over"})}
+# The keys each kind cannot do without (the published schema's ``required``).
+KIND_REQUIRED: dict[str, tuple[str, ...]] = {
+    "measure": ("measure",),
+    "aggregate": ("measure",),
+    "semi_additive": ("measure",),
+    "scoped_aggregate": ("measure",),
+    "column": ("column",),
+    "literal": ("value",),
+    "arithmetic": ("op", "left", "right"),
+    "binary": ("op", "left", "right"),
+    "comparison": ("op", "left", "right"),
+    "boolean": ("op", "args"),
+    "call": ("name",),
+    "date_add": ("unit", "value", "date"),
+    "in": ("values",),
+    "not_in": ("values",),
+    "between": ("expr", "low", "high"),
+    "not_between": ("expr", "low", "high"),
+    "nullif": ("value", "null_value"),
+    "case": ("whens",),
+    "cumulative": ("input",),
+    "rolling": ("input", "window"),
+    "prior_period": ("input", "offset"),
+    "period_to_date": ("input", "period"),
+    "metric_predicate": ("entity", "input", "op", "value", "over"),
+    "aggregate_if": ("aggregation", "condition"),
+    "ratio": ("numerator", "denominator"),
+    "entity_value": ("entity", "input"),
+    "distribution": ("function", "over"),
+    "conversion": ("base", "converted", "entity", "window", "matching_mode"),
+}
+
+
+def call_kinds() -> dict[str, tuple[str, ...]]:
+    """Each inline kind a call may use, with its keys: the parser's table, as the call spells it."""
+    from .expressions import _VALID_KEYS_BY_KIND
+
+    return {
+        kind: tuple(
+            sorted(
+                (set(keys) - RETIRED_KIND_KEYS.get(kind, frozenset()))
+                | ADDED_KIND_KEYS.get(kind, frozenset())
+            )
+        )
+        for kind, keys in sorted(_VALID_KEYS_BY_KIND.items())
+        if kind not in RETIRED_KINDS
+    }
+
 
 def refusal(
     path: str, message: str, *, fix: str = "", code: str = "INVALID_QUERY", **details: Any
@@ -313,9 +368,18 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
     if not kind:
         raise refusal(path, "an expression object names its 'kind'", fix=_KINDLESS_FIX)
     kind = str(kind).strip()
-    if kind in {"metric", "measure_ref"}:
+    if kind in RETIRED_KINDS:
         name = raw.get("metric") or raw.get("measure") or "<id>"
         raise refusal(path, f"'{kind}' objects are retired", fix=f'Write "{name}".')
+    kinds = call_kinds()
+    if kind not in kinds:
+        matches = _closest(kind, kinds)
+        raise refusal(
+            f"{path}.kind",
+            f"unknown kind '{kind}'",
+            fix=f"Use '{matches[0]}'." if matches else f"Use one of {sorted(kinds)}.",
+            supported_kinds=sorted(kinds),
+        )
     if kind == "prior_period" and ("measure" in raw or not isinstance(raw.get("offset"), Mapping)):
         measure = raw.get("measure", "<measure id>")
         unit = raw.get("grain", "<unit>")
@@ -327,10 +391,17 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
                 f'"offset": {{"unit": "{unit}", "value": 1}}}}.'
             ),
         )
+    if not (kind == "prior_period" and "measure" in raw):
+        _check_keys(raw, ("kind", *kinds[kind]), path)
     node: dict[str, Any] = {}
     for key, value in raw.items():
         child = f"{path}.{key}"
-        if key in EXPRESSION_KEYS or (key == "over" and kind == "distribution") or key == "value" and kind in {"aggregate_if", "nullif"}:
+        if (
+            key in EXPRESSION_KEYS
+            or (key == "over" and kind == "distribution")
+            or key == "value"
+            and kind in {"aggregate_if", "nullif"}
+        ):
             node[key] = _expression(value, child, context)
         elif key in EXPRESSION_LISTS and isinstance(value, list):
             node[key] = [

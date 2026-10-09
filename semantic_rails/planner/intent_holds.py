@@ -276,9 +276,7 @@ def _with_query_clock(
         and time.get("range")
     ):
         return query
-    role = next(
-        (row for row in config.temporal_roles if row.id == time.get("temporal_role")), None
-    )
+    role = next((row for row in config.temporal_roles if row.id == time.get("temporal_role")), None)
     try:
         bounds = range_bounds(
             time["range"], now=context["now"], timezone=getattr(role, "timezone", "") or "UTC"

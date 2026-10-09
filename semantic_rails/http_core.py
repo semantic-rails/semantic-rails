@@ -190,7 +190,11 @@ def call_arguments(
                 details={"path": extra[0], "supported_keys": ["query", "options"]},
             )
     else:
-        call = {key: value for key, value in payload.items() if key not in {"policy_context", "request_id"}}
+        call = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"policy_context", "request_id"}
+        }
         options = {}
     arguments: dict[str, Any] = {key: options[key] for key in CALL_OPTIONS if key in options}
     arguments["context"] = dict(policy_context) or None

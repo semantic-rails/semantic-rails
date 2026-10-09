@@ -235,9 +235,7 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             if dialect is None or dialect.like_escape_clause
             else ""
         )
-        return (
-            f"({render_expr(expr.expr)} LIKE {_render_string_literal(expr.pattern)}{escape})"
-        )
+        return f"({render_expr(expr.expr)} LIKE {_render_string_literal(expr.pattern)}{escape})"
     if isinstance(expr, SqlIn):
         operator = "NOT IN" if expr.negated else "IN"
         return (

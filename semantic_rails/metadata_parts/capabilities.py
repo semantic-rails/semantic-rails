@@ -115,7 +115,7 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         if not supported["percentile_metrics"]
         else "",
     }
-    supported_rows = [{"kind": "agent_query_ir_v1", "available": True, "reason": ""}] + [
+    supported_rows = [{"kind": "query_call_v2", "available": True, "reason": ""}] + [
         {"kind": kind, "available": True, "reason": ""} for kind, ok in supported.items() if ok
     ]
     unsupported_rows = [

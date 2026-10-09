@@ -17,14 +17,14 @@ from . import CONTRACT_NAMES
 _JSON_SCHEMA_ARTIFACTS = {
     "package.v1.json",
     "metric_portability.v1.json",
-    "query_ir.v1.json",
+    "query.v2.json",
     "semantic_contract.v1.json",
     "validation_report.v1.json",
 }
 
 
 # Contracts a release stopped shipping; a baseline that has one reports it removed.
-_RETIRED_CONTRACT_NAMES = ("query_mcp.v1.json", "query_ir.preview.v2.json")
+_RETIRED_CONTRACT_NAMES = ("query_mcp.v1.json", "query_ir.preview.v2.json", "query_ir.v1.json")
 
 
 def load_contract_directory(path: str | Path) -> dict[str, dict[str, Any]]:

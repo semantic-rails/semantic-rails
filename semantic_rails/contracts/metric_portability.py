@@ -15,7 +15,7 @@ from semantic_rails.expressions import expr_to_dict
 from semantic_rails.package_snapshot import canonicalize_semantics, json_fingerprint
 
 METRIC_PORTABILITY_VERSION = 1
-QUERY_IR_SCHEMA = "https://semantic-rails.com/schemas/query_ir.v1.json"
+QUERY_IR_SCHEMA = "https://semantic-rails.com/schemas/query.v2.json"
 _PRESENTATION = frozenset(
     {"name", "label", "description", "aliases", "topics", "example_entries", "authoring_warnings"}
 )
@@ -136,10 +136,7 @@ def export_metric_portability(
                     {"context": context_hash, "metrics": _dependencies(metric.id, definitions)}
                 ),
                 "query_template": {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"kind": "metric", "metric": metric.id}, "as": "value"}
-                    ],
+                    "select": [{"expression": metric.id, "as": "value"}],
                 },
             }
         )
@@ -170,7 +167,7 @@ def export_metric_portability(
         ],
         "query_capabilities": {
             "schema_id": QUERY_IR_SCHEMA,
-            "version": 1,
+            "version": 2,
             "runtime_validation_required": True,
             "groupable_dimensions": sorted(row.id for row in config.dimensions if row.groupable),
             "filterable_dimensions": sorted(row.id for row in config.dimensions if row.filterable),
@@ -232,8 +229,7 @@ def compare_metric_portability(
             ):
                 raise ValueError("Metric definition does not match identity")
             expected_query = {
-                "version": 1,
-                "select": [{"expression": {"kind": "metric", "metric": row["id"]}, "as": "value"}],
+                "select": [{"expression": row["id"], "as": "value"}],
             }
             if row.get("query_template") != expected_query:
                 raise ValueError("Metric query template does not match identity")

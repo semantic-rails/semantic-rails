@@ -499,6 +499,10 @@
             "minimum": 1,
             "type": "integer"
           },
+          "now": {
+            "description": "ISO date or date-time that relative windows (time.last, time.this) resolve against; default: the current time.",
+            "type": "string"
+          },
           "query": {
             "additionalProperties": true,
             "description": "Query IR (object or JSON string). IR and time shapes: execute's query schema.",
@@ -610,6 +614,10 @@
               "validate",
               "sql"
             ],
+            "type": "string"
+          },
+          "now": {
+            "description": "ISO date or date-time that relative windows (time.last, time.this) resolve against; default: the current time.",
             "type": "string"
           },
           "query": {
