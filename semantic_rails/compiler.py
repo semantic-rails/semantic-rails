@@ -1700,6 +1700,20 @@ def _validate_where_value_type(dim, item) -> None:
     # ``missing`` takes a boolean, not a value of the dimension; ``contains`` takes text.
     if item.op in {"missing", "contains"}:
         return
+    if str(getattr(dim, "data_type", "") or "").lower() == "boolean" and item.op in (
+        operators.RANGE_WORDS
+    ):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"where filter on boolean dimension {dim.id!r} compares with is or not",
+            details={
+                "dimension": dim.id,
+                "op": item.op,
+                "recovery_hints": [
+                    {"code": "USE_FILTER_WORD", "message": "Write is true or is false."}
+                ],
+            },
+        )
     values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:

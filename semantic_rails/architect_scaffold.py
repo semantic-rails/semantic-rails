@@ -446,14 +446,10 @@ def _examples_and_tests(plan: _Plan) -> tuple[dict[str, Any], dict[str, Any]]:
     ns = plan.package_id
     temporal_role = f"temporal_role.{ns}_{plan.entity}_{slug(plan.time_column)}"
     metric_key = "total_amount" if plan.amount_column else f"{plan.entity}_count"
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"expression": {"metric": f"metric.{ns}.{metric_key}"}, "as": metric_key}],
-        "limit": 10,
-    }
+    query: dict[str, Any] = {"select": [f"metric.{ns}.{metric_key}"], "limit": 10}
     if plan.time_column:
         query["time"] = {"temporal_role": temporal_role, "grain": "day"}
-        query["order_by"] = [{"field": "time", "direction": "ASC"}]
+        query["order_by"] = [{"field": "period", "direction": "asc"}]
     suffix = "_by_day" if plan.time_column else ""
     if plan.dimension_column:
         query["group_by"] = [f"dimension.{ns}_{plan.entity}_{slug(plan.dimension_column)}"]
@@ -472,12 +468,8 @@ def _examples_and_tests(plan: _Plan) -> tuple[dict[str, Any], dict[str, Any]]:
             "starter_count_returns_rows": {
                 "kind": "query_row_count_bounds",
                 "query": {
-                    "version": 1,
                     "select": [
-                        {
-                            "expression": {"measure": f"measure.{ns}.{plan.entity}_count"},
-                            "as": "row_count",
-                        }
+                        {"expression": f"measure.{ns}.{plan.entity}_count", "as": "row_count"}
                     ],
                     "limit": 10,
                 },
