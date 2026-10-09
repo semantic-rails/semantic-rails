@@ -1782,7 +1782,7 @@ def test_editing_a_segment_starts_from_its_membership_field(tmp_path: Path) -> N
     _segment_metrics(project)
     tier, status = "dimension.shop_order_tier", "dimension.shop_order_status"
     segment = {
-        "id": "segment.shop.s",
+        "as": "segment.shop.s",
         "label": "S",
         "description": "Tier 2 orders.",
         "entity": "entity.shop_order",

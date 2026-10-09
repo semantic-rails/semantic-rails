@@ -291,7 +291,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "accumulation": "event",
                         "value_type": "count",
                         "entity_key": ["account_id"],
-                        "time": "valid_from",
+                        "times": ["valid_from"],
                     }
                 },
             },
@@ -318,7 +318,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "accumulation": "event",
                         "value_type": "count",
                         "entity_key": ["account_id"],
-                        "time": "date_day",
+                        "times": ["date_day"],
                     }
                 },
             },
@@ -342,7 +342,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "accumulation": "event",
                         "value_type": "count",
                         "entity_key": ["account_id"],
-                        "time": "next_valid_from",
+                        "times": ["next_valid_from"],
                     }
                 },
             },
@@ -366,7 +366,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "accumulation": "event",
                         "value_type": "count",
                         "entity_key": ["send_id"],
-                        "time": "sent_at",
+                        "times": ["sent_at"],
                     }
                 },
             },
@@ -390,7 +390,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "accumulation": "event",
                         "value_type": "count",
                         "entity_key": ["signup_id"],
-                        "time": "signed_at",
+                        "times": ["signed_at"],
                     }
                 },
             },

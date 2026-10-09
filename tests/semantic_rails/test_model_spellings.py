@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.package_snapshot import load_package_snapshot
+from tests.semantic_rails.conftest import copy_package_config
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -60,15 +62,7 @@ def test_jaffle_relationship_ids() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("spec", "expected"),
-    [
-        pytest.param({}, "relationship.widgets_gadget", id="derived"),
-        pytest.param({"as": "relationship.widget_gadget"}, "relationship.widget_gadget", id="as"),
-    ],
-)
-def test_graph_relationship_id(tmp_path: Path, spec: dict, expected: str) -> None:
-    """A graph relationship's id is derived from its key, or kept with `as:`."""
+def _relationship_package(root: Path, spec: dict) -> Path:
     for name, document in {
         "package.yml": {
             "schema_version": 1,
@@ -106,7 +100,64 @@ def test_graph_relationship_id(tmp_path: Path, spec: dict, expected: str) -> Non
             "model": {"id": "gadgets", "relation": "gadgets", "entities": {"gadget": {}}}
         },
     }.items():
-        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / name).write_text(yaml.safe_dump(document), encoding="utf-8")
-    config = load_package_snapshot(tmp_path).config
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(yaml.safe_dump(document), encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        pytest.param({}, "relationship.widgets_gadget", id="derived"),
+        pytest.param({"as": "relationship.widget_gadget"}, "relationship.widget_gadget", id="as"),
+    ],
+)
+def test_graph_relationship_id(tmp_path: Path, spec: dict, expected: str) -> None:
+    """A graph relationship's id is derived from its key, or kept with `as:`."""
+    config = load_package_snapshot(_relationship_package(tmp_path, spec)).config
     assert [row.id for row in config.relationships] == [expected]
+
+
+def test_graph_relationship_id_key_is_refused(tmp_path: Path) -> None:
+    package = _relationship_package(tmp_path, {"id": "relationship.widget_gadget"})
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_snapshot(package)
+    assert exc.value.code == "INVALID_CONFIG"
+    assert any(
+        "graph relationship 'widgets_gadget' has unknown key 'id'" in error
+        and "write `as:` only to keep a public id" in error
+        for error in exc.value.details["errors"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("keys", "refused"),
+    [
+        pytest.param({"primary": ["date_day", "store_id"]}, "", id="primary"),
+        pytest.param(
+            {"foreign": {"store": ["store_id"]}},
+            "model 'daily_metrics' keys has unknown key 'foreign'",
+            id="foreign",
+        ),
+    ],
+)
+def test_a_fact_model_keys_its_rows_with_keys_primary(
+    tmp_path: Path, keys: dict, refused: str
+) -> None:
+    """A fact model has no entity, so `keys.primary` stays its row key; nothing else in `keys:`."""
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    path = package / "models" / "core" / "daily_metrics.yml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["model"]["keys"] = keys
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    if refused:
+        with pytest.raises(SemanticLayerError) as exc:
+            load_package_snapshot(package)
+        assert any(refused in error for error in exc.value.details["errors"])
+        return
+    config = load_package_snapshot(package).config
+    assert {
+        tuple(measure.row_grain)
+        for measure in config.measures
+        if measure.source_relation == "jaffle_daily_metric_rollup"
+    } == {("date_day", "store_id")}

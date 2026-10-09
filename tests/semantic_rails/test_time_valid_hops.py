@@ -82,7 +82,7 @@ FILES = {
             usage: {label: Usage, key: [usage_id], model: usage}
           relationships:
             usage_account_segment:
-              id: relationship.usage_account_segment
+              as: relationship.usage_account_segment
               entities: [usage, account_segment]
               cardinality: many_to_one
               target: [account_id]
@@ -92,7 +92,7 @@ FILES = {
                 valid_to: account_segments.valid_to
             # The window is on the near table: each segment row is one version already.
             account_segment_account:
-              id: relationship.account_segment_account
+              as: relationship.account_segment_account
               entities: [account_segment, account]
               cardinality: many_to_one
               allowed_directions: [forward]
@@ -150,7 +150,7 @@ FILES = {
     **{
         f"metrics/{left}_plus_{right}.yml": f"""
         metric:
-          id: metric.hist.{left}_plus_{right}
+          as: metric.hist.{left}_plus_{right}
           label: {left.title()} plus {right}
           kind: derived
           value_type: number

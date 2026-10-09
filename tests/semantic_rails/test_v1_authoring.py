@@ -82,7 +82,6 @@ def _write_synthetic_package(
         models = {
             "widgets": {
                 "id": "widgets",
-                "entity": "widget",
                 "relation": "widget",
                 "entities": {"widget": {}},
                 "times": {
@@ -251,7 +250,7 @@ def test_empty_entities_block_preserves_name_binding(tmp_path: Path) -> None:
 
 
 def test_name_binding_refuses_another_entitys_primary_key(tmp_path: Path) -> None:
-    model: dict[str, Any] = {"relation": "readings", "entity": "device", "entities": {"device": {}}}
+    model: dict[str, Any] = {"relation": "readings", "entities": {"device": {}}}
     pkg = _write_synthetic_package(
         tmp_path / "name_binding_conflict",
         graph_entities={"reading": {}, "device": {"model": "devices", "key": "device_id"}},
@@ -260,27 +259,7 @@ def test_name_binding_refuses_another_entitys_primary_key(tmp_path: Path) -> Non
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
     assert exc.value.code == "INVALID_CONFIG"
-    assert all(f"'{name}'" in str(exc.value) for name in ("reading", "device"))
-    assert "model 'reading'" in str(exc.value)
-
-
-@pytest.mark.parametrize("reverse_models", [False, True])
-def test_two_models_cannot_claim_an_unbound_entity(tmp_path: Path, reverse_models: bool) -> None:
-    models = {
-        name: {"entity": "reading", "relation": name, "entities": {"reading": {}}}
-        for name in ("readings", "other_readings")
-    }
-    if reverse_models:
-        models = dict(reversed(list(models.items())))
-    pkg = _write_synthetic_package(
-        tmp_path / "duplicate_claims",
-        graph_entities={"reading": {"key": "reading_id"}},
-        models=models,
-    )
-    with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(pkg))
-    assert exc.value.code == "INVALID_CONFIG"
-    assert all(f"'{name}'" in str(exc.value) for name in ("reading", "readings", "other_readings"))
+    assert "model 'reading' must identify its primary entity" in str(exc.value)
 
 
 def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path) -> None:
@@ -292,7 +271,6 @@ def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path
         },
         models={
             "readings": {
-                "entity": "reading",
                 "relation": "readings",
                 "entities": {"reading": {}, "device": {}},
             },
@@ -306,37 +284,13 @@ def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path
     ]
 
 
-@pytest.mark.parametrize("second_model", ["device", "sensors"])
-@pytest.mark.parametrize("both_entities", [False, True])
-def test_implicit_bindings_preserve_authored_entity_relations(
-    tmp_path: Path, second_model: str, both_entities: bool
-) -> None:
-    models = {
-        "reading": {"entity": "device", "relation": "devices", "entities": {"device": {}}},
-        second_model: {"entity": "reading", "relation": "readings", "entities": {"reading": {}}},
-    }
-    if both_entities:
-        for model in models.values():
-            model["entities"] = {"reading": {}, "device": {}}
-    pkg = _write_synthetic_package(
-        tmp_path / "implicit_identity",
-        graph_entities={"reading": {"key": "id"}, "device": {"key": "id"}},
-        models=models,
-    )
-    config = load_package_config(str(pkg))
-    assert {entity.id: entity.table for entity in config.entities} == {
-        "entity.synth_reading": "readings",
-        "entity.synth_device": "devices",
-    }
-
-
 def test_implicit_binding_resolves_model_name(tmp_path: Path) -> None:
     pkg = _write_synthetic_package(
         tmp_path / "implicit_resolution",
         graph_entities={"reading": {"key": "reading_id"}, "device": {"key": "device_id"}},
         models={
             "reading": {"relation": "readings", "entities": {"device": {}, "reading": {}}},
-            "other": {"entity": "device", "relation": "devices", "entities": {"device": {}}},
+            "device": {"relation": "devices", "entities": {"device": {}}},
         },
     )
     config = load_package_config(str(pkg))
@@ -355,7 +309,7 @@ def test_explicit_binding_does_not_prevent_other_identity_backfill(tmp_path: Pat
         },
         models={
             "readings": {"relation": "readings", "entities": {"reading": {}}},
-            "sensors": {"entity": "device", "relation": "devices", "entities": {"device": {}}},
+            "device": {"relation": "devices", "entities": {"device": {}}},
         },
     )
     config = load_package_config(str(pkg))
@@ -365,19 +319,14 @@ def test_explicit_binding_does_not_prevent_other_identity_backfill(tmp_path: Pat
     }
 
 
-@pytest.mark.parametrize("explicit_binding", [False, True])
-def test_final_bindings_refuse_two_entities_on_one_model(
-    tmp_path: Path, explicit_binding: bool
-) -> None:
-    reading: dict[str, Any] = {"key": "reading_id"}
-    if explicit_binding:
-        reading["model"] = "readings"
+def test_final_bindings_refuse_two_entities_on_one_model(tmp_path: Path) -> None:
     pkg = _write_synthetic_package(
         tmp_path / "final_binding_collision",
-        graph_entities={"reading": reading, "readings": {"key": "other_id"}},
-        models={
-            "readings": {"entity": "reading", "relation": "readings", "entities": {"reading": {}}}
+        graph_entities={
+            "reading": {"key": "reading_id", "model": "readings"},
+            "readings": {"key": "other_id"},
         },
+        models={"readings": {"relation": "readings", "entities": {"reading": {}}}},
     )
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
@@ -399,22 +348,6 @@ def test_name_fallback_cannot_select_an_explicitly_bound_entity(tmp_path: Path) 
         load_package_config(str(pkg))
     assert exc.value.code == "INVALID_CONFIG"
     assert "model 'reading' must identify its primary entity" in str(exc.value)
-
-
-@pytest.mark.parametrize("entities_block", [{}, {"device": {}}])
-def test_explicit_binding_refuses_conflicting_identity_without_primary_resolution(
-    tmp_path: Path, entities_block: dict
-) -> None:
-    model: dict[str, Any] = {"entity": "device", "relation": "readings", "entities": entities_block}
-    pkg = _write_synthetic_package(
-        tmp_path / "conflicting_identity",
-        graph_entities={"reading": {"model": "readings", "key": "reading_id"}},
-        models={"readings": model},
-    )
-    with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(pkg))
-    assert exc.value.code == "INVALID_CONFIG"
-    assert all(f"'{name}'" in str(exc.value) for name in ("readings", "reading", "device"))
 
 
 def test_null_model_kind_accepts_authored_graph_relationship(tmp_path: Path) -> None:
@@ -456,7 +389,7 @@ def test_graph_model_cannot_be_primary_for_two_entities(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("customer_first", [False, True])
-@pytest.mark.parametrize("identity", [None, "binding", "entity"])
+@pytest.mark.parametrize("identity", [None, "binding"])
 def test_shared_entity_keys_require_explicit_primary_identity(
     tmp_path: Path, customer_first: bool, identity: str | None
 ) -> None:
@@ -472,8 +405,6 @@ def test_shared_entity_keys_require_explicit_primary_identity(
     }
     if identity == "binding":
         graph_entities["customer"]["model"] = "parties"
-    elif identity == "entity":
-        model["entity"] = "customer"
     pkg = _write_synthetic_package(
         tmp_path / "shared_keys",
         graph_entities=graph_entities,
@@ -481,7 +412,6 @@ def test_shared_entity_keys_require_explicit_primary_identity(
             "parties": model,
             "supplier": {
                 "id": "supplier",
-                "entity": "supplier",
                 "relation": "suppliers",
                 "entities": {"supplier": {}},
             },
@@ -520,7 +450,6 @@ def test_architect_mutation_rolls_back_when_primary_remains_unidentified(tmp_pat
                 "entities": {"customer": {}, "supplier": {}},
             },
             "supplier": {
-                "entity": "supplier",
                 "relation": "suppliers",
                 "entities": {"supplier": {}},
             },
@@ -595,7 +524,7 @@ def test_unattachable_graph_relationship_is_refused(tmp_path: Path, relationship
         pkg / "models" / "orphan.yml",
         {
             "models": {
-                "orphan": {"entity": "orphan", "relation": "orphan", "entities": {"orphan": {}}}
+                "orphan": {"relation": "orphan", "entities": {"orphan": {}}}
             }
         },
     )
@@ -629,7 +558,6 @@ def test_model_entities_block_translates_to_legacy_shape(tmp_path: Path) -> None
         models={
             "customers": {
                 "id": "customers",
-                "entity": "customer",
                 "relation": "customer",
                 "entities": {"customer": {}},
                 "measures": {
@@ -682,7 +610,6 @@ def test_model_entities_block_with_expr_renames_column(tmp_path: Path) -> None:
         models={
             "customers": {
                 "id": "customers",
-                "entity": "customer",
                 "relation": "customer",
                 "entities": {"customer": {}},
                 "measures": {
@@ -738,7 +665,6 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
         models={
             "users": {
                 "id": "users",
-                "entity": "user",
                 "relation": "user",
                 "entities": {"user": {}},
                 "measures": {
@@ -754,7 +680,6 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
             },
             "accounts": {
                 "id": "accounts",
-                "entity": "account",
                 "relation": "account",
                 "entities": {"account": {}},
                 "measures": {
@@ -824,7 +749,6 @@ def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict
         models={
             "customers": {
                 "id": "customers",
-                "entity": "customer",
                 "relation": "customer",
                 "entities": {"customer": {}},
                 "measures": {
@@ -840,7 +764,6 @@ def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict
             },
             "orders": {
                 "id": "orders",
-                "entity": "order",
                 "relation": "orders",
                 "entities": {"order": {}, "customer": {}},
                 "measures": {
@@ -884,7 +807,6 @@ def test_times_default_flag_replaces_default_time(tmp_path: Path) -> None:
         models={
             "widgets": {
                 "id": "widgets",
-                "entity": "widget",
                 "relation": "widget",
                 "entities": {"widget": {}},
                 "times": {
@@ -929,7 +851,6 @@ def test_measure_unnested_expr_and_default_agg(tmp_path: Path) -> None:
         models={
             "widgets": {
                 "id": "widgets",
-                "entity": "widget",
                 "relation": "widget",
                 "entities": {"widget": {}},
                 "times": {
@@ -992,7 +913,6 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
         models={
             "widgets": {
                 "id": "widgets",
-                "entity": "widget",
                 "relation": "widget",
                 "entities": {"widget": {}},
                 "times": {
@@ -1116,22 +1036,120 @@ _DELETE = object()
             "models/widgets.yml",
             (*_MODEL, "keys"),
             {"primary": ["widget_id"]},
-            ("model 'widgets' authors 'keys.primary:' beside 'entities:'",),
-            id="keys-primary-beside-entities",
+            ("model 'widgets' has unknown key 'keys'", "`graph.entities.<x>.model`"),
+            id="model-keys-primary",
         ),
         pytest.param(
             "models/widgets.yml",
             (*_MODEL, "keys"),
             {"foreign": {"gadget": ["gadget_id"]}},
-            ("model 'widgets' authors 'keys.foreign:'",),
-            id="keys-foreign",
+            ("model 'widgets' has unknown key 'keys'", "`graph.entities.<x>.model`"),
+            id="model-keys-foreign",
         ),
         pytest.param(
             "models/widgets.yml",
-            (*_MODEL, "entities"),
-            _DELETE,
-            ("model 'widgets' authors a singular 'entity:'",),
-            id="singular-entity",
+            (*_MODEL, "entity"),
+            "widget",
+            ("model 'widgets' has unknown key 'entity'", "`graph.entities.<x>.model`"),
+            id="model-singular-entity",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "time"),
+            "created_at",
+            ("measure 'widget_count' has unknown key 'time'", "`times: [<role>]`"),
+            id="measure-time",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "aggregation"),
+            "count_distinct",
+            ("measure 'widget_count' has unknown key 'aggregation'", "`default_agg:`"),
+            id="measure-aggregation",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "dimensions"),
+            {"color": {"column": "color", "kind": "categorical", "valid_values": ["red"]}},
+            ("dimension 'color' has unknown key 'valid_values'", "`domain:`"),
+            id="dimension-valid-values",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "times", "created_at", "id"),
+            "temporal_role.synth_widget_created_at",
+            ("times entry 'created_at' has unknown key 'id'", "write `as:`"),
+            id="time-id",
+        ),
+        pytest.param(
+            "metrics.yml",
+            ("metrics", "widgets", "id"),
+            "metric.synth.widgets",
+            ("metric 'widgets' has unknown key 'id'", "write `as:`"),
+            id="metric-id",
+        ),
+        pytest.param(
+            "segments.yml",
+            ("segments",),
+            {"big_widgets": {"id": "segment.synth.big_widgets", "entity": "widget"}},
+            ("segment 'big_widgets' has unknown key 'id'", "write `as:`"),
+            id="segment-id",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "topics"),
+            ["widgets"],
+            ("model 'widgets' has unknown key 'topics'",),
+            id="model-topics",
+        ),
+        pytest.param(
+            "graph.yml",
+            ("graph", "entities", "widget", "topics"),
+            ["widgets"],
+            ("graph entity 'widget' has unknown key 'topics'",),
+            id="graph-entity-topics",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MODEL, "times", "created_at", "topics"),
+            ["widgets"],
+            ("times entry 'created_at' has unknown key 'topics'",),
+            id="time-topics",
+        ),
+        pytest.param(
+            "graph.yml",
+            ("graph", "entities", "widget", "freshness_sla_seconds"),
+            3600,
+            ("graph entity 'widget' has unknown key 'freshness_sla_seconds'", "entity's model"),
+            id="graph-entity-freshness",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "validity_windows"),
+            [{"from_": "2024-01-01", "to": "2024-06-30"}],
+            ("validity_windows[0] has unknown key 'from_'", "write `from:`"),
+            id="validity-window-from_",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "validity_windows"),
+            [{"from": "2024-01-01", "label": "Launch"}],
+            ("validity_windows[0] has unknown key 'label'", "write `semantics:`"),
+            id="validity-window-label",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "external_discontinuities"),
+            [{"from_": "2024-01-01", "what": "Repricing"}],
+            ("external_discontinuities[0] has unknown key 'from_'", "write `from:`"),
+            id="discontinuity-from_",
+        ),
+        pytest.param(
+            "models/widgets.yml",
+            (*_MEASURE, "external_discontinuities"),
+            [{"from": "2024-01-01", "label": "Repricing"}],
+            ("external_discontinuities[0] has unknown key 'label'", "write `what:`"),
+            id="discontinuity-label",
         ),
         pytest.param(
             "models/widgets.yml",
@@ -1356,7 +1374,6 @@ def _widget_model_with_two_count_measures() -> dict[str, Any]:
     return {
         "widgets": {
             "id": "widgets",
-            "entity": "widget",
             "relation": "widget",
             "entities": {"widget": {}},
             "times": {
@@ -1501,7 +1518,6 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
         models={
             "widgets": {
                 "id": "widgets",
-                "entity": "widget",
                 "relation": "widget",
                 "entities": {"widget": {}},
                 "times": {
@@ -1580,7 +1596,6 @@ def _two_entity_model_skeleton() -> dict[str, Any]:
     return {
         "customers": {
             "id": "customers",
-            "entity": "customer",
             "relation": "customer",
             "entities": {"customer": {}},
             "measures": {
@@ -1665,7 +1680,6 @@ def test_times_block_consolidates_temporal_role_and_dimension(tmp_path: Path) ->
         models={
             "orders": {
                 "id": "orders",
-                "entity": "order",
                 "relation": "orders",
                 "entities": {"order": {}},
                 "times": {
@@ -1759,7 +1773,6 @@ def test_metric_kind_cumulative_direct_measure_field_resolves_package_relative(
         models={
             "widgets": {
                 "id": "widgets",
-                "entity": "widget",
                 "relation": "widget",
                 "entities": {"widget": {}},
                 "times": {

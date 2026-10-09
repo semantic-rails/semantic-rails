@@ -71,7 +71,7 @@ def _write_minimal_package(
                 "relation": "order_fact",
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
                         "column": "ordered_at",
@@ -85,7 +85,7 @@ def _write_minimal_package(
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                         **dict(measure_extra or {}),
                     }
                 },
@@ -99,7 +99,7 @@ def _write_minimal_package(
             "metrics": {
                 "sales.orders": {
                     "value_type": "number",
-                    "id": "metric.sales.orders",
+                    "as": "metric.sales.orders",
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                     "label": "Orders",
@@ -107,7 +107,7 @@ def _write_minimal_package(
                 },
                 "sales.orders_copy": {
                     "value_type": "number",
-                    "id": "metric.sales.orders_copy",
+                    "as": "metric.sales.orders_copy",
                     "name": "sales.orders_copy",
                     "label": "Orders copy",
                     "kind": "derived",
@@ -192,7 +192,7 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
                 "relation": "order_fact",
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
                         "column": "ordered_at",
@@ -206,7 +206,7 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                     }
                 },
             }
@@ -218,14 +218,14 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
             "metrics": {
                 "sales.orders": {
                     "value_type": "number",
-                    "id": "metric.sales.orders",
+                    "as": "metric.sales.orders",
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                     "label": "Orders",
                 },
                 "sales.orders_cumulative": {
                     "value_type": "number",
-                    "id": "metric.sales.orders_cumulative",
+                    "as": "metric.sales.orders_cumulative",
                     "name": "sales.orders_cumulative",
                     "label": "Cumulative orders",
                     "kind": "cumulative",
@@ -242,7 +242,7 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
         package_dir / "metrics" / "sales" / "orders_copy.yml",
         {
             "metric": {
-                "id": "metric.sales.orders_copy",
+                "as": "metric.sales.orders_copy",
                 "name": "sales.orders_copy",
                 "label": "Orders copy",
                 "value_type": "number",
@@ -488,7 +488,7 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
                 "relation": "SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.ORDERS",
                 "times": {
                     "order_date": {
-                        "id": "temporal_role.demo_order_date",
+                        "as": "temporal_role.demo_order_date",
                         "name": "demo.Order.order_date",
                         "label": "Order date",
                         "column": "O_ORDERDATE",
@@ -503,7 +503,7 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
                         "label": "Orders",
                         "description": "Orders",
                         "kind": "entity_count",
-                        "time": "order_date",
+                        "times": ["order_date"],
                     }
                 },
             }
@@ -515,7 +515,7 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
             "metrics": {
                 "sales.orders": {
                     "value_type": "number",
-                    "id": "metric.sales.orders",
+                    "as": "metric.sales.orders",
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                     "label": "Orders",
@@ -660,7 +660,7 @@ def test_loader_rejects_duplicate_metric_ids(tmp_path: Path):
     package_dir = tmp_path / "duplicate_metric_demo"
     _write_minimal_package(
         package_dir,
-        metric_extra={"id": "metric.sales.orders"},
+        metric_extra={"as": "metric.sales.orders"},
     )
 
     with pytest.raises(SemanticLayerError) as exc:

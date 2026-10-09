@@ -99,7 +99,7 @@ graph:
 ROLLUP_SAFE_ITEMS = """
   relationships:
     items_order:
-      id: relationship.items_order
+      as: relationship.items_order
       entities: [item, order]
       cardinality: many_to_one
       rollup_safe:
@@ -254,7 +254,7 @@ def _write_package(root: Path, *, rollup_safe: bool = False, extra_seed: str = "
     (pkg / "metrics.yml").write_text(yaml.safe_dump({"metrics": {"geo.order_amount": recipe}}))
     segments = {
         name: {
-            "id": f"segment.geo.{name}",
+            "as": f"segment.geo.{name}",
             "label": name,
             "entity": "entity.geo_order",
             "basis_metric": "metric.geo.order_amount",
@@ -775,7 +775,7 @@ def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_parent: bool
     )
     graph = yaml.safe_load((package / "graph.yml").read_text())["graph"]
     graph["relationships"]["items_other_order"] = {
-        "id": "relationship.items_other_order",
+        "as": "relationship.items_other_order",
         "entities": ["item", "order"],
         "via": "other_order_id",
         "cardinality": "many_to_one",

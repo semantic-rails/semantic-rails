@@ -230,7 +230,7 @@ def _write_package(
         target = destination_target if role == "destination" else "airport_code"
         relationship_lines += [
             f"    {name}:",
-            f"      id: relationship.{name}",
+            f"      as: relationship.{name}",
             "      entities: [leg, airport]",
             "      cardinality: many_to_one",
             *extra,
@@ -240,7 +240,7 @@ def _write_package(
         name, _ = _RELATIONSHIPS[role]
         relationship_lines += [
             f"    {name}_reverse:",
-            f"      id: relationship.{name}_reverse",
+            f"      as: relationship.{name}_reverse",
             "      entities: [airport, leg]",
             "      cardinality: one_to_many",
             "      via: [airport_code]",
@@ -258,13 +258,13 @@ def _write_package(
         graph += "    gate: {label: Gate, key: [gate_id], model: gates}\n"
         relationship_lines += [
             "    legs_gate:",
-            "      id: relationship.legs_gate",
+            "      as: relationship.legs_gate",
             "      entities: [leg, gate]",
             "      cardinality: many_to_one",
             "      via: [gate_id]",
             "      target: [gate_id]",
             "    gates_airport:",
-            "      id: relationship.gates_airport",
+            "      as: relationship.gates_airport",
             "      entities: [gate, airport]",
             "      cardinality: many_to_one",
             "      via: [airport_code]",
@@ -691,7 +691,7 @@ def _normalized_joins(relationships: dict, inferred: list[str] | None = None) ->
 
 
 def _entry(name: str, via: list[str] | None = None, target: list[str] | None = None):
-    spec: dict = {"id": f"relationship.{name}", "entities": ["leg", "airport"]}
+    spec: dict = {"as": f"relationship.{name}", "entities": ["leg", "airport"]}
     if via:
         spec["via"] = via
     if target:

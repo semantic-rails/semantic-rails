@@ -422,7 +422,7 @@ def _with_home_region(project: ArchitectProject) -> dict[str, Any]:
     graph = _graph(project)
     source, target, via, key = _RELATIONSHIPS["owners_home_region"]
     graph["graph"]["relationships"]["owners_home_region"] = {
-        "id": "relationship.owners_home_region",
+        "as": "relationship.owners_home_region",
         "entities": [source, target],
         "cardinality": "many_to_one",
         "via": [via],
@@ -533,7 +533,7 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
 
         graph = _graph(project)
         graph["graph"]["relationships"]["legs_origin_airport"] = {
-            "id": ORIGIN,
+            "as": ORIGIN,
             "entities": ["leg", "airport"],
             "cardinality": "many_to_one",
             "via": ["origin_code"],
@@ -737,7 +737,7 @@ def _small_package(tmp_path, entities, relationships, seed):
         "entities": {key: {"key": ["id"], "model": key} for key in entities},
         "relationships": {
             name: {
-                "id": f"relationship.{name}",
+                "as": f"relationship.{name}",
                 "entities": [source, target],
                 "via": [column],
                 "target": ["id"],
@@ -798,7 +798,7 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
         INSERT INTO d VALUES (1, 'yes'), (2, 'no');
         """,
     )
-    child_model = {"model": {"id": "c", "relation": "c", "keys": {"primary": ["id"]}}}
+    child_model = {"model": {"id": "c", "relation": "c", "entities": {"c": {"expr": "id"}}}}
     (pkg / "models/c.yml").write_text(yaml.safe_dump(child_model))
     project = ArchitectProject(pkg, workspace_root=tmp_path)
     graph = _graph(project)
@@ -825,7 +825,7 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
     gold = answer()
     assert gold == [(100,)]
     relationship = {
-        "id": "relationship.ac",
+        "as": "relationship.ac",
         "entities": ["a", "c"],
         "cardinality": cardinality,
         "allowed_directions": ["forward"],
@@ -976,7 +976,7 @@ def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path, decide):
     relationship = graph["graph"]["relationships"].pop("accounts_branch_region")
     graph["graph"]["relationships"]["accounts_billing_region"] = {
         **relationship,
-        "id": "relationship.accounts_billing_region",
+        "as": "relationship.accounts_billing_region",
         "via": ["billing_region_id"],
     }
     if decide:
@@ -1134,7 +1134,7 @@ def test_an_invalid_intermediate_write_cannot_erase_the_branch_region_baseline(t
     source, target, via, key = _RELATIONSHIPS["invoices_issued_region"]
     relationships = graph["graph"]["relationships"]
     relationships["invoices_issued_region"] = {
-        "id": "relationship.invoices_issued_region",
+        "as": "relationship.invoices_issued_region",
         "entities": [source, target],
         "cardinality": "many_to_one",
         "via": [via],
@@ -1241,7 +1241,7 @@ def test_an_explicit_shorter_row_keeps_both_answers_and_follows_the_loader(tmp_p
     relative = "package.yml" if layout == "inline" else "graph.yml"
     document = yaml.safe_load((pkg / relative).read_text())
     document["graph"]["relationships"]["owner_district"] = {
-        "id": "relationship.owner_district",
+        "as": "relationship.owner_district",
         "entities": ["owner", "district"],
         "via": ["district_id"],
         "target": ["id"],
@@ -1277,7 +1277,7 @@ def test_an_edited_row_that_moves_an_inherited_pair_requires_its_own_decision(tm
     project.record_route_decision(**_pin(SMALL_ACCOUNT, DISTRICT, SMALL_BRANCH))
     graph = _graph(project)
     graph["graph"]["relationships"]["owner_district"] = {
-        "id": "relationship.owner_district",
+        "as": "relationship.owner_district",
         "entities": ["owner", "district"],
         "via": ["district_id"],
         "target": ["id"],
@@ -1310,7 +1310,7 @@ def test_package_census_impact_and_guard_ignore_query_route_overrides(tmp_path, 
     for pkg, route in ((base, SMALL_BRANCH), (head, SMALL_HOME)):
         graph = yaml.safe_load((pkg / "graph.yml").read_text())
         graph["graph"]["relationships"]["owner_district"] = {
-            "id": "relationship.owner_district",
+            "as": "relationship.owner_district",
             "entities": ["owner", "district"],
             "via": ["district_id"],
             "target": ["id"],
@@ -1389,7 +1389,7 @@ def test_batch_route_swap_refuses_every_file_without_recorded_decision(tmp_path,
     relationship = graph["graph"]["relationships"].pop("accounts_branch_region")
     graph["graph"]["relationships"]["accounts_billing_region"] = {
         **relationship,
-        "id": "relationship.accounts_billing_region",
+        "as": "relationship.accounts_billing_region",
         "via": ["billing_region_id"],
     }
     revision, before = project.revision(), _files_and_receipts(project)

@@ -754,7 +754,6 @@ def _composite_coverage_key(models: dict[str, Any], relationships: dict) -> None
         (_lookup(**{"from": "premium_amount", "via": "claim_line"}), "via"),  # one-to-many
         (_lookup(**{"from": "premium_amount", "via": "policy"}), "via"),  # not direct
         (_lookup(**{"from": "line_amount"}), "via"),  # the source can't reach coverage
-        (_lookup(**{"from": "premium_amount", "aggregation": "max"}), "aggregation"),
         (_lookup(**{"from": "premium_amount", "default_agg": "max"}), "default_agg"),
         (_lookup(**{"from": "premium_amount", "additive": True}), "additive"),
         (_lookup(**{"from": "premium_amount", "accumulation": "stock"}), "accumulation"),

@@ -137,7 +137,7 @@ def _write_geo_package(
     if ship_city:
         rel_lines += [
             "    orders_ship_city:",
-            "      id: relationship.orders_ship_city",
+            "      as: relationship.orders_ship_city",
             "      entities: [order, city]",
             "      cardinality: many_to_one",
             "      via: [ship_city_id]",
@@ -147,7 +147,7 @@ def _write_geo_package(
     if rollup_safe_reverse:
         rel_lines += [
             "    orders_customer:",
-            "      id: relationship.orders_customer",
+            "      as: relationship.orders_customer",
             "      entities: [order, customer]",
             "      cardinality: many_to_one",
             "      rollup_safe:",

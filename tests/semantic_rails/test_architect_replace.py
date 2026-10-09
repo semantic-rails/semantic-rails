@@ -52,7 +52,7 @@ ORDERS: dict[str, Any] = {
 }
 
 SEGMENT: dict[str, Any] = {
-    "id": "segment.shop.large_orders",  # not the id derived from its key
+    "as": "segment.shop.large_orders",  # not the id derived from its key
     "label": "Big orders",
     "entity": "entity.shop_order",
     "basis_metric": "metric.shop.gross_revenue",
@@ -212,7 +212,7 @@ def test_mcp_replace_keeps_public_ids(workspace: Path) -> None:
                     spec={
                         key: value
                         for key, value in SEGMENT.items()
-                        if key not in {"id", "preview_dimensions"}
+                        if key not in {"as", "preview_dimensions"}
                     },
                 ),
             ]
@@ -227,5 +227,5 @@ def test_mcp_replace_keeps_public_ids(workspace: Path) -> None:
     assert revenue["as"] == "metric.shop.gross_revenue" and "description" not in revenue
     big_orders = _yaml(workspace, "segments/core.yml")["segments"]["big_orders"]
     assert (
-        big_orders["id"] == "segment.shop.large_orders" and "preview_dimensions" not in big_orders
+        big_orders["as"] == "segment.shop.large_orders" and "preview_dimensions" not in big_orders
     )

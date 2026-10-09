@@ -189,7 +189,7 @@ def _write_package(
     for name in relationships:
         source, target, via, key = _RELATIONSHIPS[name]
         edges[name] = {
-            "id": _rel(name),
+            "as": _rel(name),
             "entities": [source, target],
             "cardinality": "many_to_one",
             "via": [via],
@@ -492,7 +492,7 @@ def _write_shop(root: Path, rows: list[dict[str, Any]] | None = None) -> Path:
     (pkg / "package.yml").write_text(yaml.safe_dump(package))
     edges = {
         name: {
-            "id": _rel(name),
+            "as": _rel(name),
             "entities": [source, target],
             "cardinality": "many_to_one",
             "via": [via],
@@ -600,7 +600,7 @@ def _write_chain(root: Path) -> Path:
     (pkg / "package.yml").write_text(yaml.safe_dump(package))
     edges = {
         name: {
-            "id": _rel(name),
+            "as": _rel(name),
             "entities": [source, target],
             "cardinality": "many_to_one",
             "via": [f"{target}_id"],

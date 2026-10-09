@@ -69,7 +69,7 @@ def test_multiple_default_times_rejected(tmp_path):
         # The first entry (ordered_at) already has default: true.
         # Add fulfilled_at as a second default temporal axis on the same model.
         times["fulfilled_at"] = {
-            "id": "temporal_role.jaffle_order_fulfilled_time",
+            "as": "temporal_role.jaffle_order_fulfilled_time",
             "name": "jaffle.Order.fulfilled_at",
             "label": "Order fulfilled time",
             "column": "fulfilled_at",

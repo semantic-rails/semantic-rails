@@ -191,7 +191,7 @@ def _refused_own_key_package(root):
         )
     )
     graph["graph"]["relationships"]["invoices_receipt"] = {
-        "id": "relationship.invoices_receipt",
+        "as": "relationship.invoices_receipt",
         "entities": ["invoice", "receipt"],
         "cardinality": "one_to_one",
         "via": ["invoice_id"],
