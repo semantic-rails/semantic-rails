@@ -18,7 +18,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from ..expressions import AggregateExpr
-from ._base import _object_by_id, _said_name
+from ._base import _balance_body, _object_by_id, _said_name
 from .coverage import (
     _COMPARISON_PHRASE_RE,
     _COMPARISON_WORDS,
@@ -104,8 +104,8 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
         if not isinstance(expression, dict) or set(expression) - _PLAIN_SELECT:
             return None
         recipe = recipes.get(str(expression.get("metric") or ""))
-        body = recipe.expression if recipe is not None else None
-        if recipe is not None and not (isinstance(body, AggregateExpr) and not body.window):
+        body = _balance_body(recipe) if recipe is not None else None
+        if recipe is not None and body is None:
             return None
         measure = measures.get(
             body.measure

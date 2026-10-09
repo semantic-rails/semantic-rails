@@ -20,7 +20,7 @@ from ..config_parts.measure_governance import (
     whole_aggregate,
 )
 from ..errors import SemanticLayerError
-from ..expressions import MeasureRefExpr, collect_object_references, expr_to_dict
+from ..expressions import AggregateExpr, MeasureRefExpr, collect_object_references, expr_to_dict
 from .visibility import visible_dimensions, visible_object_ids
 
 
@@ -481,6 +481,17 @@ def _said_name(row: Any, text: str) -> frozenset[str]:
     )
 
 
+def _balance_body(recipe: Any) -> AggregateExpr | None:
+    """A metric's expression when it is one plain aggregate with no window, else None.
+
+    The one test for a metric that ``snapshot._balance`` shapes to a stock's read day; the
+    governed swap offers a stock only such a metric.
+    """
+
+    body = getattr(recipe, "expression", None)
+    return body if isinstance(body, AggregateExpr) and not body.window else None
+
+
 def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | None:
     """The metric a one-select draft over a measure answers with instead.
 
@@ -513,12 +524,15 @@ def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | No
     governing = governing_metrics(config, measure.id)
     visible = set(visible_object_ids(config, (metric.id for metric in governing)))
     governing = [metric for metric in governing if metric.id in visible]
-    # A stock is shaped to its read day only as a bare aggregate (snapshot._balance).
-    form = whole_aggregate if measure.measure_class == "semi_additive" else governed_form
+    # A stock answers only with a metric snapshot._balance shapes to its read day: the same
+    # _balance_body test, so a scoped or wrapped governor never skips the complete-day holds.
+    stock = measure.measure_class == "semi_additive"
+    form = whole_aggregate if stock else governed_form
     candidates = {
         metric.id: (metric, governed[2])
         for metric in governing
-        if (governed := form(metric)) is not None
+        if (not stock or _balance_body(metric) is not None)
+        and (governed := form(metric)) is not None
         and governed[0] == measure.id
         and (governed[1] or measure.default_aggregation) == aggregation
     }

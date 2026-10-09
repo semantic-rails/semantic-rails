@@ -67,12 +67,13 @@ def _package(
     clock: str = CALL_CLOCK,
     governors: tuple[str, ...] = ("calls",),
     published_calls: bool = False,
-    customer_mrr: bool = False,
+    customer_mrr: str = "",
 ) -> Path:
     """Accounts with their events, daily balances and calls. ``calls`` is the form of the
     governed call metrics: ``zero_filled`` (``COALESCE(<filtered count>, 0)``), ``bare`` or
     ``one_filled``. ``published_calls`` publishes the calls measure; ``customer_mrr`` replaces
-    MRR with one zero-filled metric of the customers' balances."""
+    MRR with one metric of the customers' balances: ``zero_filled``, or ``scoped`` (a
+    ``scoped_aggregate`` with a ``where``)."""
 
     customer = {"field": SEGMENT, "op": "=", "value": "customer"}
 
@@ -107,11 +108,14 @@ def _package(
         del metrics["mrr"]
         balances = {"kind": "aggregate", "measure": MRR_ALL, "aggregation": "last_value",
                     "filter": {"all": [customer]}}  # fmt: skip
+        scoped = {"kind": "scoped_aggregate", "measure": MRR_ALL, "aggregation": "last_value",
+                  "where": [customer]}  # fmt: skip
         metrics["customer_mrr"] = {
             "label": "Customer MRR", "kind": "derived", "value_type": "currency",
             "temporal_role": DAY_CLOCK,
-            "expression": {"kind": "call", "name": "COALESCE",
-                           "args": [balances, {"kind": "literal", "value": 0}]},
+            "expression": scoped if customer_mrr == "scoped" else {
+                "kind": "call", "name": "COALESCE",
+                "args": [balances, {"kind": "literal", "value": 0}]},
         }  # fmt: skip
     filtered = counted(CALLS_ALL)
     filled = {"zero_filled": 0, "one_filled": 1}
@@ -433,13 +437,16 @@ def test_a_compound_part_swaps_only_to_a_bare_governor(tmp_path: Path) -> None:
         engine.close()
 
 
-def test_a_stock_swaps_only_to_a_bare_governor(tmp_path: Path) -> None:
-    """A zero-filled balance would skip the read-day shaping and the complete-day holds, so
-    today's incomplete day keeps the measure and is held."""
+@pytest.mark.parametrize("intent", ["MRR today", "MRR"])
+@pytest.mark.parametrize("form", ["zero_filled", "scoped"])
+def test_a_stock_swaps_only_to_a_bare_governor(tmp_path: Path, form: str, intent: str) -> None:
+    """A zero-filled or scoped balance would skip the read-day shaping and the complete-day
+    holds (today's incomplete day would read no rows), so the draft keeps the measure and is
+    held, with or without a stated day."""
 
-    engine = Runtime.from_path(str(_package(tmp_path / "subscriptions", customer_mrr=True)))
+    engine = Runtime.from_path(str(_package(tmp_path / "subscriptions", customer_mrr=form)))
     try:
-        plan = _plan(engine, "MRR today")
+        plan = _plan(engine, intent)
         _assert_held(plan)
         assert _selected(plan) == {"measure": MRR_ALL}
         assert [gap["expected"]["metrics"] for gap in _governed_gaps(plan)] == [
