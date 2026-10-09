@@ -355,7 +355,7 @@ def test_removing_the_signups_model_drops_an_id_form_pin_in_the_correctness_shop
 
 
 def test_every_definition_goes_and_mentions_are_reported(workspace: Path) -> None:
-    # A one-object file after metrics/core.yml overrides its gross.
+    # A one-object file after metrics/core.yml defines gross again, which loading refuses.
     _dump(
         workspace / "shop" / "metrics" / "z.yml",
         {"metric": {"name": "gross", **_metric("order_count")}},
@@ -373,9 +373,10 @@ def test_every_definition_goes_and_mentions_are_reported(workspace: Path) -> Non
     assert report["impact"]["references"] == [
         {"file": "examples/core.yml", "ids": ["metric.shop.gross"]}
     ]
-    assert report["impact"]["changes"] == [
-        {"object_id": "metric.shop.gross", "kind": "metrics", "change_type": "removed"}
-    ]
+    # The package before the change doesn't load, so there is no change list to compare;
+    # removing both definitions leaves one that does.
+    assert "z.yml defines metric 'gross', which " in report["impact"]["error"]
+    load_package_config(str(workspace / "shop"))
 
 
 def test_mcp_preview_apply_replay_and_stale_revision(workspace: Path) -> None:

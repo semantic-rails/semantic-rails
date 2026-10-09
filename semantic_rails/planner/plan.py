@@ -27,9 +27,10 @@ from typing import Any
 
 from ..ast import every_filter
 from ..errors import SemanticLayerError
+from ..naming import semantic_token as _semantic_token
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
-from ._base import _governed_target, _resolved, _semantic_token
+from ._base import _governed_target, _resolved
 from .answer_shape import _answer_shape_why
 from .consumed_spans import unconsumed_terms
 from .examples import example_plan

@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ...naming import semantic_token as _semantic_token
 from .._base import (
     _NAME_CONNECTORS,
     _TERM_SYNONYMS,
@@ -30,7 +31,6 @@ from .._base import (
     _preferred_measure,
     _preferred_metric,
     _resolved,
-    _semantic_token,
     _tokens,
 )
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text

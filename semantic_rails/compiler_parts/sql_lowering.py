@@ -65,6 +65,8 @@ from ..ir import (
     PhysicalPlan,
     PhysicalPlanNode,
 )
+from ..naming import last_token as _last_token
+from ..naming import slug as _slug
 from ..schema import AggregateRelationConfig, PackageConfig
 from ..sql_ast import (
     SqlBinary,
@@ -867,16 +869,6 @@ class AnchoredEntitySetPlan:
     projection_objects: set[str]
 
 
-def _slug(value: str, *, fallback: str = "item") -> str:
-    raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
-    parts = [part for part in raw.split("_") if part]
-    return "_".join(parts) or fallback
-
-
-def _last_token(value: str) -> str:
-    return str(value or "").split(".")[-1]
-
-
 def _semantic_set_name(predicate: MetricPredicateExpr, index: int) -> str:
     label = "predicate"
     if isinstance(predicate.input, MetricRecipeRefExpr):
@@ -1009,14 +1001,25 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
     return []
 
 
+def _validate_metric_predicate_filter_envelope(item: dict[str, Any]) -> None:
+    if str(item.get("op", "=")).strip() == "=" and item.get("value") is True:
+        return
+    raise SemanticLayerError(
+        "INVALID_METRIC_FILTER",
+        "metric_predicate filters must use op '=' and value true; put the threshold inside expression.op/expression.value",
+        details={"op": item.get("op", "="), "value": item.get("value")},
+    )
+
+
 def _query_metric_predicates(plan: LogicalPlan) -> list[MetricPredicateExpr]:
     predicates: list[MetricPredicateExpr] = []
     for item in list(plan.query.get("metric_filters", []) or []):
-        raw_expr = dict(item.get("expression", {}) or {})
+        raw_expr = item.get("expression")
         if not raw_expr:
             continue
-        expr = _parse_public_expr(raw_expr)
+        expr = _parse_public_expr(dict(raw_expr))
         if isinstance(expr, MetricPredicateExpr):
+            _validate_metric_predicate_filter_envelope(dict(item))
             predicates.append(expr)
     return predicates
 
@@ -3423,7 +3426,7 @@ def _snapshot_select_fields(
     if time_alias and time_expr is not None:
         fields_by_alias[time_alias] = time_expr
     for column, expr in zip(row_grain_columns, row_grain_exprs, strict=True):
-        fields_by_alias[f"__row_key_{_slug(column)}"] = expr
+        fields_by_alias[f"__row_key_{_slug(column, fallback='item')}"] = expr
     for column in _source_join_columns_for_paths(
         measure.entity, measure_plan.path_selections, config
     ):
@@ -3456,7 +3459,7 @@ def _snapshot_select_fields(
     partition_exprs.extend(row_grain_exprs)
     partition_aliases = [
         *([time_alias] if time_alias else []),
-        *[f"__row_key_{_slug(column)}" for column in row_grain_columns],
+        *[f"__row_key_{_slug(column, fallback='item')}" for column in row_grain_columns],
     ]
     return (
         fields,
