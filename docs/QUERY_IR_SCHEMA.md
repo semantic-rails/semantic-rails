@@ -80,9 +80,9 @@ also decides every route that walks its pair. Without a row, a query whose
 routes can answer differently uses the start entity's one direct key or is
 refused with `AMBIGUOUS_PATH` (see
 [the route rule](PACKAGE_AUTHORING.md#the-route-rule)), which asks which route
-the question means. Where the engine chose one of two or more routes, compact
-and full responses carry an info note, `ROUTE_COLOCATED_KEY` or
-`ROUTE_RECORDED`, with the chosen route in `details.route`.
+the question means. Where the engine chose one of two or more routes, the
+answer's `routes` names it as `{from, to, via}` (compact and full responses add
+how it was chosen, `basis`).
 
 ### `route_decisions`
 
@@ -123,24 +123,18 @@ ignored).
   `POLICY_DENIED` (`details.reason: route_override_under_row_policy`, with
   `path`, `policy_ids` and `hint`). A reviewed package row is the way to change
   routes there.
-- **Disclosed.** Every response carries one `info` warning
-  `ROUTE_CHOSEN_BY_QUERY` per row, at every verbosity: `details.row` and
-  `details.replaced`, how the package resolves the pair without it (`decided`:
-  its own row; `colocated_key`: the start's own key; `inherited`: rows for pairs
-  its routes walk through; `only_route`; `undecided`: the package refuses it).
-  Only an `undecided` pair gets `details.meaning` and
-  `details.route_alternatives`, using the package's own refusal options when they
-  include the chosen route. Alternatives are at most three ready decision rows;
-  each row's `label` is its meaning. Routes through hidden entities or
+- **Disclosed.** The answer's `routes` names each route the call chose, at
+  every verbosity, as `{from, to, via}`; compact and full responses add `basis:
+  routes` and `replaced`, how the package resolves the pair without it
+  (`decided`: its own row; `colocated_key`: the start's own key; `inherited`:
+  rows for pairs its routes walk through; `only_route`; `undecided`: the package
+  refuses it). Only an `undecided` pair gets `other_routes`: at most three of the
+  other options the package's refusal offers, each ready to send as `routes`,
+  with `more_routes` counting the rest. Routes through hidden entities or
   relationships are excluded under the query's policy context, including from
-  messages and counts. Unknown visibility under an `object_visibility` policy
-  withholds alternatives. `details.more_alternatives` counts any remaining
-  visible alternatives; validating the query without `route_decisions` returns
-  every clarification option without a warehouse query. State the meaning used
-  and offer the listed rows as one-step switches: resend the query with an
-  alternative row in `route_decisions`. No alternative is executed. The warning
-  mentions once that a reviewed package default using `details.row` would
-  remove the question; this advice is not repeated in `recovery_hints`.
+  counts. Validating the call without `routes` returns every clarification
+  option without a warehouse query. State the meaning used and offer the listed
+  routes as one-step switches. No alternative is executed.
   `hop_profile.targets[*].route_basis` is `query` for the pair.
 - `build-options` with a partial query that carries rows shows the dimensions
   they make reachable, and its query patches keep the rows; a patch that would

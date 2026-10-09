@@ -73,7 +73,9 @@ def test_a_window_without_a_grain_is_one_total(runtime: Runtime) -> None:
     assert row["orders"] == gold[0]["orders"]
     assert row["revenue"] == pytest.approx(gold[0]["revenue"])
     assert [column["field"] for column in response["output_columns"]] == ["revenue", "orders"]
-    assert len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]
+    assert (
+        len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]["message"]
+    )
     assert "UNGRAINED_TIME_PROJECTION" not in _codes(response)
 
 
@@ -127,7 +129,7 @@ def test_a_grain_still_returns_one_row_per_period(runtime: Runtime) -> None:
     assert {row["period"]: row["revenue"] for row in response["rows"]} == pytest.approx(
         {row["month"].date().isoformat(): row["revenue"] for row in gold}
     )
-    assert response["assumptions"] == []
+    assert "assumptions" not in response
 
 
 @pytest.mark.parametrize(
@@ -162,7 +164,7 @@ def test_an_expression_that_needs_the_time_axis_is_not_collapsed(runtime: Runtim
     assert all(set(row) == {ORDER_TIME, "running"} for row in response["rows"])
     assert max(row["running"] for row in response["rows"]) == pytest.approx(gold[0]["revenue"])
     assert "UNGRAINED_TIME_PROJECTION" in _codes(response)
-    assert response["assumptions"] == []
+    assert "assumptions" not in response
 
 
 # The predicate measures orders on the query's own clock (order time), in the query's own
@@ -406,7 +408,9 @@ def test_every_kind_of_measure_returns_the_window_total(runtime: Runtime, case: 
     for key, row_values in want.items():
         assert got[key] == pytest.approx(row_values), key
     assert response["row_count"] == len(gold)  # one row per group, never one per timestamp
-    assert len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]
+    assert (
+        len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]["message"]
+    )
     assert not {"UNGRAINED_TIME_PROJECTION", "UNGRAINED_GROUPED_TIME_PROJECTION"} & set(
         _codes(response)
     )
@@ -452,7 +456,7 @@ def test_execute_reports_the_total_and_its_assumption(mcp: SemanticLayerMCPAdapt
     assert response["ok"], response["errors"]
     assert response["row_count"] == 2 and response["truncated"] is False
     # The default response is minimal, and an assumption changes what the numbers mean.
-    assert "one total" in response["assumptions"][0]
+    assert "one total" in response["assumptions"][0]["message"]
     assert response["time_shape"] == "window_total"
     assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
     yearly = mcp.call_tool(
@@ -481,7 +485,7 @@ def test_a_grant_scoped_execute_reports_the_total_and_its_flag(
         STORE,
         "metric.sales.aov_usd",
     ]
-    assert "one total" in response["assumptions"][0]
+    assert "one total" in response["assumptions"][0]["message"]
     assert response["time_shape"] == "window_total"
     assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
     # The advice for a result that is too big must not blame the raw timestamp either.

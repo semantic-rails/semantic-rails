@@ -317,14 +317,14 @@ def test_broad_scalar_window_suppresses_short_contained_caveat(tmp_path: Path) -
         runtime.close()
 
 
-def test_caveat_warning_cap_emits_truncation_summary(tmp_path: Path) -> None:
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_every_matching_caveat_is_stated_at_every_verbosity(tmp_path: Path, verbosity) -> None:
     rows = [_revenue_caveat(id=f"caveat.test.cap_{index}") for index in range(6)]
     runtime = _runtime_with_caveats(tmp_path, rows)
     try:
-        result = runtime.validate(_revenue_query(), verbosity="compact")
+        result = runtime.validate(_revenue_query(), verbosity=verbosity)
 
-        assert len(_applied_caveats(result)) == 5
-        assert "SEMANTIC_CAVEATS_TRUNCATED" in _caveat_codes(result)
+        assert len(_applied_caveats(result)) == 6
     finally:
         runtime.close()
 

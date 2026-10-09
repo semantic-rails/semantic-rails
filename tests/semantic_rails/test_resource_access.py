@@ -711,7 +711,7 @@ def test_grant_responses_omit_caveat_metadata(granted_runtime, request, operatio
 
 @pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
-def test_grant_responses_omit_caveat_counts(granted_runtime, request, operation, verbosity):
+def test_grant_responses_omit_every_caveat(granted_runtime, request, operation, verbosity):
     caveats = [
         SemanticCaveatConfig(
             id=f"caveat.private.customer_{i}",
@@ -724,12 +724,12 @@ def test_grant_responses_omit_caveat_counts(granted_runtime, request, operation,
     config = replace(granted_runtime.config, semantic_caveats=caveats)
     runtime = _replace_test_config(granted_runtime, config, request)
     legacy = runtime.validate(query(), context=RequestContext(), verbosity="compact")
-    assert any(row["code"] == "SEMANTIC_CAVEATS_TRUNCATED" for row in legacy["warnings"])
+    assert sum(row["code"] == "SEMANTIC_CAVEAT_APPLIED" for row in legacy["warnings"]) == 6
     result = _granted_response(runtime, operation, verbosity)
     assert result["ok"]
     serialized = json.dumps(result)
-    for hidden in ("SEMANTIC_CAVEATS_TRUNCATED", "matched_count", "omitted_count"):
-        assert hidden not in serialized
+    for caveat in caveats:
+        assert caveat.id not in serialized and caveat.message not in serialized
 
 
 @pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
@@ -740,7 +740,7 @@ def test_grant_responses_drop_unlisted_warnings(granted_runtime, monkeypatch, op
     unknown = {"code": "UNLISTED_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
     monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args, **kwargs: [unknown])
     result = _granted_response(granted_runtime, operation, verbosity)
-    assert result["warnings"] == []
+    assert "warnings" not in result
     assert [row["semantic_id"] for row in result["output_columns"]] == [CUSTOMERS]
 
 
@@ -767,7 +767,7 @@ def test_grant_responses_project_listed_warnings(
         ],
     )
     result = _granted_response(granted_runtime, operation)
-    assert result["warnings"] == ([listed] if object_ids == [CUSTOMERS] else [])
+    assert result.get("warnings", []) == ([listed] if object_ids == [CUSTOMERS] else [])
 
 
 @pytest.mark.parametrize("code", ["FILTER_VALUE_NOT_FOUND", "FILTER_VALUE_UNVERIFIED"])
@@ -794,7 +794,7 @@ def test_grant_responses_project_filter_guard_warnings(
         lambda *args, **kwargs: [{**listed, "future_metadata": {"object_id": SECRET_DIMENSION}}],
     )
     result = granted_runtime.query(query(), context=context(), verbosity="full")
-    assert result["warnings"] == ([listed] if object_ids == [DIMENSION] else [])
+    assert result.get("warnings", []) == ([listed] if object_ids == [DIMENSION] else [])
 
 
 def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(granted_runtime, request):

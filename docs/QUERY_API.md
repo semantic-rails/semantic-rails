@@ -1184,18 +1184,36 @@ remain separate predicates.
 
 Qualified metric asks return `interpreted_intent.pattern: "qualified_metric_rollup"` and a validated runtime-composed `scoped_aggregate`. Contextual predicates omit `time_alignment`; `time_grain` appears only when the qualification grain differs from the output grain, such as daily output qualified by monthly customer activity.
 
+### The answer envelope
+
+`validate`, `compile` and `query` state what an answer means beside its rows, at every
+verbosity:
+
+- `status` and `observation_scope` always (the scope decides whether an empty additive
+  measure reads 0 or NULL);
+- `window` (`{start, end, now, partial, data_through}`, only the keys that apply) when a
+  window or a grain series was resolved, and `clock` when a time-bearing measure was read;
+- `routes` only when a route was chosen among two or more (see
+  [the route rule](PACKAGE_AUTHORING.md#the-route-rule));
+- `assumptions` only when the answer took something as meant, each `{code, message, …}`:
+  `WINDOW_TOTAL` (a window with no grain read as one total, with `time_shape:
+  "window_total"`), `PARTIAL_PERIOD` ("Q3 2017 so far (46 of 92 days)") and
+  `ENTITY_FILTER_OVER` (how each entity's aggregate was taken);
+- `warnings` and `errors` only when there are some.
+
+No field is empty: a list, object or string with nothing in it is left out (`rows` stays,
+since an empty result is an answer). Verbosity trims only afterwards and never removes a
+warning, an assumption or a route; a minimal response keeps each route's `{from, to, via}`
+(and a call's `other_routes`). The echoed `query` and `normalized_query` are the call, never
+the engine form with its identity or `now`.
+
 ### `POST /api/v1/validate`
 
-Response keys:
+Response keys, besides the answer envelope:
 
 - `ok`
 - `version`
-- `status`
-- `errors`
-- `warnings`
 - `recovery_hints`
-- `assumptions`
-- `time_shape` (only `"window_total"`, when the window was one total)
 - `policy_effects`
 - `provenance_summary`
 - `disabled_options`
@@ -1214,10 +1232,9 @@ from the returned rows (see
 
 ### `POST /api/v1/query`
 
-Response keys:
+Response keys, besides the answer envelope:
 
 - `ok`
-- `status`
 - `rows`
 - `row_count`
 - `rendered_sql`
@@ -1226,11 +1243,7 @@ Response keys:
 - `explain`
 - `query`
 - `normalized_query`
-- `warnings`
-- `errors`
 - `recovery_hints`
-- `assumptions`
-- `time_shape` (only `"window_total"`, when the window was one total)
 - `withheld` (only for a rank by values a `withhold_values` policy withholds: the withheld
   objects, whose column `rows`, `column_types` and `output_columns` leave out; retained at
   minimal verbosity and under resource grants)
@@ -1371,20 +1384,8 @@ The response `warnings` array can carry these non-error signals:
   matched window or slice itself is affected and comparisons built on it
   can mislead. Agents should mention caveats only when explaining
   affected results.
-- `SEMANTIC_CAVEATS_TRUNCATED` — fires when more caveats matched than
-  the current verbosity returns. Increase `verbosity` to inspect the
-  omitted advisory context.
-- `ROUTE_COLOCATED_KEY`, `ROUTE_RECORDED` — severity `info`, at `compact`
-  and `full` verbosity: the query reads an entity pair with two or more
-  routes, and the engine used the start entity's own key or the package's
-  `graph.path_preferences` rows. `details.route` is the chosen route; the
-  message reads it ("the Order's Store (own key)"). On `ROUTE_COLOCATED_KEY`,
-  `details.alternatives` holds the row that would make each other route the
-  default when that row would load beside the package's rows, and
-  `details.conflicts_with` lists any other route with the rows its row would
-  disagree with; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
-  it walks through, `details.rows` names them. See
-  [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
+  Every matching caveat is stated at every verbosity; verbosity trims only
+  each caveat's details.
 - `ROUTE_PASS_THROUGH` — severity `warning`, at every verbosity: the package's
   one route for a pair the query reads goes down into another table's rows and
   back up to another parent ("the Team of any of the Member's Member events"),
@@ -1394,25 +1395,24 @@ The response `warnings` array can carry these non-error signals:
   `details.through` and `details.fixes` (`declare_key`, `declare_link_table`,
   `record_route`, `child_group`). See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
-- `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
-  `route_decisions` row the query applied. `details.row` is the row and
-  `details.replaced` what would have applied without it (`decided`,
-  `colocated_key`, `inherited`, `only_route` or `undecided`). Only an
-  `undecided` pair whose chosen route was offered by the package's own
-  `AMBIGUOUS_PATH` clarification gets `details.meaning` and
-  `details.route_alternatives`: at most three ready decision rows from those
-  same options, with each meaning in the row's `label`. Routes through entities
-  or relationships hidden under the query's policy context are not in the caller's
-  view, so they are never offered or counted. `details.more_alternatives`,
-  when present, counts the remaining visible alternatives. Validate the query
-  without `route_decisions` to receive every clarification option without a
-  warehouse query. State the chosen meaning and offer the listed rows as
-  one-step query switches; alternatives are never executed. The warning mentions
-  a reviewed package default using `details.row` once, without a duplicate
-  recovery hint. Pairs the package already resolves keep their existing message
-  and details. Route clarifications, conflict rows, inherited-row notes, and
-  plan candidates name only routes whose relationships and every waypoint
-  are visible to the caller. Routes are never re-chosen per caller: when the
+
+The answer's `routes` (not a warning) names each entity pair whose route was
+chosen among two or more, as `{from, to, via}`, at every verbosity; a pair with
+one route is not listed. A route the call chose for a pair the package leaves
+undecided adds `other_routes`: at most three of the other options its
+`AMBIGUOUS_PATH` clarification offered, each ready to send as `routes`, with
+`more_routes` counting the rest. Validate the call without `routes` to receive
+every option without a warehouse query; alternatives are never executed. A
+compact or full answer adds how each route was chosen (`basis`): `routes` (the
+call's, with `replaced`: `decided`, `colocated_key`, `inherited`, `only_route` or
+`undecided`), `own_key` (the start entity's own key, with `alternatives`, the
+row that would make each other route the default when it would load beside the
+package's rows, and `conflicts_with`, any other route with the rows its row
+would disagree with) or `recorded` (the package's `graph.path_preferences`
+rows, with `recorded_for` naming the pairs whose rows an inherited route
+follows). Route clarifications, conflict rows, switches and plan candidates
+name only routes whose relationships and every waypoint are visible to the
+caller. Routes are never re-chosen per caller: when the
   package's route for a pair reads a hidden entity or relationship, the pair has
   no route for that caller (`PATH_NOT_FOUND`, `details.reason:
   "no_relationship_chain"`), and a `route_decisions` row naming a hidden

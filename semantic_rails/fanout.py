@@ -450,12 +450,12 @@ def route_note(
     config: PackageConfig, start: str, target: str, route: Sequence[str]
 ) -> RouteResolution | None:
     """The pair's resolution when the engine chose ``route``, the route the SQL read, among two
-    or more, so the response says how. None when the pair has one route (nothing was chosen),
-    is refused, or resolves to another route than the SQL read: a note names only the SQL's
-    route, and says the same whatever the process resolved before.
+    or more, so the answer's ``routes`` names it. None when the pair has one route (nothing was
+    chosen), is refused, or resolves to another route than the SQL read: ``routes`` names only
+    the SQL's route, and says the same whatever the process resolved before.
 
-    The pair's resolution is ``resolve_route``'s, which depends only on the package. Notes
-    never enumerate routes for a pair the query resolved (its resolution is cached), and a
+    The pair's resolution is ``resolve_route``'s, which depends only on the package. This
+    never enumerates routes for a pair the query resolved (its resolution is cached), and a
     decided pair only checks whether a second route fits the hop ceiling, with bounded
     reachability scans."""
     try:

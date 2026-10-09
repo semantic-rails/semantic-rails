@@ -395,27 +395,27 @@ The agent never picks one; it asks:
 1. Refusal: `details.clarification.question` ("Which District does the question mean for an
    Account?") and one option per route, each with a `meaning` in business words.
 2. Ask the person, reading each option's `meaning`.
-3. Resend the same query with the chosen option's `decision` in
-   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions). The answer is for this person and this
-   query only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (how
-   the package resolves the pair without it: `undecided` when it refuses). State the meaning
-   used (`details.meaning`) and mention the `label` of each ready decision row in
-   `details.route_alternatives` as a one-step switch: resend with that row in
-   `route_decisions`. Only an undecided pair gets these alternatives, taken from the
-   package's refusal options and excluding routes through hidden objects. At most three
-   are listed; `details.more_alternatives` counts any remaining visible alternatives.
-   To see every option, validate the query without `route_decisions`; that does not run
-   a warehouse query. The warehouse executes only the chosen route.
+3. Send the chosen option's `query`: the same call with the route in `routes`. The answer is
+   for this person and this query only, and its `routes` names the route it took as
+   `{from, to, via}`. State the option's meaning, and mention each of `other_routes` (the
+   other options, ready to send as `routes`) as a one-step switch. Only a pair the package
+   leaves undecided gets these, taken from the refusal's options and excluding routes
+   through hidden objects. At most three are listed; `more_routes` counts the rest. To see
+   every option, validate the call without `routes`; that does not run a warehouse query.
+   The warehouse executes only the chosen route. A compact or full answer adds `basis:
+   routes` and `replaced` (how the package resolves the pair without it: `undecided` when it
+   refuses).
 4. To make it the default for everyone, a maintainer calls Architect
    [`record_route_decision`](ARCHITECT_MCP.md) with the same `decision`. That is a reviewed package
    change; from then on the question answers without asking. An option with `conflicts_with`
    names the package rows to change first; its `decision` still answers per query.
 
-One row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
-`ROUTE_RECORDED` (compact and full responses) names the route the answer used, the start entity's
-own key or the package's recorded routes; it needs no follow-up, and `ROUTE_COLOCATED_KEY` lists
-the row that would make each other route the default (or, in `details.conflicts_with`, the rows
-that row would disagree with). `PATH_NOT_FOUND` with `details.reason:
+One row also decides every route that walks its pair. The answer's `routes` names each route
+the engine chose among several; it needs no follow-up. A compact or full answer adds how
+(`basis`: `own_key`, the start entity's own key, or `recorded`, the package's rows, with
+`recorded_for` naming the pairs whose rows it follows), and an own-key route lists the row
+that would make each other route the default in `alternatives` (or, in `conflicts_with`, the
+rows that row would disagree with). `PATH_NOT_FOUND` with `details.reason:
 excluded_by_decision` means the package's rows rule out every route; it is a package fix, not a
 query fix.
 
