@@ -756,6 +756,10 @@ Plain filters on a child:
 The runtime rejects any `field` that does not resolve, with
 `INVALID_ORDER_BY` and a list of available aliases.
 
+Requested terms sort NULLs last in both directions on every backend, except in a
+[rank by withheld values](PACKAGE_AUTHORING.md#ranking-by-withheld-values), whose
+ascending order is the exact reverse of its descending order.
+
 With `limit`, the engine preserves these sort terms and appends every remaining
 output column in output order, ascending with NULLs last. Identical output rows
 are interchangeable. Ordering without `limit` is unchanged.
