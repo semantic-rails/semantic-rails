@@ -140,10 +140,18 @@ def _without_caller_selects(
 
     caller = list(caller_select)
     positions = {_select_key(config, item): index for index, item in enumerate(caller)}
+    # A caller's column name is the caller's: a generated item of the same name gives way.
+    named = {
+        str(item["as"]): index
+        for index, item in enumerate(caller)
+        if isinstance(item, dict) and item.get("as")
+    }
     kept: list[Any] = []
     renamed: dict[str, str] = {}
     for item in query.get("select") or []:
         index = positions.get(_select_key(config, item))
+        if index is None and isinstance(item, dict):
+            index = named.get(str(item.get("as") or ""))
         if index is None:
             kept.append(item)
             continue
