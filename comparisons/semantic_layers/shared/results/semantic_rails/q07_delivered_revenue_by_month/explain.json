@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.53,
-      "compile_ms": 0.212,
+      "cache_lookup_ms": 0.632,
+      "compile_ms": 0.243,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -449,7 +449,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1\nFROM comparison_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM guarded_base AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -580,6 +580,18 @@
                   "distinct": false,
                   "name": "SUM"
                 }
+              },
+              {
+                "alias": "m1_rows",
+                "expression": {
+                  "args": [
+                    {
+                      "value": 1
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "COUNT"
+                }
               }
             ],
             "where": []
@@ -614,49 +626,75 @@
               {
                 "alias": "m1",
                 "expression": {
-                  "else_expr": null,
-                  "whens": [
+                  "args": [
                     {
-                      "condition": {
-                        "left": {
-                          "frame": "",
-                          "function": {
-                            "args": [
-                              {
-                                "parts": [
-                                  "base",
-                                  "m1"
-                                ]
+                      "parts": [
+                        "base",
+                        "m1"
+                      ]
+                    },
+                    {
+                      "else_expr": null,
+                      "whens": [
+                        {
+                          "condition": {
+                            "left": {
+                              "left": {
+                                "frame": "",
+                                "function": {
+                                  "args": [
+                                    {
+                                      "parts": [
+                                        "base",
+                                        "m1"
+                                      ]
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "COUNT"
+                                },
+                                "order_by": [],
+                                "partition_by": []
+                              },
+                              "op": ">",
+                              "right": {
+                                "value": 0
                               }
-                            ],
-                            "distinct": false,
-                            "name": "COUNT"
+                            },
+                            "op": "AND",
+                            "right": {
+                              "left": {
+                                "expr": {
+                                  "parts": [
+                                    "base",
+                                    "m1_rows"
+                                  ]
+                                }
+                              },
+                              "op": "OR",
+                              "right": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "m1_rows"
+                                  ]
+                                },
+                                "op": "=",
+                                "right": {
+                                  "value": 0
+                                }
+                              }
+                            }
                           },
-                          "order_by": [],
-                          "partition_by": []
-                        },
-                        "op": ">",
-                        "right": {
-                          "value": 0
-                        }
-                      },
-                      "result": {
-                        "args": [
-                          {
-                            "parts": [
-                              "base",
-                              "m1"
-                            ]
-                          },
-                          {
+                          "result": {
                             "value": 0
                           }
-                        ],
-                        "distinct": false,
-                        "name": "COALESCE"
-                      }
+                        }
+                      ]
                     }
-                  ]
+                  ],
+                  "distinct": false,
+                  "name": "COALESCE"
                 }
               }
             ],
@@ -681,7 +719,8 @@
             "parts": [
               "t"
             ]
-          }
+          },
+          "nulls_last": false
         }
       ],
       "qualify": [],
@@ -989,10 +1028,10 @@
   },
   "query_ir_hints": [],
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1\nFROM comparison_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM guarded_base AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:738a3e0d5ee52d27dd5b0d9ef53e670cc3a541c155a7a5a1f20888a94e619e87",
-  "source_fingerprint": "3be89439f14f4fbad2d7b21c52678ca261ead872cf6db820220d6a0bfa6ab055",
+  "semantic_fingerprint": "sha256:aac5e6deeae332b480c8e782df0d02116bab1711e756c910af6b285efd73f4de",
+  "source_fingerprint": "92a7dc155b7dfd213985fbfb14af23e8857dab2ebcbbca2b073e4f949609d910",
   "sql_plan": {
     "ctes": [
       {
@@ -1072,6 +1111,18 @@
                 "distinct": false,
                 "name": "SUM"
               }
+            },
+            {
+              "alias": "m1_rows",
+              "expression": {
+                "args": [
+                  {
+                    "value": 1
+                  }
+                ],
+                "distinct": false,
+                "name": "COUNT"
+              }
             }
           ],
           "where": []
@@ -1106,49 +1157,75 @@
             {
               "alias": "m1",
               "expression": {
-                "else_expr": null,
-                "whens": [
+                "args": [
                   {
-                    "condition": {
-                      "left": {
-                        "frame": "",
-                        "function": {
-                          "args": [
-                            {
-                              "parts": [
-                                "base",
-                                "m1"
-                              ]
+                    "parts": [
+                      "base",
+                      "m1"
+                    ]
+                  },
+                  {
+                    "else_expr": null,
+                    "whens": [
+                      {
+                        "condition": {
+                          "left": {
+                            "left": {
+                              "frame": "",
+                              "function": {
+                                "args": [
+                                  {
+                                    "parts": [
+                                      "base",
+                                      "m1"
+                                    ]
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "COUNT"
+                              },
+                              "order_by": [],
+                              "partition_by": []
+                            },
+                            "op": ">",
+                            "right": {
+                              "value": 0
                             }
-                          ],
-                          "distinct": false,
-                          "name": "COUNT"
+                          },
+                          "op": "AND",
+                          "right": {
+                            "left": {
+                              "expr": {
+                                "parts": [
+                                  "base",
+                                  "m1_rows"
+                                ]
+                              }
+                            },
+                            "op": "OR",
+                            "right": {
+                              "left": {
+                                "parts": [
+                                  "base",
+                                  "m1_rows"
+                                ]
+                              },
+                              "op": "=",
+                              "right": {
+                                "value": 0
+                              }
+                            }
+                          }
                         },
-                        "order_by": [],
-                        "partition_by": []
-                      },
-                      "op": ">",
-                      "right": {
-                        "value": 0
-                      }
-                    },
-                    "result": {
-                      "args": [
-                        {
-                          "parts": [
-                            "base",
-                            "m1"
-                          ]
-                        },
-                        {
+                        "result": {
                           "value": 0
                         }
-                      ],
-                      "distinct": false,
-                      "name": "COALESCE"
-                    }
+                      }
+                    ]
                   }
-                ]
+                ],
+                "distinct": false,
+                "name": "COALESCE"
               }
             }
           ],
@@ -1173,7 +1250,8 @@
           "parts": [
             "t"
           ]
-        }
+        },
+        "nulls_last": false
       }
     ],
     "qualify": [],

@@ -352,6 +352,13 @@ def shop(tmp_path_factory):
         ("not in June", "2024-06-01", "2024-07-01", 2),
         ("excluding Q2", "2024-04-01", "2024-07-01", 2),
         ("except in December", "2023-12-01", "2024-01-01", 3),
+        # Dotted abbreviations are one time phrase, wholly inside the exclusion.
+        ("not on Jun. 25", "2024-06-25", "2024-06-26", 2),
+        ("excluding Jun. 25, 2024", "2024-06-25", "2024-06-26", 2),
+        ("not on Tue. June 25", "2024-06-25", "2024-06-26", 2),
+        ("excluding Tue. June 25", "2024-06-25", "2024-06-26", 2),
+        # The current day offers readings unless an exclusion names it.
+        ("not on Fri July 5", "2024-07-05", "2024-07-06", 3),
     ],
 )
 def test_excluded_period_never_becomes_a_positive_window(shop, phrase, start, end, expected):
@@ -370,11 +377,15 @@ def test_excluded_period_never_becomes_a_positive_window(shop, phrase, start, en
             "where": [{"field": "dimension.shop_customer_channel", "op": "!=", "value": "store"}],
         },
     )
-    assert plan["status"] != "ok", plan
-    assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+    assert plan["status"] == "low_confidence", plan
+    assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    gaps = {gap["kind"]: gap for gap in plan["why"]["details"]["gaps"]}
+    assert [item["kind"] for item in gaps["negation_unrealized"]["expected"]["items"]] == ["time"]
+    assert "time_window_unresolved" in gaps
     assert "execute" not in plan["next"].get("ready_for", [])
     read = _time_window(intent, SHOP_NOW)
     assert read.unresolved and not read.windows and not read.bounds
+    assert read.excluded and not read.readings
 
 
 @pytest.mark.parametrize(
@@ -384,6 +395,12 @@ def test_exclusion_guard_covers_every_window_parser(phrase):
     read = _time_window(f"signups {phrase}", SHOP_NOW)
     assert read.unresolved and not read.windows and not read.bounds
     assert "all time: no start date" not in read.assumptions
+
+
+def test_a_window_after_an_excluded_value_stays_positive():
+    read = _time_window("signups excluding store last month", SHOP_NOW)
+    assert read.bounds == {"range": {"last": {"unit": "month", "value": 1}}}
+    assert not read.excluded and not read.unresolved
 
 
 @pytest.mark.parametrize(
@@ -431,13 +448,13 @@ def test_scoped_beginning_is_not_all_time(shop, phrase):
             2,
         ),
         (
-            "orders in total in 2017",
+            "orders in total in Q1 2024",
             "orders",
             "order_id",
             "ordered_at",
-            "2017-01-01",
-            "2018-01-01",
-            0,
+            "2024-01-01",
+            "2024-04-01",
+            3,
         ),
         (
             "signups March 2",
@@ -489,7 +506,8 @@ def test_bounded_reading_matches_shop_reference_sql(
         gold = connection.execute(reference).fetchone()[0]
     assert gold == expected
     rows = shop.query(query)["rows"]
-    assert sum(row[query["select"][0]["as"]] or 0 for row in rows) == gold
+    # One bounded window is one row: an empty result can't pass as a zero.
+    assert [row[query["select"][0]["as"]] for row in rows] == [gold]
     for word in ("ever", "in total", "in  total"):
         if word in intent:
             assert any(intent[start:end] == word for start, end in read.spans)

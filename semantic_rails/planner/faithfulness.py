@@ -46,18 +46,16 @@ from .coverage import (
     _query_contains_prior_period,
     _referenced_ids,
 )
+from .exclusions import exclusion_gaps
 from .filter_checks import (
     _contradictory_filter_gaps,
-    _excluded_value_spans,
-    _exclusion_matches,
     _filter_value_gaps,
-    _positive_filter_evidence,
-    _query_has_negative_semantics,
     _where_clause_gaps,
 )
 from .generators import _target_focus_text
 from .intent_ir import IntentIR
 from .ranking_checks import _ranking_gaps
+from .snapshot import snapshot_day_gaps, snapshot_read
 from .time_checks import (
     _caller_window_gaps,
     _fiscal_calendar_gaps,
@@ -70,13 +68,8 @@ from .time_windows import _time_window
 from .visibility import visible_object_ids
 
 
-def _shared_subjects(config: Any, text: str) -> list[Any]:
-    """Whole analytic names that remain indistinguishable, independent of ranking.
-
-    A label without its parenthetical counts, so the shared base of two variants
-    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
-    """
-
+def _selectable_subjects(config: Any, candidate_ids: list[str] | None = None) -> list[Any]:
+    """Visible published subjects, with equivalent authored answers collapsed."""
     rows = [
         *config.metric_recipes,
         *(row for row in config.measures if getattr(row, "publish", True)),
@@ -89,9 +82,41 @@ def _shared_subjects(config: Any, text: str) -> list[Any]:
     for metric in config.metric_recipes:
         wrapped = whole_aggregate(metric)
         other = measures.get(wrapped[0]) if wrapped is not None and not wrapped[2] else None
-        if other is not None and other.label == metric.label and other.name == metric.name:
+        if wrapped is not None and (
+            candidate_ids is not None
+            and metric.id in candidate_ids
+            and metric.id in visible
+            and other is not None
+            and other.id in candidate_ids
+            and (wrapped[1] or other.default_aggregation) == other.default_aggregation
+        ):
+            mirrors.add(other.id)
+        elif (
+            wrapped is not None
+            and other is not None
+            and other.label == metric.label
+            and other.name == metric.name
+            and (
+                candidate_ids is None
+                or (wrapped[1] or other.default_aggregation) == other.default_aggregation
+            )
+        ):
             mirrors.add(metric.id)
-    rows = [row for row in rows if row.id not in mirrors]
+    return [
+        row
+        for row in rows
+        if row.id not in mirrors and (candidate_ids is None or row.id in candidate_ids)
+    ]
+
+
+def _shared_subjects(config: Any, text: str) -> list[Any]:
+    """Whole analytic names that remain indistinguishable, independent of ranking.
+
+    A label without its parenthetical counts, so the shared base of two variants
+    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
+    """
+
+    rows = _selectable_subjects(config)
     fits = {}
     for row in rows:
         spans = _name_matches(row, text)
@@ -275,46 +300,9 @@ def intent_faithfulness_why(
             )
         )
 
-    # Named-value coverage suppresses a reversal when this check reports it,
-    # so every exclusion clause must be inspected, not only the first one.
-    negation_matches = _exclusion_matches(text)
-    excluded_spans = _excluded_value_spans(text)
-    for negation_match in negation_matches:
-        excluded_span = next(
-            (span for span in excluded_spans if span[0] == negation_match.start("value")),
-            negation_match.span("value"),
-        )
-        excluded_text = text[excluded_span[0] : excluded_span[1]].strip()
-        positive_filters = _positive_filter_evidence(runtime, query, excluded_text)
-        reversed_clause = bool(positive_filters)
-        negative_present = _query_has_negative_semantics(query)
-        # A matching positive predicate is still a reversal when an unrelated
-        # (or even contradictory) negative predicate also happens to exist.
-        if reversed_clause or not negative_present:
-            gaps.append(
-                CoverageGap(
-                    kind=("negation_reversed" if reversed_clause else "negation_unrealized"),
-                    clause=negation_match.group(0).strip(),
-                    message=(
-                        "The excluded value is encoded by a positive filter, reversing the request."
-                        if reversed_clause
-                        else "The question contains an exclusion, but the draft has no negative predicate."
-                    ),
-                    expected={"filter_polarity": "negative", "excluded_text": excluded_text},
-                    actual={
-                        "where": list(query.get("where") or []),
-                        "positive_matches": positive_filters,
-                        "negative_predicate_present": negative_present,
-                    },
-                    recovery_hint={
-                        "kind": "provide_negative_filter",
-                        "message": (
-                            "Pass an explicit Query IR/partial_query filter using != or NOT IN for "
-                            "the excluded value, then validate before execution."
-                        ),
-                    },
-                )
-            )
+    # Every exclusion clause holds: the planner doesn't answer exclusions yet.
+    window = _time_window(text, policy_context=query.get("policy_context"))
+    gaps.extend(exclusion_gaps(runtime._config, text, query, window))
 
     requested_subjects = _conjoined_subjects(runtime, text)
     if len(requested_subjects) >= 2:
@@ -345,6 +333,8 @@ def intent_faithfulness_why(
     if role_window_why is not None:
         return role_window_why
     caller_time = (partial_query or {}).get("time")
+    # A balance read on the closing day of the question's window answers that window.
+    read = snapshot_read(runtime, question, query)
     if isinstance(caller_time, dict) and any(
         caller_time.get(key) for key in ("start", "end", "range")
     ):
@@ -354,13 +344,21 @@ def intent_faithfulness_why(
             _caller_window_gaps(runtime, text, query)
             or _caller_window_gaps(runtime, text, query, timezone="UTC")
         )
-    else:
+    elif read is None:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
-    if not _time_window(question, policy_context=query.get("policy_context")).as_of:
-        # As-of cues already hold as TIME_WINDOW_UNRESOLVED, without a query.
-        gaps.extend(_stock_as_of_gaps(runtime._config, query))
+    # Unconsumed as-of cues have their own TIME_WINDOW_UNRESOLVED hold; the balance's
+    # independent completion/subject checks still apply, including to caller windows.
+    stock_gaps = (
+        _stock_as_of_gaps(runtime._config, query)
+        if (
+            read is not None
+            or not _time_window(question, policy_context=query.get("policy_context")).as_of
+        )
+        else []
+    )
+    gaps.extend(stock_gaps or snapshot_day_gaps(runtime, question, query, partial_query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
@@ -370,9 +368,30 @@ def intent_faithfulness_why(
         # value-specific absences are consequences of the same contradiction.
         gaps.extend(contradictions)
     else:
-        gaps.extend(_filter_value_gaps(runtime, text, query))
+        filter_text = text
+        if len(requested_subjects) >= 2 and not missing:
+            filter_text = _conjoined_filter_text(text, requested_subjects)
+        gaps.extend(_filter_value_gaps(runtime, filter_text, query))
 
-    return _coverage_why(gaps)
+    why = _coverage_why(gaps)
+    if why is not None and any(gap.kind == "multiple_subjects_unrealized" for gap in gaps):
+        objects = {
+            row.id: row for row in [*runtime._config.measures, *runtime._config.metric_recipes]
+        }
+        why["details"]["parts"] = [
+            {
+                **part,
+                "temporal_roles": [
+                    str(
+                        getattr(objects[key], "temporal_role", "")
+                        or getattr(objects[key], "default_temporal_role", "")
+                    )
+                    for key in part["candidate_ids"]
+                ],
+            }
+            for part in requested_subjects
+        ]
+    return why
 
 
 def _ambiguous_grouping_gaps(
@@ -533,8 +552,18 @@ def named_subject_why(
 ) -> dict[str, Any] | None:
     """A shared whole name cannot be settled by the ranking's label or score."""
 
-    rows = _shared_subjects(runtime._config, question)
-    if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
+    parts = _conjoined_subjects(runtime, question)
+    projected = set(_projected_subject_ids(partial_query or {}))
+    rows = []
+    for part in parts:
+        rows = _selectable_subjects(runtime._config, part["candidate_ids"])
+        if len(rows) >= 2 and not any(row.id in projected for row in rows):
+            rows = sorted(rows, key=lambda row: row.id)
+            break
+        rows = []
+    if not parts:
+        rows = _shared_subjects(runtime._config, question)
+    if not rows or any(row.id in projected for row in rows):
         return None
     return _coverage_why(
         [
@@ -672,6 +701,13 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
             return []
         matches.append({"phrase": piece, "candidate_ids": candidate_ids})
     return matches
+
+
+def _conjoined_filter_text(text: str, subjects: list[dict[str, Any]]) -> str:
+    """Selected subject names consume only their first occurrence, never a later filter."""
+    for part in subjects:
+        text = text.replace(part["phrase"], "", 1)
+    return text
 
 
 def _matches_exact_subject_field(row: Any, piece_tokens: tuple[str, ...]) -> bool:

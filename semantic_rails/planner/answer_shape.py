@@ -5,16 +5,28 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ._base import _TERM_SYNONYMS, _last_token, _object_by_id, _singular
+from ._base import (
+    _TERM_SYNONYMS,
+    _last_token,
+    _object_by_id,
+    _requested_grouping_spans,
+    _singular,
+)
 from .consumed_spans import _TERM_RE, _name_spans
-from .coverage import CoverageGap, _coverage_why, _query_contains_prior_period
+from .coverage import (
+    _COMPARISON_PHRASE_RE,
+    _COMPARISON_WORDS,
+    CoverageGap,
+    _coverage_why,
+    _query_contains_prior_period,
+)
 from .grouping_checks import (
     _declared_name_spans,
     _entity_grouping_dimensions,
     _reads_grouping,
     _time_of,
 )
-from .groupings import _listed_grouping_terms, _requested_grouping_spans
+from .groupings import _listed_grouping_terms
 from .plan_query import _select_key
 from .time_windows import _time_window
 from .unasked_groupings import _grain_splits
@@ -25,10 +37,6 @@ from .unmatched_words import _FRAMING_WORDS
 _PERSON_WORDS = frozenset({"who", "whom", "whose"})
 _LIST_WORDS = _PERSON_WORDS | {"which", "list"}
 _EACH_WORDS = frozenset({"each", "every"})
-_COMPARISON_WORDS = frozenset(
-    {"against", "compare", "compared", "compares", "comparing", "comparison", "versus", "vs"}
-)
-_COMPARISON_PHRASE_RE = re.compile(r"\b(?:up\s+or\s+down|down\s+or\s+up)\b")
 # A question asking for one value: "how many", "how much", "what is", "what was", "what's".
 _VALUE_QUESTION_RE = re.compile(r"\bhow\s+(?:many|much)\b|\bwhat(?:['’]s|\s+(?:is|was|are|were))\b")
 # Where a clause starts: after punctuation, or after "and" ("How many orders and who placed

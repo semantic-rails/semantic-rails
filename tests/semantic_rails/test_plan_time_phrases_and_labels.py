@@ -27,7 +27,7 @@ from semantic_rails.planner.patterns.metric_by_dimension_rollup import (
 from semantic_rails.planner.time_checks import _caller_window_gaps
 from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
 from semantic_rails.planner.unmatched_words import unmatched_intent_terms
-from tests.semantic_rails.result_helpers import assert_plan_held
+from tests.semantic_rails.result_helpers import assert_plan_held, disable_planner_patterns
 
 MARCH_15 = "2017-03-15"
 HOUR = {"start": f"{MARCH_15}T12:00:00", "end": f"{MARCH_15}T13:00:00"}
@@ -1067,18 +1067,13 @@ def test_a_window_stated_twice_the_same_way_is_one_window(
         "orders in Q1 2017 by stores opened in Q1 2017",
         "revenue in 2017 for products launched in 2017",
         "revenue in Q1 2017 and orders in Q1 2017",
+        "revenue in 2017 (excluding stores opened in 2017)",
     ],
 )
 def test_the_same_window_beside_another_condition_is_not_a_restatement(text: str) -> None:
     window = _time_window(text)
     assert window.bounds == {}
     assert len(window.conflicts) >= 1 and window.unresolved != ()
-
-
-def test_an_excluded_condition_does_not_restate_a_positive_window() -> None:
-    window = _time_window("revenue in 2017 (excluding stores opened in 2017)")
-    assert window.bounds == {} and window.unresolved != ()
-    assert len(window.windows) == 1 and window.conflicts == ()
 
 
 @pytest.mark.parametrize(
@@ -1329,6 +1324,7 @@ def test_a_second_measure_is_never_dropped_silently(
     runtime_factory: Any, intent: str, missing: str | tuple[str, ...]
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
+    disable_planner_patterns(runtime, "conjoined_metrics")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
         if intent == "revenue and orders by store":
@@ -1340,6 +1336,15 @@ def test_a_second_measure_is_never_dropped_silently(
         assert gaps, payload["why"]
         named = {row["phrase"] for gap in gaps for row in gap["actual"]["missing"]}
         assert named & set((missing,) if isinstance(missing, str) else missing), gaps
+    finally:
+        runtime.close()
+
+
+def test_conjoined_store_grouping_stays_held_with_pattern_enabled(runtime_factory: Any) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="revenue and orders by store", detail="query")
+        assert_plan_held(payload, "VALIDATION_FAILED")
     finally:
         runtime.close()
 

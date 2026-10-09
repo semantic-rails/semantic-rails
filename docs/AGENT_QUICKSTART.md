@@ -26,38 +26,22 @@ PACKAGE_PATH="$(pwd)/my_package"
 semantic-rails mcp setup --path "$PACKAGE_PATH"
 ```
 
-On POSIX systems, start a terminal-managed HTTP smoke in the background:
+For local HTTP clients, run one foreground server in a separate terminal:
 
 ```bash
-semantic-rails mcp start --path "$PACKAGE_PATH" --port 8091
-semantic-rails mcp status --path "$PACKAGE_PATH"
+semantic-rails serve --path "$PACKAGE_PATH" --host 127.0.0.1 --port 8091
 ```
 
-Managed `start/status/stop` is POSIX-only because it verifies process identity
-before signaling a background PID. It uses `ps` for that, so it also refuses (and
-starts nothing) where `ps` is missing, as in minimal container images such as
-`python:3.12-slim`; install `procps` there. A `ps` that can't run or doesn't answer
-within five seconds counts the same way, and `stop` never signals a process it
-could not identify. If identity observation fails, `stop` reports
-`ok: false` with `identity_unverifiable` and leaves the server registered so you
-can retry. An observed identity mismatch removes the stale registration without
-signaling the process. On Windows, prefer
-`semantic-rails mcp setup --install --yes` so the client launches stdio, or run
-`semantic-rails mcp http ...` as a foreground process in a separate terminal.
-
-For desktop MCP clients, prefer `semantic-rails mcp setup --install --yes`
-or the lower-level `client-config` commands below. The raw
-`semantic-rails mcp stdio --path "$PACKAGE_PATH"` and
-`semantic-rails mcp http --path "$PACKAGE_PATH" --host 127.0.0.1 --port 8091`
-commands are foreground servers; they stay open until the client disconnects or
-you stop the process.
+It serves both the HTTP API and stateless Streamable HTTP at `/mcp`. Stop it
+with Ctrl-C. Desktop MCP clients can launch stdio themselves with
+`semantic-rails mcp setup --path "$PACKAGE_PATH" --install --yes`.
 
 From a source checkout, prefix commands with `uv run`, or point at the bundled
 synthetic Jaffle Shop package:
 
 ```bash
 uv run semantic-rails mcp stdio --package jaffle_shop
-uv run semantic-rails mcp http --package jaffle_shop --host 127.0.0.1 --port 8091
+uv run semantic-rails serve --package jaffle_shop --host 127.0.0.1 --port 8091
 ```
 
 Then list tool names:
@@ -73,12 +57,6 @@ curl http://127.0.0.1:8091/mcp \
 
 The response should list six tools: `discover`, `inspect`, `valid-values`, `plan`, `execute` and
 `segment`.
-
-On POSIX, stop the managed server when you are done with the terminal smoke:
-
-```bash
-semantic-rails mcp stop --path "$PACKAGE_PATH"
-```
 
 `mcp setup` is the quick local workflow path before wiring a client: it loads the
 package, checks that the MCP tools are available, and previews the Claude/Codex
@@ -199,6 +177,18 @@ Statuses are:
   month": `comparison_unrealized`); and "How many orders and how much revenue last
   week?" needs a select of its own naming orders and one naming revenue, never the same select
   twice or one that names neither (`multiple_questions_unrealized`).
+  Exact conjoined metric or measure names ("New accounts and closures last week")
+  can produce one Query IR v1 draft with a select for every subject, in question order.
+  The subjects must share a declared or compatible clock, a supported window, grouping,
+  and filters. Equivalent measure/metric names with the same aggregation resolve to the
+  authored metric; different shared-name candidates ask for clarification. Each ambiguous
+  subject must have its own candidate selected in `partial_query.select`; selecting one
+  subject leaves any other ambiguous subject unresolved. A plain aggregate metric without its own
+  clock uses its measure's clock. Window support and validation use the final
+  query after merging the caller's `partial_query`. Structurally incompatible subjects remain
+  held as `multiple_subjects_unrealized`, with visible subject ids and their declared clocks
+  in `why.details.parts`. Disabling `conjoined_metrics` in `package.planner.disabled_patterns`
+  keeps the coverage guard: a draft that omits a requested subject is never ready.
   `warnings` can still name other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
   Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort and
   time scope can be proven; entity keys or key counts alone do not prove that scope.

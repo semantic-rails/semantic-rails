@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 from ..ast import _parse_now, _relative_range_bounds
 from ..errors import SemanticLayerError
 from ._base import _tokens
-from .filter_checks import _excluded_value_spans
+from .exclusions import excluded_time_spans
 from .time_phrases import (
     _BOUNDARY_BEFORE_RE,
     _COMPARISON_GUARD,
@@ -173,6 +173,9 @@ class _TimeWindow:
     # another phrase left the question unresolved.
     windows: tuple[tuple[tuple[int, int], dict[str, Any]], ...] = ()
     as_of: tuple[_AsOfCue, ...] = ()
+    # Time phrases an exclusion names ("signups not in June 2024"): never a positive window,
+    # so each is reported unresolved.
+    excluded: tuple[tuple[int, int], ...] = ()
     # Explicit alternatives for a named current period or a mismatched weekday.
     readings: tuple[str, ...] = ()
 
@@ -313,22 +316,23 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     for row in relative:
         if not _overlaps(row[0], [item[0] for item in windows]):
             windows.append(row)
-    named, named_rejected, assumptions, readings = _named_calendar_windows(
+    named, named_rejected, assumptions, named_readings = _named_calendar_windows(
         interval_text, today, [row[0] for row in windows] + rejected + [cue.span for cue in as_of]
     )
     windows.extend(named)
     rejected.extend(named_rejected)
     all_time = _all_time_spans(interval_text)
     windows.extend((span, {}, "") for span in all_time)
-    # Every parser passes through the same exclusion grammar: a negative clause
-    # cannot become a positive date window, even with unrelated negative filters.
-    excluded = _excluded_value_spans(lowered)
-    rejected.extend(
-        span
-        for span, _bounds, _unit in windows
-        if any(start <= span[0] and span[1] <= end for start, end in excluded)
-    )
-    windows = [row for row in windows if row[0] not in rejected]
+    # A time phrase an exclusion names is no window the question asks for.
+    candidates = [row[0] for row in windows]
+    for span in [*rejected, *_time_cues(lowered), *(cue.span for cue in as_of)]:
+        if not _overlaps(span, candidates):
+            candidates.append(span)
+    excluded = tuple(excluded_time_spans(lowered, candidates))
+    rejected += [row[0] for row in windows if row[0] in excluded]
+    windows = [row for row in windows if row[0] not in excluded]
+    # An excluded phrase is held as excluded, never offered as a reading to choose.
+    readings = [text for span, text in named_readings if not _overlaps(span, list(excluded))]
     # "Ever" and "in total" emphasize one bounded window; other all-time forms
     # still conflict with it. Record the intensifiers' exact spans for consumption.
     intensifiers = []
@@ -388,6 +392,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
             windows=tuple((row[0], dict(row[1])) for row in windows),
             as_of=as_of,
+            excluded=excluded,
             readings=tuple(readings),
         )
     if not windows:

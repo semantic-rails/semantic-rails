@@ -69,7 +69,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # PRs use one version; the merge queue and manual runs keep full coverage.
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
         shard: [0, 1, 2, 3]
     env:
       SR_SHARD_COUNT: "4"

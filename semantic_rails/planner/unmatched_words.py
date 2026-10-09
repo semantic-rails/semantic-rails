@@ -6,10 +6,18 @@ import re
 from collections import Counter
 from typing import Any
 
-from ._base import _NUMBER_WORDS, _TERM_SYNONYMS, _name_matches, _singular, _tokens
+from ._base import (
+    _NUMBER_WORDS,
+    _TERM_SYNONYMS,
+    _name_matches,
+    _requested_grouping_spans,
+    _singular,
+    _tokens,
+)
 from .consumed_spans import _TERM_RE, _ZONE_NAME_RE, _consumed_spans
 from .coverage import (
     _PRIOR_PERIOD_RE,
+    _TIME_FRAMING_WORDS,
     _catalog_rows,
     _core_text,
     _dict_nodes,
@@ -20,8 +28,9 @@ from .coverage import (
     _value_names,
     _value_phrases,
 )
-from .filter_checks import _excluded_value_spans, _field_predicates, _positive_filter_evidence
-from .groupings import _explicit_grain, _requested_grouping_spans
+from .exclusions import exclusion_regions, exclusion_words
+from .filter_checks import _field_predicates, _positive_filter_evidence
+from .groupings import _explicit_grain
 from .time_checks import _fiscal_calendar_gaps
 from .time_phrases import (
     _FISCAL_RE,
@@ -145,44 +154,7 @@ _FRAMING_WORDS = frozenset(
             "selling",
             "performing",
         ],
-        *[
-            "day",
-            "days",
-            "week",
-            "weeks",
-            "month",
-            "months",
-            "quarter",
-            "quarters",
-            "year",
-            "years",
-            "daily",
-            "weekly",
-            "monthly",
-            "quarterly",
-            "yearly",
-            "annual",
-            "annually",
-            "half",
-            "h1",
-            "h2",
-            "q1",
-            "q2",
-            "q3",
-            "q4",
-            "date",
-            "dates",
-            "time",
-            "period",
-            "periods",
-            "through",
-            "until",
-            "during",
-            "ever",
-            "first",
-            "second",
-            "last",
-        ],
+        *_TIME_FRAMING_WORDS,
         *_MONTH_NUMBERS,
     }
 )
@@ -283,16 +255,20 @@ def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
 
 def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> list[tuple[int, int]]:
     """The clauses another check owns, when the draft honors them: a fiscal calendar ("fiscal
-    revenue on April 3, 2017"), a prior-period comparison, or an included/excluded value."""
+    revenue on April 3, 2017"), a prior-period comparison, or an included/excluded value.
+    The exclusion check owns its markers ("other than") and list separators ("as well as"); it
+    holds a draft that misses an item."""
 
     lowered = text.lower()
-    spans: list[tuple[int, int]] = []
+    time_spans = _time_window(text).spans
+    spans: list[tuple[int, int]] = exclusion_words(text, time_spans)
     if not _fiscal_calendar_gaps(runtime._config, text, query):
         spans.extend(match.span() for match in _FISCAL_RE.finditer(lowered))
     if _query_contains_prior_period(runtime, query):
         spans.extend(match.span() for match in _PRIOR_PERIOD_RE.finditer(lowered))
+    excluded = exclusion_regions(text, time_spans)
     for marker in re.finditer(r"\b(?:including|include)\s+", lowered):
-        negative = any(start <= marker.start() < end for start, end in _excluded_value_spans(text))
+        negative = any(start <= marker.start() < end for start, end in excluded)
         predicates = _field_predicates(query)
         for phrase, rows in _value_phrases(runtime._config).items():
             pattern = re.escape(phrase).replace(r"\ ", r"[\s_-]+") + r"\b"

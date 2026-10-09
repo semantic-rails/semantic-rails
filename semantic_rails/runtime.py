@@ -1439,6 +1439,211 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     ]
 
 
+def _guard_probe_names(compiled, prefix):
+    from .sql_ast import SqlIdentifier
+
+    ctes = {cte.name: cte for cte in compiled["sql_ast"].ctes}
+    guard = ctes.get(GUARDED_BASE)
+    projection = ctes["projected"].query if "projected" in ctes else compiled["sql_ast"]
+    by_alias = (
+        {
+            field.alias: {
+                node.parts[0]
+                for node in sql_nodes(field.expression)
+                if isinstance(node, SqlIdentifier) and node.parts[0].startswith(prefix)
+            }
+            for field in guard.query.select
+        }
+        if guard is not None
+        else {}
+    )
+    by_output = {
+        field.alias: set().union(*(by_alias.get(a, set()) for a in base_reads(field.expression)))
+        for field in projection.select
+    }
+    return by_alias, by_output
+
+
+def _compiled_cte_row(runtime, compiled, payload, probes, columns):
+    """Read the settlement's own CTEs, preserving bound row filters and request limits."""
+    from .relation_pipelines import attach_relation_ctes
+    from .renderer import render_select_for_profile
+    from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlParameter, SqlSelect, SqlTableRef
+    from .sql_preparation import finalize_parameters
+
+    probe = SqlSelect(
+        select=[
+            SqlField(SqlIdentifier([name, column]), f"{name}__{column}")
+            for name in probes
+            for column in columns
+        ],
+        from_table=SqlTableRef(probes[0]),
+        joins=[SqlJoin("CROSS", SqlTableRef(name)) for name in probes[1:]],
+        ctes=[
+            cte
+            for cte in compiled["sql_ast"].ctes
+            if cte.name in probes or cte.name in {f"{p}_rows" for p in probes}
+        ],
+    )
+    probe = attach_relation_ctes(runtime._config, probe)
+    dialect = dialect_for_warehouse(runtime.warehouse)
+    prepared = replace(
+        dialect.prepare_query(render_select_for_profile(probe, dialect=dialect)),
+        parameters=tuple(
+            node.slot
+            for cte in probe.ctes
+            for node in sql_nodes(cte.query)
+            if isinstance(node, SqlParameter)
+        ),
+    )
+    prepared = finalize_parameters(prepared, runtime._config.package.connection.kind)
+    with runtime._query_lock:
+        rows = _adapter_query(
+            runtime._get_adapter(),
+            prepared,
+            limits=_normalize_query_limits(
+                (payload or {}).get("limits"), _time_zone(runtime._config, compiled)
+            ),
+            policy_context=_policy_context(payload or {}),
+        )
+    return rows[0] if rows else {}
+
+
+def _requested_window(compiled, payload):
+    time = dict(payload.get("time", {}) or {})
+    normalized = dict((compiled["explain"].normalized_query or {}).get("time", {}) or {})
+    window: dict[str, Any] = {
+        key: str(time.get(key) or normalized.get(key) or "") for key in ("start", "end")
+    }
+    if time.get("range"):
+        window["relative_range"] = dict(time["range"])
+    return window
+
+
+def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=()):
+    """Disclose only edges proven by the same coverage that guarded the answer's NULLs."""
+    from datetime import date, datetime
+
+    from .compiler_parts.aliasing import AliasRegistry
+
+    time = compiled["logical_plan"].time
+    outputs = {
+        item["output"]: item
+        for item in compiled.get("zero_outputs", [])
+        if item["output"] not in excluded_outputs
+        and (
+            any(row.get(item["output"]) is None for row in rows)
+            if rows
+            else bool(time.get("start") or time.get("end"))
+        )
+    }
+    if not outputs:
+        return []
+    by_alias, by_output = _guard_probe_names(compiled, "coverage_")
+    probes = sorted(set().union(*(by_output.get(name, set()) for name in outputs)))
+    if not probes:
+        return []
+    try:
+        coverage = _compiled_cte_row(
+            runtime, compiled, payload, probes, ("loaded_from", "loaded_to")
+        )
+    except Exception:
+        return []  # A failed disclosure read never changes the answer or its other warnings.
+    if not coverage or any(f"{p}__loaded_to" not in coverage for p in probes):
+        return []
+    window = _requested_window(compiled, payload)
+    bound = [row.bound_measure for row in compiled["logical_plan"].measure_plans]
+    aliases = AliasRegistry.for_plan(
+        compiled["logical_plan"], measure_aliases=[b.alias for b in bound]
+    )
+    time_key = f"{time.get('temporal_role', '')}__{time.get('grain', '')}"
+    affected: list[str] = []
+    measures: list[dict[str, Any]] = []
+    for output, item in outputs.items():
+        for measure in item["measures"]:
+            names = set().union(
+                *(
+                    by_alias.get(aliases.internal(b.alias), set())
+                    for b in bound
+                    if b.measure_id == measure
+                )
+            ) & by_output.get(output, set())
+            # Combined plans can settle the output itself instead of its leaf aliases.
+            if not names and len(item["measures"]) == 1:
+                names = by_output.get(output, set())
+            if not names:
+                continue
+            edges = [coverage[f"{p}__loaded_to"] for p in sorted(names)]
+            edge, source = None, None
+            if time.get("window_total") and any(
+                coverage.get(f"{p}__loaded_from") == 1 for p in names
+            ):
+                continue
+            if all(value is None for value in edges):
+                pass  # No visible rows: an undated disclosure, never another caller's edge.
+            elif time.get("window_total"):
+                if rows or not window["start"] or not all(value == -1 for value in edges):
+                    continue
+                edge, source = window["start"], "before_window"
+            else:
+                # Require every mapped leaf to have a dated edge before claiming one.
+                if not rows or any(value is None for value in edges):
+                    continue
+                buckets = [row.get(time_key) for row in rows if row.get(output) is None]
+                values = [*edges, *buckets]
+                # Compare SQL's bucket keys only, never raw bounds or coerced dates.
+                if not (
+                    all(type(value) is date for value in values)
+                    or (
+                        all(type(value) is datetime for value in values)
+                        and len({value.utcoffset() is None for value in values}) == 1
+                    )
+                ):
+                    continue
+                latest = max(edges)
+                if not any(bucket > latest for bucket in buckets):
+                    continue
+                edge = (
+                    latest.date().isoformat()
+                    if type(latest) is datetime
+                    and time.get("grain") in {"day", "week", "month", "quarter", "year"}
+                    else latest.isoformat()
+                )
+                source = "last_bucket"
+            detail = {"id": measure, "edge": edge, "edge_source": source}
+            if detail not in measures:
+                measures.append(detail)
+            if output not in affected:
+                affected.append(output)
+    if not affected:
+        return []
+    messages = []
+    grain = str(time.get("grain") or "day")
+    for item in measures:
+        if item["edge_source"] == "before_window":
+            reason = f"in this window: its data ends before {item['edge']}, the window start, so the total reads NULL, not 0"
+        elif item["edge"] is not None:
+            reason = f"after the {grain} of {item['edge']}, the last {grain} with data, so later {grain}s read NULL, not 0"
+        else:
+            reason = "with no dated coverage edge, so it reads NULL, not 0"
+        messages.append(f"No data yet for {item['id']} {reason}.")
+    return [
+        semantic_issue(
+            code="NO_DATA_YET",
+            message=" ".join(messages),
+            severity="warning",
+            stage="execution",
+            details={
+                "outputs": affected,
+                "measures": measures,
+                "matched_time": window,
+                "agent_action": "mention_when_interpreting_results",
+            },
+            object_ids=sorted({item["id"] for item in measures}),
+        )
+    ]
+
+
 def _no_data_in_scope_warnings(
     compiled, rows, *, excluded_outputs=(), dataset: bool = False, runtime=None, payload=None
 ) -> list[dict[str, Any]]:
@@ -1475,72 +1680,17 @@ def _no_data_in_scope_warnings(
     if not outputs:
         return []
     if dataset and runtime is not None:
-        from .relation_pipelines import attach_relation_ctes
-        from .renderer import render_select_for_profile
-        from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlParameter, SqlSelect, SqlTableRef
-        from .sql_preparation import finalize_parameters
-
-        ctes = {cte.name: cte for cte in compiled["sql_ast"].ctes}
-        guard = ctes.get(GUARDED_BASE)
-        projection = ctes["projected"].query if "projected" in ctes else compiled["sql_ast"]
-        if guard is not None:
-            by_alias = {
-                field.alias: {
-                    node.parts[0]
-                    for node in sql_nodes(field.expression)
-                    if isinstance(node, SqlIdentifier) and node.parts[0].startswith("observed_")
-                }
-                for field in guard.query.select
+        _, by_output = _guard_probe_names(compiled, "observed_")
+        probes = sorted(set().union(*(by_output.get(name, set()) for name in outputs)))
+        if probes:
+            seen = _compiled_cte_row(runtime, compiled, payload, probes, ("seen",))
+            outputs = {
+                name: item
+                for name, item in outputs.items()
+                if not by_output.get(name)
+                or not seen
+                or any(not seen.get(f"{p}__seen") for p in by_output[name])
             }
-            by_output = {
-                field.alias: set().union(
-                    *(by_alias.get(a, set()) for a in base_reads(field.expression))
-                )
-                for field in projection.select
-                if field.alias in outputs
-            }
-            probes = sorted(set().union(*by_output.values()))
-            if probes:
-                # Reuse exactly the observation the settlement emitted, including authored
-                # conditions and row filters, rather than interpreting returned NULLs.
-                probe = SqlSelect(
-                    select=[SqlField(SqlIdentifier([name, "seen"]), name) for name in probes],
-                    from_table=SqlTableRef(probes[0]),
-                    joins=[SqlJoin("CROSS", SqlTableRef(name)) for name in probes[1:]],
-                    ctes=[
-                        cte
-                        for name, cte in ctes.items()
-                        if name in probes or name in {f"{p}_rows" for p in probes}
-                    ],
-                )
-                probe = attach_relation_ctes(runtime._config, probe)
-                dialect = dialect_for_warehouse(runtime.warehouse)
-                prepared = replace(
-                    dialect.prepare_query(render_select_for_profile(probe, dialect=dialect)),
-                    parameters=tuple(
-                        node.slot
-                        for cte in probe.ctes
-                        for node in sql_nodes(cte.query)
-                        if isinstance(node, SqlParameter)
-                    ),
-                )
-                prepared = finalize_parameters(prepared, runtime._config.package.connection.kind)
-                with runtime._query_lock:
-                    seen = _adapter_query(
-                        runtime._get_adapter(),
-                        prepared,
-                        limits=_normalize_query_limits(
-                            (payload or {}).get("limits"), _time_zone(runtime._config, compiled)
-                        ),
-                        policy_context=_policy_context(payload or {}),
-                    )
-                outputs = {
-                    name: item
-                    for name, item in outputs.items()
-                    if not by_output.get(name)
-                    or not seen
-                    or any(not seen[0].get(p) for p in by_output[name])
-                }
     if not outputs:
         return []
     return [
@@ -2019,6 +2169,26 @@ class Runtime:
         # Lazily loaded on first access; None = not yet looked up,
         # False = looked up and absent/stale (don't retry this call).
         self._manifest: dict[str, Any] | None | bool = None
+        self._package_examples: list[tuple[str, dict[str, Any]]] | None = None
+
+    def _get_package_examples(self) -> list[tuple[str, dict[str, Any]]]:
+        """Load the same authored entries project validation certifies, once per generation."""
+        from pathlib import Path
+
+        from .yaml_loader import load_named_entries
+
+        with self._cache_lock:
+            if self._package_examples is None:
+                self._package_examples = (
+                    load_named_entries(
+                        Path(self.package_root) / "examples",
+                        plural_key="examples",
+                        singular_key="example",
+                    )
+                    if self.source_path
+                    else []
+                )
+            return self._package_examples
 
     @property
     def snapshot(self) -> LoadedPackageSnapshot:
@@ -2360,6 +2530,7 @@ class Runtime:
                 else ""
             )
             self._manifest = None
+            self._package_examples = None
             self._package_fingerprint = new_fingerprint
             # Preserve an operator-injected cache backend. Cache keys include
             # the package fingerprint, so prior-generation entries cannot be
@@ -2831,6 +3002,12 @@ class Runtime:
                     seed_warnings=self._seed_warnings,
                 ),
             ) from exc
+        coverage_warnings = _no_data_yet_warnings(
+            self, compiled, rows, payload, excluded_outputs=_withheld_columns(policy_effects)
+        )
+        coverage_outputs = [
+            name for warning in coverage_warnings for name in warning["details"]["outputs"]
+        ]
         out: dict[str, Any] = {
             "ok": True,
             **result_rows(
@@ -2848,10 +3025,11 @@ class Runtime:
             "errors": [],
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
+                *coverage_warnings,
                 *_no_data_in_scope_warnings(
                     compiled,
                     rows,
-                    excluded_outputs=_withheld_columns(policy_effects),
+                    excluded_outputs=[*_withheld_columns(policy_effects), *coverage_outputs],
                     dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
                     runtime=self,
                     payload=payload,
@@ -2900,7 +3078,7 @@ class Runtime:
         # storefront_session fact only spans Sept 2016, but there was
         # no signal to distinguish that from a silent row-drop. Surface
         # the applied time bounds and point at inspect for freshness.
-        if not rows:
+        if not rows and not coverage_warnings:
             time_block = dict(payload.get("time", {}) or {})
             # Time block accepts ``{start, end}`` or a relative ``range``
             # (see ast.py:_SUPPORTED_TIME_KEYS). Either signal counts as
@@ -2956,15 +3134,7 @@ class Runtime:
                 # window against historical data ends up far outside the
                 # data range, the original cause of the blind-agent's
                 # silent 0-rows on Q2).
-                normalized_time = dict(
-                    (compiled["explain"].normalized_query or {}).get("time", {}) or {}
-                )
-                requested_window: dict[str, Any] = {
-                    "start": str(time_block.get("start") or normalized_time.get("start") or ""),
-                    "end": str(time_block.get("end") or normalized_time.get("end") or ""),
-                }
-                if time_block.get("range"):
-                    requested_window["relative_range"] = dict(time_block.get("range") or {})
+                requested_window = _requested_window(compiled, payload)
                 out["data_diagnostics"] = {
                     "rows_returned": 0,
                     "applied_time_filter": applied,

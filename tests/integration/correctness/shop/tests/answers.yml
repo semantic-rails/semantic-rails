@@ -490,6 +490,7 @@ tests:
     cites: *store_cites
     tags: [planner]
     intent: revenue by store
+    known_wrong: {planner: "The signup channel declares the value store, so the planner reads store as that value inside the grouping name and withholds execute readiness."}
     query: {select: *revenue, group_by: *store}
     expected_rows: [{dimension.shop_order_store_id: a, revenue: 43}, {dimension.shop_order_store_id: b, revenue: 25}, {dimension.shop_order_store_id: null, revenue: 6}]
     reference_sql: SELECT store_id, SUM(amount) FROM orders GROUP BY 1
@@ -504,6 +505,37 @@ tests:
     query: {select: *revenue, group_by: *store, where: [{field: dimension.shop_order_store_id, op: '=', value: b}]}
     expected_rows: [{dimension.shop_order_store_id: b, revenue: 25}]
     reference_sql: SELECT store_id, SUM(amount) FROM orders WHERE store_id = 'b' GROUP BY 1
+  shop/plan-signups-excluding-web:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An exclusion keeps the signups with no recorded channel, so customers 102, 104 and 107 (store) and 105 (no channel) remain.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [planner]
+    intent: signups excluding web
+    known_wrong: {planner: "Questions that exclude values hold until exclusion answers ship."}
+    query:
+      select: &signups [{expression: {measure: measure.shop.signup_count}, as: signup_count}]
+      where: &not_web [{field: dimension.shop_customer_channel, op: IS DISTINCT FROM, value: web}]
+    expected_rows: [{signup_count: 4}]
+    reference_sql: SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel IS DISTINCT FROM 'web'
+  shop/plan-signups-excluding-web-in-june-2024:
+    kind: query_matches_snapshot
+    expect: answer
+    why: In June 2024 only customer 106 (web, June 25) and customer 107 (store, June 10) signed up; excluding web keeps 107.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, tests/integration/correctness/shop/models/signups.yml#model.times.signed_up_at, docs/QUERY_IR_SCHEMA.md#wherefilter, docs/QUERY_IR_SCHEMA.md#timeblock]
+    tags: [planner, time-window]
+    intent: signups excluding web in June 2024
+    known_wrong: {planner: "Questions that exclude values hold until exclusion answers ship."}
+    query:
+      select: *signups
+      time: {temporal_role: temporal_role.shop_customer_signed_up_at, grain: month, start: '2024-06-01', end: '2024-07-01'}
+      where: *not_web
+    expected_rows: [{temporal_role.shop_customer_signed_up_at__month: '2024-06-01T00:00:00', signup_count: 1}]
+    reference_sql: |
+      SELECT CAST(date_trunc('month', signed_up_at) AS DATE), COUNT(DISTINCT customer_id) FROM signups
+      WHERE channel IS DISTINCT FROM 'web'
+        AND signed_up_at >= TIMESTAMP '2024-06-01' AND signed_up_at < TIMESTAMP '2024-07-01'
+      GROUP BY 1
 
   shop/plan-refunds-must-say-same-refund-or-separate:
     kind: validate_fails_with_code
@@ -7457,7 +7489,7 @@ tests:
     cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#wherefilter]
     tags: [planner, time-window]
     intent: signups not in June
-    known_wrong: {planner: "The planner holds excluded time periods until it can represent their complement."}
+    known_wrong: {planner: "The planner holds excluded time periods until it can represent their complement. This xfail can't tell that hold from a wrong number; tests/semantic_rails/test_plan_named_periods.py::test_excluded_period_never_becomes_a_positive_window pins the hold (PLAN_INTENT_COVERAGE_GAP, negation_unrealized on a time item)."}
     partial_query:
       policy_context: {now: '2024-07-05T06:00:00Z'}
       where: [{field: dimension.shop_customer_channel, op: '!=', value: store}]

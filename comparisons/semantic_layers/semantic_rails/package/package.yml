@@ -24,7 +24,6 @@ defaults:
     filterable: true
   time:
     timezone: UTC
-    default_query_axis: false
     supported_grains: [day, week, month, quarter, year]
   relationship:
     traversal: [forward, reverse]

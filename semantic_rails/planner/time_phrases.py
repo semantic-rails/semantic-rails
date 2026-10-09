@@ -553,14 +553,15 @@ def _named_calendar_windows(
     list[tuple[tuple[int, int], dict[str, str], str]],
     list[tuple[int, int]],
     list[str],
-    list[str],
+    list[tuple[tuple[int, int], str]],
 ]:
     """Resolve unqualified named periods; report ambiguity without selecting a reading."""
 
     windows: list[tuple[tuple[int, int], dict[str, str], str]] = []
     rejected: list[tuple[int, int]] = []
     assumptions: list[str] = []
-    readings: list[str] = []
+    # Each reading with the span it reads, so an excluded phrase offers none.
+    readings: list[tuple[tuple[int, int], str]] = []
     matches = list(_NAMED_PERIOD_RE.finditer(lowered))
     for match in matches:
         span = match.span()
@@ -606,8 +607,8 @@ def _named_calendar_windows(
             rejected.append(span)
             readings.extend(
                 [
-                    f"the stated weekday {match['weekday']}",
-                    f"{_WEEKDAYS[start.weekday()]} {start.isoformat()}",
+                    (span, f"the stated weekday {match['weekday']}"),
+                    (span, f"{_WEEKDAYS[start.weekday()]} {start.isoformat()}"),
                 ]
             )
             continue
@@ -634,8 +635,8 @@ def _named_calendar_windows(
             )
             readings.extend(
                 [
-                    current,
-                    f"{prior['start']} to {prior['end']} (end exclusive)",
+                    (span, current),
+                    (span, f"{prior['start']} to {prior['end']} (end exclusive)"),
                 ]
             )
             continue

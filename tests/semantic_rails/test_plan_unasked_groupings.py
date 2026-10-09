@@ -658,7 +658,7 @@ _CASES = [
         "PLAN_INTENT_COVERAGE_GAP",
         "PLAN_UNASKED_GROUPING",
     ),
-    _Case("Store name", "PLAN_INTENT_COVERAGE_GAP", "PLAN_INTENT_COVERAGE_GAP"),
+    _Case("Store name", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
     _Case("item revenue where store", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
 ]
 
@@ -674,6 +674,7 @@ def _outcome(payload: dict[str, Any]) -> str:
 def test_the_check_only_holds_a_plan_that_was_ready(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, case: _Case
 ) -> None:
+    jaffle._package_examples = []  # These cases test generic grouping checks.
     after = plan_payload(jaffle, intent=case.intent)
     with monkeypatch.context() as without_checks:
         # The two checks are the only readers of the listed groupings, with the answer-shape

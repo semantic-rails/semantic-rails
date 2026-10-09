@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 
 import yaml
 
-from semantic_rails import package_tools, result_values
+from semantic_rails import package_tools, result_values, yaml_loader
 from semantic_rails.runtime import _time_zone
 from semantic_rails.runtime_parts.responses import output_columns
 from semantic_rails.yaml_loader import Yaml12SafeLoader
@@ -57,7 +57,7 @@ DecimalLoader.add_constructor(
 
 
 def load_entries():
-    entries = package_tools._load_named_entries(
+    entries = yaml_loader.load_named_entries(
         SHOP / "tests", plural_key="tests", singular_key="test"
     )
     # Keep the product loader and its query parsing; only frozen rows need exact literals.

@@ -11,7 +11,6 @@ from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.cli.common import _package_id_from_yaml
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.local_config import init_local_profile
-from semantic_rails.mcp_manager import save_mcp_registry
 from semantic_rails.naming import slug, title
 from semantic_rails.repl.authoring import (
     _authoring_namespace,
@@ -64,17 +63,13 @@ def test_atomic_write_failure_preserves_destination(tmp_path, monkeypatch, opera
     assert list(tmp_path.iterdir()) == [path]
 
 
-@pytest.mark.parametrize("writer", ["profile", "registry"])
-def test_local_state_files_are_private(tmp_path, monkeypatch, writer):
+def test_local_profile_file_is_private(tmp_path, monkeypatch):
     monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
-    if writer == "registry":
-        path = save_mcp_registry({"version": 1, "servers": {}})
-    else:
-        package = tmp_path / "package"
-        package.mkdir()
-        (package / "package.yml").write_text("package: {id: example}\n")
-        path = tmp_path / "home" / "profiles.yml"
-        init_local_profile(package_path=str(package), path=path)
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "package.yml").write_text("package: {id: example}\n")
+    path = tmp_path / "home" / "profiles.yml"
+    init_local_profile(package_path=str(package), path=path)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 

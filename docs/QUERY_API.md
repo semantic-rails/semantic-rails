@@ -46,10 +46,14 @@ uv run semantic-rails init my_semantic_package
 uv run semantic-rails project validate --path ./my_semantic_package
 uv run semantic-rails serve --package jaffle_shop --port 8081
 uv run semantic-rails mcp stdio --package jaffle_shop
-uv run semantic-rails mcp http --package jaffle_shop --host 127.0.0.1 --port 8091
+uv run semantic-rails serve --package jaffle_shop --host 127.0.0.1 --port 8091
 ```
 
 ## HTTP Routes
+
+`serve` and ASGI also expose stateless Streamable HTTP at `/mcp`; see
+[MCP_INTERFACE.md](MCP_INTERFACE.md). `/health` and `/api/v1/health` are public
+health probes even when API keys are configured.
 
 Preferred stable routes:
 
@@ -203,11 +207,19 @@ valid-value lookups are unavailable for restricted grants. Plans contain portabl
 IR; each subsequent request must independently resolve its trusted grants. Restricted
 compile/query results retain SQL and result rows but omit package-wide diagnostics,
 dependency descriptions, and related-object suggestions. Grant responses carry only
-listed engine diagnostics (`NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
+listed engine diagnostics (`NO_DATA_YET`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
 `FILTER_VALUE_UNVERIFIED`, `FILTERED_SERIES_BUCKETS_DROPPED`, and
 `FILTERED_SERIES_BUCKETS_UNVERIFIED`) whose named objects are all granted. Bucket diagnostics
 re-enter authorization and reveal no bucket keys when the source read is denied. Requests
 cannot replace the resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
+
+`NO_DATA_YET` fires for guarded `NULL` series buckets beyond their visible coverage,
+empty totals with coverage proven before the window, or no visible coverage.
+`details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`:
+`last_bucket` names a SQL bucket key, `before_window` names the resolved window start,
+and both `edge` and `edge_source` are null with no visible coverage. It replaces
+`EMPTY_RESULT_WINDOW` and excludes covered outputs from `NO_DATA_IN_SCOPE`. It is granted
+only when every named measure is granted.
 
 Restricted responses reuse the ordinary catalog formatter and output-column builder.
 Compact catalogs retain the 200-row cap per kind, `counts`, `counts_total`, and
@@ -837,8 +849,6 @@ Useful card fields for measures:
 - `recommended_filters`
 - `sample_questions`
 - `comparison_family`
-- `comparison_peers`
-- `clock_variants`
 - `preferred_companion_metrics`
 - `starter_query_patches` — list of `{kind, query_patch [, note]}` entries.
   Always includes `select` (and `group_by` when a recommended dimension
@@ -1304,6 +1314,16 @@ The response `warnings` array can carry these non-error signals:
   `details.recovery_hints[0]` (`SET_TIME_GRAIN`) recommends adding
   `time.grain`: a grain whose one calendar bucket covers `[start, end)`
   returns one total.
+- `NO_DATA_YET` — fires on `execute` for guarded `NULL` series buckets beyond visible
+  coverage, empty totals whose coverage is proven before the window, or no visible
+  coverage. `details.outputs` lists output aliases; `details.measures` lists
+  `{id, edge, edge_source}`. `last_bucket` names a SQL bucket key (a date for day or
+  coarser grains, a full ISO timestamp for sub-day grains); `before_window` names the
+  resolved window start. Both `edge` and `edge_source` are null with no visible coverage.
+  An empty series with dated coverage keeps existing warnings. `NO_DATA_YET` replaces
+  `EMPTY_RESULT_WINDOW`, and covered outputs are excluded from `NO_DATA_IN_SCOPE`.
+  Resource grants expose it only when every named measure is granted.
+  See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
 - `NO_DATA_IN_SCOPE` — fires on `execute` when a sum, count or distinct count (or a sum or
   difference of them) reads `NULL` on every returned row, or nothing came back and neither a
   `start`/`end` window nor a metric filter explains it. Such a

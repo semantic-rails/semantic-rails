@@ -92,7 +92,23 @@ def runtime(tmp_path_factory):
                     "warehouse": "duckdb",
                     "default_db": "records.duckdb",
                     "seed": {"kind": "sql_script", "source": "seed.sql"},
+                    "schema_strict": True,
                 },
+            }
+        )
+    )
+    (root / "metrics.yml").write_text(
+        yaml.safe_dump(
+            {
+                "metrics": {
+                    "records": {
+                        "kind": "aggregate",
+                        "label": "Records",
+                        "measure": "measure.nulls.records",
+                        "aggregation": "count_distinct",
+                        "value_type": "count",
+                    }
+                }
             }
         )
     )

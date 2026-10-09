@@ -359,7 +359,6 @@ def _package_document(plan: _Plan) -> dict[str, Any]:
             "dimension": {"groupable": True, "filterable": True},
             "time": {
                 "timezone": "UTC",
-                "default_query_axis": False,
                 "supported_grains": ["day", "week", "month", "quarter", "year"],
             },
             "relationship": {"traversal": ["forward", "reverse"]},

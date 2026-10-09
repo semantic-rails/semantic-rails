@@ -46,7 +46,6 @@ def validate_temporal_support(config: PackageConfig, payload: Mapping[str, Any])
         "window",
         "window_unit",
         "anchor",
-        "default_query_axis",
     }
 
     def visit(node: Any) -> None:

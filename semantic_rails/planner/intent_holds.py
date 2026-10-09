@@ -319,13 +319,17 @@ def _unclocked_window_why(
 
 
 def _unresolved_time_why(
-    intent: str, partial_query: dict[str, Any] | None
+    intent: str,
+    partial_query: dict[str, Any] | None,
+    consumed: tuple[tuple[int, int], ...] = (),
 ) -> dict[str, Any] | None:
     """Return a ``why`` envelope when the intent's time scope wasn't resolved.
 
     Triggers when the intent contains a time phrase the window resolver
     didn't turn into bounds, whatever window the draft happens to carry:
-    only an explicit window in the caller's ``partial_query`` settles it.
+    only an explicit window in the caller's ``partial_query`` settles it,
+    or, for an as-of phrase, a balance draft reading the day it names
+    (``consumed``, the spans ``snapshot.snapshot_read`` returns).
     The shape mirrors the pattern ``blocked_reason`` envelope ({code,
     message, details, recovery_hints}).
     """
@@ -334,7 +338,8 @@ def _unresolved_time_why(
     from .time_windows import _MAX_TIME_TEXT  # noqa: WPS433
 
     window = _time_window(intent, policy_context=(partial_query or {}).get("policy_context"))
-    phrases = list(window.unresolved)
+    read = {intent.lower()[low:high].strip() for low, high in consumed}
+    phrases = [phrase for phrase in window.unresolved if phrase not in read]
     too_long = len(intent) > _MAX_TIME_TEXT
     if not phrases and not too_long:
         return None

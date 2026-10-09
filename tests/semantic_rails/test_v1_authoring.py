@@ -60,7 +60,6 @@ def _write_synthetic_package(
         "defaults": {
             "time": {
                 "timezone": "UTC",
-                "default_query_axis": False,
                 "supported_grains": ["day", "week", "month"],
             },
         },
@@ -93,10 +92,9 @@ def _write_synthetic_package(
                         "column": "created_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     },
                 },
-                "default_time": "created_at",
                 "measures": {
                     "widget_count": {
                         "label": "Widget count",
@@ -1024,10 +1022,9 @@ def test_measure_unnested_expr_and_default_agg(tmp_path: Path) -> None:
                         "column": "created_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     },
                 },
-                "default_time": "created_at",
                 "measures": {
                     "revenue_usd": {
                         "label": "Revenue (USD)",
@@ -1091,10 +1088,9 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
                         "column": "created_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     },
                 },
-                "default_time": "created_at",
                 "measures": {
                     "widget_count": {
                         "label": "Widget count",
@@ -1167,10 +1163,9 @@ def _write_strict_package(
                         "column": "created_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     },
                 },
-                "default_time": "created_at",
                 **(model_extra or {}),
                 "measures": {
                     "widget_count": {
@@ -1306,10 +1301,9 @@ def _widget_model_with_two_count_measures() -> dict[str, Any]:
                     "column": "created_at",
                     "kind": "timestamp",
                     "class": "event_time",
-                    "default_query_axis": True,
+                    "default": True,
                 },
             },
-            "default_time": "created_at",
             "measures": {
                 "widget_count": {
                     "label": "Widget count",
@@ -1459,10 +1453,9 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
                         "column": "created_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     },
                 },
-                "default_time": "created_at",
                 "measures": {
                     "shared_key": {
                         "label": "Measure shared_key",
@@ -1730,10 +1723,9 @@ def test_metric_kind_cumulative_direct_measure_field_resolves_package_relative(
                         "column": "created_at",
                         "kind": "timestamp",
                         "class": "event_time",
-                        "default_query_axis": True,
+                        "default": True,
                     },
                 },
-                "default_time": "created_at",
                 "measures": {
                     "revenue_usd": {
                         "label": "Revenue (USD)",

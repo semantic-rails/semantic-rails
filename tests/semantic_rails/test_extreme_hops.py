@@ -189,7 +189,6 @@ def _write_geo_package(
                   class: event_time
                   as: temporal_role.geo_order_time
                   default: true
-                  default_query_axis: true
               measures:
                 revenue_usd:
                   kind: aggregate

@@ -3,7 +3,7 @@
 `semantic_rails.mcp` exposes a dependency-free Model Context Protocol interface over the same
 runtime that serves `/api/v1/*`. The canonical implementation remains the in-process
 `SemanticLayerMCPAdapter`. The ASGI app serves stateless MCP Streamable HTTP at `/mcp`, while the
-CLI retains packaged stdio and legacy HTTP/SSE transports for local compatibility.
+CLI supports stdio and stateless Streamable HTTP through `semantic-rails serve` at `/mcp`.
 
 For `semantic-rails mcp stdio`, stdout contains only newline-delimited JSON-RPC messages;
 startup diagnostics go to stderr. If the selected package cannot load, `initialize`
@@ -117,7 +117,19 @@ tool/schema drift cannot be merged silently.
 - `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values.
-- `plan`: draft Query IR from a natural-language question.
+- `plan`: draft Query IR from a natural-language question. A fully matched
+  package example uses its validated authored query (`best.pattern:
+  package_example`), including its groupings, filters and limit. An example
+  answers only its exact question: case and whitespace aside (and the
+  contractions `plan` expands in every question), any other wording, including
+  punctuation, plurals, numbers, signs, symbols, a different top-N count or
+  another date or time phrase, gets normal planning. Multiple
+  valid visible matches return
+  `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
+  `why.details.example_ids`. Invalid examples fall through with
+  `why.details.invalid_examples`; an example that reads a hidden object is
+  invalid for that caller, as in a package without the object.
+  Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
@@ -312,8 +324,9 @@ A draft that validates can still leave out part of the question. `plan` returns
   `actual.grain` the draft's grain (`null` with no time block). For a direct balance read,
   ask for one day ("MRR yesterday", `MRR on <YYYY-MM-DD>`), or set `time.grain: day` with
   that day's start and end. A stock keyed by its clock alone (a
-  daily rollup) is one series and isn't held. A question with an as-of cue ("MRR right now")
-  stays `TIME_WINDOW_UNRESOLVED`;
+  daily rollup) is one series and isn't held. `plan` drafts most balance questions on one
+  day itself (see "How plan reads a balance" below); an as-of cue on anything else ("new
+  accounts right now") stays `TIME_WINDOW_UNRESOLVED`;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue";
@@ -326,8 +339,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   scopes do not prove an outer filter's result. Grouping does not cure an uncertain filter.
   Without grouping by the field, the draft returns one total, so its filter must keep only
   values the question names: "revenue for Brooklyn" filtered to Brooklyn and Philadelphia
-  is a gap, while "revenue for Brooklyn and Philadelphia" is not. An exclusion must drop
-  only values the question names, with or without grouping;
+  is a gap, while "revenue for Brooklyn and Philadelphia" is not. Values an exclusion names
+  follow the exclusion rule below;
 - combines top-level filters on one field so no value can survive, which returns no rows
   (`contradictory_filters`);
 - misses a negation, a prior-period comparison ("vs prior fiscal quarter" included) or one of
@@ -383,9 +396,35 @@ A draft that validates can still leave out part of the question. `plan` returns
   the `PLAN_UNMATCHED_TERMS` checks below included, so it holds only a draft nothing else
   holds.
 
-When a question has several exclusion clauses, `plan` checks each clause. A
-negative filter for one value does not make a later excluded value safe if the
-draft includes it.
+`plan` doesn't answer questions that exclude values yet. An exclusion ("excluding", "except",
+"without", "not", "but not", "other than", "apart from", "aside from", "minus", "outside of",
+"all stores but") holds whatever the draft carries, the caller's `partial_query` included: each
+clause is one gap, `negation_reversed` when a top-level `=` or `IN` filter keeps a value the
+clause names, otherwise `negation_unrealized`. Its recovery hint (`ask_for_breakdown`) suggests
+asking for the breakdown by the excluded dimension instead ("signups by channel"), which shows
+each value and the rows with no recorded value; listing the values to keep would drop those
+rows. A time phrase inside an exclusion ("signups not in June 2024") is never read as the
+question's window.
+
+An exclusion keeps rows with no recorded value, so its executable form is one top-level `where`
+filter per excluded value, `{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`: "signups
+excluding web" counts the signups with no channel, which `!=` and `NOT IN` drop. The held
+draft uses that form, and a hand-written Query IR with it still runs through `execute`.
+
+The gap's `expected.items` lists what the clause names, each with its `kind`: a declared value
+name (its value, label or alias, in double quotes or none) with its `field` and `value`, a
+time phrase, or `unknown` for any other word in an item's place. Commas, semicolons, slashes,
+"&", "and", "or", "nor", "plus", "as well as", "along with", "alongside", "together with",
+dashes, line breaks and brackets separate items; a separator inside a declared name ("Click &
+Collect") doesn't split it. The list ends at the first word that is neither; every other
+character up to that word is an `unknown` item, except the question's final `.`, `?` or `!`.
+The first time phrase after the list with only words between is the question's window
+("signups excluding web in June 2024"); any other value, quoted or time mention before the
+next exclusion, an "including" or the question's end is an `unknown` item. When an exclusion
+word or an "including" falls inside a quoted string or a declared value name ("Including
+Top", "All but Web"), or an exclusion word inside a grouping phrase ("revenue by store
+excluding Brooklyn"), the whole question is one `unknown` item. An excluded value named "Top"
+is never read as a ranking.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),
@@ -573,9 +612,9 @@ assumption "all time: no start date". A caller's bounded window cannot silently 
 Beside exactly one bounded window, "ever" and "in total" instead emphasize that window
 and add no all-time assumption ("signups in total last month"). The other all-time forms
 still conflict with a stated bounded window. "Since launch of …" and "since the beginning
-of …" are not all-time readings. A time phrase inside an
-exclusion clause ("not in June", "excluding Q2") never becomes a positive window:
-`plan` holds it with `TIME_WINDOW_UNRESOLVED` and no execute readiness.
+of …" are not all-time readings. A named or all-time phrase inside an exclusion ("not in
+June", "excluding Q2", "not on Jun. 25") follows the exclusion rule above: it never becomes a
+positive window, and `plan` offers no readings for it.
 A balance such as "MRR of all time" remains held: a stock needs an as-of day. Period-to-date
 forms ("year to date", "month to date", "ytd", "mtd") retain their existing handling. Planning
 reads no warehouse data to establish coverage; the all-time assumption makes no claim about
@@ -662,6 +701,34 @@ provides a complete window in `query.time` (both `start` and `end`, or a relativ
 they return `TIME_WINDOW_UNRESOLVED` with a request to shorten the question or supply those
 bounds. Include the selected `temporal_role` and `grain` in that time block. A date or
 qualifier beyond the limit therefore cannot silently disappear from an otherwise ready draft.
+**How plan reads a balance.** When every select reads a balance directly (a stock measure, or
+a metric that is one aggregate of it, on the stock's `as_of_time` clock), `plan` drafts it on
+one day: the last complete day before `policy_context.now` in the clock's zone when the question
+has no time words or says "now", "right now", "currently", "current" or "at the moment"; the closing
+day of the period an "end of" or "as of" phrase names ("at the end of last month" on 2026-10-05
+is 2026-09-30); a day the question states; or the closing day of one stated period ("MRR last
+month"; the opening day for a `start_of_period` stock). The draft carries `time.grain: day` on
+that clock with the day (`range.last` of one day for the last complete day), and `assumptions`
+names the day. A generated building-block stock measure is answered with the metric governing
+it, as for any draft on that metric's clock; a caller's select, expression and alias are kept.
+A generated governed balance must be named in full: "pro accounts" cannot stand for "Paying
+accounts". Time words without a single-day reading ("all time", "ever", "to date", "since
+launch", "trend") keep the `stock_as_of_unrealized` hold. A day that isn't complete (today,
+the end of this week) isn't ready to execute, and no earlier day stands in for one. A
+day-grain balance window is read only when both bounds are whole days and it ends on or
+before the last complete day; otherwise `stock_as_of_unrealized`. This includes a caller's
+`query.time`; the gap hints at the last complete day. When that day has no rows,
+`execute` returns none with `EMPTY_RESULT_WINDOW`. When a `metric_constraint` requires the
+clock's date dimension in `group_by`, `plan` adds it (beside the day grain it adds no row) and
+counts it as asked; any other required field, or one hidden from the caller, keeps the
+`POLICY_DENIED` hold. A balance the question compares ("MRR right now compared with a week
+ago"), or asks for by week, month, quarter or year where the clock or a constraint reads it per
+day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of_unrealized`
+gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
+weeks are allowed), a stock on an event clock, a ratio, or a balance beside a flow keep the
+holds above, and a window in `query.time` is used as passed: a day-grain balance window is read
+only when both bounds are whole days and it ends on or before the last complete day;
+otherwise `stock_as_of_unrealized`.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.
@@ -756,6 +823,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
+| `NO_DATA_YET` | `execute` | Guarded `NULL` series buckets beyond visible coverage, empty totals with coverage proven before the window, or no visible coverage. `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`. `last_bucket` names the SQL bucket key (date for day or coarser grains, full ISO timestamp for sub-day grains); `before_window` names the resolved window start. Both `edge` and `edge_source` are null with no visible coverage. Empty series with dated coverage keep existing warnings. Replaces `EMPTY_RESULT_WINDOW`; covered outputs are excluded from `NO_DATA_IN_SCOPE`. Granted only when every named measure is granted. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. Under `observation_scope: "dataset"` an empty answer to a filtered query never gets it. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `=` or `IN` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. Aggregate-filter literals of a retained additive series are checked in both observation scopes. One warning; `details.filters` lists each `dimension`, `value` and closest `suggestion`. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. See [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers) |
@@ -827,50 +895,25 @@ uv run semantic-rails mcp stdio --package jaffle_shop
 uv run semantic-rails mcp doctor --package jaffle_shop
 PACKAGE_PATH="$(pwd)/my_package"
 uv run semantic-rails mcp stdio --path "$PACKAGE_PATH"
-uv run semantic-rails mcp http --package jaffle_shop --host 127.0.0.1 --port 8091
+uv run semantic-rails serve --package jaffle_shop --host 127.0.0.1 --port 8091
 ```
 
 `mcp doctor` loads the package and adapter once, confirms the required tools are
 registered, and prints the exact stdio/http commands to run next. It does not
 bind a port.
 
-Managed local HTTP server commands (POSIX only):
+The `serve` command runs a foreground server for both the HTTP API and
+stateless Streamable HTTP. Start it in a separate terminal and stop it with Ctrl-C:
 
 ```bash
-semantic-rails mcp start --path "$PACKAGE_PATH" --port 8091
-semantic-rails mcp status --path "$PACKAGE_PATH"
-semantic-rails mcp stop --path "$PACKAGE_PATH"
+semantic-rails serve --path "$PACKAGE_PATH" --host 127.0.0.1 --port 8091
 ```
 
-The setup wizard uses this same default server name. Starting the same healthy
-configuration is idempotent. If `status` reports a dead registration, stop it
-explicitly with `semantic-rails mcp stop --name default`; the interactive
-wizard can also remove a dead registration and retry.
-
-Use `mcp start --port 0` to let the operating system choose an available port.
-The manager holds the listening socket through server startup, so concurrent
-starts cannot claim the same port. The start response and `mcp status` report
-the assigned port. Repeating the same named start with `--port 0` reuses its
-healthy server; process identity and health nonce checks still apply.
-For port zero, if the host cannot resolve or bind, startup returns `INVALID_CONFIG` without
-spawning a process or writing a server record. Configuration conflicts report
-the server's `assigned_port` while comparing the originally requested port.
-The server consumes the inherited socket-fd environment variable at startup,
-including when an explicit port is used, so child processes do not inherit it.
-
-Windows users should install the generated stdio client config with
-`semantic-rails mcp setup --install --yes`, or run `mcp http` in a foreground
-terminal. `mcp doctor` reports the supported lifecycle and prints the matching
-commands for the current platform.
-
-The raw server commands are foreground processes. `mcp stdio` is intended for
-MCP hosts that launch a subprocess from their config; `mcp http` stays attached
-to the terminal until you stop it. Use them directly when a host or another
-terminal is managing the process:
+Local MCP clients can launch stdio with `mcp setup --install --yes`, on every
+supported platform. The raw stdio command stays open until its client disconnects:
 
 ```bash
 semantic-rails mcp stdio --path "$PACKAGE_PATH"
-semantic-rails mcp http --path "$PACKAGE_PATH" --host 127.0.0.1 --port 8091
 ```
 
 Casual local setup:
@@ -922,10 +965,14 @@ curl -s http://127.0.0.1:8091/mcp \
   | python -c 'import json, sys; tools=json.load(sys.stdin)["result"]["tools"]; print(f"{len(tools)} tools"); print("\n".join("- " + tool["name"] for tool in tools))'
 ```
 
-This compatibility server accepts JSON-RPC requests at `/mcp` and exposes an SSE endpoint at
-`/sse`; it is not the hosted Streamable HTTP transport. When
-`SEMANTIC_RAILS_API_KEYS` or `SEMANTIC_RAILS_API_KEY_FILE` is configured, `/mcp` and `/sse` require
-`Authorization: Bearer ...`, `X-API-Key`, or `X-Semantic-API-Key`. `/health` stays public.
+The local `serve` and ASGI servers use the same stateless Streamable HTTP
+handler at `/mcp`. When `SEMANTIC_RAILS_API_KEYS` or `SEMANTIC_RAILS_API_KEY_FILE`
+is configured, `/mcp` requires `Authorization: Bearer ...`, `X-API-Key`, or
+`X-Semantic-API-Key`. Without configured keys, authentication is disabled for
+local use. `/health` stays public. The endpoint validates Origin and MCP headers,
+refuses bodies larger than 64 KiB, and resolves policy context from trusted
+transport headers rather than tool arguments. Install a trusted policy-context
+resolver before exposing either server to callers with different permissions.
 
 Pip-installed stdio configuration can be generated from the project directory
 so the command and package path match the local machine:
@@ -971,14 +1018,13 @@ own config/vault rather than reading a user's home directory.
 
 ## Transports and Protocol Versions
 
-Three entry points serve the same tools. They share one JSON-RPC dispatcher
+Two transports serve the same tools. They share one JSON-RPC dispatcher
 (`semantic_rails.mcp_server.handle_jsonrpc_message`), so they return identical results:
 
 | Entry point | Serves | Why it is kept |
 |---|---|---|
 | `semantic-rails mcp stdio` | stdio | Local agents such as Claude Code and Claude Desktop. The default. |
-| ASGI `/mcp` (`semantic_rails.mcp_streamable_http`) | Stateless Streamable HTTP | Network clients. Authenticated with the same API keys as `/api/v1/*`. |
-| `semantic-rails mcp http` | Legacy HTTP + SSE | Clients that predate Streamable HTTP. The MCP specification deprecated this transport in `2025-03-26`, and revision `2026-07-28` schedules it for removal after a twelve-month window. New integrations should use `/mcp`. |
+| ASGI or `semantic-rails serve` `/mcp` (`semantic_rails.mcp_streamable_http`) | Stateless Streamable HTTP | Network clients. Authenticated with the same API keys as `/api/v1/*`. |
 
 Each tool result carries its payload twice: as `structuredContent`, and as compact JSON in
 `content[0].text` for hosts that forward only text. Resource reads return compact JSON text.

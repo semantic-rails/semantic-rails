@@ -1544,10 +1544,6 @@ def _metric_from_measure(
             publish_spec.get("comparison_family", spec.get("comparison_family", ""))
         ),
         comparison_mode=str(publish_spec.get("comparison_mode", spec.get("comparison_mode", ""))),
-        comparison_peers=_ensure_list(
-            publish_spec.get("comparison_peers", spec.get("comparison_peers"))
-        ),
-        clock_variants=_ensure_list(publish_spec.get("clock_variants", spec.get("clock_variants"))),
         preferred_companion_metrics=_ensure_list(
             publish_spec.get("preferred_companion_metrics", spec.get("preferred_companion_metrics"))
         ),
@@ -1890,12 +1886,20 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
     dim_defaults = dict(defaults.get("dimension", {}) or {})
     time_defaults = dict(defaults.get("time", {}) or {})
+    if "default" in time_defaults:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{path}: defaults.time.default is not supported; declare default: true on a model's time role",
+        )
+    _check_binding_keys(dim_defaults, _DIMENSION_KEYS, label=f"{path}: defaults.dimension")
+    _check_binding_keys(time_defaults, _TIME_KEYS, label=f"{path}: defaults.time")
     measure_defaults = dict(defaults.get("measure", {}) or {})
     _check_binding_keys(measure_defaults, _MEASURE_KEYS, label=f"{path}: defaults.measure")
     relationship_defaults = dict(defaults.get("relationship", {}) or {})
     operational_contract = load_operational_contract(defaults, path=path)
     meta_contract = load_meta_contract(defaults, path=path)
 
+    model_default_times: dict[str, str] = {}
     for model_id, model in model_rows.items():
         is_fact = model_id in fact_models
         model_meta = _normalize_meta(model.get("meta"), f"{path}: model '{model_id}'")
@@ -1949,6 +1953,13 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         )
         dims = dict(model.get("dimensions", {}) or {})
         times = dict(model.get("times", {}) or {})
+        default_keys = [key for key, spec in times.items() if bool(dict(spec or {}).get("default"))]
+        if len(default_keys) > 1:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: model '{model_id}' has multiple default: true time roles: {sorted(default_keys)}; declare at most one",
+            )
+        model_default_times[model_id] = str(next(iter(default_keys), ""))
 
         for dim_key, dim_spec_raw in dims.items():
             dim_spec = {**dim_defaults, **dict(dim_spec_raw or {})}
@@ -2008,7 +2019,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     description=str(dim_spec.get("description", label)),
                     semantic_kind=kind,
                     topics=_unique_aliases(model_topics, _ensure_list(dim_spec.get("topics"))),
-                    preferred_filter_ops=_ensure_list(dim_spec.get("preferred_filter_ops")),
                     sample_values_strategy=str(dim_spec.get("sample_values_strategy", "")),
                     filterable=bool(dim_spec.get("filterable", True)),
                     groupable=bool(dim_spec.get("groupable", True)),
@@ -2039,7 +2049,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         description=str(time_spec.get("description", label)),
                         semantic_kind=str(time_spec.get("kind", "timestamp")),
                         topics=_unique_aliases(model_topics, _ensure_list(time_spec.get("topics"))),
-                        preferred_filter_ops=_ensure_list(time_spec.get("preferred_filter_ops")),
                         sample_values_strategy=str(time_spec.get("sample_values_strategy", "")),
                         filterable=bool(time_spec.get("filterable", True)),
                         groupable=bool(time_spec.get("groupable", True)),
@@ -2061,25 +2070,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                             "supported_grains", ["day", "week", "month", "quarter", "year"]
                         )
                     ),
-                    default_query_time_axis=bool(
-                        time_spec.get("default_query_axis", time_spec.get("default", False))
-                    ),
+                    default_query_time_axis=time_key == model_default_times[model_id],
                     timezone=str(time_spec.get("timezone", "UTC")),
                     column_timezone=str(time_spec.get("column_timezone", "") or ""),
                 )
             )
             temporal_lookup[(model_id, time_key)] = temporal_id
 
-        default_time = str(model.get("default_time", "")).strip()
-        # Authoring sugar: a `times.<key>.default: true` flag replaces the
-        # separate `default_time:` field. If multiple flags are set, the
-        # multi-default-time validator catches it.
-        if not default_time:
-            for time_key, time_spec_raw in times.items():
-                time_spec = dict(time_spec_raw or {})
-                if bool(time_spec.get("default")):
-                    default_time = str(time_key)
-                    break
+        default_time = model_default_times[model_id]
         row_grain = _ensure_list(
             model.get("grain") or dict(model.get("keys", {}) or {}).get("primary")
         )
@@ -2098,6 +2096,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             measure_spec = lookup_measure_spec(
                 raw_measure_spec, measure_spec, f"{path}: measure '{measure_key}'"
             )
+            publish_spec = measure_spec.get("publish")
+            if isinstance(publish_spec, dict):
+                for advisory_key in ("clock_variants", "comparison_peers", "preferred_filter_ops"):
+                    if advisory_key in publish_spec:
+                        raise SemanticLayerError(
+                            "INVALID_CONFIG",
+                            f"{path}: measure '{measure_key}' publish.{advisory_key} is not supported",
+                        )
             measure_id = str(
                 measure_spec.get("id", f"measure.{_slug(entity_cfg.name)}_{_slug(measure_key)}")
             )
@@ -2220,8 +2226,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 ),
                 comparison_family=str(measure_spec.get("comparison_family", "")),
                 comparison_mode=str(measure_spec.get("comparison_mode", "")),
-                comparison_peers=_ensure_list(measure_spec.get("comparison_peers")),
-                clock_variants=_ensure_list(measure_spec.get("clock_variants")),
                 preferred_companion_metrics=_ensure_list(
                     measure_spec.get("preferred_companion_metrics")
                 ),
@@ -2600,8 +2604,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             or _default_topics(str(spec.get("name", metric_key))),
             comparison_family=str(spec.get("comparison_family", "")),
             comparison_mode=str(spec.get("comparison_mode", "")),
-            comparison_peers=_ensure_list(spec.get("comparison_peers")),
-            clock_variants=_ensure_list(spec.get("clock_variants")),
             preferred_companion_metrics=_ensure_list(spec.get("preferred_companion_metrics")),
             operational=validate_operational_payload(
                 normalize_operational_payload(
@@ -2720,16 +2722,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         model_id: set(dict(model.get("dimensions", {}) or {}))
         for model_id, model in model_rows.items()
     }
-
-    def _model_default_time_key(model: dict[str, Any]) -> str:
-        text = str(model.get("default_time", "") or "").strip()
-        if text:
-            return text
-        for time_key, time_spec_raw in dict(model.get("times", {}) or {}).items():
-            if bool(dict(time_spec_raw or {}).get("default")):
-                return str(time_key)
-        times = dict(model.get("times", {}) or {})
-        return str(next(iter(times), ""))
 
     def _resolve_dimension_ref(ref: Any, *, model_id: str = "") -> str:
         text = str(ref or "").strip()
@@ -2864,7 +2856,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             source_entity = model_to_entity.get(model_id) or _resolve_entity_ref(
                 model["time_entity"]
             )
-            default_time_key = _model_default_time_key(model)
+            default_time_key = model_default_times[model_id] or str(
+                next(iter(model.get("times", {}) or {}), "")
+            )
             base_time_spec = dict(
                 dict(model.get("times", {}) or {}).get(default_time_key, {}) or {}
             )
@@ -3027,9 +3021,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         meta_contract=meta_contract,
     )
     config = with_published_flags(config)
-    from .temporal_support import require_temporal_support
-
-    require_temporal_support(config, requested=bool(time_defaults.get("default_query_axis")))
     _ensure_unique_object_ids(config, path=path)
     _validate_caveat_refs(config, path=path)
     validate_row_filters(config)
