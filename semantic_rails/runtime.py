@@ -2926,6 +2926,8 @@ class Runtime:
         kept = {_SEED_KEYS[key] for key in call if key in _SEED_KEYS}
         if any(isinstance(item, dict) and "having" in item for item in call.get("where") or []):
             kept.add("metric_filters")
+        if internal.get("group_by"):
+            kept.add("group_by")  # a dimension the call lifted from select
         return {
             key: value
             for key, value in internal.items()

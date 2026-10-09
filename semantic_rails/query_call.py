@@ -73,6 +73,18 @@ TOOL_ARGUMENTS: frozenset[str] = frozenset(
     {"now", "mode", "max_rows", "row_format", "verbosity", "sql_profile", "debug"}
 )
 IGNORED: frozenset[str] = frozenset({"version"})
+# Keys callers send for one of the call's fields.
+KEY_SYNONYMS: dict[str, str] = {
+    "filter": "where",
+    "filters": "where",
+    "dimensions": "group_by",
+    "groupby": "group_by",
+    "measures": "select",
+    "metrics": "select",
+    "orderby": "order_by",
+    "sort": "order_by",
+    "route": "routes",
+}
 # Keys of an inline kind that name another expression; a reference there is an id string.
 EXPRESSION_KEYS: frozenset[str] = frozenset(
     {
@@ -285,7 +297,7 @@ def _check_top_level(payload: Mapping[str, Any]) -> None:
                 "is an argument of the tool, not a key of the query",
                 fix=f"Pass `{key}` beside `query`.",
             )
-        matches = _closest(key, FIELDS)
+        matches = [KEY_SYNONYMS[key]] if key in KEY_SYNONYMS else _closest(key, FIELDS)
         raise refusal(
             key,
             f"unknown key; a call has {list(FIELDS)}",
@@ -350,6 +362,20 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
             continue
         if not isinstance(item, Mapping):
             raise refusal(path, "is an id string or {expression, as}", fix='Write "metric.<id>".')
+        named = [
+            key for key in ("metric", "measure", "dimension") if isinstance(item.get(key), str)
+        ]
+        if named and "expression" not in item:
+            ref = item[named[0]].strip()
+            raise refusal(
+                path,
+                "a reference is the id string itself",
+                fix=(
+                    f'Move "{ref}" to group_by.'
+                    if named[0] == "dimension"
+                    else f'Write "{ref}", or {{"expression": "{ref}", "as": ...}} to name it.'
+                ),
+            )
         _check_keys(item, SELECT_KEYS, path)
         if "expression" not in item:
             raise refusal(path, "needs 'expression'", fix='Write {"expression": "metric.<id>"}.')
@@ -393,8 +419,19 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
     if not isinstance(raw, Mapping):
         raise refusal(path, "is an id string or an object with 'kind'", fix=_KINDLESS_FIX)
     kind = raw.get("kind")
+    if not kind and isinstance(raw.get("dimension"), str):
+        raise refusal(
+            path,
+            "a dimension splits the answer; it is not an expression",
+            fix=f'Move "{raw["dimension"].strip()}" to group_by.',
+        )
     if not kind:
-        raise refusal(path, "an expression object names its 'kind'", fix=_KINDLESS_FIX)
+        ref = raw.get("metric") or raw.get("measure")
+        raise refusal(
+            path,
+            "an expression object names its 'kind'",
+            fix=f'Write "{ref}".' if isinstance(ref, str) else _KINDLESS_FIX,
+        )
     kind = str(kind).strip()
     if kind in RETIRED_KINDS:
         name = raw.get("metric") or raw.get("measure") or "<id>"
@@ -722,10 +759,15 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
         raise refusal("time", "is an object", fix='Write {"last": {"unit": "week", "value": 1}}.')
     for key in raw:
         if key == "range":
+            bounds = raw["range"] if isinstance(raw["range"], Mapping) else {}
             raise refusal(
                 "time.range",
                 "is retired",
-                fix='Write "last": {"unit": ..., "value": ...} directly under time.',
+                fix=(
+                    'Write "start" and "end" directly under time.'
+                    if "start" in bounds or "end" in bounds
+                    else 'Write "last": {"unit": ..., "value": ...} directly under time.'
+                ),
             )
         if key == "calendar_id":
             raise refusal(
