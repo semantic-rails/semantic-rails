@@ -6,7 +6,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: The recent aggregate cuts its own population while the cumulative input retains November history.
-    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue]
+    cites: [docs/QUERY_CALL.md#select, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue]
     tags: [time-window]
     query:
       select:
@@ -37,7 +37,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Filtering the recent metric output does not remove November from the cumulative input.
-    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue]
+    cites: [docs/QUERY_CALL.md#select, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue]
     tags: [time-window]
     query:
       select:
@@ -68,7 +68,7 @@ tests:
     expect: refuse
     code: CUMULATIVE_TIME_FILTER_UNSUPPORTED
     why: A lower bound on the input clock removes history needed by the cumulative sum.
-    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at]
+    cites: [docs/QUERY_CALL.md#select, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at]
     tags: [time-window]
     query:
       select:
@@ -86,7 +86,7 @@ tests:
     expect: refuse
     code: WINDOWED_TIME_FILTER_UNSUPPORTED
     why: A lower bound on the input clock removes earlier buckets needed by the rolling sum.
-    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at]
+    cites: [docs/QUERY_CALL.md#select, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at]
     tags: [time-window]
     query:
       select:
@@ -107,7 +107,7 @@ tests:
     why: A field condition must not be applied to the computed per-order value.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#per-entity-value-filters
+      - docs/QUERY_CALL.md#per-entity-value-filters
     tags: [refusal]
     query:
       select:
@@ -124,7 +124,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Three store a orders minus a conditional count with no match anywhere is three.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_orders, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_orders, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, time-window]
     query:
       select:
@@ -144,7 +144,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: A nonmatching order contributes a measured zero before the per-customer values are summed.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_amount, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_amount, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, time-window]
     query:
       select:
@@ -166,7 +166,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Store b has orders elsewhere in the loaded range, so its absent orders in this window read zero and the difference is one.
-    cites: &conditional_window_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.store_b_orders, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: &conditional_window_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.store_b_orders, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, time-window]
     query: &conditional_window
       select:
@@ -198,7 +198,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Stores with equal order counts rank by the remaining output columns, keeping a stable subset.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#orderby]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#order_by]
     tags: [time-window]
     query:
       select: [{expression: measure.shop.order_count, as: orders}]
@@ -217,7 +217,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Order 7's NULL revenue sorts after every value, so it never takes one of the three highest places.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#orderby]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#order_by]
     tags: [null-vs-zero]
     query:
       select: [measure.shop.revenue]
@@ -237,7 +237,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Order 7's NULL revenue sorts after every value in ascending order too, so it is not among the three lowest.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#orderby]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#order_by]
     tags: [null-vs-zero]
     query:
       select: [measure.shop.revenue]
@@ -258,7 +258,7 @@ tests:
     expect: refuse
     code: INVALID_TEMPORAL_BINDING
     why: A metric pinned to close time must never filter its orders on order time.
-    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_CALL.md#time]
     tags: [time-window, clock, refusal]
     query:
       select: [{expression: metric.shop.closed_orders, as: orders}]
@@ -268,7 +268,7 @@ tests:
     expect: refuse
     code: INVALID_QUERY
     why: A call cannot re-pin a measure's clock; temporal_role_overrides is refused at its path, and a package metric pins the clock instead.
-    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_CALL.md#time]
     tags: [time-window, clock, refusal]
     query:
       select: [{expression: measure.shop.window_order_count, as: orders}]
@@ -278,7 +278,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Orders pinned to close time count only orders closed within the requested period.
-    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, docs/QUERY_CALL.md#time]
     tags: [time-window, clock]
     query:
       select: [{expression: metric.shop.closed_orders, as: orders}]
@@ -292,7 +292,7 @@ tests:
     expect: refuse
     code: INVALID_TEMPORAL_BINDING
     why: Signup time cannot choose whether the order threshold uses order time or close time.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_CALL.md#entity-filters]
     tags: [time-window, clock, refusal]
     query: &window_predicate
       select: [{expression: measure.shop.signup_count, as: signups}]
@@ -305,7 +305,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: 'Customer 102 signed up and ordered within the window but closed the order after it, so the pinned close clock keeps no customer: each day of the named window reads NULL, as nothing in the filtered population holds a signup (no data in scope).'
-    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_CALL.md#entity-filters]
     tags: [time-window, clock]
     query:
       <<: *window_predicate
@@ -366,7 +366,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Conjoined equalities cannot hold on one store, even though orders 1 and 2 belong to a and b.
-    cites: &store_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    cites: &store_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id, docs/QUERY_CALL.md#where]
     tags: [list-vs-conjunction, empty-result]
     query:
       select: &revenue [measure.shop.revenue]
@@ -389,7 +389,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Refunds have data in scope, so order 8's null store reads zero while orders 2, 4, 6 and 7 contribute six refunds.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, second-fact]
     query:
       select:
@@ -406,7 +406,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: No order reaches 1000 anywhere in scope, so every store's conditional count has no data and reads null.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.huge_order_count, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.huge_order_count, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero]
     query: {select: [measure.shop.huge_order_count], group_by: *store}
     expected_rows: [{dimension.shop_order_store_id: a, huge_order_count: null}, {dimension.shop_order_store_id: b, huge_order_count: null}, {dimension.shop_order_store_id: null, huge_order_count: null}]
@@ -417,7 +417,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: All six refunds leave tax_amount unrecorded, so both goods and shipping groups read null.
-    cites: [tests/integration/correctness/shop/models/refunds.yml#model.measures.tax_refunded, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/models/refunds.yml#model.measures.tax_refunded, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero]
     query: {select: [measure.shop.tax_refunded], group_by: [dimension.shop_refund_refund_type]}
     expected_rows: [{dimension.shop_refund_refund_type: goods, tax_refunded: null}, {dimension.shop_refund_refund_type: shipping, tax_refunded: null}]
@@ -428,7 +428,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: The half-open UTC window includes orders 1, 2 and 3 in November and December, totaling 15 and 7.
-    cites: &clock_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_IR_SCHEMA.md#timeblock, tests/integration/correctness/conftest.py#CLOCKS]
+    cites: &clock_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_CALL.md#time, tests/integration/correctness/conftest.py#CLOCKS]
     tags: [time-window, clock]
     query: &months
       select: *revenue
@@ -469,7 +469,7 @@ tests:
     kind: validate_fails_with_code
     expect: clarify
     why: Order 7 has goods and shipping on different refunds, so plain child conditions must ask which reading is intended.
-    cites: &child_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_IR_SCHEMA.md#child-groups]
+    cites: &child_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_CALL.md#entity-filters]
     tags: [child-scope]
     query:
       select: &orders [measure.shop.order_count]
@@ -500,7 +500,7 @@ tests:
     kind: validate_fails_with_code
     expect: refuse
     why: A filter value is never null; is with null is refused before inspecting orders, with missing as the fix.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id, docs/QUERY_CALL.md#where]
     tags: [refusal]
     query:
       select: *orders
@@ -532,7 +532,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: An exclusion keeps the signups with no recorded channel, so customers 102, 104 and 107 (store) and 105 (no channel) remain.
-    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_CALL.md#where]
     tags: [planner]
     intent: signups excluding web
     known_wrong: {planner: "Questions that exclude values hold until exclusion answers ship."}
@@ -545,7 +545,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: In June 2024 only customer 106 (web, June 25) and customer 107 (store, June 10) signed up; excluding web keeps 107.
-    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, tests/integration/correctness/shop/models/signups.yml#model.times.signed_up_at, docs/QUERY_IR_SCHEMA.md#wherefilter, docs/QUERY_IR_SCHEMA.md#timeblock]
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, tests/integration/correctness/shop/models/signups.yml#model.times.signed_up_at, docs/QUERY_CALL.md#where, docs/QUERY_CALL.md#time]
     tags: [planner, time-window]
     intent: signups excluding web in June 2024
     known_wrong: {planner: "Questions that exclude values hold until exclusion answers ship."}
@@ -584,7 +584,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: The three largest order totals, largest first, are order 4's 20, order 1's 10 and order 10's 9; order 7's NULL total sorts last.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/graph.yml#graph.entities.order, docs/QUERY_IR_SCHEMA.md#orderby]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/graph.yml#graph.entities.order, docs/QUERY_CALL.md#order_by]
     tags: [planner]
     intent: top 3 orders by revenue
     query:
@@ -614,7 +614,7 @@ tests:
     kind: validate_fails_with_code
     expect: refuse
     why: The supplied partial query sums period averages, so planning must refuse it; request a ratio of windowed totals instead.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.average_order, docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.average_order, docs/QUERY_CALL.md#select]
     tags: [planner, refusal]
     intent: revenue by month
     query: &rolling_average
@@ -633,9 +633,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -665,9 +665,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -698,9 +698,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -728,9 +728,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -754,9 +754,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -778,9 +778,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -810,9 +810,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -843,9 +843,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -873,9 +873,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -899,9 +899,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -923,9 +923,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_authored
     query:
@@ -955,9 +955,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_authored
     query:
@@ -987,9 +987,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_authored
     query:
@@ -1016,9 +1016,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_authored
     query:
@@ -1042,9 +1042,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_authored
     query:
@@ -1066,9 +1066,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -1098,9 +1098,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -1130,9 +1130,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -1159,9 +1159,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -1185,9 +1185,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -1209,9 +1209,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -1242,9 +1242,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -1275,9 +1275,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -1305,9 +1305,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -1331,9 +1331,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -1355,9 +1355,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_implicit
     query:
@@ -1388,9 +1388,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_implicit
     query:
@@ -1421,9 +1421,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_implicit
     query:
@@ -1451,9 +1451,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_implicit
     query:
@@ -1477,9 +1477,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_implicit
     query:
@@ -1501,9 +1501,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -1534,9 +1534,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -1567,9 +1567,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -1597,9 +1597,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -1623,9 +1623,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -1647,9 +1647,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_implicit
     query:
@@ -1680,9 +1680,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_implicit
     query:
@@ -1713,9 +1713,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_implicit
     query:
@@ -1743,9 +1743,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_implicit
     query:
@@ -1769,9 +1769,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_implicit
     query:
@@ -1790,7 +1790,7 @@ tests:
     expect: refuse
     code: INVALID_QUERY
     why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
-    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_CALL.md#time]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -1807,7 +1807,7 @@ tests:
     expect: refuse
     code: INVALID_QUERY
     why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
-    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_CALL.md#time]
     tags: [time-window]
     variant: ny_authored
     query:
@@ -1824,7 +1824,7 @@ tests:
     expect: refuse
     code: INVALID_QUERY
     why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
-    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_CALL.md#time]
     tags: [time-window]
     variant: date_authored
     query:
@@ -1841,7 +1841,7 @@ tests:
     expect: refuse
     code: INVALID_QUERY
     why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
-    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_CALL.md#time]
     tags: [time-window]
     variant: tz_authored
     query:
@@ -1858,7 +1858,7 @@ tests:
     expect: refuse
     code: INVALID_QUERY
     why: A call cannot pick a calendar; time.calendar_id is refused at its path, so Gregorian buckets never carry fiscal labels.
-    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_CALL.md#time]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -1883,9 +1883,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.smallest_order
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -1927,10 +1927,10 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+      - docs/QUERY_CALL.md#where
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -1955,8 +1955,8 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -1986,8 +1986,8 @@ tests:
       - tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type
       - tests/integration/correctness/shop/models/refunds.yml#model.measures.goods_refunded
       - tests/integration/correctness/shop/models/refunds.yml#model.measures.shipping_refunded
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2020,8 +2020,8 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/refunds.yml#model.measures.goods_refunded
       - tests/integration/correctness/shop/models/refunds.yml#model.measures.shipping_refunded
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2062,8 +2062,8 @@ tests:
       - tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type
       - tests/integration/correctness/shop/models/refunds.yml#model.measures.goods_refunded
       - tests/integration/correctness/shop/models/refunds.yml#model.measures.tax_refunded
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2090,9 +2090,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2116,9 +2116,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -2154,9 +2154,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -2191,9 +2191,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -2220,9 +2220,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -2250,10 +2250,10 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+      - docs/QUERY_CALL.md#having
     tags: [time-window]
     variant: utc_authored
     query:
@@ -2283,9 +2283,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -2315,9 +2315,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -2346,9 +2346,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -2373,9 +2373,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.large_order_count
       - tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#entity-filters
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2401,9 +2401,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.huge_order_count
       - tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#entity-filters
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2428,9 +2428,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#inline-expression-kinds
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2454,9 +2454,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#inline-expression-kinds
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2480,9 +2480,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#inline-expression-kinds
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2506,9 +2506,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2529,9 +2529,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2552,9 +2552,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2577,9 +2577,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2600,9 +2600,9 @@ tests:
     why: Freeze the declared inputs and independent reference for is operand IS True.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#having
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2620,9 +2620,9 @@ tests:
     why: Freeze the declared inputs and independent reference for is operand IS False.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#having
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2639,9 +2639,9 @@ tests:
     why: Freeze the declared inputs and independent reference for is operand IS NOT True.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#having
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2658,9 +2658,9 @@ tests:
     why: Freeze the declared inputs and independent reference for is operand IS NOT False.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#having
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2680,9 +2680,9 @@ tests:
       - tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type
       - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2759,9 +2759,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type
       - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2832,9 +2832,9 @@ tests:
       - tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type
       - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2894,9 +2894,9 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -2954,9 +2954,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -3009,9 +3009,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -3064,9 +3064,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3094,9 +3094,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3124,10 +3124,10 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+      - docs/QUERY_CALL.md#entity-filters
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3158,10 +3158,10 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+      - docs/QUERY_CALL.md#entity-filters
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3191,10 +3191,10 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+      - docs/QUERY_CALL.md#entity-filters
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3223,10 +3223,10 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
-      - docs/QUERY_IR_SCHEMA.md#metricfilter-expressions
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+      - docs/QUERY_CALL.md#entity-filters
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3251,7 +3251,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Customers 101, 102 and 103 each ordered at least twice over all time; each count is taken per customer, never per customer and store, so 102's and 103's single orders at each store still qualify.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#entity-filters]
     tags: [child-scope]
     query:
       select: [measure.shop.revenue]
@@ -3272,7 +3272,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Inside the first half of 2024 only customer 103 ordered twice (orders 4 at store a and 9 at store b); 101 and 102 ordered twice only over all time, and the count is per customer, never per customer and store.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#entity-filters]
     tags: [child-scope, time-window]
     query:
       select: [measure.shop.revenue]
@@ -3296,7 +3296,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Customer 101 ordered twice in 2023 and customer 103 twice in 2024 (at stores a and b); the count is per customer per year, never per customer, store and year.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#entity-filters]
     tags: [child-scope, time-window]
     query:
       select: [measure.shop.revenue]
@@ -3319,7 +3319,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: TOR is found in store whatever its case, so customers 102, 104 and 107 count; 105's unknown channel contains nothing.
-    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_CALL.md#where]
     tags: [null-vs-zero]
     query:
       select: [measure.shop.signup_count]
@@ -3334,7 +3334,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: No channel holds an underscore; as a LIKE wildcard it would have matched every channel.
-    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_CALL.md#where]
     tags: [empty-result]
     query:
       select: [measure.shop.signup_count]
@@ -3350,8 +3350,8 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -3375,9 +3375,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -3404,9 +3404,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -3435,9 +3435,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3473,9 +3473,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3512,9 +3512,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3549,9 +3549,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3582,9 +3582,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -3621,9 +3621,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -3658,9 +3658,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -3691,9 +3691,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -3730,9 +3730,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -3767,9 +3767,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -3800,9 +3800,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -3839,9 +3839,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -3876,9 +3876,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -3908,9 +3908,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -3940,9 +3940,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_authored
     query:
@@ -3970,9 +3970,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -4016,9 +4016,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -4062,9 +4062,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -4122,9 +4122,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -4168,9 +4168,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_implicit
     query:
@@ -4213,9 +4213,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -4237,9 +4237,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -4280,9 +4280,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -4324,9 +4324,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -4367,9 +4367,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -4411,9 +4411,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_authored
     query:
@@ -4453,9 +4453,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_authored
     query:
@@ -4496,9 +4496,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -4538,9 +4538,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -4581,9 +4581,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -4624,9 +4624,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: date_authored
     query:
@@ -4668,9 +4668,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -4711,9 +4711,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: tz_authored
     query:
@@ -4755,9 +4755,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5061,9 +5061,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5134,9 +5134,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5171,9 +5171,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5206,9 +5206,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -5249,9 +5249,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -5555,9 +5555,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -5599,9 +5599,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: ny_implicit
     query:
@@ -5673,9 +5673,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5719,9 +5719,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5760,9 +5760,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5804,9 +5804,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5844,9 +5844,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5887,9 +5887,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5924,9 +5924,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5961,9 +5961,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -5998,9 +5998,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6035,9 +6035,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6073,9 +6073,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6114,9 +6114,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6166,9 +6166,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6217,9 +6217,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6269,9 +6269,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6321,9 +6321,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6363,9 +6363,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6408,9 +6408,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6455,9 +6455,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6523,9 +6523,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_implicit
     query:
@@ -6590,9 +6590,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6652,9 +6652,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6694,9 +6694,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6732,9 +6732,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6774,9 +6774,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count
       - tests/integration/correctness/conftest.py#CLOCKS
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
     tags: [time-window]
     variant: utc_authored
     query:
@@ -6822,9 +6822,9 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#where
     tags: [null-vs-zero]
     variant: utc_authored
     query:
@@ -6848,7 +6848,7 @@ tests:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
     tags: [null-vs-zero, time-window]
     variant: utc_authored
     query:
@@ -6884,7 +6884,7 @@ tests:
       - tests/integration/correctness/shop/models/account_days.yml#model.dimensions.plan
       - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
       - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#time
     tags: [clock]
     variant: utc_authored
     query:
@@ -6912,7 +6912,7 @@ tests:
     cites:
       - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
       - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+      - docs/QUERY_CALL.md#time
     tags: [clock]
     variant: utc_authored
     query:
@@ -6961,8 +6961,8 @@ tests:
       - tests/integration/correctness/shop/models/account_days.yml#model.dimensions.plan
       - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
       - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
-      - docs/QUERY_IR_SCHEMA.md#wherefilter
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#where
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
     tags: [clock, null-vs-zero]
     variant: utc_authored
     query:
@@ -7028,7 +7028,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: Non-store signups outside June are customers 101 and 103; a positive June window would incorrectly count only 106.
-    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_CALL.md#where]
     tags: [planner, time-window]
     intent: signups not in June
     known_wrong: {planner: "The planner holds excluded time periods until it can represent their complement. This xfail can't tell that hold from a wrong number; tests/semantic_rails/test_plan_named_periods.py::test_excluded_period_never_becomes_a_positive_window pins the hold (PLAN_INTENT_COVERAGE_GAP, negation_unrealized on a time item)."}
@@ -7059,7 +7059,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: 'The last complete week before May 10 (April 29 to May 6) has no order, and order 7 on May 6 shows the data is loaded past it: the count and the revenue read 0, not NULL, and the named window answers its one total.'
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#timeblock, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#time, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, time-window]
     query:
       select: [measure.shop.order_count, measure.shop.revenue]
@@ -7076,7 +7076,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: 'The first quarter of 2024 answers each of its months: February has no order inside the loaded data, so it reads 0 between January and March.'
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#timeblock, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#time, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, time-window]
     query:
       select: [measure.shop.revenue]
@@ -7095,7 +7095,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: 'August 2024 so far on August 3 at noon: order 11 on August 1 is the last row, so August 2 and 3 are after the data-through edge and read NULL (no data yet), never 0; only August 3, still filling, is a partial period.'
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#timeblock, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#time, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, time-window]
     query:
       select: [measure.shop.order_count]
@@ -7116,7 +7116,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: 'In the quiet week of April 29 both operands of the average order value read 0, so the ratio divides by zero and reads NULL, not 0.'
-    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, time-window]
     query:
       select: [metric.shop.average_order_value]
@@ -7130,7 +7130,7 @@ tests:
     kind: query_matches_snapshot
     expect: answer
     why: 'January closes on its last day with a snapshot, January 15 (accounts 1 and 3): account 2, last seen on January 7, is not carried forward, so seats read 220, not 1226.'
-    cites: [tests/integration/correctness/shop/models/account_days.yml#model.measures.seats, tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day, docs/QUERY_IR_SCHEMA.md#timeblock]
+    cites: [tests/integration/correctness/shop/models/account_days.yml#model.measures.seats, tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day, docs/QUERY_CALL.md#time]
     tags: [time-window, clock]
     query:
       select: [measure.shop.seats]

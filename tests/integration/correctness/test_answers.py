@@ -114,10 +114,10 @@ def test_correctness_builders_have_frozen_answers(case):
         "tests/integration/correctness/shop/models/orders.yml#model.measures.revenue",
         "tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id",
         "tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at",
-        "docs/QUERY_IR_SCHEMA.md#wherefilter",
-        "docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0",
-        "docs/QUERY_IR_SCHEMA.md#timeblock",
-        "docs/QUERY_IR_SCHEMA.md#child-groups",
+        "docs/QUERY_CALL.md#where",
+        "docs/QUERY_CALL.md#empty-groups-null-or-0",
+        "docs/QUERY_CALL.md#time",
+        "docs/QUERY_CALL.md#entity-filters",
     ],
 )
 def test_hygiene_accepts_definition_or_decision(duckdb_backend, citation):
@@ -134,7 +134,7 @@ def test_hygiene_accepts_definition_or_decision(duckdb_backend, citation):
     [
         ({"unknown": True}, {}, "unknown keys"),
         ({"tags": ["unknown"]}, {}, "unknown tags"),
-        ({"cites": ["docs/QUERY_IR_SCHEMA.md#missing"]}, {}, "unresolved citation"),
+        ({"cites": ["docs/QUERY_CALL.md#missing"]}, {}, "unresolved citation"),
         ({}, {"data_sha256": "stale"}, "stale fixture fingerprint"),
         ({"expect": "refuse"}, {}, "expect/kind mismatch"),
         ({"reference_sql": ""}, {}, "missing reference_sql"),
