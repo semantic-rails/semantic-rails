@@ -6,6 +6,7 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
 
@@ -94,13 +95,12 @@ metrics:
       filter:
         all: [{field: dimension.subscriptions_account_segment, op: '=', value: customer}]
 """,
-        "policies/snapshot.yml": """
-policies:
-  day_required:
+        "policies.yml": """
+semantic_policies:
+  - id: day_required
     kind: metric_constraint
     object_ids: [measure.subscriptions.mrr_all]
-    config:
-      required_group_by: [dimension.subscriptions_account_day_day]
+    required_group_by: [dimension.subscriptions_account_day_day]
 """,
     }
     for name, contents in files.items():
@@ -147,6 +147,12 @@ def test_authored_snapshot_question_answers_reference(subscriptions):
     gold = _reference(subscriptions, "2026-10-04", 2)
     assert gold == [("Acme Data Co", 500), ("Initech", 99)]
     assert [(row[NAME], row["mrr"]) for row in rows] == gold
+
+
+def test_snapshot_policy_holds_a_query_without_the_day(subscriptions):
+    query = {**QUERY, "group_by": [NAME], "order_by": [{"field": NAME, "direction": "ASC"}]}
+    with pytest.raises(SemanticLayerError, match="blocked by policy"):
+        subscriptions.query(query)
 
 
 @pytest.mark.parametrize(

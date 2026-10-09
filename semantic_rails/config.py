@@ -493,6 +493,70 @@ def _normalize_examples(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
     return text_examples, entries
 
 
+# Each root block file of a directory package and the key it is read through.
+_BLOCK_FILES = (
+    ("defaults.yml", "defaults"),
+    ("graph.yml", "graph"),
+    ("relations.yml", "relations"),
+    ("metrics.yml", "metrics"),
+    ("segments.yml", "segments"),
+    ("policies.yml", "semantic_policies"),
+    ("caveats.yml", "semantic_caveats"),
+)
+# Every root YAML file and directory of YAML anything reads from a package directory: the
+# loader's files and object directories, and the examples and tests the package tools run.
+_PACKAGE_ROOT_FILES = frozenset({"package.yml", *(name for name, _ in _BLOCK_FILES)})
+_OBJECT_DIRS = ("models", "relations", "metrics", "segments")
+_PACKAGE_ROOT_DIRS = frozenset({*_OBJECT_DIRS, "examples", "tests"})
+
+
+def _unread_root_errors(path: str, contents: dict[str, bytes] | None) -> list[str]:
+    """One error per root YAML file, and per root directory holding YAML, that nothing reads.
+    Names starting with ``_`` or ``.`` are left alone."""
+    if contents is not None:
+        sources = [os.path.relpath(name, path) for name in contents]
+    else:
+        sources = []
+        for root, dirnames, filenames in os.walk(path):
+            if root == path:
+                dirnames[:] = [name for name in dirnames if not name.startswith(("_", "."))]
+            sources.extend(os.path.relpath(os.path.join(root, name), path) for name in filenames)
+    unread: set[tuple[str, bool]] = set()
+    for source in sources:
+        top, *rest = Path(source).parts
+        known = _PACKAGE_ROOT_DIRS if rest else _PACKAGE_ROOT_FILES
+        if (
+            source.endswith((".yml", ".yaml"))
+            and not top.startswith(("_", "."))
+            and top not in known
+        ):
+            unread.add((top, bool(rest)))
+    errors = []
+    for name, is_dir in sorted(unread):
+        if is_dir:
+            what = f"{os.path.join(path, name)}{os.sep} is not a package directory"
+            fix = (
+                f"write these {name} in {name}.yml"
+                if name in ("policies", "caveats")
+                else f"move them under {', '.join(f'{d}/' for d in sorted(_PACKAGE_ROOT_DIRS))}"
+                " or start the directory name with '_'"
+            )
+        else:
+            what = f"{os.path.join(path, name)} is not a package file"
+            yml = os.path.splitext(name)[0] + ".yml"
+            fix = (
+                f"rename it {yml}"
+                if yml in _PACKAGE_ROOT_FILES
+                else f"move its contents into {', '.join(sorted(_PACKAGE_ROOT_FILES))} or start "
+                "its name with '_'"
+            )
+        errors.append(
+            f"{what} — its YAML is ignored by the loader, so this would silently change "
+            f"behavior; {fix}"
+        )
+    return errors
+
+
 def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> dict[str, Any]:
     contents = captured.contents if captured is not None else None
 
@@ -536,17 +600,32 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
     merged.setdefault("metrics", {})
     merged.setdefault("segments", {})
 
-    for filename, key in (
-        ("defaults.yml", "defaults"),
-        ("graph.yml", "graph"),
-        ("relations.yml", "relations"),
-        ("metrics.yml", "metrics"),
-        ("segments.yml", "segments"),
-        ("policies.yml", "semantic_policies"),
-        ("caveats.yml", "semantic_caveats"),
-    ):
+    # A later definition replaces an earlier one wholesale, so each is read from one place only.
+    origins: dict[str, dict[str, str]] = {}
+    for block in _OBJECT_DIRS:
+        authored = raw.get(block)
+        origins[block] = (
+            dict.fromkeys(map(str, authored), package_path) if isinstance(authored, dict) else {}
+        )
+
+    def define(block: str, object_id: str, filename: str) -> None:
+        if first := origins[block].get(object_id):
+            errors.append(
+                f"{filename} defines {block[:-1]} {object_id!r}, which {first} also defines — "
+                f"the definition in {first} is ignored by the loader, so this would silently "
+                "change behavior; keep one definition"
+            )
+        origins[block][object_id] = filename
+
+    for filename, key in _BLOCK_FILES:
         full = os.path.join(path, filename)
         if is_file(full):
+            if raw.get(key):
+                errors.append(
+                    f"{package_path} declares {key!r}, which {full} replaces — the package.yml "
+                    "block is ignored by the loader, so this would silently change behavior; "
+                    "keep the block in one of the two files"
+                )
             doc = load(full)
             list_keys = {"semantic_policies", "semantic_caveats"}
             if key in doc:
@@ -561,6 +640,8 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                 merged[key] = list(value or [])
             else:
                 merged[key] = dict(value or {})
+            if key in origins:
+                origins[key] = dict.fromkeys(map(str, merged[key]), full)
 
     def _yaml_files(root: str) -> list[str]:
         if contents is not None:
@@ -599,6 +680,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     model.get("id") or model_key or os.path.splitext(os.path.basename(file_path))[0]
                 )
                 model["id"] = model_id
+                define("models", model_id, file_path)
                 models[model_id] = model
         merged["models"] = models
 
@@ -625,6 +707,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     or os.path.splitext(os.path.basename(file_path))[0]
                 )
                 relation["id"] = relation_id
+                define("relations", relation_id, file_path)
                 relations[relation_id] = relation
         merged["relations"] = relations
 
@@ -645,6 +728,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     ): dict(doc.get("metric", doc) or {})
                 }
             for metric_key, metric_raw in metric_docs.items():
+                define("metrics", str(metric_key), file_path)
                 metrics[str(metric_key)] = dict(metric_raw or {})
         merged["metrics"] = metrics
 
@@ -665,8 +749,11 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     ): dict(doc.get("segment", doc) or {})
                 }
             for segment_key, segment_raw in segment_docs.items():
+                define("segments", str(segment_key), file_path)
                 segments[str(segment_key)] = dict(segment_raw or {})
         merged["segments"] = segments
+
+    errors.extend(_unread_root_errors(path, contents))
     if errors:
         raise SemanticLayerError("INVALID_CONFIG", "\n".join(errors), details={"errors": errors})
     return merged
