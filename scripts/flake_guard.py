@@ -27,6 +27,8 @@ MAX_FILES = 20
 BUDGET_SECONDS = 290
 # Leave headroom above measured test durations when sizing or starting a repetition.
 FIT_MARGIN = 1.2
+# A repeated test running longer than this is hung; unit tests take about a second at most.
+TEST_TIMEOUT_SECONDS = 60
 
 
 def imported_modules(path: Path) -> set[str]:
@@ -166,6 +168,9 @@ def run_repetitions(
                 str(workers),
                 f"--flake-seed={seed}",
                 f"--junitxml={report}",
+                # A hung test fails on its own limit and ends the run, well inside the budget.
+                f"--timeout={TEST_TIMEOUT_SECONDS}",
+                "--max-worker-restart=0",
                 "-p",
                 "no:cacheprovider",
                 *files,
@@ -197,18 +202,14 @@ def run_repetitions(
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
-                if expected is None:
-                    print(
-                        "::warning::Flake guard inconclusive: 0 of 3 repetitions passed; "
-                        f"repetition 1 timed out without a duration estimate: {files}",
-                        flush=True,
-                    )
-                    return 0
+                # Each test runs under its own limit, so a repetition the budget stops was slow, not hung: like one
+                # that cannot fit, it proves nothing either way.
                 print(
-                    f"intermittent: investigate; repetition {repetition}; timed out: {files}",
+                    f"::notice::Flake guard inconclusive: {repetition - 1} of 3 repetitions passed; "
+                    f"repetition {repetition} ran out of the time budget: {files}",
                     flush=True,
                 )
-                return 1
+                return 0
             if result:
                 print(
                     f"intermittent: investigate; repetition {repetition}; "

@@ -309,53 +309,27 @@ def test_guard_repeats_three_times_but_never_retries_failure(
 
 
 @pytest.mark.parametrize(
-    "content, files, expected",
+    "content, files",
     [
-        (None, ["tests/test_sample.py"], 0),
-        ("<truncated", ["tests/test_sample.py"], 0),
-        ("<testsuite/>", ["tests/test_sample.py"], 0),
+        (None, ["tests/test_sample.py"]),
+        ("<truncated", ["tests/test_sample.py"]),
         (
             '<testsuite><testcase classname="tests.test_sample" time="10"/></testsuite>',
             ["tests/test_sample.py"],
-            1,
         ),
         (
             '<testsuite><testcase classname="tests.test_sample" time="10"/></testsuite>',
             ["tests/test_sample.py", "tests/test_missing.py"],
-            0,
-        ),
-        (
-            '<testsuite><testcase classname="tests.test_sample"/></testsuite>',
-            ["tests/test_sample.py"],
-            0,
-        ),
-        (
-            '<testsuite><testcase classname="tests.test_sample" time="invalid"/></testsuite>',
-            ["tests/test_sample.py"],
-            0,
-        ),
-        (
-            '<testsuite><testcase classname="tests.test_sample" time="nan"/></testsuite>',
-            ["tests/test_sample.py"],
-            0,
-        ),
-        (
-            '<testsuite><testcase classname="tests.test_sample" time="inf"/></testsuite>',
-            ["tests/test_sample.py"],
-            0,
-        ),
-        (
-            '<testsuite><testcase classname="tests.test_sample" time="-10"/></testsuite>',
-            ["tests/test_sample.py"],
-            0,
         ),
     ],
 )
-def test_guard_first_timeout_kills_workers_and_fails_only_with_complete_estimate(
-    monkeypatch, tmp_path, capsys, content, files, expected
+@pytest.mark.parametrize("budget_ends_in", [1, 2])
+def test_guard_budget_ending_a_repetition_kills_workers_and_passes_inconclusive(
+    monkeypatch, tmp_path, capsys, content, files, budget_ends_in
 ):
     killed = []
     calls = []
+    clock = [1000.0]
     report = tmp_path / "results.xml"
     if content is not None:
         report.write_text(content)
@@ -365,28 +339,33 @@ def test_guard_first_timeout_kills_workers_and_fails_only_with_complete_estimate
 
         def __init__(self, command, **kwargs):
             assert kwargs["start_new_session"]
+            assert f"--timeout={flake_guard.TEST_TIMEOUT_SECONDS}" in command
+            assert "--max-worker-restart=0" in command
             calls.append(command)
 
         def wait(self, timeout=None):
-            if timeout is not None:
+            if timeout is None:
+                return -9
+            if len(calls) == budget_ends_in:
+                # Every test passes its own limit, but a busy runner makes the whole run outlast the budget.
+                clock[0] += timeout
                 raise subprocess.TimeoutExpired("pytest", timeout)
-            return -9
+            clock[0] += 5.0
+            return 0
 
     monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
     monkeypatch.setattr(flake_guard.os, "killpg", lambda *args: killed.append(args))
     monkeypatch.setattr(flake_guard.os, "cpu_count", lambda: 2)
-    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: 1000.0)
-    assert flake_guard.run_repetitions(files, tmp_path, 1030, report) == expected
-    assert len(calls) == 1
+    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: clock[0])
+    assert flake_guard.run_repetitions(files, tmp_path, clock[0] + 290, report) == 0
+    assert len(calls) == budget_ends_in
     assert killed == [(123, flake_guard.signal.SIGKILL)]
     output = capsys.readouterr().out
-    if expected:
-        assert "repetition 1; timed out" in output and "tests/test_sample.py" in output
-        assert "intermittent: investigate" in output
-    else:
-        assert "::warning::Flake guard inconclusive: 0 of 3 repetitions passed" in output
-        assert "without a duration estimate" in output
-        assert "intermittent: investigate" not in output
+    assert (
+        f"::notice::Flake guard inconclusive: {budget_ends_in - 1} of 3 repetitions passed; "
+        f"repetition {budget_ends_in} ran out of the time budget: {files}"
+    ) in output
+    assert "intermittent" not in output
 
 
 def test_guard_skips_a_repetition_that_cannot_fit_and_passes_inconclusive(
@@ -413,31 +392,30 @@ def test_guard_skips_a_repetition_that_cannot_fit_and_passes_inconclusive(
     assert "intermittent" not in output
 
 
-def test_guard_still_fails_a_repetition_that_hangs(monkeypatch, tmp_path, capsys):
-    killed = []
-    clock = [1000.0]
-    calls = []
-
-    class Process:
-        pid = 123
-
-        def __init__(self, command, **kwargs):
-            calls.append(command)
-
-        def wait(self, timeout=None):
-            if len(calls) == 2 and timeout is not None:
-                clock[0] += timeout
-                raise subprocess.TimeoutExpired("pytest", timeout)
-            clock[0] += 50.0
-            return 0 if timeout is not None else -9
-
-    monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
-    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(flake_guard.os, "killpg", lambda *args: killed.append(args))
-    # Repetition 2 fits (240 s left, ~50 s expected) but hangs: that is still a failure.
-    assert flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, clock[0] + 290) == 1
-    assert killed == [(123, flake_guard.signal.SIGKILL)]
-    assert "repetition 2; timed out" in capsys.readouterr().out
+@pytest.mark.parametrize("timeout_method", ["thread", "signal"])
+def test_guard_fails_a_test_over_its_own_limit_before_the_budget_ends(
+    monkeypatch, tmp_path, capsys, timeout_method
+):
+    # Real pytest: the hung test would pass after 20 s, well inside the 60 s budget, unless its own limit stops it.
+    write_file(tmp_path, "pytest.ini", f"[pytest]\ntimeout_method = {timeout_method}\n")
+    write_file(
+        tmp_path,
+        "conftest.py",
+        "def pytest_addoption(parser):\n    parser.addoption('--flake-seed', type=int)\n",
+    )
+    write_file(
+        tmp_path,
+        "test_sample.py",
+        "import time\n\n\ndef test_quick():\n    pass\n\n\ndef test_hangs():\n    time.sleep(20)\n",
+    )
+    monkeypatch.setattr(flake_guard, "TEST_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(flake_guard.os, "cpu_count", lambda: 2)
+    started = time.monotonic()
+    assert flake_guard.run_repetitions(["test_sample.py"], tmp_path, started + 60) == 1
+    assert time.monotonic() - started < 20
+    output = capsys.readouterr().out
+    assert "intermittent: investigate; repetition 1; test_sample::test_hangs" in output
+    assert "test_quick" not in output.split("intermittent")[-1]
 
 
 def test_guard_expired_budget_and_empty_selection(monkeypatch, tmp_path):
