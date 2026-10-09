@@ -1045,6 +1045,7 @@ graph:
       label: Customer
       key: customer_id
       model: customers
+      display: name                             # the dimension that names one customer
       disallowed_names: [cust_id, custid, customerid]
     product:
       label: Product
@@ -1109,6 +1110,19 @@ warning naming the hop (`details`: `use`, `dimension`, `entity` (the versioned e
 A path that only leaves the versioned table (`customer_history → customer` here) reads one
 version per row and gets no warning. A version written moments after its event (a billing
 row, a dbt snapshot) is the usual cause of an empty group.
+
+### `display:` — the name of one row
+
+`display:` names the dimension that names one row of the entity in an answer: a key of the
+entity's own model's `dimensions:`, never its key. Anything else fails with `INVALID_CONFIG`.
+`label` names the entity type and `key` identifies a row; `display` is what a person reads.
+
+When a question groups by, lists or ranks an entity ("by customer", "which customers",
+"top 5 customers by revenue"), `plan` groups by the entity's key and its `display` dimension,
+so names that repeat stay separate rows. Without `display:`, it uses the entity's one dimension
+whose own name names it ("Store name" for "store"), if exactly one does; otherwise the key
+alone, with an assumption line saying so. A caller who can't see the display dimension gets
+the same answer as a package without `display:`; the entity itself stays visible.
 
 ### `disallowed_names:` — explicit anti-pattern guard
 

@@ -115,7 +115,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     EntityConfig: _classes(
         "id table primary_key kind relation_id key identifiers foreign_keys calendar_id "
         "allowed_as_root freshness_sla_seconds bridge",
-        text="label description freshness_source freshness_as_of",
+        text="label description freshness_source freshness_as_of display",
         texts="key_roles foreign_key_roles topics disallowed_names",
         identity="name aliases",
     ),
@@ -300,8 +300,14 @@ def _declared_references(config: PackageConfig) -> dict[str, frozenset[str]]:
     analysis = get_package_analysis(config)
     if analysis.declared_references is None:
         ids = {row.id for row in _rows(config)}
+        # An entity's display only names a dimension shown beside its key: hiding that
+        # dimension blanks the display (a text field), never the entity.
         analysis.declared_references = {
-            row.id: frozenset(_strings(row)) & ids - {row.id} for row in _rows(config)
+            row.id: frozenset(
+                _strings(replace(row, display="") if isinstance(row, EntityConfig) else row)
+            )
+            & ids - {row.id}
+            for row in _rows(config)
         }
     return analysis.declared_references
 

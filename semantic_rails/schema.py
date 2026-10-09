@@ -102,6 +102,8 @@ class EntityConfig:
     disallowed_names: list[str] = field(default_factory=list)
     # The model authors `entities: {bridge: true}`: a declared link table routes may pass through.
     bridge: bool = False
+    # The dimension (on the entity's own model, not its key) that names one row in an answer.
+    display: str = ""
 
 
 @dataclass(frozen=True)
