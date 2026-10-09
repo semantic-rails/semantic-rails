@@ -25,19 +25,23 @@ from semantic_rails.expressions import (
 from semantic_rails.registry import Registry
 from semantic_rails.sql_ast import SqlBinary, SqlLiteral
 
+ORDERS = {"kind": "measure", "measure": "measure.jaffle.order_count"}
 
-def _comparison_dict(threshold: int = 10) -> dict:
+
+def _comparison_dict(threshold: int = 10, orders: object = ORDERS) -> dict:
+    """``orders > threshold``; the engine's own form unless a call's reference is given."""
     return {
         "kind": "comparison",
         "op": ">",
-        "left": {"measure": "measure.jaffle.order_count"},
+        "left": orders,
         "right": {"kind": "literal", "value": threshold},
     }
 
 
 def _not_query(threshold: int = 10) -> dict:
+    """The engine's own form: a post-aggregation filter on a boolean expression."""
     return {
-        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+        "select": [{"expression": ORDERS, "as": "orders"}],
         "group_by": ["dimension.jaffle_store_name"],
         "metric_filters": [
             {
@@ -212,8 +216,7 @@ def test_metric_filter_not_executes_as_complement(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         base = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
             "group_by": ["dimension.jaffle_store_name"],
         }
         unfiltered = runtime.query(base)
@@ -224,13 +227,15 @@ def test_metric_filter_not_executes_as_complement(runtime_factory):
         threshold = min(counts.values())
 
         def _query(negate: bool) -> dict:
-            comparison = _comparison_dict(threshold)
+            comparison = _comparison_dict(threshold, "measure.jaffle.order_count")
             expression = (
                 {"kind": "boolean", "op": "not", "args": [comparison]} if negate else comparison
             )
-            payload = dict(base)
-            payload["metric_filters"] = [{"expression": expression, "op": "=", "value": True}]
-            return payload
+            return {
+                **base,
+                "select": [*base["select"], {"expression": expression, "as": "kept"}],
+                "having": [{"field": "kept", "op": "is", "value": True}],
+            }
 
         negated = runtime.query(_query(negate=True))
         positive = runtime.query(_query(negate=False))
