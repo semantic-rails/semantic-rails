@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from semantic_rails.ast import PERIOD_PARTIAL
 from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
@@ -1121,8 +1122,13 @@ def _answer(backend: Backend, case: Case) -> list[tuple[Any, ...]]:
             return date.fromisoformat(value)
         return value
 
+    # The reference SQL computes values; a series' period_partial flag has tests of its own.
     return [
-        tuple(typed(value, result["column_types"][key]["type"]) for key, value in row.items())
+        tuple(
+            typed(value, result["column_types"][key]["type"])
+            for key, value in row.items()
+            if key != PERIOD_PARTIAL
+        )
         for row in result["rows"]
     ]
 

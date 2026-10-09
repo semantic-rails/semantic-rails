@@ -25,6 +25,7 @@ from decimal import Context, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .ast import PERIOD_PARTIAL
 from .cache import package_fingerprint
 from .config import load_package_config, package_root_for_source, resolve_repo_path
 from .config_validation import (
@@ -1217,6 +1218,12 @@ def _run_test(
         encoded_expected = result_rows(
             expected_rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
         )
+        # A snapshot that leaves out a series' period_partial flag is compared without it.
+        if not any(PERIOD_PARTIAL in row for row in expected_rows):
+            shown = [
+                {k: v for k, v in row.items() if k != PERIOD_PARTIAL} for row in result["rows"]
+            ]
+            result = {**result, "rows": shown}
         actual_rows = _typed_rows(result)
         ok = actual_rows == _typed_rows(encoded_expected)
         return _test_result(

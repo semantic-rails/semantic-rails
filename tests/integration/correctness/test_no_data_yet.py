@@ -309,7 +309,7 @@ def test_a_row_filtered_week_after_the_callers_data_reads_no_data_yet(sparse_run
         query = _query(start="2026-09-28", end="2026-10-05")
         query["select"][0]["expression"] = _counting_callers_but("never")
         result = rt.query(query, context=_caller(caller), now=NOW)
-        assert result["rows"] == [{"period": "2026-09-28", "value": None}]
+        assert result["rows"] == [{"period": "2026-09-28", "period_partial": False, "value": None}]
         assert result["window"]["data_through"] == f"2026-09-{day}"
         assert _warning(result)["details"]["measures"] == [
             {"id": MEASURE, "edge": f"2026-09-{week}", "edge_source": "last_bucket"}

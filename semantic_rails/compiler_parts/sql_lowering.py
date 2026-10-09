@@ -1192,7 +1192,10 @@ def _anchored_entity_set_plan(
         return None
     if len(plan.post_aggregation_exprs) != 1:
         return None
-    if plan.query.get("metric_filters") or (plan.time and plan.time.get("fill")):
+    # An explicit fill has no anchored form; a named window keeps the periods with rows here.
+    if plan.query.get("metric_filters") or (
+        plan.time and plan.time.get("fill") and not _window_is_named(plan.time)
+    ):
         return None
 
     output_alias, expr_payload = next(iter(plan.post_aggregation_exprs.items()))

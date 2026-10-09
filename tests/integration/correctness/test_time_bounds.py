@@ -396,11 +396,15 @@ def test_contextual_predicate_period_join_refuses_timezone_conversion(
         assert caught.value.details["path"] == "predicate_period_join"
         return
     within = "source_day >= DATE '2024-06-30' AND source_day <= DATE '2024-07-01'"
+    # The named window answers both its days: June 30 is before the first row, and a day no
+    # edge qualifies on holds no value of the filtered population.
     expected = backend.reference(
-        f"SELECT CAST(source_day AS TIMESTAMP), SUM(amount) FROM clock_edges WHERE {within} "
-        f"AND (id, source_day) IN (SELECT id, source_day FROM clock_edges WHERE {within} "
-        f"GROUP BY id, source_day HAVING SUM(amount) >= {threshold}) GROUP BY 1"
+        "SELECT g.d, SUM(c.amount) FROM generate_series(TIMESTAMP '2024-06-30', "
+        "TIMESTAMP '2024-07-01', INTERVAL '1 day') AS g(d) LEFT JOIN clock_edges AS c "
+        f"ON CAST(c.source_day AS TIMESTAMP) = g.d AND (c.id, c.source_day) IN ("
+        f"SELECT id, source_day FROM clock_edges WHERE {within} "
+        f"GROUP BY id, source_day HAVING SUM(amount) >= {threshold}) GROUP BY 1 ORDER BY 1"
     )
-    assert [row[1] for row in expected] == ([10] if threshold == 1 else [])
+    assert [row[1] for row in expected] == ([None, 10] if threshold == 1 else [None, None])
     result = runtime.query(query)
     _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], f">= {threshold}")

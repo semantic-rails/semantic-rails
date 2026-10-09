@@ -304,7 +304,7 @@ tests:
   shop/window-predicate-follows-a-pinned-close-clock:
     kind: query_matches_snapshot
     expect: answer
-    why: Customer 102 signed up and ordered within the window but closed the order after it; the pinned close clock keeps no signups.
+    why: 'Customer 102 signed up and ordered within the window but closed the order after it, so the pinned close clock keeps no customer: each day of the named window reads NULL, as nothing in the filtered population holds a signup (no data in scope).'
     cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
     tags: [time-window, clock]
     query:
@@ -314,12 +314,26 @@ tests:
         - entity: entity.shop_customer
           having: [{field: metric.shop.closed_orders, op: gte, value: 1}]
           over: window
-    expected_rows: []
+    expected_rows:
+      - {period: '2023-11-13', signups: null}
+      - {period: '2023-11-14', signups: null}
+      - {period: '2023-11-15', signups: null}
+      - {period: '2023-11-16', signups: null}
+      - {period: '2023-11-17', signups: null}
+      - {period: '2023-11-18', signups: null}
+      - {period: '2023-11-19', signups: null}
+      - {period: '2023-11-20', signups: null}
     reference_sql: |
-      SELECT date_trunc('day', s.signed_up_at), COUNT(*) FROM signups s
-      WHERE s.signed_up_at >= TIMESTAMP '2023-11-13' AND s.signed_up_at < TIMESTAMP '2023-11-21'
-        AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = s.customer_id
-          AND o.closed_at >= TIMESTAMP '2023-11-13' AND o.closed_at < TIMESTAMP '2023-11-21')
+      WITH kept AS (
+        SELECT s.* FROM signups s
+        WHERE s.signed_up_at >= TIMESTAMP '2023-11-13' AND s.signed_up_at < TIMESTAMP '2023-11-21'
+          AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = s.customer_id
+            AND o.closed_at >= TIMESTAMP '2023-11-13' AND o.closed_at < TIMESTAMP '2023-11-21')
+      )
+      SELECT g.d, CASE WHEN COUNT(k.customer_id) > 0 THEN COUNT(k.customer_id)
+        WHEN (SELECT COUNT(*) FROM kept) > 0 THEN 0 END
+      FROM generate_series(TIMESTAMP '2023-11-13', TIMESTAMP '2023-11-20', INTERVAL '1 day') AS g(d)
+      LEFT JOIN kept AS k ON date_trunc('day', k.signed_up_at) = g.d
       GROUP BY 1
   shop/history-key-groups-use-the-version-valid-at-order-time:
     kind: query_matches_snapshot
