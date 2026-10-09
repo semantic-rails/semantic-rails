@@ -95,6 +95,7 @@ def _query_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "assumptions",
         "warnings",
         "compose_hints",
+        "parts",
     ):
         if key in payload:
             out[key] = payload[key]

@@ -28,7 +28,6 @@ def _write_variant_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "variant_demo",
                 "name": "variant_demo",
                 "description": "Physical variant routing demo",
@@ -313,7 +312,6 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
                 "warehouse": "duckdb",
                 "default_db": "x.duckdb",
                 "seed": {"kind": "external"},
-                "schema_strict": True,
             },
             "defaults": {"time": {"timezone": "UTC"}},
         },
@@ -328,7 +326,9 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
     if overrides.get("fiscal_calendar") or overrides.get("fact_days"):  # quarters start in Feb
         entities["fiscal"] = {"kind": "time", "key": ["date_day"], "model": "fiscal_days"}
         day = {"column": "date_day", "kind": "date", "class": "calendar_time"}
-        calendar = {"id": "fiscal_days", "relation": "fiscal_days", "calendar_id": "fiscal"}
+        # A fact model's days bucket on the default calendar; fiscal ones are refused.
+        calendar_id = "fiscal" if overrides.get("fiscal_calendar") else "default"
+        calendar = {"id": "fiscal_days", "relation": "fiscal_days", "calendar_id": calendar_id}
         calendar |= {"entities": {"fiscal": {}}, "times": {"date_day": day}}
         calendar["dimensions"] = {"quarter_start": {"kind": "date"}}
         _write_yaml(package_dir / "models" / "fiscal_days.yml", {"model": calendar})
@@ -589,12 +589,6 @@ _SHIP_TO_KEY = {
             _rollup_query(_REVENUE, "sum", "month"),
             "timezone_mismatch",
             id="role-converts-timezone",
-        ),
-        pytest.param(
-            ({"monthly": _MONTHLY}, {"fiscal_calendar": True}),
-            _rollup_query(_REVENUE, "sum", "quarter", calendar_id="fiscal", fill=True),
-            "calendar_mismatch",
-            id="non-default-calendar",
         ),
         pytest.param(
             ({"weekly": _WEEKLY},),
@@ -959,6 +953,15 @@ def test_rollup_routing_matches_base_tables(
     assert _decisions(routing) == {f"leaf_1:{relation}": reason or "selected"}
 
 
+def test_a_non_default_calendar_refuses_before_routing(tmp_path: Path) -> None:
+    query = _rollup_query(_REVENUE, "sum", "quarter", calendar_id="fiscal", fill=True)
+    with pytest.raises(SemanticLayerError) as refused:
+        _routed_answers(tmp_path, ({"monthly": _MONTHLY}, {"fiscal_calendar": True}), query)
+
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["reason"] == "calendar_not_supported_yet"
+
+
 @pytest.mark.parametrize(
     ("rollups", "query", "decisions"),
     [
@@ -1061,16 +1064,17 @@ def test_noncanonical_rollups_are_refused(tmp_path: Path, single_file, location,
         _write_yaml(source, raw)
     else:
         source = package
+        # graph.yml keeps the graph; package.yml declaring it too would be refused.
         _write_yaml(
-            package / "package.yml", {key: value for key, value in raw.items() if key != "models"}
+            package / "package.yml",
+            {key: value for key, value in raw.items() if key not in ("models", "graph")},
         )
         _write_yaml(package / "models" / "orders.yml", {"model": raw["models"]["orders"]})
     with pytest.raises(SemanticLayerError, match=re.escape(error)) as exc:
         load_package_config(str(source))
     assert exc.value.code == "INVALID_CONFIG"
     if "default_variant" in fields:
-        assert "model 'orders'" in str(exc.value)
-        assert "['default_variant']" in str(exc.value)
+        assert "model 'orders' has unknown key 'default_variant'" in str(exc.value)
 
 
 def test_routing_report_caps_its_rows(tmp_path: Path, monkeypatch):

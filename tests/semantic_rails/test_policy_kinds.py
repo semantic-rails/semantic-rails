@@ -65,16 +65,11 @@ def starter():
     raw = yaml.safe_load(
         Path("configs/examples/semantic_rails_package_starter.yml").read_text(encoding="utf-8")
     )
-    # Default mode must not auto-publish duplicates of the explicit metrics.
-    for model in raw["models"].values():
-        for measure in model.get("measures", {}).values():
-            measure["publish"] = False
     return raw
 
 
-def write_policy_package(tmp_path, starter, strict, kind, action, location="action", **fields):
+def write_policy_package(tmp_path, starter, kind, action, location="action", **fields):
     raw = deepcopy(starter)
-    raw["package"]["schema_strict"] = strict
     policy = {"id": "policy.test", "kind": kind, **fields}
     if location == "action":
         if kind != "row_filter" or action:
@@ -94,12 +89,9 @@ def write_policy_package(tmp_path, starter, strict, kind, action, location="acti
     return path
 
 
-@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize(("kind", "action", "problem"), INVALID_POLICIES)
-def test_package_validation_rejects_invalid_policies(
-    tmp_path, starter, strict, kind, action, problem
-):
-    path = write_policy_package(tmp_path, starter, strict, kind, action)
+def test_package_validation_rejects_invalid_policies(tmp_path, starter, kind, action, problem):
+    path = write_policy_package(tmp_path, starter, kind, action)
     errors = validate_runtime_package(path)
     assert any(problem in error and "policy.test" in error for error in errors), errors
     with pytest.raises(SemanticLayerError) as exc:
@@ -107,10 +99,9 @@ def test_package_validation_rejects_invalid_policies(
     assert exc.value.code == "INVALID_CONFIG"
 
 
-@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize(("kind", "action"), VALID_POLICIES)
-def test_valid_policy_kinds_and_actions_load(tmp_path, starter, strict, kind, action):
-    path = write_policy_package(tmp_path, starter, strict, kind, action)
+def test_valid_policy_kinds_and_actions_load(tmp_path, starter, kind, action):
+    path = write_policy_package(tmp_path, starter, kind, action)
     assert validate_runtime_package(path) == []
     assert load_package_config(str(path)).semantic_policies[0].kind == kind
 
@@ -118,9 +109,7 @@ def test_valid_policy_kinds_and_actions_load(tmp_path, starter, strict, kind, ac
 @pytest.mark.parametrize("field", ["action", "visibility"])
 @pytest.mark.parametrize("action", ["hidden", "block"])
 def test_nested_policy_actions_are_refused(tmp_path, starter, field, action):
-    path = write_policy_package(
-        tmp_path, starter, False, "object_visibility", "", config={field: action}
-    )
+    path = write_policy_package(tmp_path, starter, "object_visibility", "", config={field: action})
     errors = validate_runtime_package(path)
     assert any("unknown key 'config'" in error for error in errors), errors
 
@@ -137,18 +126,15 @@ CLOSED_POLICY_KEYS = [
 ]
 
 
-@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize("scoped", [False, True])
 @pytest.mark.parametrize(("kind", "action", "fields", "key"), CLOSED_POLICY_KEYS)
-def test_policy_keys_are_closed_at_load(
-    tmp_path, starter, strict, scoped, kind, action, fields, key
-):
+def test_policy_keys_are_closed_at_load(tmp_path, starter, scoped, kind, action, fields, key):
     scope = (
         {"audiences": ["external"], "roles": ["sales"], "environments": ["production"]}
         if scoped
         else {}
     )
-    path = write_policy_package(tmp_path, starter, strict, kind, action, **scope, **fields)
+    path = write_policy_package(tmp_path, starter, kind, action, **scope, **fields)
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
@@ -207,17 +193,14 @@ def test_release_labels_preserve_absent_and_empty_values(tmp_path, starter, fiel
 
 
 def test_flat_release_label_and_rank_limit(tmp_path, starter):
-    path = write_policy_package(tmp_path, starter, True, "package_release", "")
+    path = write_policy_package(tmp_path, starter, "package_release", "")
     assert package_release_labels(load_package_config(str(path))) == ["stable"]
-    path = write_policy_package(
-        tmp_path, starter, True, "object_access", "withhold_values", max_rank=3
-    )
+    path = write_policy_package(tmp_path, starter, "object_access", "withhold_values", max_rank=3)
     assert withheld_max_rank(load_package_config(str(path)).semantic_policies[0]) == 3
 
 
-@pytest.mark.parametrize("strict", [False, True])
-def test_redact_is_refused_with_upgrade_hint(tmp_path, starter, strict):
-    path = write_policy_package(tmp_path, starter, strict, "object_access", "redact")
+def test_redact_is_refused_with_upgrade_hint(tmp_path, starter):
+    path = write_policy_package(tmp_path, starter, "object_access", "redact")
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
@@ -249,24 +232,21 @@ def test_bundled_access_policy_refuses_external_and_allows_internal():
         engine.close()
 
 
-@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize(("kind", "action", "problem"), INVALID_POLICIES[:3])
-def test_directory_package_rejects_invalid_policy(tmp_path, starter, strict, kind, action, problem):
+def test_directory_package_rejects_invalid_policy(tmp_path, starter, kind, action, problem):
     path = tmp_path / "shop_starter"
     path.mkdir()
-    package_file = write_policy_package(path, starter, strict, "object_visibility", "hidden")
+    package_file = write_policy_package(path, starter, "object_visibility", "hidden")
     raw = yaml.safe_load(package_file.read_text(encoding="utf-8"))
     graph = raw.pop("graph")
     models = raw.pop("models")
+    # policies.yml holds the policies below; package.yml declaring them too would be refused.
+    raw.pop("semantic_policies")
     for spec in graph["entities"].values():
-        spec["model"] = next(
-            key for key, model in models.items() if model["grain"] == [spec["key"]]
-        )
         spec["key"] = [spec["key"]]
     (path / "graph.yml").write_text(yaml.safe_dump({"graph": graph}), encoding="utf-8")
     (path / "models").mkdir()
     for key, model in models.items():
-        model.pop("grain")
         (path / "models" / f"{key}.yml").write_text(
             yaml.safe_dump({"model": {"id": key, **model}}), encoding="utf-8"
         )
@@ -361,13 +341,10 @@ MALFORMED_VISIBLE_ONLY = {
 }
 
 
-@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize("name", MALFORMED_VISIBLE_ONLY)
-def test_malformed_visible_only_policies_are_refused(tmp_path, starter, strict, name):
+def test_malformed_visible_only_policies_are_refused(tmp_path, starter, name):
     fields, problem = MALFORMED_VISIBLE_ONLY[name]
-    path = write_policy_package(
-        tmp_path, starter, strict, "object_visibility", "visible_only", **fields
-    )
+    path = write_policy_package(tmp_path, starter, "object_visibility", "visible_only", **fields)
     errors = validate_runtime_package(path)
     assert any(problem in error and "policy.test" in error for error in errors), errors
     with pytest.raises(SemanticLayerError, match=problem) as exc:
@@ -380,7 +357,7 @@ def test_malformed_visible_only_policies_are_refused(tmp_path, starter, strict, 
 def test_flat_visible_only_loads_and_nested_refuses(tmp_path, starter, location, scope):
     fields = {"object_ids": VISIBLE_ONLY["object_ids"], **scope}
     path = write_policy_package(
-        tmp_path, starter, True, "object_visibility", "visible_only", location, **fields
+        tmp_path, starter, "object_visibility", "visible_only", location, **fields
     )
     if location != "action":
         with pytest.raises(SemanticLayerError, match="unknown key 'config'"):

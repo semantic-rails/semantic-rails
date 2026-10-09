@@ -22,9 +22,29 @@ from .schema import PackageConfig, require_boolean_mnpi_package
 
 _SOURCE_SUFFIXES = (".yml", ".yaml", ".json", ".toml")
 _SOURCE_EXCLUDED_DIRS = {".git", ".pytest_cache", ".uv-cache", "__pycache__", ".compiled"}
+# The package directories the loader and the package tools read YAML from.
+PACKAGE_SOURCE_DIRS = frozenset({"models", "relations", "metrics", "segments", "examples", "tests"})
 
 
-def _source_files(path: str) -> list[str]:
+def links_package_input(root: str, link: str) -> bool:
+    """Whether the directory symlink ``link`` (relative to ``root``), which nothing follows,
+    could hide package input: it is or sits under a directory the package reads, or its tree
+    holds a YAML file, a directory symlink or a directory it can't read. A link to a folder of
+    data files hides none."""
+    if Path(link).parts[0] in PACKAGE_SOURCE_DIRS:
+        return True
+    unreadable: list[OSError] = []
+    for parent, dirnames, filenames in os.walk(os.path.join(root, link), onerror=unreadable.append):
+        if any(name.lower().endswith((".yml", ".yaml")) for name in filenames) or any(
+            os.path.islink(os.path.join(parent, name)) for name in dirnames
+        ):
+            return True
+    return bool(unreadable)
+
+
+def _source_files(path: str, links: list[str] | None = None) -> list[str]:
+    """The source files under ``path``; directory symlinks the walk skips that could hide
+    package input go into ``links``."""
     if os.path.isfile(path):
         # Single-file packages execute sibling examples/tests just like directory
         # packages. Bind those inputs too, without absorbing unrelated packages.
@@ -43,6 +63,13 @@ def _source_files(path: str) -> list[str]:
     files: list[str] = []
     for root, dirs, names in os.walk(path):
         dirs[:] = sorted(name for name in dirs if name not in _SOURCE_EXCLUDED_DIRS)
+        if links is not None:
+            links.extend(
+                os.path.join(root, name)
+                for name in dirs
+                if os.path.islink(os.path.join(root, name))
+                and links_package_input(path, os.path.relpath(os.path.join(root, name), path))
+            )
         files.extend(os.path.join(root, name) for name in names if name.endswith(_SOURCE_SUFFIXES))
     return sorted(files)
 
@@ -52,6 +79,9 @@ class CapturedSource:
     source_path: str
     is_directory: bool
     files: tuple[tuple[str, bytes], ...] = field(repr=False)
+    # Directory symlinks inside a directory package that could hide package input, relative to
+    # it; the walk never follows them.
+    directory_links: tuple[str, ...] = ()
 
     @property
     def fingerprint(self) -> str:
@@ -62,6 +92,8 @@ class CapturedSource:
             digest.update(encoded_name)
             digest.update(len(data).to_bytes(8, "big"))
             digest.update(data)
+        for name in self.directory_links:
+            digest.update(b"directory-link\0" + name.encode("utf-8") + b"\0")
         return digest.hexdigest()
 
     @property
@@ -87,17 +119,19 @@ def capture_package_source(path: str | Path) -> CapturedSource:
         raise SemanticLayerError("INVALID_CONFIG", f"Package source '{source}' does not exist")
     root = source if directory else os.path.dirname(source)
 
-    def read() -> tuple[tuple[str, bytes], ...]:
-        return tuple(
+    def read() -> tuple[tuple[tuple[str, bytes], ...], tuple[str, ...]]:
+        links: list[str] = []
+        files = tuple(
             (Path(name).relative_to(root).as_posix(), Path(name).read_bytes())
-            for name in _source_files(source)
+            for name in _source_files(source, links if directory else None)
         )
+        return files, tuple(sorted(Path(name).relative_to(root).as_posix() for name in links))
 
     for _ in range(3):
         try:
             first = read()
             if first == read():
-                return CapturedSource(source, directory, first)
+                return CapturedSource(source, directory, *first)
         except FileNotFoundError:
             continue
     raise SemanticLayerError(
@@ -194,6 +228,7 @@ def load_package_snapshot(path: str | Path | LoadedPackageSnapshot) -> LoadedPac
         return path
     # Parser dependencies remain one-way at module import time.
     from .config import _load_package_source, _parse_package, normalize_package
+    from .config_parts.shape_checks import authoring_errors
 
     source = capture_package_source(path)
     authored = _load_package_source(source.source_path, captured=source)
@@ -202,6 +237,9 @@ def load_package_snapshot(path: str | Path | LoadedPackageSnapshot) -> LoadedPac
         raise SemanticLayerError(
             "INVALID_CONFIG", f"{source.source_path}: schema_version must be 1 (got {version!r})"
         )
+    # Every file-based load runs the authoring check validate-config reports.
+    if errors := authoring_errors(authored, path_label=source.source_path):
+        raise SemanticLayerError("INVALID_CONFIG", "\n".join(errors), details={"errors": errors})
     normalized = normalize_package(deepcopy(authored))
     config = _parse_package(deepcopy(normalized), path=source.source_path)
     semantic = semantic_payload(config)

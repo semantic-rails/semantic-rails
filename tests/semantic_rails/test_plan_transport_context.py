@@ -124,8 +124,9 @@ def test_authenticated_plan_queries_round_trip_to_compile(governed_app, transpor
     status, plan = _call(governed_app, transport, "plan", arguments)
     assert status == 200
     assert plan["ok"] is True
-    assert_plan_held(plan, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-    assert plan["best"]["validation_ok"] is False
+    assert plan["status"] == "ok"
+    assert plan["best"]["pattern"] == "package_example"
+    assert plan["best"]["validation_ok"] is True
     assert plan["request_context"]["tenant"] == "planner-tenant"
     queries = _query_irs(plan)
     assert queries
@@ -134,8 +135,8 @@ def test_authenticated_plan_queries_round_trip_to_compile(governed_app, transpor
             not {"policy_context", "request_context", "request_id", "intent", "detail"}
             & query.keys()
         )
-    # Author the intended grouping before independently testing compile and its policy.
-    query = {**plan["best"]["query_ir"], "group_by": ["dimension.jaffle_store_name"]}
+    # The authored answer remains portable and governed at compile time.
+    query = plan["best"]["query_ir"]
     if partial:
         assert query["limit"] == 17  # The planner's alternative cap is not a query limit.
 

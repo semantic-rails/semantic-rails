@@ -117,7 +117,19 @@ tool/schema drift cannot be merged silently.
 - `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values.
-- `plan`: draft Query IR from a natural-language question.
+- `plan`: draft Query IR from a natural-language question. A fully matched
+  package example uses its validated authored query (`best.pattern:
+  package_example`), including its groupings, filters and limit. An example
+  answers only its exact question: case and whitespace aside (and the
+  contractions `plan` expands in every question), any other wording, including
+  punctuation, plurals, numbers, signs, symbols, a different top-N count or
+  another date or time phrase, gets normal planning. Multiple
+  valid visible matches return
+  `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
+  `why.details.example_ids`. Invalid examples fall through with
+  `why.details.invalid_examples`; an example that reads a hidden object is
+  invalid for that caller, as in a package without the object.
+  Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
@@ -252,12 +264,58 @@ query detail keeps them self-contained because it omits the trace.
 Other exact repeats use `{"$ref": "best.resolved.0"}` or a `best.query_ir` field path;
 follow the dot-separated path from the response root (numbers index arrays).
 
+#### Questions that ask several things
+
+When one draft can't answer a question that asks several things ("Last week, how many accounts
+signed up, and what was the MRR?" needs two clocks), `plan` splits it at a top-level clause
+boundary: ", and", "," or "and" immediately before a wh-word or "how many" / "how much". A
+leading phrase that asks nothing ("Last week, …") belongs to every part; nothing else is shared.
+A grouping list ("by plan and region") and quoted text are never split, and a question one
+draft answers, such as subjects the conjoined pattern selects in one query ("New accounts and
+closures last week"), keeps its one draft. `plan` splits only when the caller's `query` carries
+nothing but request context.
+
+The payload then carries `parts: [{text, spans, status, best, why, assumptions, warnings}]`:
+each part is planned on its own words exactly like a question of its own, and `spans` are the
+offsets in `intent` of the shared phrase and the part's clause. The top-level `status` is `ok`
+only when every part is `ok`. Otherwise it is the weakest part's status (`needs_clarification`,
+then `low_confidence`, `unrealizable`, `out_of_scope`), and `why.code="PLAN_PARTS_NOT_READY"`
+lists the parts not ready in `why.details.parts`. Every part's warnings are top-level warnings
+too. `best` and `intent_ir` are the first part's, for clients that read only `best`;
+`detail="query"` returns every part's `best.query_ir`. Execute each part's query and report
+each answer.
+
+`plan` doesn't plan the parts when it can't read each one alone. It keeps the whole question's
+draft, `low_confidence`, with `why.code="PLAN_PARTS_HELD"`, the parts listed as `{text, spans}`,
+the whole question's own hold (such as `multiple_questions_unrealized`) in
+`why.details.question_why`, that draft's gaps in `why.details.gaps` as for a single question
+(such as `governed_metric_unrealized` naming the metric for a part's measure), and the parts
+concerned in `why.details.parts`. `why.details.reason`
+is one of:
+
+- `too_many_parts`: more than four parts;
+- `dependent_part`: a part points back at another ("…, and what share of those closed?", "…,
+  and how much of that came from new accounts?");
+- `part_without_subject`: a part names nothing to measure ("…, and how many?");
+- `part_without_window`: some parts state a time window and others don't, so a trailing "last
+  week" may be meant for every part;
+- `part_without_grouping`: the parts don't all state the same grouping ("by plan", "per plan",
+  "for each plan", "monthly", "over time"): some state one and others don't, or they state
+  different ones, so a trailing "per plan" may be meant for every part. A leading "Monthly, …"
+  doesn't settle which grouping a part meant;
+- `part_filters_differ`: the planned parts filter their rows differently, so a filter one part
+  states may be meant for every part.
+
+Ask such parts one at a time, each naming what it measures, its filters and its window.
+
 A draft that validates can still leave out part of the question. `plan` returns
 `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
 
 - doesn't use a metric the question names by its label, an alias or its id, when that name
   has two words or more and holds every measure the question names ("completed revenue"
-  holds "revenue") (`named_metric_unrealized`). `plan` drafts that metric itself, and the
+  holds "revenue"), apart from a measure named only with words of the metric's own label,
+  aliases or id ("accounts" beside an alias "moved to a bigger plan" of "Accounts that
+  upgraded") (`named_metric_unrealized`). `plan` drafts that metric itself, and the
   metric's own name isn't read again as a window, a ranking or a value;
 - answers with a measure, or the metric that is its plain aggregate, while a metric that
   reads the same measure through a filter fits the question (`governed_metric_unrealized`,
@@ -265,13 +323,19 @@ A draft that validates can still leave out part of the question. `plan` returns
   relative clauses such as "stores that were active last week". It fits when the question
   holds every word of its label (with or without a parenthetical), an alias or its id, in any order and
   with plurals as singulars, or when the measure is a [building
-  block](PACKAGE_AUTHORING.md#building-block-measures). Under `schema_strict`, a measure
-  authored `publish: false` that no metric aggregates whole is not offered to agents:
+  block](PACKAGE_AUTHORING.md#building-block-measures). A measure authored
+  `publish: false` that no metric aggregates whole is not offered to agents:
   `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query.select`
   names it by id; no other part of the request names it. When a metric reads the measure
   through a filter, it is a building block: `plan` answers with the metric when it is the only
-  one that filters the measure or the question names it, and otherwise holds the draft. Without
-  `schema_strict`, the flag also suppresses auto-publishing a metric of the measure's own name.
+  one that filters the measure or the question names it, and otherwise holds the draft. That
+  swap applies to every single-subject draft, whichever pattern or fallback drafted it, when
+  the metric is one aggregate of the measure through a filter, bare or inside
+  `COALESCE(<aggregate>, 0)`, and the draft has no time block (the metric is read over all
+  time) or one on the metric's clock; never to a caller's `select`. A part of a compound
+  question and a semi-additive measure swap only to the bare form (for a semi-additive
+  measure, a plain aggregate with a `filter`, not a `scoped_aggregate`), and a compound part
+  only on the metric's clock.
   When the question names no governing metric, a published measure is
   still held while a visible metric narrows its rows: an aggregate in that metric, over this
   measure or another one, filters on a dimension of the measure's entity ("New teams" counts
@@ -327,8 +391,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   scopes do not prove an outer filter's result. Grouping does not cure an uncertain filter.
   Without grouping by the field, the draft returns one total, so its filter must keep only
   values the question names: "revenue for Brooklyn" filtered to Brooklyn and Philadelphia
-  is a gap, while "revenue for Brooklyn and Philadelphia" is not. An exclusion must drop
-  only values the question names, with or without grouping;
+  is a gap, while "revenue for Brooklyn and Philadelphia" is not. Values an exclusion names
+  follow the exclusion rule below;
 - combines top-level filters on one field so no value can survive, which returns no rows
   (`contradictory_filters`);
 - misses a negation, a prior-period comparison ("vs prior fiscal quarter" included) or one of
@@ -384,9 +448,35 @@ A draft that validates can still leave out part of the question. `plan` returns
   the `PLAN_UNMATCHED_TERMS` checks below included, so it holds only a draft nothing else
   holds.
 
-When a question has several exclusion clauses, `plan` checks each clause. A
-negative filter for one value does not make a later excluded value safe if the
-draft includes it.
+`plan` doesn't answer questions that exclude values yet. An exclusion ("excluding", "except",
+"without", "not", "but not", "other than", "apart from", "aside from", "minus", "outside of",
+"all stores but") holds whatever the draft carries, the caller's `partial_query` included: each
+clause is one gap, `negation_reversed` when a top-level `=` or `IN` filter keeps a value the
+clause names, otherwise `negation_unrealized`. Its recovery hint (`ask_for_breakdown`) suggests
+asking for the breakdown by the excluded dimension instead ("signups by channel"), which shows
+each value and the rows with no recorded value; listing the values to keep would drop those
+rows. A time phrase inside an exclusion ("signups not in June 2024") is never read as the
+question's window.
+
+An exclusion keeps rows with no recorded value, so its executable form is one top-level `where`
+filter per excluded value, `{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`: "signups
+excluding web" counts the signups with no channel, which `!=` and `NOT IN` drop. The held
+draft uses that form, and a hand-written Query IR with it still runs through `execute`.
+
+The gap's `expected.items` lists what the clause names, each with its `kind`: a declared value
+name (its value, label or alias, in double quotes or none) with its `field` and `value`, a
+time phrase, or `unknown` for any other word in an item's place. Commas, semicolons, slashes,
+"&", "and", "or", "nor", "plus", "as well as", "along with", "alongside", "together with",
+dashes, line breaks and brackets separate items; a separator inside a declared name ("Click &
+Collect") doesn't split it. The list ends at the first word that is neither; every other
+character up to that word is an `unknown` item, except the question's final `.`, `?` or `!`.
+The first time phrase after the list with only words between is the question's window
+("signups excluding web in June 2024"); any other value, quoted or time mention before the
+next exclusion, an "including" or the question's end is an `unknown` item. When an exclusion
+word or an "including" falls inside a quoted string or a declared value name ("Including
+Top", "All but Web"), or an exclusion word inside a grouping phrase ("revenue by store
+excluding Brooklyn"), the whole question is one `unknown` item. An excluded value named "Top"
+is never read as a ranking.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),
@@ -553,7 +643,34 @@ qualifies it ("year 2017", "the calendar year 2017"; "financial year 2017" and "
 are not calendar years and are reported), consecutive years, a quarter or half with a year ("the first half
 of 2017", "H2 2017"), a month or month range with a year, days with a year ("March 1 to March
 31, 2017", "Mar 1 - Mar 31 2017"), an ISO date or ISO range ("2017-03-01 to 2017-03-31"), or a
-relative window ("last 7 days"). A range's spoken end is included: the response's
+relative window ("last 7 days"). A single named month, quarter or half without a year
+("in September", "Q3", "the first half") uses the latest such period starting on or before
+`policy_context.now` (the package's time zone, or UTC), and `assumptions` names the year.
+Without a day, every month name needs a scoping word ("in", "for", "during", "on" or
+"since") or must be the whole input: "customer April", "Jan's revenue" and "the June
+promotion" do not resolve a month. "First half hour" and "first quarter hour" do not name
+calendar periods.
+Only a completed period resolves: if it contains the reference date, `plan` returns
+`needs_clarification` with `TIME_WINDOW_UNRESOLVED` and `why.details.possible_readings` naming
+that period through the last complete day and the same period a year earlier. A month and
+day without a year ("Sept 30", "September 1st") uses the latest such date; an optional weekday
+("Wed Sept 30") must match it, otherwise the same clarification names the stated weekday
+and the date's actual weekday. "Since September", "since Sept 22" and "since Q3" start at
+that inferred date and end at the start of the reference day, so they include only complete
+days. "Early", "late" and "mid" months and multiple named periods remain unresolved.
+"All time", "of all time", "ever", "in total", bare "to date", "since launch", "since the
+beginning" and "since we started" record their spans and add no start or end, with the
+assumption "all time: no start date". A caller's bounded window cannot silently narrow them.
+Beside exactly one bounded window, "ever" and "in total" instead emphasize that window
+and add no all-time assumption ("signups in total last month"). The other all-time forms
+still conflict with a stated bounded window. "Since launch of …" and "since the beginning
+of …" are not all-time readings. A named or all-time phrase inside an exclusion ("not in
+June", "excluding Q2", "not on Jun. 25") follows the exclusion rule above: it never becomes a
+positive window, and `plan` offers no readings for it.
+A balance such as "MRR of all time" remains held: a stock needs an as-of day. Period-to-date
+forms ("year to date", "month to date", "ytd", "mtd") retain their existing handling. Planning
+reads no warehouse data to establish coverage; the all-time assumption makes no claim about
+the first date with data. A range's spoken end is included: the response's
 `assumptions` says so, with the exclusive `time.end` it chose. A window restated right beside
 itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
 one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are a
@@ -676,8 +793,10 @@ counts it as asked; any other required field, or one hidden from the caller, kee
 ago"), or asks for by week, month, quarter or year where the clock or a constraint reads it per
 day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of_unrealized`
 gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
-weeks are allowed), a stock on an event clock, a ratio, or a balance beside a flow keep the
-holds above, and a window in `query.time` is used as passed: a day-grain balance window is read
+weeks are allowed), a stock on an event clock, a ratio, a balance beside a flow, or a metric
+that wraps a balance (`COALESCE(<filtered balance>, 0)`, arithmetic over one, a scoped
+aggregate) keep the holds above, and a window in `query.time` is used as passed: a day-grain
+balance window is read
 only when both bounds are whole days and it ends on or before the last complete day;
 otherwise `stock_as_of_unrealized`.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
@@ -774,6 +893,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
+| `NO_DATA_YET` | `execute` | Guarded `NULL` series buckets beyond visible coverage, empty totals with coverage proven before the window, or no visible coverage. `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`. `last_bucket` names the SQL bucket key (date for day or coarser grains, full ISO timestamp for sub-day grains); `before_window` names the resolved window start. Both `edge` and `edge_source` are null with no visible coverage. Empty series with dated coverage keep existing warnings. Replaces `EMPTY_RESULT_WINDOW`; covered outputs are excluded from `NO_DATA_IN_SCOPE`. Granted only when every named measure is granted. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. Under `observation_scope: "dataset"` an empty answer to a filtered query never gets it. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `=` or `IN` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. Aggregate-filter literals of a retained additive series are checked in both observation scopes. One warning; `details.filters` lists each `dimension`, `value` and closest `suggestion`. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. See [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers) |
@@ -1070,7 +1190,6 @@ expression kind names the received kind and its request path (for example,
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
 | `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric, or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
-| `INCOMPATIBLE_CALENDAR` | Selected calendar grain is not supported by the underlying measure. |
 | `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary, or joins into a `temporal_validity` window without a query `time`. |
 | `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (=) each key dimension. Keys are named only on validate, compile and run errors. The message, `details.key_dimensions` and hint name those dimensions only when every key column is a dimension of the caller's view; a key a hidden dimension declares keeps the generic refusal. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
@@ -1079,7 +1198,7 @@ expression kind names the received kind and its request path (for example,
 | `WINDOWED_TIME_FILTER_UNSUPPORTED` | Time-windowed filter cannot be applied to this query shape. `details.lookback` carries the metric's window; `recovery_hints` carries a `widen_time_window` patch with a concrete `suggested_start` and a `drop_time_start` patch with `{remove: ["time.start"]}`. A `where` filter on a date or calendar dimension other than an upper bound refuses the same way: `details.where_path` names it and the patch removes it. Filters on the window's own measure input and applied row policies on temporal columns also refuse (`details.filter_source`), with no time-boundary recovery patch. |
 | `MIXED_GRAIN_INVALID` | Query mixes incompatible grains; split or rewrite. Compatible measure and dimension replacements rank naming-token overlap (id suffix, name and label) before character similarity. Replacements answer a different question and are suggestions for the caller to judge. |
 | `NO_VALID_VALUES_SOURCE` | No `valid_values` source declared for the requested dimension. |
-| `REWRITE_NOT_SUPPORTED` | Required rewrite is not implemented; try a simpler shape. |
+| `REWRITE_NOT_SUPPORTED` | Required rewrite is not implemented; try a simpler shape. A non-default `time.calendar_id`, or a `grain` on a time bound to a non-default calendar, refuses with `details.reason: calendar_not_supported_yet` and `details.calendar_id`: authored fiscal calendars return in a later release. |
 | `INVALID_EXPRESSION_AST` | Expression AST is malformed; check the position-specific shape. An invalid `where` operator lists query filter operators and the null-test form: `op: "IS NULL"` / `"IS NOT NULL"`, omitting `value`. |
 | `OBJECT_NOT_FOUND` | Referenced `object_id` does not exist for the caller; see `details.closest_matches`. An object hidden from the caller gets exactly the response of one the package doesn't have, and is never suggested. An existing measure with the exact namespace and name of a missing metric (or the reverse) is the first suggestion; unrelated typos keep same-kind matching. When what the caller may see can't be resolved, no suggestion is made. |
 | `INVALID_QUERY` | Query IR fails structural validation. |

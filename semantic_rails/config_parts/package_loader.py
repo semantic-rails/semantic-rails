@@ -6,40 +6,20 @@ from ..errors import SemanticLayerError
 from ..naming import slug as _slug
 from ..naming import title as _titleize
 
-_JOIN_KEYS: frozenset[str] = frozenset(
-    {
-        "id",
-        "as",
-        "to",
-        "via",
-        "target",
-        "source_key_role",
-        "target_key_role",
-        "cardinality",
-        "safety",
-        "name",
-        "label",
-        "description",
-        "traversal",
-        "allowed_directions",
-        "temporal_validity",
-        "target_key_type",
-        "join_semantics",
-        "rollup_safe_aggregations_reverse",
-        "entities",
-    }
+# `graph.relationships` keys copied as they are onto the join a relationship projects.
+_RELATIONSHIP_PASSTHROUGH = (
+    "safety",
+    "temporal_validity",
+    "target_key_type",
+    "join_semantics",
+    "label",
+    "description",
+    "name",
+    "via",
+    "target",
+    "source_key_role",
+    "target_key_role",
 )
-
-
-def _check_binding_keys(binding: dict[str, Any], allowed: frozenset[str], *, label: str) -> None:
-    """Reject unknown authored keys before defaults or parsing can silently ignore them."""
-    unknown = sorted(key for key in set(binding) - allowed if not str(key).startswith("_"))
-    if unknown:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"{label} has unknown keys {unknown}; use {sorted(allowed)}",
-            details={"unknown_keys": unknown},
-        )
 
 
 def _with_default(mapping: dict[str, Any], key: str, value: Any) -> None:
@@ -91,8 +71,8 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize the ergonomic authoring contract into the canonical
     PackageConfig-shaped dict.
 
-    Fills namespace-derived IDs and default publish blocks for fields the
-    author left out. Existing explicit values are preserved unchanged.
+    Fills namespace-derived IDs for fields the author left out. Existing
+    explicit values are preserved unchanged.
     """
     out = dict(raw or {})
     package = dict(out.get("package", {}) or {})
@@ -101,22 +81,9 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         package["namespace"] = namespace
     out["package"] = package
 
-    defaults = dict(out.get("defaults", {}) or {})
-    relationship_defaults = dict(defaults.get("relationship", {}) or {})
-    _check_binding_keys(relationship_defaults, _JOIN_KEYS, label="defaults.relationship")
     graph = dict(out.get("graph", {}) or {})
     graph_entities = dict(graph.get("entities", {}) or {})
     models = _model_mapping(out)
-    # Validate authored joins before graph projection can replace their specs.
-    for model_id, model in models.items():
-        for join_key, join_raw in dict(model.get("joins", {}) or {}).items():
-            join = dict(join_raw or {})
-            rel_id = str(join.get("id", f"relationship.{_slug(model_id)}_{_slug(join_key)}"))
-            _check_binding_keys(
-                join,
-                _JOIN_KEYS,
-                label=f"models.{model_id}.joins.{join_key} (relationship '{rel_id}')",
-            )
     bound_entities: dict[str, str] = {}
     for entity_key, entity_raw in graph_entities.items():
         entity = dict(entity_raw or {})
@@ -138,7 +105,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     # canonical singular `entity:` + `keys.primary:` + `keys.foreign:`
     # shape so the downstream parser stays bijective. The block lists every entity
     # the model exposes; graph model bindings determine the primary entity,
-    # otherwise an explicit entity or matching grain identifies it. Per-entity options:
+    # otherwise an explicit entity or the model's own name identifies it. Per-entity options:
     #   expr:    column rename when authored column != graph's canonical key
     #   label:   display override (passed through as model_entity_labels meta)
     # Block-level option:
@@ -187,21 +154,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 # Allow `entities: { customer: }` shorthand (None value).
                 ent_raw = {}
             per_entity[str(ent_name)] = dict(ent_raw or {})
-        # Without an explicit binding or authored identity, match the grain to an entity key.
-        # Compute from graph_entities (which the loader will further normalize
-        # below — but `key:` is authored, so it's available now).
-        model_grain = model.get("grain")
-        if model_grain is not None:
-            grain_cols = [
-                str(c) for c in (model_grain if isinstance(model_grain, list) else [model_grain])
-            ]
-        else:
-            existing_primary = (
-                (model.get("keys") or {}).get("primary")
-                if isinstance(model.get("keys"), dict)
-                else None
-            )
-            grain_cols = _column_list(existing_primary)
 
         def _canonical_key_for(entity_name: str) -> list[str]:
             ent = graph_entities.get(entity_name) or {}
@@ -218,18 +170,8 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             else:
                 effective_cols[ent_name] = _canonical_key_for(ent_name)
 
-        # Explicit bindings and authored identity precede grain and name matching.
+        # Explicit bindings and authored identity precede the model-name default.
         primary_entity = str(model.get("entity", "") or "").strip()
-        if not primary_entity and grain_cols:
-            matches = sorted(name for name, cols in effective_cols.items() if cols == grain_cols)
-            if len(matches) > 1:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"model '{model_id}' grain {grain_cols} matches multiple entity keys: "
-                    f"{', '.join(matches)}; bind the model in the graph or set entity:",
-                )
-            if matches:
-                primary_entity = matches[0]
         # Empty blocks retain the graph's existing model-name default.
         if (
             not primary_entity
@@ -241,28 +183,8 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"model '{model_id}' must identify its primary entity with a graph model "
-                "binding, entity, grain matching an entity key, or an unbound entity "
-                "listed with the model's name",
-            )
-
-        # An explicit graph binding fixes identity independently of the row grain.
-        # Otherwise grain must agree with the resolved primary.
-        # A primary with no declared columns may instead receive its key from grain.
-        primary_cols = (
-            effective_cols.get(primary_entity)
-            or _canonical_key_for(primary_entity)
-            or _column_list((model.get("keys") or {}).get("primary"))
-        )
-        if (
-            model_id not in bound_entities
-            and model_grain is not None
-            and primary_cols
-            and grain_cols != primary_cols
-        ):
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"model '{model_id}' grain {grain_cols} does not match the key of "
-                f"primary entity '{primary_entity}' ({primary_cols})",
+                "binding (graph.entities.<entity>.model), or list an unbound entity with the "
+                "model's name",
             )
 
         # Translate to canonical singular-entity shape.
@@ -300,7 +222,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         models[model_id] = model
 
     # Back-fill `graph.entities.<x>.model:` from the model whose primary
-    # entity is <x>. Authors can leave the binding implicit when grain
+    # entity is <x>. Authors can leave the binding implicit when the model's name
     # disambiguates which model owns each entity.
     for model_id, model in models.items():
         # Fact models don't bind to a graph entity — skip the back-fill.
@@ -360,16 +282,15 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 f"graph entity '{entity_key}'",
             )
         # Refuse keyless graph entities before translating authored relationships.
-        # Only this entity's declared key or its own model's key/grain can supply it.
+        # Only this entity's declared key or its own model's key can supply it.
         model_keys = dict(model.get("keys", {}) or {})
-        if not _column_list(entity.get("key") or model_keys.get("primary") or model.get("grain")):
+        if not _column_list(entity.get("key") or model_keys.get("primary")):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"graph entity '{entity_key}' must declare key (model '{model_id}')",
             )
         model.setdefault("id", model_id)
         model.setdefault("entity", entity_key)
-        model.setdefault("defaults", {})
 
         dimensions = dict(model.get("dimensions", {}) or {})
         for dim_key, dim_raw in list(dimensions.items()):
@@ -503,13 +424,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 _with_default(measure, "id", f"measure.{namespace}.{_slug(str(measure_key))}")
                 _with_default(measure, "name", f"{namespace}.{_slug(str(measure_key))}")
             _apply_as_override(measure, "measure", namespace=namespace)
-            if measure.get("publish") is None:
-                measure["publish"] = {
-                    "id": f"metric.{namespace}.{_slug(str(measure_key))}"
-                    if namespace
-                    else f"metric.{_slug(str(measure_key))}",
-                    "label": str(measure.get("label", _titleize(str(measure_key)))),
-                }
             measures[measure_key] = measure
         model["measures"] = measures
         models[model_id] = model
@@ -554,13 +468,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 _with_default(measure, "id", f"measure.{namespace}.{_slug(str(measure_key))}")
                 _with_default(measure, "name", f"{namespace}.{_slug(str(measure_key))}")
             _apply_as_override(measure, "measure", namespace=namespace)
-            if measure.get("publish") is None:
-                measure["publish"] = {
-                    "id": f"metric.{namespace}.{_slug(str(measure_key))}"
-                    if namespace
-                    else f"metric.{_slug(str(measure_key))}",
-                    "label": str(measure.get("label", _titleize(str(measure_key)))),
-                }
             measures[measure_key] = measure
         model["measures"] = measures
         models[model_id] = model
@@ -623,7 +530,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             }
             cardinality = cardinality_map.get(cardinality, cardinality)
             rollup_safe = spec.get("rollup_safe", {})
-            if not isinstance(rollup_safe, dict) or any(key != "reverse" for key in rollup_safe):
+            if not isinstance(rollup_safe, dict):
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     f"graph relationship '{rel_name}' rollup_safe must be a mapping "
@@ -641,21 +548,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             }
             if cardinality:
                 edge_spec["cardinality"] = cardinality
-            for passthrough in (
-                "safety",
-                "temporal_validity",
-                "target_key_type",
-                "join_semantics",
-                "label",
-                "description",
-                "name",
-                "via",
-                "target",
-                "source_key_role",
-                "target_key_role",
-                # Removed; passed on so the parser refuses it, naming the relationship.
-                "path_preference",
-            ):
+            for passthrough in _RELATIONSHIP_PASSTHROUGH:
                 if passthrough in spec:
                     edge_spec[passthrough] = spec[passthrough]
             # `allowed_directions:` on the graph.relationships block maps

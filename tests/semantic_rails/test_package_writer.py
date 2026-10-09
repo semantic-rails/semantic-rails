@@ -75,15 +75,18 @@ def test_contracts_path_policy_and_authored_values_are_written(tmp_path) -> None
     )
     assert loaded.measures[0].suggested_aggregations == ["max"]
     assert loaded.package.observation_scope == "query"
+    # The loader reads the scope from defaults: only, so that is the one place it is written.
+    written = yaml.safe_load((directory / "package.yml").read_text(encoding="utf-8"))
+    assert "observation_scope" not in written["package"]
+    assert written["defaults"]["observation_scope"] == "query"
 
 
 @pytest.mark.parametrize("include_axis", [True, False])
 def test_fact_axis_default_never_gives_calendar_measures_a_clock(tmp_path, include_axis) -> None:
     raw = yaml.safe_load(PACKAGES[-1].read_text(encoding="utf-8"))
-    raw["graph"]["entities"]["day"] = {"key": "day_id", "kind": "time"}
+    raw["graph"]["entities"]["day"] = {"key": "day_id", "kind": "time", "model": "calendar"}
     raw["models"]["calendar"] = {
         "relation": "calendar",
-        "grain": ["day_id"],
         "entities": {"day": {}},
         "measures": {"calendar_count": {"kind": "entity_count", "entity_key": "day_id"}},
     }
@@ -91,7 +94,7 @@ def test_fact_axis_default_never_gives_calendar_measures_a_clock(tmp_path, inclu
         "kind": "fact",
         "relation": "daily_sales",
         "time_entity": "day",
-        "grain": ["day_id"],
+        "time_column": "day_id",
         "times": {
             "day": {
                 "id": "temporal_role.shop_sales_day",

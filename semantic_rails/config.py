@@ -20,26 +20,12 @@ from typing import Any
 
 from .config_parts.lookup_measures import lookup_measure_spec, resolve_lookup_measures
 from .config_parts.measure_governance import with_published_flags
-from .config_parts.package_loader import _JOIN_KEYS, _check_binding_keys, normalize_package
+from .config_parts.package_loader import normalize_package
 from .config_parts.route_rows import (
     RouteRowError,
     check_route_row,
     entity_references,
     require_rows_agree,
-)
-from .config_parts.shape_checks import (
-    _DIMENSION_KEYS,
-    _MEASURE_KEYS,
-    _METRIC_KEYS,
-    _MODEL_KEYS,
-    _MODEL_VARIANT_EQUIVALENCE_KEYS,
-    _MODEL_VARIANT_EXCLUDES_KEYS,
-    _MODEL_VARIANT_GRAIN_KEYS,
-    _MODEL_VARIANT_KEYS,
-    _MODEL_VARIANT_SELECTION_KEYS,
-    _MODEL_VARIANT_TIME_KEYS,
-    _SEGMENT_KEYS,
-    _TIME_KEYS,
 )
 from .dialects import (
     connection_option_errors,
@@ -61,7 +47,13 @@ from .operational import (
     normalize_operational_payload,
     validate_operational_payload,
 )
-from .package_snapshot import CapturedSource, LoadedPackageSnapshot, load_package_snapshot
+from .package_snapshot import (
+    PACKAGE_SOURCE_DIRS,
+    CapturedSource,
+    LoadedPackageSnapshot,
+    links_package_input,
+    load_package_snapshot,
+)
 from .policy_rules import policy_action
 from .row_filters import validate_row_filters
 from .schema import (
@@ -263,8 +255,6 @@ def _ensure_dict_list(value: Any) -> list[dict[str, Any]]:
 _TIME_GRAIN_ORDER = ["transaction", "minute", "hour", "day", "week", "month", "quarter", "year"]
 # What a rollup's measure column may hold per row (`holds:`); see acceleration/selection.py.
 _ROLLUP_HOLDS = frozenset({"sum", "min", "max", "count_distinct"})
-_MEASURE_BINDING_KEYS = frozenset({"column", "rollup", "aggregation", "holds"})
-_DIMENSION_BINDING_KEYS = frozenset({"column", "path"})
 
 
 def _coarser_time_grains(grain: str) -> list[str]:
@@ -314,18 +304,9 @@ def _resolve_variant_specs(
         resolving.add(name)
         spec = dict(raw[name])
         label = f"{path}: model '{model_id}' variant '{name}'"
-        _check_binding_keys(spec, _MODEL_VARIANT_KEYS, label=label)
-        for key, allowed in (
-            ("grain", _MODEL_VARIANT_GRAIN_KEYS),
-            ("time", _MODEL_VARIANT_TIME_KEYS),
-            ("excludes", _MODEL_VARIANT_EXCLUDES_KEYS),
-            ("selection", _MODEL_VARIANT_SELECTION_KEYS),
-            ("equivalence", _MODEL_VARIANT_EQUIVALENCE_KEYS),
-        ):
-            if key in spec:
-                if not isinstance(spec[key], dict):
-                    raise SemanticLayerError("INVALID_CONFIG", f"{label} {key} must be a mapping")
-                _check_binding_keys(spec[key], allowed, label=f"{label} {key}")
+        for key in ("grain", "time", "excludes", "selection", "equivalence"):
+            if key in spec and not isinstance(spec[key], dict):
+                raise SemanticLayerError("INVALID_CONFIG", f"{label} {key} must be a mapping")
         parent_name = str(spec.get("inherits_from", "") or "").strip()
         if parent_name:
             spec = _merge_variant_spec(resolve(parent_name), spec)
@@ -433,13 +414,6 @@ def _parse_caveat_time(value: Any, *, path: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise SemanticLayerError("INVALID_CONFIG", f"{path}.time must be an object")
     raw = dict(value or {})
-    allowed = {"at", "from", "to"}
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"{path}.time contains unsupported keys {unknown}; use at or from/to",
-        )
     has_point = "at" in raw and str(raw.get("at", "") or "").strip()
     has_range = any(str(raw.get(key, "") or "").strip() for key in ("from", "to"))
     if has_point and has_range:
@@ -502,24 +476,6 @@ def _parse_caveats(rows: Any, *, path: str) -> list[SemanticCaveatConfig]:
                 severity=severity,
                 owner=str(row_dict.get("owner", "") or ""),
                 references=_ensure_dict_list(row_dict.get("references")),
-                config={
-                    key: value
-                    for key, value in row_dict.items()
-                    if key
-                    not in {
-                        "id",
-                        "kind",
-                        "message",
-                        "object_ids",
-                        "entity_values",
-                        "time",
-                        "audiences",
-                        "environments",
-                        "severity",
-                        "owner",
-                        "references",
-                    }
-                },
             )
         )
     return caveats
@@ -543,6 +499,90 @@ def _normalize_examples(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
     return text_examples, entries
 
 
+# Each root block file of a directory package and the key it is read through.
+_BLOCK_FILES = (
+    ("defaults.yml", "defaults"),
+    ("graph.yml", "graph"),
+    ("relations.yml", "relations"),
+    ("metrics.yml", "metrics"),
+    ("segments.yml", "segments"),
+    ("policies.yml", "semantic_policies"),
+    ("caveats.yml", "semantic_caveats"),
+)
+# Every root YAML file and directory of YAML anything reads from a package directory: the
+# loader's files and object directories, and the examples and tests the package tools run.
+_PACKAGE_ROOT_FILES = frozenset({"package.yml", *(name for name, _ in _BLOCK_FILES)})
+_OBJECT_DIRS = ("models", "relations", "metrics", "segments")
+_PACKAGE_ROOT_DIRS = PACKAGE_SOURCE_DIRS
+
+
+def _unread_root_errors(
+    path: str, contents: dict[str, bytes] | None, links: tuple[str, ...] = ()
+) -> list[str]:
+    """One error per root YAML file, and per root directory holding YAML, that nothing reads,
+    and per directory symlink that could hide package input, which nothing follows. Root names
+    starting with ``_`` or ``.`` are left alone. ``links`` are the captured directory symlinks,
+    relative to ``path``."""
+    if contents is not None:
+        sources = [os.path.relpath(name, path) for name in contents]
+    else:
+        sources = []
+        found: list[str] = []
+        for root, dirnames, filenames in os.walk(path):
+            if root == path:
+                dirnames[:] = [name for name in dirnames if not name.startswith(("_", "."))]
+            found.extend(
+                os.path.relpath(os.path.join(root, name), path)
+                for name in dirnames
+                if os.path.islink(os.path.join(root, name))
+                and links_package_input(path, os.path.relpath(os.path.join(root, name), path))
+            )
+            sources.extend(os.path.relpath(os.path.join(root, name), path) for name in filenames)
+        links = tuple(found)
+    errors = [
+        f"{os.path.join(path, link)} is a directory symlink — the loader does not follow it, so "
+        "this would silently change behavior; copy or link the files instead"
+        for link in sorted(links)
+        if not Path(link).parts[0].startswith(("_", "."))
+    ]
+    unread: set[tuple[str, bool]] = set()
+    for source in sources:
+        top, *rest = Path(source).parts
+        known = _PACKAGE_ROOT_DIRS if rest else _PACKAGE_ROOT_FILES
+        if (
+            source.endswith((".yml", ".yaml"))
+            and not top.startswith(("_", "."))
+            and top not in known
+        ):
+            unread.add((top, bool(rest)))
+    for name, is_dir in sorted(unread):
+        if is_dir:
+            what = f"{os.path.join(path, name)}{os.sep} is not a package directory"
+            fix = (
+                f"write these {name} in {name}.yml"
+                if name in ("policies", "caveats")
+                else f"move them under {', '.join(f'{d}/' for d in sorted(_PACKAGE_ROOT_DIRS))}"
+                " or start the directory name with '_'"
+            )
+        else:
+            what = f"{os.path.join(path, name)} is not a package file"
+            stem = os.path.splitext(name)[0]
+            if stem + ".yml" in _PACKAGE_ROOT_FILES:
+                fix = f"rename it {stem}.yml"
+            elif stem in ("examples", "tests"):
+                fix = f"write these entries under {stem}/"
+            else:
+                fix = (
+                    f"move its contents into {', '.join(sorted(_PACKAGE_ROOT_FILES))} or start "
+                    "its name with '_'"
+                )
+        errors.append(
+            f"{what} — its YAML is ignored by the loader, so this would silently change "
+            f"behavior; {fix}"
+        )
+    return errors
+
+
 def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> dict[str, Any]:
     contents = captured.contents if captured is not None else None
 
@@ -562,7 +602,27 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
             "INVALID_CONFIG", f"Package directory '{path}' is missing package.yml"
         )
 
+    # Each file is read through one wrapper key; record every other root key it would drop.
+    errors: list[str] = []
+
+    def drops(filename: str, doc: dict[str, Any], wrappers: tuple[str, ...], fix: str) -> None:
+        for key in sorted(str(k) for k in doc if str(k) not in wrappers):
+            if not key.startswith("_"):
+                errors.append(
+                    f"{filename} has unknown key {key!r} — unknown keys are ignored by the "
+                    f"loader, so this would silently change behavior; {fix}"
+                )
+
+    def drops_beside_wrapper(filename: str, doc: dict[str, Any], *wrappers: str) -> None:
+        if wrapper := next((name for name in wrappers if name in doc), None):
+            drops(filename, doc, (wrapper,), f"the loader reads only {wrapper!r} from this file")
+
     raw = load(package_path)
+    if raw.get("relations") not in (None, {}, []):
+        errors.append(
+            f"{package_path} declares relations:, which a directory package keeps in "
+            "relations.yml or relations/; move it there"
+        )
     merged: dict[str, Any] = dict(raw)
     merged.setdefault("defaults", {})
     merged.setdefault("graph", {})
@@ -571,19 +631,38 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
     merged.setdefault("metrics", {})
     merged.setdefault("segments", {})
 
-    for filename, key in (
-        ("defaults.yml", "defaults"),
-        ("graph.yml", "graph"),
-        ("relations.yml", "relations"),
-        ("metrics.yml", "metrics"),
-        ("segments.yml", "segments"),
-        ("policies.yml", "semantic_policies"),
-        ("caveats.yml", "semantic_caveats"),
-    ):
+    # A later definition replaces an earlier one wholesale, so each is read from one place only.
+    origins: dict[str, dict[str, str]] = {}
+    for block in _OBJECT_DIRS:
+        authored = raw.get(block)
+        origins[block] = (
+            dict.fromkeys(map(str, authored), package_path) if isinstance(authored, dict) else {}
+        )
+
+    def define(block: str, object_id: str, filename: str) -> None:
+        if first := origins[block].get(object_id):
+            errors.append(
+                f"{filename} defines {block[:-1]} {object_id!r}, which {first} also defines — "
+                f"the definition in {first} is ignored by the loader, so this would silently "
+                "change behavior; keep one definition"
+            )
+        origins[block][object_id] = filename
+
+    for filename, key in _BLOCK_FILES:
         full = os.path.join(path, filename)
         if is_file(full):
+            if raw.get(key):
+                errors.append(
+                    f"{package_path} declares {key!r}, which {full} replaces — the package.yml "
+                    "block is ignored by the loader, so this would silently change behavior; "
+                    "keep the block in one of the two files"
+                )
             doc = load(full)
             list_keys = {"semantic_policies", "semantic_caveats"}
+            if key in doc:
+                drops_beside_wrapper(full, doc, key)
+            elif key not in list_keys:
+                drops(full, doc, (), f"write this file's contents under a top-level {key!r} key")
             value = doc.get(key, doc if key in list_keys else {})
             # `semantic_policies:` and `semantic_caveats:` are lists; every other
             # block is a mapping. Don't wrap a list in `dict(...)` — that
@@ -592,6 +671,8 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                 merged[key] = list(value or [])
             else:
                 merged[key] = dict(value or {})
+            if key in origins:
+                origins[key] = dict.fromkeys(map(str, merged[key]), full)
 
     def _yaml_files(root: str) -> list[str]:
         if contents is not None:
@@ -614,6 +695,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         models = dict(merged.get("models", {}) or {})
         for file_path in _yaml_files(models_dir):
             doc = load(file_path)
+            drops_beside_wrapper(file_path, doc, "models", "model")
             if "models" in doc:
                 model_docs = dict(doc.get("models", {}) or {})
             else:
@@ -625,10 +707,16 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                 }
             for model_key, model_raw in model_docs.items():
                 model = dict(model_raw or {})
+                if "models" in doc and str(model.get("id", model_key)).strip() != str(model_key):
+                    errors.append(
+                        f"{file_path}: model '{model_key}' authors id {model['id']!r}; the "
+                        "model's key is its id, so delete id:"
+                    )
                 model_id = str(
                     model.get("id") or model_key or os.path.splitext(os.path.basename(file_path))[0]
                 )
                 model["id"] = model_id
+                define("models", model_id, file_path)
                 models[model_id] = model
         merged["models"] = models
 
@@ -637,6 +725,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         relations = dict(merged.get("relations", {}) or {})
         for file_path in _yaml_files(relations_dir):
             doc = load(file_path)
+            drops_beside_wrapper(file_path, doc, "relations", "relation")
             if "relations" in doc:
                 relation_docs = dict(doc.get("relations", {}) or {})
             else:
@@ -654,6 +743,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     or os.path.splitext(os.path.basename(file_path))[0]
                 )
                 relation["id"] = relation_id
+                define("relations", relation_id, file_path)
                 relations[relation_id] = relation
         merged["relations"] = relations
 
@@ -662,6 +752,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         metrics = dict(merged.get("metrics", {}) or {})
         for file_path in _yaml_files(metrics_dir):
             doc = load(file_path)
+            drops_beside_wrapper(file_path, doc, "metrics", "metric")
             if "metrics" in doc:
                 metric_docs = dict(doc.get("metrics", {}) or {})
             else:
@@ -673,6 +764,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     ): dict(doc.get("metric", doc) or {})
                 }
             for metric_key, metric_raw in metric_docs.items():
+                define("metrics", str(metric_key), file_path)
                 metrics[str(metric_key)] = dict(metric_raw or {})
         merged["metrics"] = metrics
 
@@ -681,6 +773,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
         segments = dict(merged.get("segments", {}) or {})
         for file_path in _yaml_files(segments_dir):
             doc = load(file_path)
+            drops_beside_wrapper(file_path, doc, "segments", "segment")
             if "segments" in doc:
                 segment_docs = dict(doc.get("segments", {}) or {})
             else:
@@ -692,8 +785,14 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     ): dict(doc.get("segment", doc) or {})
                 }
             for segment_key, segment_raw in segment_docs.items():
+                define("segments", str(segment_key), file_path)
                 segments[str(segment_key)] = dict(segment_raw or {})
         merged["segments"] = segments
+
+    links = captured.directory_links if captured is not None else ()
+    errors.extend(_unread_root_errors(path, contents, links))
+    if errors:
+        raise SemanticLayerError("INVALID_CONFIG", "\n".join(errors), details={"errors": errors})
     return merged
 
 
@@ -1258,7 +1357,6 @@ def _parse_package_meta(
         seed=seed,
         connection=connection,
         environments=_ensure_list(package.get("environments")),
-        schema_strict=bool(package.get("schema_strict", False)),
         planner=planner_cfg,
         observation_scope=observation_scope,
     )
@@ -1490,73 +1588,6 @@ def _default_topics(name: str, fallback: str = "analytics") -> list[str]:
     return parts[:2] or [fallback]
 
 
-def _metric_from_measure(
-    measure: MeasureConfig,
-    spec: dict[str, Any],
-    *,
-    operational_contract: dict[str, Any],
-    path: str,
-) -> MetricConfig | None:
-    publish = spec.get("publish", True)
-    if publish is False:
-        return None
-    publish_spec = dict(publish or {}) if isinstance(publish, dict) else {}
-    default_metric_name = measure.name or measure.id.split("measure.", 1)[-1]
-    metric_id = str(publish_spec.get("id", f"metric.{default_metric_name}"))
-    metric_name = str(publish_spec.get("name", default_metric_name))
-    metric_label = str(
-        publish_spec.get("label", measure.label or _titleize(metric_name.split(".")[-1]))
-    )
-    kind = "semi_additive" if measure.measure_class == "semi_additive" else "aggregate"
-    expr_kind = "semi_additive" if kind == "semi_additive" else "aggregate"
-    temporal_role = (
-        measure.compatible_temporal_roles[0] if measure.compatible_temporal_roles else ""
-    )
-    publish_operational = normalize_operational_payload(
-        publish_spec.get("operational"),
-        contract=operational_contract,
-        target="metric",
-        path=f"{path} publish.operational",
-    )
-    metric_operational = validate_operational_payload(
-        merge_operational_payloads(measure.operational, publish_operational),
-        contract=operational_contract,
-        target="metric",
-        path=f"{path} auto-published metric operational",
-    )
-    _, metric_example_entries = _normalize_examples(publish_spec.get("examples"))
-    return MetricConfig(
-        id=metric_id,
-        kind=kind,
-        expression=parse_semantic_expression(
-            {"kind": expr_kind, "measure": measure.id, "aggregation": measure.default_aggregation},
-            context="config",
-        ),
-        temporal_role=temporal_role,
-        compatible_temporal_roles=list(measure.compatible_temporal_roles),
-        name=metric_name,
-        label=metric_label,
-        description=str(publish_spec.get("description", measure.description or metric_label)),
-        topics=_ensure_list(publish_spec.get("topics"))
-        or list(measure.topics)
-        or _default_topics(metric_name),
-        comparison_family=str(
-            publish_spec.get("comparison_family", spec.get("comparison_family", ""))
-        ),
-        comparison_mode=str(publish_spec.get("comparison_mode", spec.get("comparison_mode", ""))),
-        preferred_companion_metrics=_ensure_list(
-            publish_spec.get("preferred_companion_metrics", spec.get("preferred_companion_metrics"))
-        ),
-        operational=metric_operational,
-        meta={
-            **dict(measure.meta),
-            **_normalize_meta(publish_spec.get("meta"), f"{path}: {metric_id}"),
-        },
-        example_entries=metric_example_entries or list(measure.example_entries),
-        value_type=str(publish_spec.get("value_type") or measure.value_type or "number"),
-    )
-
-
 def _ensure_unique_object_ids(config: PackageConfig, *, path: str) -> None:
     seen: dict[str, str] = {}
     groups = (
@@ -1595,13 +1626,6 @@ def _parse_path_policy(raw: dict[str, Any], *, path: str) -> PathPolicyConfig:
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"{path}: path_policy must be a mapping (got {type(policy_raw).__name__})",
-        )
-    unknown = sorted(set(policy_raw) - {"max_hops"})
-    if unknown:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"{path}: path_policy contains unsupported keys: {', '.join(unknown)}",
-            details={"supported": ["max_hops"]},
         )
     try:
         max_hops = int(policy_raw.get("max_hops", DEFAULT_PATH_HOP_LIMIT))
@@ -1728,8 +1752,6 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
 
 
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
-    if "aggregate_relations" in raw:
-        raise SemanticLayerError("INVALID_CONFIG", "declare rollups under the model's `variants:`")
     package_raw = dict(raw.get("package", {}) or {})
     namespace = str(package_raw.get("namespace", package_raw.get("id", "")) or "").strip()
     defaults = dict(raw.get("defaults", {}) or {})
@@ -1758,7 +1780,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     fact_models: dict[str, dict[str, Any]] = {}
     regular_model_rows: dict[str, dict[str, Any]] = {}
     for model_id, model in model_rows.items():
-        _check_binding_keys(model, _MODEL_KEYS, label=f"{path}: model '{model_id}'")
         model_kind = str(model.get("kind", "model") or "model").strip().lower()
         if model_kind == "fact":
             fact_models[model_id] = model
@@ -1795,7 +1816,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         model = model_rows[model_id]
         model_keys = dict(model.get("keys", {}) or {})
         key, primary_role = _key_columns_and_role(
-            entity_spec.get("key") or model_keys.get("primary") or model.get("grain"),
+            entity_spec.get("key") or model_keys.get("primary"),
             default_role="primary",
         )
         if not key:
@@ -1891,10 +1912,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             "INVALID_CONFIG",
             f"{path}: defaults.time.default is not supported; declare default: true on a model's time role",
         )
-    _check_binding_keys(dim_defaults, _DIMENSION_KEYS, label=f"{path}: defaults.dimension")
-    _check_binding_keys(time_defaults, _TIME_KEYS, label=f"{path}: defaults.time")
     measure_defaults = dict(defaults.get("measure", {}) or {})
-    _check_binding_keys(measure_defaults, _MEASURE_KEYS, label=f"{path}: defaults.measure")
     relationship_defaults = dict(defaults.get("relationship", {}) or {})
     operational_contract = load_operational_contract(defaults, path=path)
     meta_contract = load_meta_contract(defaults, path=path)
@@ -1963,7 +1981,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
         for dim_key, dim_spec_raw in dims.items():
             dim_spec = {**dim_defaults, **dict(dim_spec_raw or {})}
-            _check_binding_keys(dim_spec, _DIMENSION_KEYS, label=f"{path}: dimension '{dim_key}'")
             dim_id = str(dim_spec.get("id", f"dimension.{_slug(entity_cfg.name)}_{_slug(dim_key)}"))
             label = str(dim_spec.get("label", _titleize(dim_key)))
             name = str(dim_spec.get("name", f"{entity_cfg.name}.{dim_key}"))
@@ -2029,7 +2046,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
         for time_key, time_spec_raw in times.items():
             time_spec = {**time_defaults, **dict(time_spec_raw or {})}
-            _check_binding_keys(time_spec, _TIME_KEYS, label=f"{path}: time '{time_key}'")
             dim_id = str(
                 time_spec.get(
                     "dimension_id", f"dimension.{_slug(entity_cfg.name)}_{_slug(time_key)}"
@@ -2078,9 +2094,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             temporal_lookup[(model_id, time_key)] = temporal_id
 
         default_time = model_default_times[model_id]
-        row_grain = _ensure_list(
-            model.get("grain") or dict(model.get("keys", {}) or {}).get("primary")
-        )
+        row_grain = _ensure_list(dict(model.get("keys", {}) or {}).get("primary"))
         # Fact models infer grain from the declared time_column (the row's
         # time-key on the fact table).
         if is_fact and not row_grain:
@@ -2090,20 +2104,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         for measure_key, measure_spec_raw in dict(model.get("measures", {}) or {}).items():
             raw_measure_spec = dict(measure_spec_raw or {})
             measure_spec = {**measure_defaults, **raw_measure_spec}
-            _check_binding_keys(
-                measure_spec, _MEASURE_KEYS, label=f"{path}: measure '{measure_key}'"
-            )
             measure_spec = lookup_measure_spec(
                 raw_measure_spec, measure_spec, f"{path}: measure '{measure_key}'"
             )
-            publish_spec = measure_spec.get("publish")
-            if isinstance(publish_spec, dict):
-                for advisory_key in ("clock_variants", "comparison_peers", "preferred_filter_ops"):
-                    if advisory_key in publish_spec:
-                        raise SemanticLayerError(
-                            "INVALID_CONFIG",
-                            f"{path}: measure '{measure_key}' publish.{advisory_key} is not supported",
-                        )
             measure_id = str(
                 measure_spec.get("id", f"measure.{_slug(entity_cfg.name)}_{_slug(measure_key)}")
             )
@@ -2313,11 +2316,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     f"{path}: join '{model_id}.{edge_key}' has invalid safety '{safety}' (must be 'safe', 'requires_rewrite', or 'unsafe')",
                 )
             rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
-            _check_binding_keys(
-                join_spec,
-                _JOIN_KEYS,
-                label=f"{path}: relationship '{rel_id}' (join '{model_id}.{edge_key}')",
-            )
             relationships.append(
                 RelationshipConfig(
                     id=rel_id,
@@ -2374,29 +2372,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 f"{path}: duplicate metric id '{metric.id}' in {existing.name or existing.id} and {source}; metric ids must be unique",
             )
         metric_recipes_by_id[metric.id] = metric
-
-    # Auto-publish path: measures auto-create metric records for legacy
-    # packages. Disabled under schema_strict: true, where every metric must
-    # be authored explicitly.
-    schema_strict = bool(package_raw.get("schema_strict", False))
-    if not schema_strict:
-        for model_id, model in model_rows.items():
-            for measure_key, measure_spec_raw in dict(model.get("measures", {}) or {}).items():
-                measure_id = str(
-                    dict(measure_spec_raw or {}).get(
-                        "id",
-                        f"measure.{_slug(next(row.name for row in entities if row.id == model_to_entity[model_id]))}_{_slug(measure_key)}",
-                    )
-                )
-                measure = next(row for row in measures if row.id == measure_id)
-                metric = _metric_from_measure(
-                    measure,
-                    dict(measure_spec_raw or {}),
-                    operational_contract=operational_contract,
-                    path=f"{path}: measure '{measure_id}'",
-                )
-                if metric is not None:
-                    _add_metric_recipe(metric, source=f"measure '{measure_id}' publish")
 
     # Build a measure key/name → measure_id index so metric authoring can
     # use package-relative keys (`revenue_usd`) instead of fully qualified
@@ -2511,7 +2486,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     known_dimension_ids = frozenset(dimension_lookup.values())
     for metric_key, metric_spec_raw in metrics_rows.items():
         spec = dict(metric_spec_raw or {})
-        _check_binding_keys(spec, _METRIC_KEYS, label=f"{path}: metric '{metric_key}'")
 
         # Translate direct named fields per metric kind into the runtime
         # expression AST shape. Authors can still write the AST directly
@@ -2642,7 +2616,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     segments: list[SegmentConfig] = []
     for segment_key, segment_spec_raw in segments_rows.items():
         spec = dict(segment_spec_raw or {})
-        _check_binding_keys(spec, _SEGMENT_KEYS, label=f"{path}: segment '{segment_key}'")
         segment_id = str(spec.get("id", f"segment.{segment_key}"))
         entity_ref = str(spec.get("entity", "")).strip()
         entity_id = entity_lookup.get(entity_ref, entity_ref)
@@ -2764,9 +2737,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         dimension_columns: dict[str, str] = {}
         dimension_paths: dict[str, list[str]] = {}
         for dim_id, binding in raw_dimension_bindings.items():
-            _check_binding_keys(
-                binding, _DIMENSION_BINDING_KEYS, label=f"{path}: rollup dimension '{dim_id}'"
-            )
             column = str(binding.get("column", "") or "").strip()
             if column:
                 dimension_columns[dim_id] = column
@@ -2893,11 +2863,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     )
                     raw_column = columns.get(measure_id, columns.get(measure_key, measure_key))
                     if isinstance(raw_column, dict):
-                        _check_binding_keys(
-                            raw_column,
-                            _MEASURE_BINDING_KEYS,
-                            label=f"{path}: variant '{variant_id}' column '{measure_key}'",
-                        )
                         column = str(raw_column.get("column", "") or "").strip()
                         rollup = str(
                             raw_column.get("rollup", raw_measure_spec.get("rollup", "")) or ""

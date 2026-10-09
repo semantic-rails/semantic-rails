@@ -499,12 +499,152 @@ def _time_cues(lowered: str) -> list[tuple[int, int]]:
     """Every span that scopes the question in time, resolvable or not."""
 
     spans = [match.span() for pattern in _OTHER_TIME_CUE_RES for match in pattern.finditer(lowered)]
+    spans.extend(_all_time_spans(lowered))
     for match in _YEAR_TOKEN_RE.finditer(lowered):
         before, after = lowered[: match.start()], lowered[match.end() :]
         if _QUANTITY_BEFORE_RE.search(before) or _QUANTITY_AFTER_RE.search(after):
             continue
         spans.append(match.span())
     return spans
+
+
+# A single named calendar construct without a year. Qualified forms are read first;
+# overlap checks below prevent their suffix from being interpreted on the caller's year.
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_WEEKDAY_ALT = "|".join(f"{day}|{day[:3]}" for day in _WEEKDAYS)
+_NAMED_PERIOD_RE = re.compile(
+    rf"\b(?:(?P<lead>in|for|during|on|since)\s+)?(?:the\s+)?"
+    rf"(?:(?:(?P<weekday>{_WEEKDAY_ALT})\.?\s+)?(?P<month>{_MONTH_ALT})\.?"
+    rf"(?:\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?)?"
+    r"|q(?P<quarter>[1-4])|h(?P<half>[12])"
+    r"|(?P<ordinal>first|second|third|fourth|1st|2nd|3rd|4th)\s+"
+    r"(?P<unit>quarter|half)(?!\s+hours?\b))\b"
+)
+_ALL_TIME_RE = re.compile(
+    r"\b(?:(?:of\s+)?all\s+time|ever|in\s+total|since\s+(?:launch|the\s+beginning|we\s+started)"
+    r"(?!\s+of\b)"
+    r"|(?:(?P<to_date_unit>day|week|month|quarter|year)[\s-]+)?to[\s-]+date)\b"
+)
+_NAMED_QUALIFIER_RE = re.compile(r"\b(?:early|late|mid)[\s-]*$")
+
+
+def _all_time_spans(lowered: str) -> list[tuple[int, int]]:
+    return [match.span() for match in _ALL_TIME_RE.finditer(lowered) if not match["to_date_unit"]]
+
+
+def _named_period_bounds(match: re.Match[str], year: int) -> dict[str, str]:
+    if match["month"]:
+        month = _MONTH_NUMBERS[match["month"]]
+        if match["day"]:
+            day = date(year, month, int(match["day"]))
+            return _day_window(day, day)
+        return {"start": _month_start(year, month), "end": _month_end_exclusive(year, month)}
+    number = int(match["quarter"] or match["half"] or _ORDINALS[match["ordinal"]])
+    if match["half"] or match["unit"] == "half":
+        return _half_window(number, year) if number <= 2 else {}
+    return _quarter_window(number, year)
+
+
+def _named_calendar_windows(
+    lowered: str,
+    today: date,
+    occupied: list[tuple[int, int]],
+) -> tuple[
+    list[tuple[tuple[int, int], dict[str, str], str]],
+    list[tuple[int, int]],
+    list[str],
+    list[tuple[tuple[int, int], str]],
+]:
+    """Resolve unqualified named periods; report ambiguity without selecting a reading."""
+
+    windows: list[tuple[tuple[int, int], dict[str, str], str]] = []
+    rejected: list[tuple[int, int]] = []
+    assumptions: list[str] = []
+    # Each reading with the span it reads, so an excluded phrase offers none.
+    readings: list[tuple[tuple[int, int], str]] = []
+    matches = list(_NAMED_PERIOD_RE.finditer(lowered))
+    for match in matches:
+        span = match.span()
+        if _overlaps(span, occupied):
+            continue
+        before, after = lowered[: span[0]], lowered[span[1] :]
+        boundary = _BOUNDARY_BEFORE_RE.search(before)
+        if (
+            boundary
+            or len(matches) > 1
+            or _NAMED_QUALIFIER_RE.search(before)
+            or _UNPARSED_RANGE_BEFORE_RE.search(before)
+            or _UNPARSED_RANGE_AFTER_RE.search(after)
+            or re.match(r"^\s*(?:,?\s*\d|of\b)", after)
+            or (_FISCAL_RE.search(lowered) and not match["day"])
+            or (match["weekday"] and not match["day"])
+        ):
+            rejected.append((boundary.start() if boundary else span[0], span[1]))
+            continue
+        # A month alone may name a person or promotion. Dates with a day need no lead.
+        if (
+            match["month"]
+            and not match["day"]
+            and not match["lead"]
+            and lowered.strip() != match[0]
+        ):
+            continue
+        bounds: dict[str, str] = {}
+        # Four prior years cover leap-day dates as well as ordinary dates.
+        for year in range(today.year, today.year - 5, -1):
+            try:
+                candidate = _named_period_bounds(match, year)
+            except ValueError:
+                continue
+            if candidate and candidate["start"] <= today.isoformat():
+                bounds = candidate
+                break
+        if not bounds:
+            rejected.append(span)
+            continue
+        start = date.fromisoformat(bounds["start"])
+        if match["weekday"] and match["weekday"][:3] != _WEEKDAYS[start.weekday()][:3]:
+            rejected.append(span)
+            readings.extend(
+                [
+                    (span, f"the stated weekday {match['weekday']}"),
+                    (span, f"{_WEEKDAYS[start.weekday()]} {start.isoformat()}"),
+                ]
+            )
+            continue
+        if match["lead"] == "since":
+            # Include only complete days. The explicit end survives execution on a later clock.
+            if bounds["start"] >= today.isoformat():
+                rejected.append(span)
+                continue
+            bounds = {"start": bounds["start"], "end": today.isoformat()}
+        elif bounds["end"] > today.isoformat():
+            rejected.append(span)
+            prior = {}
+            for year in range(start.year - 1, start.year - 5, -1):
+                try:
+                    prior = _named_period_bounds(match, year)
+                except ValueError:
+                    continue
+                if prior:
+                    break
+            current = (
+                f"{bounds['start']} (not a complete day yet)"
+                if start == today
+                else f"{bounds['start']} through {(today - timedelta(days=1)).isoformat()} (complete days)"
+            )
+            readings.extend(
+                [
+                    (span, current),
+                    (span, f"{prior['start']} to {prior['end']} (end exclusive)"),
+                ]
+            )
+            continue
+        windows.append((span, bounds, ""))
+        assumptions.append(
+            f"'{match[0]}' means {start.year}: {bounds['start']} to {bounds['end']} (end exclusive)."
+        )
+    return windows, rejected, assumptions, readings
 
 
 # Words that make a grouping term name a clock ("order date", "order month at month grain").

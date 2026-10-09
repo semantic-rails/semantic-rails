@@ -248,6 +248,7 @@ def _write_package(root: Path, *, rollup_safe: bool = False, extra_seed: str = "
     recipe = {
         "as": "metric.geo.order_amount",
         "kind": "derived",
+        "value_type": "number",
         "expression": {"measure": "measure.geo.amount"},
     }
     (pkg / "metrics.yml").write_text(yaml.safe_dump({"metrics": {"geo.order_amount": recipe}}))

@@ -653,7 +653,7 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
         assert discovered["measures"]
         assert discovered["dimension_values"]
         assert inspected["card"]["usage_summary"]["default_aggregation"] == "count_distinct"
-        assert inspected["card"]["default_metric_id"] == ""
+        assert "default_metric_id" not in inspected["card"]
         assert delivered_inspected["card"]["usage_summary"]["default_aggregation"] == "sum"
         assert build_options["stage"] == "post_measure"
         assert build_options["builder_step"] == "group_by"

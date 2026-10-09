@@ -32,19 +32,11 @@ from .compiler_parts.sql_lowering import _stock_clock_key_gap, _stock_snapshot_r
 from .compiler_parts.temporal import _expr_leaf_temporal_role_sets
 from .config import (
     SEED_KIND_EXTERNAL,
-    _merge_package_dir,
     get_package_path,
     load_package_config,
     package_root_for_source,
 )
-from .config_parts.shape_checks import (
-    _METRIC_KEYS,
-    _SEGMENT_KEYS,
-    _VALID_COMPILED_DIMENSION_KINDS,
-    _check_package_shapes,
-    _check_typed_field_enums,
-    add_error,
-)
+from .config_parts.shape_checks import _VALID_COMPILED_DIMENSION_KINDS, add_error
 from .diagnostics import (
     filter_value_miss,
     object_id_suggestions,
@@ -215,22 +207,20 @@ def _validate_runtime_package_file(source_path: Path) -> list[str]:
     raw = _load_yaml_safe(source_path, errors)
     if expect_mapping(raw, source_path.as_posix(), errors) is None:
         return errors
-    # Single-file parity: run the same raw-YAML authoring checks the
-    # directory validator runs (unknown keys, list-typed fields, enum
-    # values) before attempting the full load, so shape mistakes surface
-    # with targeted messages even when the load itself fails.
-    _check_package_shapes(raw, path_label=source_path.as_posix(), errors=errors)
-    raw_models = raw.get("models")
-    if isinstance(raw_models, dict):
-        _check_typed_field_enums(source_path.as_posix(), raw_models, errors)
     try:
         config = load_package_config(str(source_path))
     except Exception as exc:
-        if errors and isinstance(exc, SemanticLayerError) and exc.details.get("unknown_keys"):
-            return errors
-        add_error(errors, f"{source_path}: failed to load package config: {exc}")
-        return errors
+        return _load_failure(errors, source_path, exc)
     errors.extend(_compiled_package_errors(config, source_path))
+    return errors
+
+
+def _load_failure(errors: list[str], path: Path, exc: Exception) -> list[str]:
+    """The authoring errors loading refused the package for, one per line, or the failure."""
+    if isinstance(exc, SemanticLayerError) and exc.details.get("errors"):
+        errors.extend(exc.details["errors"])
+    else:
+        add_error(errors, f"{path}: failed to load package config: {exc}")
     return errors
 
 
@@ -276,10 +266,7 @@ def _validate_runtime_package_dir(path: Path) -> list[str]:
     try:
         config = load_package_config(str(path))
     except Exception as exc:
-        if errors and isinstance(exc, SemanticLayerError) and exc.details.get("unknown_keys"):
-            return errors
-        add_error(errors, f"{path}: failed to load package config: {exc}")
-        return errors
+        return _load_failure(errors, path, exc)
 
     if schema_version == 1 and config.package.package_id != path.name:
         add_error(
@@ -492,24 +479,13 @@ def _validate_split_package(
                 )
             elif relation_ref.startswith("relation.") or relation_ref in relation_refs:
                 relation_refs.add(relation_ref)
-            # Under the v1 authoring contract, the `entities:` block on a
-            # model declares the model's primary entity (and any FK refs).
-            # The loader translates `entities:` into the canonical
-            # `keys.primary:` form before runtime parsing — so when
-            # `entities:` is present and both `keys:` and `grain:` are
-            # omitted, that's valid authoring.
+            # A model lists its entities under `entities:`, and the loader derives its keys
+            # from them; a fact model declares time_entity and time_column instead.
             model_kind = str(model.get("kind", "model") or "model").strip().lower()
-            if model_kind == "fact":
-                # Fact models declare a time_entity + time_column instead
-                # of keys/grain — validated by the loader.
+            if model_kind == "fact" or ("entities" in model and model.get("keys") is None):
                 pass
-            elif "entities" in model and model.get("keys") is None and model.get("grain") is None:
-                pass  # v1 entities-block authoring; loader will derive keys.
             elif model.get("keys") is None:
-                grain = expect_list(model.get("grain"), f"{model_path}.grain", errors)
-                if grain is not None and not grain:
-                    add_error(errors, f"{model_path}.grain must not be empty when keys are omitted")
-                continue
+                add_error(errors, f"{model_path} must list its entities under entities:")
             else:
                 keys = expect_mapping(model.get("keys"), f"{model_path}.keys", errors)
                 if keys is None:
@@ -535,305 +511,7 @@ def _validate_split_package(
     if any("aliases" in doc for doc in alias_docs if isinstance(doc, dict)):
         add_error(errors, f"{path}: package authoring should not use a top-level aliases registry")
 
-    # Always-on enum checks for typed fields. A typo in `kind:` (e.g.
-    # `catagorical` for `categorical`) would otherwise be silently stored
-    # and yield a broken-but-loadable package — the worst class of
-    # authoring bug. Reject unknown values with a clear list of options.
-    _check_typed_field_enums(str(path), models, errors)
-
-    # Authoring-shape checks (unknown keys, wrong-typed fields) on the
-    # assembled blocks. Metric/segment specs come from the package's
-    # metrics/ and segments/ trees.
-    metrics_raw = _load_metric_files(path, errors)
-    segments_raw = _load_segment_files(path, errors)
-    _check_package_shapes(
-        {
-            "package": package_root.get("package"),
-            "graph": graph_root.get("graph"),
-            "models": models,
-            **_loader_metrics_and_segments(path, errors),
-        },
-        path_label=str(path),
-        errors=errors,
-        top_level=False,
-    )
-
-    # Strict-mode raw-YAML checks (gated behind package.schema_strict: true).
-    if bool(package.get("schema_strict", False)):
-        _check_strict_raw_yaml(
-            path,
-            package_root,
-            graph_root,
-            models,
-            errors,
-            metrics=metrics_raw,
-            segments=segments_raw,
-        )
-
     return errors
-
-
-def _loader_metrics_and_segments(path: Path, errors: list[str]) -> dict[str, Any]:
-    """The metric and segment specs the loader reads from a package directory.
-
-    Uses the loader's own source capture and merge, so the shape checks see every
-    supported layout (specs in package.yml, root metrics.yml and segments.yml, and
-    files under metrics/ and segments/: a mapping, a `metric:`/`segment:` wrapper or
-    a bare spec), skip the directories the loader skips, and check the copy the
-    loader keeps when a key is defined twice. If the merge fails, that is an error:
-    the checks can't run, even when a later load succeeds.
-    """
-    try:
-        source = capture_package_source(path)
-        merged = _merge_package_dir(source.source_path, captured=source)
-    except (
-        SemanticLayerError,
-        yaml.YAMLError,
-        OSError,
-        TypeError,
-        ValueError,
-        AttributeError,
-    ) as exc:
-        add_error(
-            errors, f"{path}: can't read the metric and segment specs to check their keys: {exc}"
-        )
-        return {"metrics": {}, "segments": {}}
-    return {"metrics": merged.get("metrics"), "segments": merged.get("segments")}
-
-
-def _load_metric_files(
-    package_path: Path, errors: list[str]
-) -> dict[str, tuple[Path, dict[str, Any]]]:
-    """Load every metric YAML under <package>/metrics/ into a flat map of
-    metric_key -> (file_path, raw_metric_dict). Used by strict-mode checks
-    to inspect authored fields like `topics:`."""
-    out: dict[str, tuple[Path, dict[str, Any]]] = {}
-    metrics_dir = package_path / "metrics"
-    if not metrics_dir.is_dir():
-        return out
-    for metric_file in sorted([*metrics_dir.rglob("*.yml"), *metrics_dir.rglob("*.yaml")]):
-        raw = _load_yaml_safe(metric_file, errors)
-        if not isinstance(raw, dict):
-            continue
-        metrics_block = raw.get("metrics")
-        if isinstance(metrics_block, dict):
-            for metric_key, metric_raw in metrics_block.items():
-                if isinstance(metric_raw, dict):
-                    out[str(metric_key)] = (metric_file, metric_raw)
-        elif isinstance(raw.get("metric"), dict):
-            metric_raw = raw["metric"]
-            metric_key = str(metric_raw.get("name") or metric_raw.get("id") or metric_file.stem)
-            out[metric_key] = (metric_file, metric_raw)
-    return out
-
-
-def _load_segment_files(
-    package_path: Path, errors: list[str]
-) -> dict[str, tuple[Path, dict[str, Any]]]:
-    """Load segment YAMLs into a flat map of segment_key -> (file, raw)."""
-    out: dict[str, tuple[Path, dict[str, Any]]] = {}
-    segments_dir = package_path / "segments"
-    if not segments_dir.is_dir():
-        return out
-    for segment_file in sorted([*segments_dir.rglob("*.yml"), *segments_dir.rglob("*.yaml")]):
-        raw = _load_yaml_safe(segment_file, errors)
-        if not isinstance(raw, dict):
-            continue
-        segments_block = raw.get("segments")
-        if isinstance(segments_block, dict):
-            for segment_key, segment_raw in segments_block.items():
-                if isinstance(segment_raw, dict):
-                    out[str(segment_key)] = (segment_file, segment_raw)
-        elif isinstance(raw.get("segment"), dict):
-            segment_raw = raw["segment"]
-            segment_key = str(segment_raw.get("name") or segment_raw.get("id") or segment_file.stem)
-            out[segment_key] = (segment_file, segment_raw)
-    return out
-
-
-_STRICT_LEGACY_KEYS_ON_OBJECTS = {
-    # Field name → migration message
-    # Applied to dimensions and measures.
-    "topics": "topics is metadata-only and dropped in v1; remove it",
-    "preferred_companion_metrics": "preferred_companion_metrics is advisory-only and dropped; remove it",
-}
-
-# Subset applied to metrics and segments. preferred_companion_metrics
-# stays on metrics (advisory governance metadata, see commit ef4c543).
-_STRICT_LEGACY_KEYS_ON_METRICS = {
-    "topics": "topics is metadata-only and dropped in v1; remove it",
-}
-
-
-def _check_strict_raw_yaml(
-    path: Path,
-    package_root: dict[str, Any],
-    graph_root: dict[str, Any],
-    models: dict[str, dict[str, Any]],
-    errors: list[str],
-    *,
-    metrics: dict[str, tuple[Path, dict[str, Any]]] | None = None,
-    segments: dict[str, tuple[Path, dict[str, Any]]] | None = None,
-) -> None:
-    """Reject legacy authoring forms when schema_strict: true.
-
-    Each rejection includes a migration pointer.
-    """
-    # 2. Top-level `relations:` block in canonical packages
-    if package_root.get("relations") not in (None, {}, []):
-        add_error(
-            errors,
-            f"{path / 'package.yml'}: top-level relations: block is experimental; "
-            f"omit it from canonical packages.",
-        )
-
-    # 4. Graph entity strict checks
-    graph = graph_root.get("graph", {}) or {}
-    for entity_key, entity_raw in (graph.get("entities") or {}).items():
-        if not isinstance(entity_raw, dict):
-            continue
-        if "id" in entity_raw:
-            add_error(
-                errors,
-                f"{path}: graph.entities.{entity_key}.id is auto-derived from key; "
-                f"remove it. Use 'as: <full_id>' only when preserving a public ID.",
-            )
-    # 5. Model strict checks
-    for model_id, model in models.items():
-        if not isinstance(model, dict):
-            continue
-        # Authored `id:` on the model
-        if "id" in model and str(model.get("id", "")).strip() != model_id:
-            add_error(
-                errors,
-                f"{path}: model {model_id!r} has authored 'id:' which differs from "
-                f"the mapping key; under schema_strict the key drives the id.",
-            )
-        # Authored model.grain when entities: block can derive it
-        if "entities" in model and "grain" in model:
-            add_error(
-                errors,
-                f"{path}: model {model_id!r} authors both 'entities:' and 'grain:'. "
-                f"Drop 'grain:' — it's derived from the primary entity's key.",
-            )
-        # Legacy singular `entity:` field (use `entities:` block instead)
-        if "entity" in model and "entities" not in model:
-            add_error(
-                errors,
-                f"{path}: model {model_id!r} authors the legacy singular 'entity:' "
-                f"field. Use the 'entities:' block instead.",
-            )
-        # Legacy `joins:` block (use graph.relationships overrides)
-        if "joins" in model:
-            add_error(
-                errors,
-                f"{path}: model {model_id!r} authors the legacy 'joins:' block. "
-                f"Move overrides to graph.relationships.<name>.",
-            )
-        # Legacy `keys.foreign:` block (use entities: block)
-        keys = model.get("keys") if isinstance(model.get("keys"), dict) else {}
-        if "foreign" in (keys or {}):
-            add_error(
-                errors,
-                f"{path}: model {model_id!r} authors keys.foreign: which is "
-                f"replaced by the entities: block (FK refs auto-derived).",
-            )
-        # Authored model.keys.primary when entities: derives it
-        if "entities" in model and "primary" in (keys or {}):
-            add_error(
-                errors,
-                f"{path}: model {model_id!r} authors keys.primary: alongside "
-                f"entities:; the entities block derives it.",
-            )
-
-        # Per-object strict checks (dimensions, measures, metrics)
-        for obj_kind, container in (
-            ("dimension", model.get("dimensions") or {}),
-            ("measure", model.get("measures") or {}),
-        ):
-            if not isinstance(container, dict):
-                continue
-            for obj_key, obj_raw in container.items():
-                if not isinstance(obj_raw, dict):
-                    continue
-                # Authored `id:` (use `as:` instead)
-                if "id" in obj_raw:
-                    add_error(
-                        errors,
-                        f"{path}: {obj_kind} {model_id}.{obj_key} authors 'id:'. "
-                        f"The id is auto-derived from the key; use 'as:' only to "
-                        f"preserve a public ID.",
-                    )
-                # Authored `name:` matching auto-derived (best-effort; we just
-                # flag any authored name as redundant under schema_strict).
-                # Soft check: if name equals the key or label-derived form, warn.
-                # (Skipped in strict-error mode; add as a warning if needed.)
-                # Discouraged metadata-only fields
-                for legacy_key, message in _STRICT_LEGACY_KEYS_ON_OBJECTS.items():
-                    if legacy_key in obj_raw:
-                        add_error(
-                            errors,
-                            f"{path}: {obj_kind} {model_id}.{obj_key}: {message}.",
-                        )
-
-        # Measure strict checks
-        for measure_key, measure_raw in (model.get("measures") or {}).items():
-            if not isinstance(measure_raw, dict):
-                continue
-            # Require explicit `kind:` on every measure under strict mode.
-            # Common values: aggregate, entity_count. Without it, the loader
-            # silently infers semantics from accumulation.kind, which makes
-            # authoring-intent ambiguous.
-            authored_kind = str(measure_raw.get("kind", "")).strip().lower()
-            if not authored_kind:
-                add_error(
-                    errors,
-                    f"{path}: measure {model_id}.{measure_key} omits 'kind:'. "
-                    f"Declare 'kind: aggregate' (most measures), 'kind: entity_count' "
-                    f"(distinct counts), or another canonical kind.",
-                )
-            accumulation = measure_raw.get("accumulation")
-            # accumulation enum
-            if isinstance(accumulation, str) and accumulation.strip().lower() not in {
-                "",
-                "flow",
-                "stock",
-                "event",
-                "population",
-            }:
-                add_error(
-                    errors,
-                    f"{path}: measure {model_id}.{measure_key} has accumulation "
-                    f"{accumulation!r}; allowed: flow, stock, event, population.",
-                )
-            elif isinstance(accumulation, dict):
-                acc_kind = str(accumulation.get("kind", "") or "").strip().lower()
-                if acc_kind and acc_kind not in {"flow", "stock", "event", "population"}:
-                    add_error(
-                        errors,
-                        f"{path}: measure {model_id}.{measure_key} has "
-                        f"accumulation.kind {acc_kind!r}; allowed: flow, stock, "
-                        f"event, population.",
-                    )
-
-    # Metric topics are dropped in v1 (keys outside _METRIC_KEYS are already reported as
-    # unknown). preferred_companion_metrics stays; see _STRICT_LEGACY_KEYS_ON_METRICS.
-    for metric_key, (metric_path, metric_raw) in (metrics or {}).items():
-        for legacy_key, message in _STRICT_LEGACY_KEYS_ON_METRICS.items():
-            if legacy_key in metric_raw and legacy_key in _METRIC_KEYS:
-                add_error(
-                    errors,
-                    f"{metric_path}: metric {metric_key!r}: {message}.",
-                )
-
-    # 7. Segment strict checks — the same legacy fields, where _SEGMENT_KEYS allows them.
-    for segment_key, (segment_path, segment_raw) in (segments or {}).items():
-        for legacy_key, message in _STRICT_LEGACY_KEYS_ON_METRICS.items():
-            if legacy_key in segment_raw and legacy_key in _SEGMENT_KEYS:
-                add_error(
-                    errors,
-                    f"{segment_path}: segment {segment_key!r}: {message}.",
-                )
 
 
 def _compiled_package_errors(config, source_path: Path) -> list[str]:
@@ -912,33 +590,8 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
                 )
 
     _check_disallowed_names(config, source_path, errors)
-    if getattr(config.package, "schema_strict", False):
-        _check_strict_authoring(config, source_path, errors)
 
     return [*errors, *_reference_errors(config, source_path)]
-
-
-def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> None:
-    """Compiled-side strict-mode checks.
-
-    Each rejection includes a clear migration pointer. Gated behind
-    package.schema_strict: true. Raw-YAML checks (e.g., authored `id:`
-    on objects, the top-level `relations:` block) live in
-    _check_strict_raw_yaml; the compiled-side checks here run
-    against the loaded PackageConfig and catch shape concerns the loader
-    already normalized away.
-    """
-    # 1. accumulation kind enum
-    allowed_accumulation = {"", "flow", "stock", "event", "population"}
-    for measure in config.measures:
-        kind = str(getattr(measure.accumulation, "kind", "") or "").strip().lower()
-        if kind not in allowed_accumulation:
-            add_error(
-                errors,
-                f"{source_path}: measure {measure.id} has accumulation.kind {kind!r} "
-                f"which is not in the strict enum {{flow, stock, event, population}}. "
-                f"Use one of those values or remove the accumulation block.",
-            )
 
 
 def _check_disallowed_names(config, source_path: Path, errors: list[str]) -> None:

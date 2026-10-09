@@ -38,7 +38,7 @@ def test_removed_rollup_setting_is_an_unknown_key(tmp_path: Path, layout, locati
     refusal = (
         "declare rollups under the model's `variants:`"
         if location == "aggregate"
-        else "unknown keys.*requires_certification"
+        else "unknown key 'requires_certification'"
     )
     with pytest.raises(SemanticLayerError, match=refusal) as caught:
         load_package_config(str(source))

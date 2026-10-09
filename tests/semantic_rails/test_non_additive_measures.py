@@ -47,7 +47,7 @@ def package_dir(tmp_path_factory) -> Path:
         package / "package.yml",
         f"schema_version: 1\npackage: {{id: {NS}, namespace: {NS}, name: {NS}, "
         f"warehouse: duckdb, default_db: data/{NS}.duckdb, seed: {{kind: external}}, "
-        "schema_strict: true, environments: [development]}\n",
+        "environments: [development]}\n",
     )
     _write(
         package / "graph.yml",
@@ -332,7 +332,7 @@ def test_additive_must_be_a_boolean_on_an_aggregate(tmp_path: Path, spec: str) -
     _write(
         package / "package.yml",
         "schema_version: 1\npackage: {id: bad, namespace: bad, name: bad, warehouse: duckdb, "
-        "seed: {kind: external}, schema_strict: true, environments: [development]}\n",
+        "seed: {kind: external}, environments: [development]}\n",
     )
     _write(package / "graph.yml", "graph:\n  entities:\n    thing: {key: [repo], model: things}\n")
     _write(

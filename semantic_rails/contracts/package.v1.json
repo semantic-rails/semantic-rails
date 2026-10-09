@@ -143,9 +143,6 @@
         "default_db": {
           "type": "string"
         },
-        "schema_strict": {
-          "type": "boolean"
-        },
         "environments": {
           "type": "array",
           "items": {

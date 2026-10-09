@@ -112,6 +112,18 @@ def _upkeep(path: Path, noun: str, measure: str, *, revisions: bool = False) -> 
                 },
             }
         },
+        "metrics.yml": {
+            "metrics": {
+                f"{measure}_cost": {
+                    "kind": "aggregate",
+                    "label": f"{measure.title()} cost",
+                    "measure": f"measure.upkeep.{measure}_cost",
+                    "aggregation": "sum",
+                    "temporal_role": f"temporal_role.upkeep_{noun}_reported_at",
+                    "value_type": "number",
+                }
+            }
+        },
     }
     for name, body in files.items():
         (path / name).write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
@@ -880,9 +892,10 @@ _BEFORE = [
     _Before("order count by customer type, order for Brooklyn store", OK, held=True),
     _Before("revenue by store, customer type and product type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("What was revenue by month, beside the revenue of the month before?", UNMATCHED),
+    # Its second clause points back at the first ("of it"), so the parts plan holds it.
     _Before(
         "What was revenue by month, and how much of it came from orders of 50 USD or more?",
-        UNMATCHED,
+        "PLAN_PARTS_HELD",
     ),
     _Before("order count by customer type, order", OK, held=True),
     _Before("order count by customer history, month", OK, held=True),

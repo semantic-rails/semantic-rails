@@ -213,6 +213,46 @@ tests:
       WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2023-12-01'
       GROUP BY store_id
       ORDER BY orders DESC, store_id ASC NULLS LAST LIMIT 1
+  shop/top-orders-by-revenue-rank-a-null-revenue-last:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Order 7's NULL revenue sorts after every value, so it never takes one of the three highest places.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#orderby]
+    tags: [null-vs-zero]
+    query:
+      select: [{expression: {measure: measure.shop.revenue}, as: revenue}]
+      group_by: [dimension.shop_order_id]
+      order_by: [{field: revenue, direction: DESC}]
+      limit: 3
+    expected_rows:
+      - {dimension.shop_order_id: 4, revenue: 20}
+      - {dimension.shop_order_id: 1, revenue: 10}
+      - {dimension.shop_order_id: 10, revenue: 9}
+    reference_sql: |
+      SELECT order_id, SUM(amount) AS revenue
+      FROM orders
+      GROUP BY order_id
+      ORDER BY revenue DESC NULLS LAST LIMIT 3
+  shop/bottom-orders-by-revenue-rank-a-null-revenue-last:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Order 7's NULL revenue sorts after every value in ascending order too, so it is not among the three lowest.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#orderby]
+    tags: [null-vs-zero]
+    query:
+      select: [{expression: {measure: measure.shop.revenue}, as: revenue}]
+      group_by: [dimension.shop_order_id]
+      order_by: [{field: revenue, direction: ASC}]
+      limit: 3
+    expected_rows:
+      - {dimension.shop_order_id: 11, revenue: 2}
+      - {dimension.shop_order_id: 9, revenue: 3}
+      - {dimension.shop_order_id: 6, revenue: 4}
+    reference_sql: |
+      SELECT order_id, SUM(amount) AS revenue
+      FROM orders
+      GROUP BY order_id
+      ORDER BY revenue ASC NULLS LAST LIMIT 3
   shop/pinned-output-refuses-another-advertised-clock:
     kind: validate_fails_with_code
     expect: refuse
@@ -490,6 +530,7 @@ tests:
     cites: *store_cites
     tags: [planner]
     intent: revenue by store
+    known_wrong: {planner: "The signup channel declares the value store, so the planner reads store as that value inside the grouping name and withholds execute readiness."}
     query: {select: *revenue, group_by: *store}
     expected_rows: [{dimension.shop_order_store_id: a, revenue: 43}, {dimension.shop_order_store_id: b, revenue: 25}, {dimension.shop_order_store_id: null, revenue: 6}]
     reference_sql: SELECT store_id, SUM(amount) FROM orders GROUP BY 1
@@ -504,6 +545,37 @@ tests:
     query: {select: *revenue, group_by: *store, where: [{field: dimension.shop_order_store_id, op: '=', value: b}]}
     expected_rows: [{dimension.shop_order_store_id: b, revenue: 25}]
     reference_sql: SELECT store_id, SUM(amount) FROM orders WHERE store_id = 'b' GROUP BY 1
+  shop/plan-signups-excluding-web:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An exclusion keeps the signups with no recorded channel, so customers 102, 104 and 107 (store) and 105 (no channel) remain.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [planner]
+    intent: signups excluding web
+    known_wrong: {planner: "Questions that exclude values hold until exclusion answers ship."}
+    query:
+      select: &signups [{expression: {measure: measure.shop.signup_count}, as: signup_count}]
+      where: &not_web [{field: dimension.shop_customer_channel, op: IS DISTINCT FROM, value: web}]
+    expected_rows: [{signup_count: 4}]
+    reference_sql: SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel IS DISTINCT FROM 'web'
+  shop/plan-signups-excluding-web-in-june-2024:
+    kind: query_matches_snapshot
+    expect: answer
+    why: In June 2024 only customer 106 (web, June 25) and customer 107 (store, June 10) signed up; excluding web keeps 107.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, tests/integration/correctness/shop/models/signups.yml#model.times.signed_up_at, docs/QUERY_IR_SCHEMA.md#wherefilter, docs/QUERY_IR_SCHEMA.md#timeblock]
+    tags: [planner, time-window]
+    intent: signups excluding web in June 2024
+    known_wrong: {planner: "Questions that exclude values hold until exclusion answers ship."}
+    query:
+      select: *signups
+      time: {temporal_role: temporal_role.shop_customer_signed_up_at, grain: month, start: '2024-06-01', end: '2024-07-01'}
+      where: *not_web
+    expected_rows: [{temporal_role.shop_customer_signed_up_at__month: '2024-06-01T00:00:00', signup_count: 1}]
+    reference_sql: |
+      SELECT CAST(date_trunc('month', signed_up_at) AS DATE), COUNT(DISTINCT customer_id) FROM signups
+      WHERE channel IS DISTINCT FROM 'web'
+        AND signed_up_at >= TIMESTAMP '2024-06-01' AND signed_up_at < TIMESTAMP '2024-07-01'
+      GROUP BY 1
 
   shop/plan-refunds-must-say-same-refund-or-separate:
     kind: validate_fails_with_code
@@ -1776,17 +1848,11 @@ tests:
       - {temporal_role.shop_order_ordered_at__year: '2023-01-01T00:00:00', revenue: 22}
       - {temporal_role.shop_order_ordered_at__year: '2024-01-01T00:00:00', revenue: 52}
   shop/utc-fiscal_quarter:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for utc fiscal quarter.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -1801,29 +1867,12 @@ tests:
         end: '2024-11-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.quarter_start) lo, MAX(CASE WHEN o.ordered_at <= (CURRENT_TIMESTAMP
-      AT TIME ZONE 'UTC') THEN c.quarter_start END) hi FROM orders o JOIN dim_fiscal c ON c.date_day = CAST(o.ordered_at
-      AS DATE)) SELECT f.quarter_start, COALESCE(SUM(o.amount), CASE WHEN f.quarter_start BETWEEN (SELECT lo FROM coverage)
-      AND (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f LEFT JOIN orders AS o ON f.date_day = CAST(o.ordered_at
-      AS DATE) WHERE f.date_day >= DATE '2023-08-01' AND f.date_day < DATE '2024-11-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-08-01T00:00:00', revenue: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-11-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-02-01T00:00:00', revenue: 12}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-05-01T00:00:00', revenue: 18}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-08-01T00:00:00', revenue: 2}
   shop/ny-fiscal_quarter:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for ny fiscal quarter.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: ny_authored
     query:
@@ -1838,31 +1887,12 @@ tests:
         end: '2024-11-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.quarter_start) lo, MAX(CASE WHEN ((o.ordered_at AT TIME ZONE 'UTC')
-      AT TIME ZONE 'America/New_York') <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York') THEN c.quarter_start END)
-      hi FROM orders o JOIN dim_fiscal c ON c.date_day = CAST(((o.ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')
-      AS DATE)) SELECT f.quarter_start, COALESCE(SUM(o.amount), CASE WHEN f.quarter_start BETWEEN (SELECT lo FROM coverage)
-      AND (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f LEFT JOIN orders AS o ON f.date_day = CAST(((o.ordered_at
-      AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') AS DATE) WHERE f.date_day >= DATE '2023-08-01' AND f.date_day
-      < DATE '2024-11-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-08-01T00:00:00', revenue: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-11-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-02-01T00:00:00', revenue: 12}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-05-01T00:00:00', revenue: 20}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-08-01T00:00:00', revenue: null}
   shop/date-fiscal_quarter:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for date fiscal quarter.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: date_authored
     query:
@@ -1877,30 +1907,12 @@ tests:
         end: '2024-11-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.quarter_start) lo, MAX(CASE WHEN CAST(o.order_date AS TIMESTAMP) <=
-      (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') THEN c.quarter_start END) hi FROM orders o JOIN dim_fiscal c ON c.date_day
-      = CAST(CAST(o.order_date AS TIMESTAMP) AS DATE)) SELECT f.quarter_start, COALESCE(SUM(o.amount), CASE WHEN f.quarter_start
-      BETWEEN (SELECT lo FROM coverage) AND (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f LEFT JOIN orders
-      AS o ON f.date_day = CAST(CAST(o.order_date AS TIMESTAMP) AS DATE) WHERE f.date_day >= DATE '2023-08-01' AND f.date_day
-      < DATE '2024-11-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-08-01T00:00:00', revenue: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-11-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-02-01T00:00:00', revenue: 12}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-05-01T00:00:00', revenue: 18}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-08-01T00:00:00', revenue: 2}
   shop/tz-fiscal_quarter:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for tz fiscal quarter.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: tz_authored
     query:
@@ -1915,30 +1927,12 @@ tests:
         end: '2024-11-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.quarter_start) lo, MAX(CASE WHEN (o.ordered_at_tz AT TIME ZONE 'UTC')
-      <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') THEN c.quarter_start END) hi FROM orders o JOIN dim_fiscal c ON c.date_day
-      = CAST((o.ordered_at_tz AT TIME ZONE 'UTC') AS DATE)) SELECT f.quarter_start, COALESCE(SUM(o.amount), CASE WHEN
-      f.quarter_start BETWEEN (SELECT lo FROM coverage) AND (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS
-      f LEFT JOIN orders AS o ON f.date_day = CAST((o.ordered_at_tz AT TIME ZONE 'UTC') AS DATE) WHERE f.date_day >=
-      DATE '2023-08-01' AND f.date_day < DATE '2024-11-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-08-01T00:00:00', revenue: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-11-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-02-01T00:00:00', revenue: 12}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-05-01T00:00:00', revenue: 18}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-08-01T00:00:00', revenue: 2}
   shop/utc-fiscal_year:
-    kind: query_matches_snapshot
-    expect: answer
-    why: Freeze the declared inputs and independent reference for utc fiscal year.
-    cites:
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
-      - tests/integration/correctness/conftest.py#CLOCKS
-      - tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.year_start
-      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
-      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
-      - docs/QUERY_IR_SCHEMA.md#timeblock
+    kind: validate_fails_with_code
+    expect: refuse
+    code: REWRITE_NOT_SUPPORTED
+    why: Authored non-default calendars are refused in this release; Gregorian buckets would carry fiscal labels.
+    cites: [tests/integration/correctness/shop/models/fiscal_calendar.yml#model.dimensions.quarter_start, docs/QUERY_IR_SCHEMA.md#timeblock]
     tags: [time-window]
     variant: utc_authored
     query:
@@ -1953,14 +1947,6 @@ tests:
         end: '2025-02-01'
         fill: true
         calendar_id: fiscal
-    reference_sql: WITH coverage AS (SELECT MIN(c.year_start) lo, MAX(CASE WHEN o.ordered_at <= (CURRENT_TIMESTAMP AT
-      TIME ZONE 'UTC') THEN c.year_start END) hi FROM orders o JOIN dim_fiscal c ON c.date_day = CAST(o.ordered_at AS
-      DATE)) SELECT f.year_start, COALESCE(SUM(o.amount), CASE WHEN f.year_start BETWEEN (SELECT lo FROM coverage) AND
-      (SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f LEFT JOIN orders AS o ON f.date_day = CAST(o.ordered_at
-      AS DATE) WHERE f.date_day >= DATE '2023-02-01' AND f.date_day < DATE '2025-02-01' GROUP BY 1
-    expected_rows:
-      - {temporal_role.shop_order_ordered_at__year: '2023-02-01T00:00:00', revenue: 42}
-      - {temporal_role.shop_order_ordered_at__year: '2024-02-01T00:00:00', revenue: 32}
   shop/null_store_group:
     kind: query_matches_snapshot
     expect: answer
@@ -7421,3 +7407,63 @@ tests:
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-01T00:00:00', seats: 1006}
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-08T00:00:00', seats: null}
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-15T00:00:00', seats: 0}
+
+  shop/plan-signups-in-latest-named-month:
+    kind: query_matches_snapshot
+    expect: answer
+    why: June is the latest completed June on the caller's July clock; only customers 106 and 107 signed up then.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/MCP_INTERFACE.md#plan]
+    tags: [planner, time-window]
+    intent: signups in June
+    partial_query: {policy_context: {now: '2024-07-05T06:00:00Z'}}
+    query:
+      select: [{as: signups, expression: {measure: measure.shop.signup_count}}]
+      time: {temporal_role: temporal_role.shop_customer_signed_up_at, grain: month, start: '2024-06-01', end: '2024-07-01'}
+    expected_rows: [{temporal_role.shop_customer_signed_up_at__month: '2024-06-01T00:00:00', signups: 2}]
+    reference_sql: |
+      SELECT date_trunc('month', signed_up_at), COUNT(DISTINCT customer_id) FROM signups
+      WHERE signed_up_at >= TIMESTAMP '2024-06-01' AND signed_up_at < TIMESTAMP '2024-07-01'
+      GROUP BY 1
+  shop/plan-signups-since-launch:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Since launch reads all seven authored signup events with no date bounds.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/MCP_INTERFACE.md#plan]
+    tags: [planner, time-window]
+    intent: signups since launch
+    partial_query: {policy_context: {now: '2024-07-05T06:00:00Z'}}
+    query:
+      select: [{as: signups, expression: {measure: measure.shop.signup_count}}]
+    expected_rows: [{signups: 7}]
+    reference_sql: SELECT COUNT(DISTINCT customer_id) FROM signups
+  shop/plan-signups-outside-june-excluding-store:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Non-store signups outside June are customers 101 and 103; a positive June window would incorrectly count only 106.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [planner, time-window]
+    intent: signups not in June
+    known_wrong: {planner: "The planner holds excluded time periods until it can represent their complement. This xfail can't tell that hold from a wrong number; tests/semantic_rails/test_plan_named_periods.py::test_excluded_period_never_becomes_a_positive_window pins the hold (PLAN_INTENT_COVERAGE_GAP, negation_unrealized on a time item)."}
+    partial_query:
+      policy_context: {now: '2024-07-05T06:00:00Z'}
+      where: [{field: dimension.shop_customer_channel, op: '!=', value: store}]
+    query:
+      select:
+        - as: signups
+          expression:
+            kind: arithmetic
+            op: subtract
+            left: {measure: measure.shop.signup_count}
+            right:
+              kind: aggregate
+              measure: measure.shop.signup_count
+              aggregation: count_distinct
+              filter:
+                all:
+                  - {field: dimension.shop_customer_signed_up_at, op: '>=', value: '2024-06-01'}
+                  - {field: dimension.shop_customer_signed_up_at, op: '<', value: '2024-07-01'}
+      where: [{field: dimension.shop_customer_channel, op: '!=', value: store}]
+    expected_rows: [{signups: 2}]
+    reference_sql: |
+      SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel <> 'store'
+      AND (signed_up_at < TIMESTAMP '2024-06-01' OR signed_up_at >= TIMESTAMP '2024-07-01')

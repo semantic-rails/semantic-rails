@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...naming import semantic_token as _semantic_token
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
     _preferred_measure,
     _preferred_metric,
     _resolved,
-    _semantic_token,
     _tokens,
 )
 from ..generators import _target_focus_text

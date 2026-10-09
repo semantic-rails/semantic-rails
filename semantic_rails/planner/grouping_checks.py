@@ -7,14 +7,13 @@ from dataclasses import replace
 from typing import Any
 
 from ..errors import SemanticLayerError
-from ._base import _NAME_CONNECTORS, _last_token, _object_by_id
+from ._base import _NAME_CONNECTORS, _last_token, _object_by_id, _strip_leading_rank_count
 from .generators import _grouping_term_matches
 from .groupings import (
     _grouping_matches,
     _is_temporal_grouping_term,
     _listed_grouping_terms,
     _name_forms,
-    _strip_leading_rank_count,
     _term_matches_value_domain,
 )
 from .plan_query import _validate_query, _where_filters

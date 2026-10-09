@@ -1,6 +1,6 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
-  "generated_at": "2026-10-08T17:04:45+00:00",
+  "generated_at": "2026-10-09T07:46:35+00:00",
   "questions": [
     {
       "comparable_layers": [
@@ -875,92 +875,92 @@
         "semantic_rails": [
           {
             "month": "2016-09-01",
-            "revenue_usd": 18053.279999999988,
+            "revenue_usd": 18053.279999999995,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-10-01",
-            "revenue_usd": 21923.95000000001,
+            "revenue_usd": 21923.950000000026,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-11-01",
-            "revenue_usd": 27916.82000000002,
+            "revenue_usd": 27916.81999999998,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-12-01",
-            "revenue_usd": 35677.60000000003,
+            "revenue_usd": 35677.600000000006,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-01-01",
-            "revenue_usd": 45017.94999999986,
+            "revenue_usd": 45017.94999999985,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-02-01",
-            "revenue_usd": 43358.11999999981,
+            "revenue_usd": 43358.11999999984,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-03-01",
-            "revenue_usd": 24857.99000000026,
+            "revenue_usd": 24857.990000000278,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-03-01",
-            "revenue_usd": 49092.32999999986,
+            "revenue_usd": 49092.329999999994,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-04-01",
-            "revenue_usd": 35420.2000000002,
+            "revenue_usd": 35420.200000000375,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-04-01",
-            "revenue_usd": 47896.789999999906,
+            "revenue_usd": 47896.789999999855,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-05-01",
-            "revenue_usd": 41481.23000000024,
+            "revenue_usd": 41481.23000000005,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-05-01",
-            "revenue_usd": 54589.11999999989,
+            "revenue_usd": 54589.11999999987,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-06-01",
-            "revenue_usd": 47980.20999999977,
+            "revenue_usd": 47980.209999999635,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-06-01",
-            "revenue_usd": 50398.65999999979,
+            "revenue_usd": 50398.659999999814,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-07-01",
-            "revenue_usd": 44886.44000000002,
+            "revenue_usd": 44886.43999999999,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-07-01",
-            "revenue_usd": 49970.74999999973,
+            "revenue_usd": 49970.749999999556,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-08-01",
-            "revenue_usd": 47657.12000000015,
+            "revenue_usd": 47657.120000000075,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-08-01",
-            "revenue_usd": 59714.46999999948,
+            "revenue_usd": 59714.46999999926,
             "store_name": "Brooklyn"
           }
         ],
@@ -2030,11 +2030,11 @@
         ],
         "semantic_rails": [
           {
-            "aov_usd": 12.085946890286664,
+            "aov_usd": 12.085946890286632,
             "store_name": "Brooklyn"
           },
           {
-            "aov_usd": 12.739104407255542,
+            "aov_usd": 12.739104407255514,
             "store_name": "Philadelphia"
           }
         ],
@@ -3522,51 +3522,51 @@
         ],
         "semantic_rails": [
           {
-            "delivered_revenue": 107371.59000000352,
+            "delivered_revenue": 107371.59000000416,
             "month": "2017-08-01"
           },
           {
-            "delivered_revenue": 18053.279999999988,
+            "delivered_revenue": 18053.28,
             "month": "2016-09-01"
           },
           {
-            "delivered_revenue": 21923.95000000001,
+            "delivered_revenue": 21923.950000000026,
             "month": "2016-10-01"
           },
           {
-            "delivered_revenue": 27916.82000000002,
+            "delivered_revenue": 27916.81999999998,
             "month": "2016-11-01"
           },
           {
-            "delivered_revenue": 35677.60000000003,
+            "delivered_revenue": 35677.600000000006,
             "month": "2016-12-01"
           },
           {
-            "delivered_revenue": 43358.11999999981,
+            "delivered_revenue": 43358.11999999984,
             "month": "2017-02-01"
           },
           {
-            "delivered_revenue": 45017.94999999986,
+            "delivered_revenue": 45017.94999999985,
             "month": "2017-01-01"
           },
           {
-            "delivered_revenue": 73950.32000000034,
+            "delivered_revenue": 73950.32000000047,
             "month": "2017-03-01"
           },
           {
-            "delivered_revenue": 83316.99000000139,
+            "delivered_revenue": 83316.99000000133,
             "month": "2017-04-01"
           },
           {
-            "delivered_revenue": 94857.19000000211,
+            "delivered_revenue": 94857.1900000026,
             "month": "2017-07-01"
           },
           {
-            "delivered_revenue": 96070.3500000028,
+            "delivered_revenue": 96070.35000000334,
             "month": "2017-05-01"
           },
           {
-            "delivered_revenue": 98378.8700000027,
+            "delivered_revenue": 98378.87000000346,
             "month": "2017-06-01"
           }
         ],
@@ -4524,22 +4524,22 @@
           {
             "customer_segment": null,
             "month": "2016-09-01",
-            "revenue_usd": 17477.699999999975
+            "revenue_usd": 17477.69999999999
           },
           {
             "customer_segment": null,
             "month": "2016-10-01",
-            "revenue_usd": 21277.359999999993
+            "revenue_usd": 21277.360000000015
           },
           {
             "customer_segment": null,
             "month": "2016-11-01",
-            "revenue_usd": 27428.18000000002
+            "revenue_usd": 27428.179999999975
           },
           {
             "customer_segment": null,
             "month": "2016-12-01",
-            "revenue_usd": 34952.610000000044
+            "revenue_usd": 34952.61
           },
           {
             "customer_segment": null,
@@ -4549,37 +4549,37 @@
           {
             "customer_segment": null,
             "month": "2017-02-01",
-            "revenue_usd": 42834.49999999981
+            "revenue_usd": 42834.49999999987
           },
           {
             "customer_segment": null,
             "month": "2017-03-01",
-            "revenue_usd": 73321.77000000025
+            "revenue_usd": 73321.77000000034
           },
           {
             "customer_segment": null,
             "month": "2017-04-01",
-            "revenue_usd": 82682.07000000132
+            "revenue_usd": 82682.07000000126
           },
           {
             "customer_segment": null,
             "month": "2017-05-01",
-            "revenue_usd": 95395.17000000276
+            "revenue_usd": 95395.17000000329
           },
           {
             "customer_segment": null,
             "month": "2017-06-01",
-            "revenue_usd": 97728.07000000266
+            "revenue_usd": 97728.0700000034
           },
           {
             "customer_segment": null,
             "month": "2017-07-01",
-            "revenue_usd": 94105.69000000205
+            "revenue_usd": 94105.69000000255
           },
           {
             "customer_segment": null,
             "month": "2017-08-01",
-            "revenue_usd": 106851.15000000346
+            "revenue_usd": 106851.15000000411
           }
         ],
         "snowflake_semantic_views": [
@@ -17031,92 +17031,92 @@
         "semantic_rails": [
           {
             "month": "2016-09-01",
-            "qualifying_revenue_usd": 6080.059999999985,
+            "qualifying_revenue_usd": 6080.059999999977,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-10-01",
-            "qualifying_revenue_usd": 10002.659999999987,
+            "qualifying_revenue_usd": 10002.659999999994,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-11-01",
-            "qualifying_revenue_usd": 14757.669999999982,
+            "qualifying_revenue_usd": 14757.669999999998,
             "store_name": "Philadelphia"
           },
           {
             "month": "2016-12-01",
-            "qualifying_revenue_usd": 19451.92000000001,
+            "qualifying_revenue_usd": 19451.919999999984,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-01-01",
-            "qualifying_revenue_usd": 24923.48000000006,
+            "qualifying_revenue_usd": 24923.479999999978,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-02-01",
-            "qualifying_revenue_usd": 20033.920000000046,
+            "qualifying_revenue_usd": 20033.919999999995,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-03-01",
-            "qualifying_revenue_usd": 27524.64000000006,
+            "qualifying_revenue_usd": 27524.64000000003,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-03-01",
-            "qualifying_revenue_usd": 7047.029999999903,
+            "qualifying_revenue_usd": 7047.0299999999,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-04-01",
-            "qualifying_revenue_usd": 19418.830000000053,
+            "qualifying_revenue_usd": 19418.830000000118,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-04-01",
-            "qualifying_revenue_usd": 22774.04999999993,
+            "qualifying_revenue_usd": 22774.049999999937,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-05-01",
-            "qualifying_revenue_usd": 24180.960000000257,
+            "qualifying_revenue_usd": 24180.960000000323,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-05-01",
-            "qualifying_revenue_usd": 29219.309999999983,
+            "qualifying_revenue_usd": 29219.309999999976,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-06-01",
-            "qualifying_revenue_usd": 19267.01000000019,
+            "qualifying_revenue_usd": 19267.010000000173,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-06-01",
-            "qualifying_revenue_usd": 19678.33000000001,
+            "qualifying_revenue_usd": 19678.330000000038,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-07-01",
-            "qualifying_revenue_usd": 20318.680000000033,
+            "qualifying_revenue_usd": 20318.680000000015,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-07-01",
-            "qualifying_revenue_usd": 22613.710000000243,
+            "qualifying_revenue_usd": 22613.710000000356,
             "store_name": "Brooklyn"
           },
           {
             "month": "2017-08-01",
-            "qualifying_revenue_usd": 24424.960000000046,
+            "qualifying_revenue_usd": 24424.96000000001,
             "store_name": "Philadelphia"
           },
           {
             "month": "2017-08-01",
-            "qualifying_revenue_usd": 35339.080000000555,
+            "qualifying_revenue_usd": 35339.08000000044,
             "store_name": "Brooklyn"
           }
         ],
@@ -18235,32 +18235,32 @@
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 106851.15000000346,
+            "delivered_revenue": 106851.15000000411,
             "month": "2017-08-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 17477.699999999983,
+            "delivered_revenue": 17477.69999999999,
             "month": "2016-09-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 21277.359999999993,
+            "delivered_revenue": 21277.360000000015,
             "month": "2016-10-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 27428.18000000002,
+            "delivered_revenue": 27428.179999999975,
             "month": "2016-11-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 34952.610000000044,
+            "delivered_revenue": 34952.61,
             "month": "2016-12-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 42834.49999999981,
+            "delivered_revenue": 42834.49999999987,
             "month": "2017-02-01"
           },
           {
@@ -18270,27 +18270,27 @@
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 73321.77000000025,
+            "delivered_revenue": 73321.77000000034,
             "month": "2017-03-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 82682.07000000132,
+            "delivered_revenue": 82682.07000000126,
             "month": "2017-04-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 94105.69000000205,
+            "delivered_revenue": 94105.69000000255,
             "month": "2017-07-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 95395.17000000276,
+            "delivered_revenue": 95395.17000000329,
             "month": "2017-05-01"
           },
           {
             "customer_segment": null,
-            "delivered_revenue": 97728.07000000266,
+            "delivered_revenue": 97728.0700000034,
             "month": "2017-06-01"
           }
         ],
@@ -18580,23 +18580,23 @@
         "semantic_rails": [
           {
             "month": "2016-09-01",
-            "trailing_3_month_revenue_usd": 18053.279999999988
+            "trailing_3_month_revenue_usd": 18053.279999999995
           },
           {
             "month": "2016-10-01",
-            "trailing_3_month_revenue_usd": 39977.229999999996
+            "trailing_3_month_revenue_usd": 39977.230000000025
           },
           {
             "month": "2016-11-01",
-            "trailing_3_month_revenue_usd": 67894.05000000002
+            "trailing_3_month_revenue_usd": 67894.05
           },
           {
             "month": "2016-12-01",
-            "trailing_3_month_revenue_usd": 85518.37000000005
+            "trailing_3_month_revenue_usd": 85518.37000000001
           },
           {
             "month": "2017-01-01",
-            "trailing_3_month_revenue_usd": 108612.36999999991
+            "trailing_3_month_revenue_usd": 108612.36999999984
           },
           {
             "month": "2017-02-01",
@@ -18604,27 +18604,27 @@
           },
           {
             "month": "2017-03-01",
-            "trailing_3_month_revenue_usd": 162326.39
+            "trailing_3_month_revenue_usd": 162326.39000000016
           },
           {
             "month": "2017-04-01",
-            "trailing_3_month_revenue_usd": 200625.43000000154
+            "trailing_3_month_revenue_usd": 200625.43000000165
           },
           {
             "month": "2017-05-01",
-            "trailing_3_month_revenue_usd": 253337.66000000454
+            "trailing_3_month_revenue_usd": 253337.66000000515
           },
           {
             "month": "2017-06-01",
-            "trailing_3_month_revenue_usd": 277766.2100000069
+            "trailing_3_month_revenue_usd": 277766.2100000081
           },
           {
             "month": "2017-07-01",
-            "trailing_3_month_revenue_usd": 289306.4100000076
+            "trailing_3_month_revenue_usd": 289306.4100000094
           },
           {
             "month": "2017-08-01",
-            "trailing_3_month_revenue_usd": 300607.65000000835
+            "trailing_3_month_revenue_usd": 300607.6500000102
           }
         ]
       },
@@ -18843,62 +18843,62 @@
           {
             "month": "2016-09-01",
             "prior_month_revenue_usd": null,
-            "revenue_usd": 18053.279999999988
+            "revenue_usd": 18053.279999999995
           },
           {
             "month": "2016-10-01",
-            "prior_month_revenue_usd": 18053.279999999988,
-            "revenue_usd": 21923.95000000001
+            "prior_month_revenue_usd": 18053.279999999995,
+            "revenue_usd": 21923.950000000026
           },
           {
             "month": "2016-11-01",
-            "prior_month_revenue_usd": 21923.95000000001,
-            "revenue_usd": 27916.82000000002
+            "prior_month_revenue_usd": 21923.950000000026,
+            "revenue_usd": 27916.81999999998
           },
           {
             "month": "2016-12-01",
-            "prior_month_revenue_usd": 27916.82000000002,
-            "revenue_usd": 35677.60000000003
+            "prior_month_revenue_usd": 27916.81999999998,
+            "revenue_usd": 35677.600000000006
           },
           {
             "month": "2017-01-01",
-            "prior_month_revenue_usd": 35677.60000000003,
-            "revenue_usd": 45017.94999999986
+            "prior_month_revenue_usd": 35677.600000000006,
+            "revenue_usd": 45017.94999999985
           },
           {
             "month": "2017-02-01",
-            "prior_month_revenue_usd": 45017.94999999986,
-            "revenue_usd": 43358.11999999981
+            "prior_month_revenue_usd": 45017.94999999985,
+            "revenue_usd": 43358.11999999984
           },
           {
             "month": "2017-03-01",
-            "prior_month_revenue_usd": 43358.11999999981,
-            "revenue_usd": 73950.32000000034
+            "prior_month_revenue_usd": 43358.11999999984,
+            "revenue_usd": 73950.32000000047
           },
           {
             "month": "2017-04-01",
-            "prior_month_revenue_usd": 73950.32000000034,
-            "revenue_usd": 83316.99000000139
+            "prior_month_revenue_usd": 73950.32000000047,
+            "revenue_usd": 83316.99000000133
           },
           {
             "month": "2017-05-01",
-            "prior_month_revenue_usd": 83316.99000000139,
-            "revenue_usd": 96070.3500000028
+            "prior_month_revenue_usd": 83316.99000000133,
+            "revenue_usd": 96070.35000000334
           },
           {
             "month": "2017-06-01",
-            "prior_month_revenue_usd": 96070.3500000028,
-            "revenue_usd": 98378.8700000027
+            "prior_month_revenue_usd": 96070.35000000334,
+            "revenue_usd": 98378.87000000346
           },
           {
             "month": "2017-07-01",
-            "prior_month_revenue_usd": 98378.8700000027,
-            "revenue_usd": 94857.19000000211
+            "prior_month_revenue_usd": 98378.87000000346,
+            "revenue_usd": 94857.1900000026
           },
           {
             "month": "2017-08-01",
-            "prior_month_revenue_usd": 94857.19000000211,
-            "revenue_usd": 107371.59000000352
+            "prior_month_revenue_usd": 94857.1900000026,
+            "revenue_usd": 107371.59000000416
           }
         ]
       },
@@ -19181,62 +19181,62 @@
           {
             "large_order_revenue_usd": 10121.24,
             "month": "2017-06-01",
-            "revenue_usd": 98378.8700000027
+            "revenue_usd": 98378.87000000346
           },
           {
-            "large_order_revenue_usd": 10629.82,
+            "large_order_revenue_usd": 10629.819999999998,
             "month": "2017-08-01",
-            "revenue_usd": 107371.59000000352
+            "revenue_usd": 107371.59000000416
           },
           {
-            "large_order_revenue_usd": 12161.109999999991,
+            "large_order_revenue_usd": 12161.109999999995,
             "month": "2017-07-01",
-            "revenue_usd": 94857.19000000211
+            "revenue_usd": 94857.1900000026
           },
           {
-            "large_order_revenue_usd": 2192.04,
+            "large_order_revenue_usd": 2192.0400000000004,
             "month": "2016-11-01",
-            "revenue_usd": 27916.82000000002
+            "revenue_usd": 27916.81999999998
           },
           {
-            "large_order_revenue_usd": 2376.5,
+            "large_order_revenue_usd": 2376.5000000000005,
             "month": "2016-09-01",
-            "revenue_usd": 18053.279999999988
+            "revenue_usd": 18053.279999999995
           },
           {
             "large_order_revenue_usd": 2642.5700000000006,
             "month": "2016-10-01",
-            "revenue_usd": 21923.95000000001
+            "revenue_usd": 21923.950000000026
           },
           {
             "large_order_revenue_usd": 3549.9199999999987,
             "month": "2016-12-01",
-            "revenue_usd": 35677.60000000003
+            "revenue_usd": 35677.600000000006
           },
           {
             "large_order_revenue_usd": 4959.6900000000005,
             "month": "2017-02-01",
-            "revenue_usd": 43358.11999999981
+            "revenue_usd": 43358.11999999984
           },
           {
-            "large_order_revenue_usd": 5175.900000000001,
+            "large_order_revenue_usd": 5175.899999999999,
             "month": "2017-01-01",
-            "revenue_usd": 45017.94999999986
+            "revenue_usd": 45017.94999999985
           },
           {
-            "large_order_revenue_usd": 6553.239999999999,
+            "large_order_revenue_usd": 6553.240000000002,
             "month": "2017-03-01",
-            "revenue_usd": 73950.32000000034
+            "revenue_usd": 73950.32000000047
           },
           {
-            "large_order_revenue_usd": 7801.520000000001,
+            "large_order_revenue_usd": 7801.520000000003,
             "month": "2017-05-01",
-            "revenue_usd": 96070.3500000028
+            "revenue_usd": 96070.35000000334
           },
           {
-            "large_order_revenue_usd": 9694.400000000005,
+            "large_order_revenue_usd": 9694.4,
             "month": "2017-04-01",
-            "revenue_usd": 83316.99000000139
+            "revenue_usd": 83316.99000000133
           }
         ]
       },

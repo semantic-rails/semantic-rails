@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from ..ast import _parse_now, _relative_range_bounds
 from ..errors import SemanticLayerError
 from ._base import _tokens
+from .exclusions import excluded_time_spans
 from .time_phrases import (
     _BOUNDARY_BEFORE_RE,
     _COMPARISON_GUARD,
@@ -25,8 +26,10 @@ from .time_phrases import (
     _TIME_UNIT_ALT,
     _YEAR_SPAN_RE,
     _YEAR_TOKEN_RE,
+    _all_time_spans,
     _AsOfCue,
     _calendar_windows,
+    _named_calendar_windows,
     _overlaps,
     _relative_window,
     _time_cues,
@@ -170,6 +173,11 @@ class _TimeWindow:
     # another phrase left the question unresolved.
     windows: tuple[tuple[tuple[int, int], dict[str, Any]], ...] = ()
     as_of: tuple[_AsOfCue, ...] = ()
+    # Time phrases an exclusion names ("signups not in June 2024"): never a positive window,
+    # so each is reported unresolved.
+    excluded: tuple[tuple[int, int], ...] = ()
+    # Explicit alternatives for a named current period or a mismatched weekday.
+    readings: tuple[str, ...] = ()
 
 
 def _phrase(lowered: str, span: tuple[int, int]) -> str:
@@ -308,6 +316,35 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     for row in relative:
         if not _overlaps(row[0], [item[0] for item in windows]):
             windows.append(row)
+    named, named_rejected, assumptions, named_readings = _named_calendar_windows(
+        interval_text, today, [row[0] for row in windows] + rejected + [cue.span for cue in as_of]
+    )
+    windows.extend(named)
+    rejected.extend(named_rejected)
+    all_time = _all_time_spans(interval_text)
+    windows.extend((span, {}, "") for span in all_time)
+    # A time phrase an exclusion names is no window the question asks for.
+    candidates = [row[0] for row in windows]
+    for span in [*rejected, *_time_cues(lowered), *(cue.span for cue in as_of)]:
+        if not _overlaps(span, candidates):
+            candidates.append(span)
+    excluded = tuple(excluded_time_spans(lowered, candidates))
+    rejected += [row[0] for row in windows if row[0] in excluded]
+    windows = [row for row in windows if row[0] not in excluded]
+    # An excluded phrase is held as excluded, never offered as a reading to choose.
+    readings = [text for span, text in named_readings if not _overlaps(span, list(excluded))]
+    # "Ever" and "in total" emphasize one bounded window; other all-time forms
+    # still conflict with it. Record the intensifiers' exact spans for consumption.
+    intensifiers = []
+    if sum(bool(row[1]) for row in windows) == 1:
+        intensifiers = [
+            span
+            for span, bounds, _unit in windows
+            if not bounds and " ".join(lowered[span[0] : span[1]].split()) in {"ever", "in total"}
+        ]
+        windows = [row for row in windows if row[0] not in intensifiers]
+    if any(not row[1] for row in windows):
+        assumptions.append("all time: no start date")
     windows.sort(key=lambda row: row[0])
     covered = [row[0] for row in windows]
     unread = [cue.span for cue in as_of] + [
@@ -321,7 +358,6 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             unresolved_spans.append((prior_start, max(prior_end, end)))
         else:
             unresolved_spans.append((start, end))
-    assumptions: list[str] = []
     if len(windows) > 1 and _is_restatement(lowered, windows):
         span = (windows[0][0][0], windows[-1][0][1])
         windows = [(span, windows[0][1], next((row[2] for row in windows if row[2]), ""))]
@@ -329,7 +365,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
     unresolved_spans += [match.span() for match in _YEAR_COMPARISON_RE.finditer(lowered)]
     # Longest cues first, so a year inside "4/3/2017" isn't reported twice.
     for span in sorted(_time_cues(lowered), key=lambda item: item[0] - item[1]):
-        if not _overlaps(span, covered + unresolved_spans):
+        if not _overlaps(span, covered + intensifiers + unresolved_spans):
             unresolved_spans.append(span)
     # A window shorter than a day is reported, never dropped to all time.
     sub_day = [
@@ -338,7 +374,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         if not _overlaps(match.span(), covered)
     ]
     unresolved_spans += [span for span in sub_day if not _overlaps(span, unresolved_spans)]
-    time_spans = tuple(sorted(covered + unresolved_spans))
+    time_spans = tuple(sorted(covered + intensifiers + unresolved_spans))
     if unresolved_spans or len(windows) > 1:
         # Report every time phrase, resolved or not: resolving part of an
         # ambiguous question would answer a different one.
@@ -356,6 +392,8 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
             windows=tuple((row[0], dict(row[1])) for row in windows),
             as_of=as_of,
+            excluded=excluded,
+            readings=tuple(readings),
         )
     if not windows:
         return _TimeWindow()

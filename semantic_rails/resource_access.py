@@ -445,6 +445,9 @@ def _restricted_plan(
 
 
 _GRANTED_WARNING_KEYS = {
+    # Coverage is read under the caller's row filters; measure IDs occur in both text
+    # and details, so the whole warning is dropped unless every named measure is granted.
+    "NO_DATA_YET": frozenset({"code", "severity", "stage", "message", "object_ids", "details"}),
     # runtime.py _no_data_in_scope_warnings: fixed text, caller output aliases,
     # and the warning's own object_ids; details contains only those output aliases.
     "NO_DATA_IN_SCOPE": frozenset(

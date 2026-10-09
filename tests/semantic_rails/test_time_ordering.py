@@ -6,12 +6,17 @@ import pytest
 
 from semantic_rails.compiler import _compile_query_sql_ast, compile_query, lower_to_sql
 from semantic_rails.compiler_parts import sql_lowering
-from semantic_rails.dialects import supported_warehouses
+from semantic_rails.dialects import dialect_for_warehouse, supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 
 ROLE = "temporal_role.jaffle_order_time"
 TIME = f"{ROLE}__month"
 GROUPS = ["dimension.jaffle_store_name", "dimension.jaffle_store_id"]
+
+
+def _refuses_fill(warehouse, fill):
+    # Every fill uses the implicit calendar; an authored one takes no part.
+    return fill and not dialect_for_warehouse(warehouse).has_implicit_calendar
 
 
 def _query(*, fill=False, groups=(), **extra):
@@ -33,6 +38,10 @@ def test_default_order_is_time_then_authored_groups(
 ):
     config, _ = package_config_factory("jaffle_shop")
     config = replace(config, package=replace(config.package, warehouse=warehouse))
+    if _refuses_fill(warehouse, fill):
+        with pytest.raises(SemanticLayerError, match="no implicit calendar"):
+            compile_query(config, None, _query(fill=fill, groups=groups, limit=3))
+        return
     compiled = compile_query(config, None, _query(fill=fill, groups=groups, limit=3))
     expected = [TIME, *groups, "orders"]
     assert [(o.expression.parts, o.direction) for o in compiled["sql_ast"].order_by] == [
@@ -58,11 +67,12 @@ def test_explicit_order_wins_without_extra_tiebreakers(
 ):
     config, _ = package_config_factory("jaffle_shop")
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    compiled = compile_query(
-        config,
-        None,
-        _query(fill=fill, groups=GROUPS, order_by=[{"field": field, "direction": "DESC"}]),
-    )
+    query = _query(fill=fill, groups=GROUPS, order_by=[{"field": field, "direction": "DESC"}])
+    if _refuses_fill(warehouse, fill):
+        with pytest.raises(SemanticLayerError, match="no implicit calendar"):
+            compile_query(config, None, query)
+        return
+    compiled = compile_query(config, None, query)
     assert len(compiled["sql_ast"].order_by) == 1
     assert compiled["sql_ast"].order_by[0].direction == "DESC"
 

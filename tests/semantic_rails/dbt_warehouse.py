@@ -82,7 +82,6 @@ def write_orders_package(
                 "warehouse": "duckdb",
                 "default_db": "data/warehouse.duckdb",
                 "seed": seed,
-                "schema_strict": True,
             },
         },
     )

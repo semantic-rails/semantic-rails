@@ -804,10 +804,7 @@ def _measure_change(
         value_type = _kept_choice("Result type", _VALUE_TYPES, current.get("value_type"), "number")
         if existing:
             _warn_on_new_aggregation(
-                load_package_config(ref.source_path),
-                _row_id(existing),
-                aggregation,
-                authored={_row_id(row) for row in _inventory_items(inventory, "metric")},
+                load_package_config(ref.source_path), _row_id(existing), aggregation
             )
         measure = {
             **current,
@@ -1369,38 +1366,26 @@ def _kept_choice(label: str, options: list[tuple[str, str]], saved: Any, fallbac
     return _author_choice(label, options, default=listed or saved)
 
 
-def _warn_on_new_aggregation(
-    config: PackageConfig, measure_id: str, aggregation: str, *, authored: set[str]
-) -> None:
-    """Warn when an edit changes a measure's default aggregation, naming the metrics it changes.
-
-    A loaded metric that isn't ``authored`` was published from a measure by the loader,
-    which spells out the measure's default aggregation.
-    """
+def _warn_on_new_aggregation(config: PackageConfig, measure_id: str, aggregation: str) -> None:
+    """Warn when an edit changes a measure's default aggregation, naming the metrics it changes."""
 
     measure = next((row for row in config.measures if row.id == measure_id), None)
     if measure is None or measure.default_aggregation == aggregation.lower():
         return
     changed: set[str] = set()
 
-    def uses(node: Any, published: bool) -> bool:
+    def uses(node: Any) -> bool:
         """The node aggregates the measure by its default, or reads a metric that does."""
         if isinstance(node, MetricRecipeRefExpr):
             return node.metric_recipe in changed
         if getattr(node, "measure", None) == measure_id:
-            return published or not getattr(node, "aggregation", "")
+            return not getattr(node, "aggregation", "")
         if isinstance(node, list | tuple):
-            return any(uses(item, published) for item in node)
-        return is_dataclass(node) and any(
-            uses(getattr(node, part.name), published) for part in fields(node)
-        )
+            return any(uses(item) for item in node)
+        return is_dataclass(node) and any(uses(getattr(node, part.name)) for part in fields(node))
 
     rows = config.metric_recipes
-    while more := {
-        row.id
-        for row in rows
-        if row.id not in changed and uses(row.expression, row.id not in authored)
-    }:
+    while more := {row.id for row in rows if row.id not in changed and uses(row.expression)}:
         changed |= more
     print(
         f"[warning] This changes the default aggregation from "

@@ -130,7 +130,7 @@
         "field": { "type": "string", "description": "Dimension id (not a column name)." },
         "op": {
           "type": "string",
-          "enum": ["=", "!=", "<", "<=", ">", ">=", "IN", "NOT IN", "LIKE", "NOT LIKE", "IS NULL", "IS NOT NULL"],
+          "enum": ["=", "!=", "<", "<=", ">", ">=", "IN", "NOT IN", "LIKE", "NOT LIKE", "IS NULL", "IS NOT NULL", "IS DISTINCT FROM"],
           "default": "="
         },
         "value": {
@@ -507,10 +507,10 @@
       "description": "Shorthand: ``{kind: 'prior_period', measure: <id>, offset: <signed int>, grain: <unit>}``. The runtime normalises this to the IR shape; the sign of ``offset`` indicates direction (negative = backward, the typical case).",
       "properties": {
         "kind": { "type": "string", "const": "prior_period" },
-        "measure": { "type": "string", "description": "Measure id. The shorthand wraps this as an aggregate with the supplied ``aggregation`` (default ``sum``)." },
+        "measure": { "type": "string", "description": "Measure id. The shorthand reads as ``input: {measure: <id>, aggregation?}``." },
         "offset": { "type": "integer", "description": "Signed integer offset. Use ``-1`` for the immediately prior period at the named grain." },
         "grain": { "type": "string", "enum": ["day", "week", "month", "quarter", "year"] },
-        "aggregation": { "type": "string", "description": "Aggregation for the wrapped measure. Defaults to ``sum``." }
+        "aggregation": { "type": "string", "description": "Aggregation for the wrapped measure. Defaults to the measure's default aggregation." }
       }
     },
     "RollingExpr": {

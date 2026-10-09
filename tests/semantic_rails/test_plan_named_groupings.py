@@ -61,7 +61,6 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
         "package.yml": {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "retail",
                 "namespace": "retail",
                 "name": "Retail",

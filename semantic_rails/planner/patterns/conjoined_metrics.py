@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from ...config_parts.measure_governance import whole_aggregate
+from ...naming import semantic_token as _semantic_token
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
+    _governed_target,
     _name_matches,
     _object_by_id,
     _resolved,
-    _semantic_token,
     _tokens,
 )
 from ..coverage import CoverageGap, _coverage_why
@@ -21,7 +22,7 @@ from ..groupings import _explicit_grain, _maybe_group_by, _time_spec
 from ..qualifiers import _add_order
 from ..time_windows import _time_window
 from ._protocol import IntentPattern
-from .metric_by_dimension_rollup import _TIME_SERIES_PHRASES, _governed_target
+from .metric_by_dimension_rollup import _TIME_SERIES_PHRASES
 
 
 def _clock(config: Any, row: Any) -> str:
@@ -66,9 +67,11 @@ def _part_query(
     query = _normalize_value_filters(
         query, _matched_value_rows(runtime, query, filter_text), text=filter_text
     )
+    # A part swaps only to the bare governed aggregate, on its own clock.
     governed = _governed_target(config, phrase, query)
     if (
         governed is not None
+        and whole_aggregate(governed) is not None
         and (query.get("time") or {}).get("temporal_role", "") == governed.temporal_role
     ):
         target = governed

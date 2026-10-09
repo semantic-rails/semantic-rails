@@ -48,6 +48,7 @@ def adapter(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SemanticLayerM
         "as": FILTERED,
         "label": "Adele-ade then chai (28d)",
         "kind": "conversion",
+        "value_type": "number",
         "temporal_role": "temporal_role.jaffle_order_time",
         "expression": {
             "kind": "conversion",

@@ -96,6 +96,21 @@ def runtime(tmp_path_factory):
             }
         )
     )
+    (root / "metrics.yml").write_text(
+        yaml.safe_dump(
+            {
+                "metrics": {
+                    "records": {
+                        "kind": "aggregate",
+                        "label": "Records",
+                        "measure": "measure.nulls.records",
+                        "aggregation": "count_distinct",
+                        "value_type": "count",
+                    }
+                }
+            }
+        )
+    )
     (root / "graph.yml").write_text(
         yaml.safe_dump({"graph": {"entities": {"record": {"key": ["id"], "model": "records"}}}})
     )

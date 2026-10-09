@@ -22,8 +22,8 @@ import yaml
 
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import RuntimeCompositionDraft
-from semantic_rails.planner.groupings import _requested_grouping_spans, _requested_grouping_terms
+from semantic_rails.planner._base import RuntimeCompositionDraft, _requested_grouping_spans
+from semantic_rails.planner.groupings import _requested_grouping_terms
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.planner.unmatched_words import (

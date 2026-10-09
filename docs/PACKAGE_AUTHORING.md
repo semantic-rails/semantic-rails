@@ -82,17 +82,23 @@ that file nor a relation pipeline. It doesn't pre-tick `_cents` columns as money
 amounts: as currency they would print cents as dollars. Publish them in dollars
 with a measure such as `amount_cents / 100.0`.
 
-Rolling windows, prior periods and growth fill empty periods from a calendar. At
-query time a package without one uses the engine's implicit Gregorian calendar
-(QUERY_IR_SCHEMA "Which calendar fills"); author one for fiscal or custom periods,
-Sunday weeks, or a ClickHouse package. `author metric` offers these metrics only
-once the package has a calendar. A calendar
-is a model whose graph entity has `kind: time`: one row per day in a `date_day`
-column, plus `week_start`, `month_start`, `quarter_start` and `year_start` date
-columns for the coarser units (see `models/core/calendar.yml` in the bundled
-package). An authored default calendar replaces the implicit one for every grain,
-so a grain whose column it lacks is refused. `author calendar` writes it from your
-date-spine table.
+Rolling windows, prior periods and growth fill empty periods from the engine's
+implicit Gregorian calendar (QUERY_IR_SCHEMA "Which calendar fills"), whether or
+not the package authors a calendar; ClickHouse has none, so it refuses them.
+`author metric` offers these metrics only once the package has a calendar. A
+calendar is a model whose graph entity has `kind: time`: one row per day in a
+`date_day` column, plus `week_start`, `month_start`, `quarter_start` and
+`year_start` date columns (see `models/core/calendar.yml` in the bundled package).
+`author calendar` writes it from your date-spine table. Its columns are ordinary
+dimensions: an authored default calendar's `date_day` and `week_start` to
+`year_start` columns are not used for bucketing, so weeks are ISO Monday weeks
+even if its `week_start` names Sundays.
+
+Fiscal and other non-default calendars (a `calendar_id` other than `default`) are
+not supported in this release. A query that names one, or that sets a `grain` on a
+time whose model is bound to one, refuses with `REWRITE_NOT_SUPPORTED`
+(`details.reason: calendar_not_supported_yet`); authored fiscal calendars return in
+a later release.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh
@@ -174,7 +180,7 @@ Two rules apply to directory packages:
 configs/semantic_rails/<package>/    # directory name must match package.id
   package.yml          # identity, warehouse, connection, seeds, defaults
   graph.yml            # canonical entities and explicit relationships
-  defaults.yml         # optional — package-wide defaults merged before models
+  defaults.yml         # optional — package-wide defaults, instead of package.yml `defaults:`
   policies.yml         # optional — visibility / access / release labels
   caveats.yml          # optional — advisory interpretation context
   models/              # one file per warehouse table or mart
@@ -189,8 +195,30 @@ configs/semantic_rails/<package>/    # directory name must match package.id
     <test>.yml
 ```
 
-The loader merges every YAML file under `models/**`, `metrics/**`, and
-`segments/*` into a single `PackageConfig`.
+The loader merges every YAML file under `models/**`, `relations/**`, `metrics/**`
+and `segments/**` into a single `PackageConfig`. At the root it reads only
+`package.yml`, the block files `defaults.yml`, `graph.yml`, `relations.yml`,
+`metrics.yml`, `segments.yml`, `policies.yml` and `caveats.yml`, and those four
+directories; the package tools read `examples/` and `tests/`. Loading refuses any
+other root YAML file or root directory holding YAML (a `policies/` directory, a
+`notes.yml`, a `defaults.yaml`), because its contents would be silently ignored;
+write tests and examples as files under `tests/` and `examples/`, not in a root
+`tests.yml` or `examples.yml`. A name that starts with `_` or `.` stays ignored.
+
+The loader doesn't follow directory symlinks, so loading refuses one anywhere in the
+package that could hide package input (a `policies -> ../shared/policies` link, a symlinked
+`models/` or `models/core/`) unless its root name starts with `_` or `.`. A link could hide
+input when it is or sits under `models/`, `relations/`, `metrics/`, `segments/`,
+`examples/` or `tests/`, or when its target holds a `.yml` or `.yaml` file, a directory
+symlink or a directory it can't read. Copy the directory or link its files instead: a file
+symlink is read like any other file. A link to a folder of data files only, such as
+`data -> ../shared/data` holding the warehouse file or seeds, loads, and Architect writes
+and `semantic-rails project upgrade` leave it in place.
+
+Each block and each object is read from one place. Loading refuses a block declared
+both in `package.yml` and in its own file (a `defaults:` block beside `defaults.yml`),
+and an object id defined twice (a model in `package.yml` `models:` and in a file under
+`models/`, or in two files), instead of letting one replace the other.
 
 ## What the loader does for you
 
@@ -276,14 +304,11 @@ model:
   id: orders
   label: Orders
   relation: shop_order
-  # grain: is derived — the graph's `model:` pointer marks this model as
-  # primary for `order`. In schema_strict DIRECTORY packages, authoring
-  # `grain:` alongside `entities:` is rejected ("Drop 'grain:'"). In
-  # single-file packages both are accepted (`grain:` explicitly pins
-  # the primary entity).
+  # The graph's `model:` pointer marks this model as primary for `order`;
+  # the order key keys its rows.
 
   entities:
-    order: {}                         # primary (grain = graph's order.key)
+    order: {}                         # primary (rows keyed by graph's order.key)
     customer: {}                      # FK reference; column = graph's customer_id
 
   times:
@@ -315,7 +340,6 @@ model:
       default_agg: sum
       accumulation: { kind: flow }
       value_type: currency
-      publish: false                  # metric defined explicitly below
 ```
 
 ```yaml
@@ -378,7 +402,6 @@ package:
   warehouse: duckdb               # or snowflake
   default_db: data/shop.duckdb    # required for duckdb
   seed: { kind: sql_script, source: data/seed.sql }
-  schema_strict: true             # opt-in v1 strict validation (recommended)
 
 defaults:
   dimension: { groupable: true, filterable: true }
@@ -387,8 +410,8 @@ defaults:
     supported_grains: [day, week, month, quarter, year]
 ```
 
-`schema_strict: true` turns on strict v1 validation (see the
-[Validation profile](#validation-profile) section). Recommended for new packages.
+Every package is checked with one set of authoring rules when it loads, in every layout;
+see [Refused legacy forms](#refused-legacy-forms) for the shapes earlier releases accepted.
 
 `defaults.observation_scope` sets where a sum or count is judged to have data, so that a
 group with no rows reads `0` rather than `NULL`. `dataset` (the default) judges it across the
@@ -663,11 +686,11 @@ and `action`, even when empty. Each kind also accepts only:
 
 Unknown keys, nested `config:`, and `visibility`, `rule`, or `description` aliases
 are refused with `INVALID_CONFIG`, including policies built in Python. Use
-`semantic-rails project upgrade` to preview the `policy-flat` alias rewrite and
-`policy-redact-deny` action rewrite. These refused legacy forms currently report
-`unverified`, so `--write` refuses them. Nested scope or identity fields, disagreeing
-alias values, and action rewrites that would change release labels are stops with
-no choices. Nested row filters remain refused and need a flat row authored by hand. Action text is trimmed and lowercased;
+`semantic-rails project upgrade` to rewrite them: the `policy-flat` alias rewrite and
+the `policy-redact-deny` action rewrite are `certified` rules for forms this engine
+refuses, so `--write` applies them with the package's other legacy forms. Nested scope or
+identity fields, disagreeing alias values, and action rewrites that would change release
+labels are stops with no choices. Nested row filters remain refused and need a flat row authored by hand. Action text is trimmed and lowercased;
 kind names must match exactly.
 
 - **`package_release`** — labels the package's release status. `label`
@@ -891,8 +914,7 @@ whole package, so hiding an object never removes or changes a `deny`,
   still apply. A caller's route decision is refused under a row filter on any package route
   for that pair, including routes hidden from them; time-filter refusals under a row filter
   read the whole package too, and either refusal discloses only policy ids visible in the
-  caller's view. `default_metric_id` names a metric only when that metric exists in the
-  caller's view; otherwise it is empty.
+  caller's view.
 
 The guarantee: a hidden object's id, names, aliases and authored text appear on no response
 to the caller, over MCP, HTTP or the CLI; a reference to it gets the error a reference to an
@@ -1019,7 +1041,7 @@ the package exposes, their key column names, and any non-default relationships
 between them.
 
 Each graph entity must have a key, declared on the entity or through its own
-model's `keys.primary:` or `grain:`. An explicit graph model binding makes that
+model's `keys.primary:`. An explicit graph model binding makes that
 entity the model's primary entity, regardless of the order of its `entities:` block. A
 conflicting resolved `entity:` fails with `INVALID_CONFIG` naming both entities,
 including for implicit bindings and bindings by model name. A
@@ -1158,8 +1180,8 @@ model:
   id: order_items
   label: Order Items
   relation: shop_order_item
-  # No grain: — graph.entities.order_item.model: order_items marks this
-  # model as the primary home of order_item.
+  # graph.entities.order_item.model: order_items marks this model as the
+  # primary home of order_item.
 
   entities:
     order_item: {}                      # primary
@@ -1212,35 +1234,24 @@ model:
     customer: { expr: cust_id }              # FK, column renamed
 ```
 
-The **primary entity** of a model is resolved without authoring `grain:`:
-`graph.entities.<x>.model:` names the model that is the primary home of each
-entity (the jaffle and tpch packages author it this way), and an omitted row grain
-is derived from that entity's canonical key. Single-file packages may instead pin
-the primary by authoring `grain:` — the entity whose key matches the grain is
-primary. Under `schema_strict`, directory packages reject
-`grain:` authored alongside an `entities:` block ("Drop 'grain:' — it's derived
-from the primary entity's key"); single-file packages accept both.
+The **primary entity** of a model is the entity whose `graph.entities.<x>.model:`
+names the model (the jaffle and tpch packages author it this way), and the model's rows
+are keyed by that entity's canonical key, or its `expr:` override.
 
-Without an explicit graph model binding, the loader resolves the primary from
-an authored singular `entity:`, then a matching grain, then an entity listed in
-the model's `entities:` block whose name matches the model and which has no
-explicit graph binding. It back-fills implicit graph bindings from the resolved
-identity. Declaration order never selects the primary; loading fails with
-`INVALID_CONFIG` if it cannot be resolved or two graph entities bind to one model.
-If multiple entity keys match the grain, bind the model in the graph or set
-`entity:`; otherwise loading fails with `INVALID_CONFIG` naming the model and
-matching entities.
-Two models claiming the same unbound graph entity also fail with `INVALID_CONFIG`
-naming both models. An explicit graph `model:` binding fixes primary identity
-independently of an authored `grain:`. That grain describes measure rows and may
-differ from the entity key (for example, payment rows belonging to one receipt,
-or snapshot rows keyed by their clock). It never replaces the bound entity's key.
-Without an explicit graph binding, when `grain:` accompanies an `entities:` block,
-it must match the resolved primary entity's `expr:` override or canonical graph
-key, including when a singular `entity:` supplies the identity. When neither
-declares columns, the check uses the model's own `keys.primary:`. If no key is declared,
-its own model's grain can supply it. Empty `entities:` blocks retain the graph's
-model-name default and still validate the grain.
+Without an explicit graph model binding, the loader resolves the primary from an
+authored `entity:` beside the `entities:` block, then an entity listed in the
+model's `entities:` block whose name matches the model and which has no explicit
+graph binding. It back-fills implicit graph bindings from the resolved identity.
+Declaration order never selects the primary; loading fails with `INVALID_CONFIG`
+if it cannot be resolved or two graph entities bind to one model. Two models
+claiming the same unbound graph entity also fail with `INVALID_CONFIG` naming both
+models.
+
+Rows finer than an entity are an entity of their own: several payments of one
+order, or one snapshot of a repository per day. Key that entity by its rows
+(`[order_id, payment_id]`, `[repo, snapshot_date]`), bind it to the model, and list
+the parent entity in the model's `entities:` block so the relationship to it is
+inferred. A model `grain:` is refused (see [Refused legacy forms](#refused-legacy-forms)).
 
 ### `bridge:` — link tables and junction tables
 
@@ -1252,7 +1263,7 @@ changes no route and no answer, and the package's semantic fingerprint records i
 Set `bridge: false` on the entities block when the model is a junction or partial
 bridge that should not be auto-used as a multi-hop join path. The model then
 synthesizes none of its `entities:` joins, so its own lookups to the entities it
-lists are gone too: author a `joins:` entry for each one a question needs.
+lists are gone too: author a `graph.relationships` row for each one a question needs.
 
 ```yaml
 model:
@@ -1443,7 +1454,10 @@ check below but still sums). Give the snapshot time `class: as_of_time`.
 
 `plan` reads such a balance on one day of that clock: the last complete day when a question
 names none ("What's our MRR?"), or the closing day of the period it names ("at the end of last
-month"); see "How plan reads a balance" in [MCP_INTERFACE.md](MCP_INTERFACE.md#plan). To have
+month"); see "How plan reads a balance" in [MCP_INTERFACE.md](MCP_INTERFACE.md#plan). A metric
+that wraps a stock (`COALESCE(<filtered last_value>, 0)`, arithmetic over it, a scoped
+aggregate) is answered only for complete days: `plan` holds a draft of it that reads today, or
+an open window, with `stock_as_of_unrealized`. To have
 every query read a balance per day, declare a `metric_constraint` on the stock with
 `required_group_by: [<the clock's date dimension>]` (and `supported_grains: [day]` on the
 clock if weeks or months are never meaningful). `plan` then adds that grouping to its drafts,
@@ -1597,7 +1611,7 @@ Each answer carries a `parent_lookup` rewrite step (`REWRITE_APPLIED`) naming `f
 and the relationships it used. Interchange export leaves lookups out as unsupported.
 
 `clock_variants`, `comparison_peers` and `preferred_filter_ops` are unsupported authoring
-keys and are refused with `INVALID_CONFIG` in every validation profile. Cards omit them.
+keys and are refused with `INVALID_CONFIG`. Cards omit them.
 
 ## Metrics
 
@@ -1659,10 +1673,9 @@ there fails validation, even `--mode parse` ("metric … references unknown meas
 'revenue_usd'; did you mean 'measure.shop.revenue_usd'?"). Metric references inside
 an AST (`{kind: metric, metric: revenue_usd}`) still resolve package-relative.
 
-With `schema_strict: true`, every authored metric needs an explicit, nonblank string
-`value_type:` in either a directory or single-file package. `number` is valid when
-intentional, including on ratio and derived metrics. Without strict validation,
-an omitted authored value defaults to `number`.
+Every authored metric needs an explicit, nonblank string `value_type:` in either a
+directory or single-file package. `number` is valid when intentional, including on
+ratio and derived metrics.
 
 ### Filtered aggregates — author via the `expression:` AST
 
@@ -1710,8 +1723,7 @@ A filtered metric is often the governed form of a measure that also counts rows 
 package leaves out: `Active stores` keeps the retail stores of an `Active stores (all kinds)`
 count. `plan` answers a question that names such a metric with the metric, and holds a draft
 that reads the measure instead (see `governed_metric_unrealized` in
-[MCP_INTERFACE.md](MCP_INTERFACE.md)). In a strict package, author an unoffered measure
-with `publish: false`:
+[MCP_INTERFACE.md](MCP_INTERFACE.md)). Author an unoffered measure with `publish: false`:
 
 ```yaml
 measures:
@@ -1723,19 +1735,54 @@ measures:
     publish: false        # answered through the metrics that filter it
 ```
 
-Under `schema_strict`, a measure authored `publish: false` is not offered to agents: `discover`
-doesn't list it, and `plan` doesn't answer with it unless `partial_query.select` names it by
-id. When a metric reads it through a filter, it is a building block. `plan` answers with the
-metric when it is the only one that filters the measure or the question names it, and otherwise
-holds the draft. `inspect` and Query IR still take the measure by id. Without
-`schema_strict`, `publish: false` also keeps the loader from publishing the measure as a metric
-of its own name. A metric that aggregates
+A measure authored `publish: false` is not offered to agents: `discover` doesn't list it,
+and `plan` doesn't answer with it unless `partial_query.select` names it by id. When a metric
+reads it through a filter, it is a building block. `plan` answers with the metric when it is
+the only one that filters the measure or the question names it, and otherwise holds the
+draft. `inspect` and Query IR still take the measure by id. A measure never publishes a
+metric of its own name, and `publish:` is `true` or `false` only. A metric that aggregates
 the measure whole publishes it. `plan` also holds a draft over a published measure while a metric
 filters its rows on a dimension of the measure's entity, such as a class; to count every row,
 select the measure by id, or filter or group by that class dimension. A metric's narrowing
 dimensions are those of the measure's entity it filters on. Only when it has none are they
 the dimensions on entities reached through many-to-one or one-to-one relationships (for
 example a team's class read from a daily team fact) that its aggregates of this measure filter on.
+
+The metric `plan` answers with must be a governed form of the measure: one aggregate of it,
+at the draft's aggregation, through a filter, either bare (as above) or as the first argument
+of `COALESCE(<aggregate>, 0)`, the usual way to report a count as 0 rather than `NULL` for a
+period without rows:
+
+```yaml
+metrics:
+  calls:
+    label: Calls
+    kind: derived
+    value_type: count
+    temporal_role: temporal_role.crm_call_called_at
+    expression:
+      kind: call
+      name: COALESCE
+      args:
+        - kind: aggregate
+          measure: measure.crm.calls_all      # a publish: false building block
+          aggregation: count_distinct
+          filter:
+            all:
+              - {field: dimension.crm_account_segment, op: "=", value: customer}
+        - {kind: literal, value: 0}
+```
+
+Any other wrapper, filler or argument is not a governed form, so `plan` keeps the measure
+and holds the draft. The swap applies to every single-subject `plan` draft, from any pattern
+or the catalog fallback, before validation and readiness, and only when the caller's
+`partial_query` has no `select`, the draft doesn't filter or group by a dimension the metric's
+filter reads, and the draft has no time block (the metric is then read over all time) or one
+on the metric's own clock. Readiness then decides the swapped draft like any other. A part of
+a compound question ("calls and callers") and a semi-additive measure swap only to the bare
+governed form, and a compound part only on the metric's own clock. For a semi-additive measure
+that form is a plain aggregate with a `filter` (not a `scoped_aggregate`), the one form its
+read day is shaped for.
 
 ### Long-tail kind — `derived` (expression AST)
 
@@ -1805,30 +1852,30 @@ keys in both layouts, with `INVALID_CONFIG`. Retired `primitive`, parent-rollup,
 relationship-weight, and `null_behavior` keys use the generic unknown-key errors
 (`INVALID_EXPRESSION_KEY` for keys inside expressions).
 
-## Validation profile
+## Refused legacy forms
 
-When `schema_strict: true` is set on the package, the loader rejects the
-authoring forms below with clear errors and migration pointers. Authored metric
-shape and `value_type:` validation runs in both directory and single-file layouts
-before loader defaults. The other raw-YAML strict checks run for directory
-packages; single-file packages skip that pass but still get compiled-config
-checks (which is why the `init` starter can author `grain:` alongside `entities:`).
+Every package is checked with one set of authoring rules when it loads, in every layout, so
+`validate-config`, `serve` and the MCP server refuse the same package. Earlier releases
+accepted the forms below; each is refused with `INVALID_CONFIG` and one hint naming the current
+form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
+([Upgrading a package](#upgrading-a-package)).
 
-| Rejected | Use instead |
-|---|---|
-| `id:` on semantic objects (graph entities, dimensions, measures) | Auto-derived from `namespace + key`; use `as:` only to preserve a public reference. Does NOT apply to model files — `model.id:` is the model's identity field in the directory layout (in single-file form, an authored model `id:` is only rejected when it differs from the `models:` mapping key) |
-| `name:` matching the auto-derived value | Remove — auto-derived from key |
-| Duplicate date/timestamp dimension when `times:` covers the same column | Drop the dimension; loader auto-creates it |
-| Sibling `snapshot_policy:` (refused in every mode) | Nested `accumulation: { kind: stock, snapshot: end_of_period }` for a stock measure |
-| Model-level `entity:` (singular) + `keys.foreign:` + `joins:` blocks | `model.entities:` block; explicit overrides in `graph.relationships:` |
-| Authored `model.grain:` alongside an `entities:` block (directory packages; single-file packages accept both) | Derived from the primary entity's key via `graph.entities.<x>.model:` |
-| Names appearing in any entity's `disallowed_names:` | Use the canonical column or `expr:` rename |
-| `accumulation:` value not in `{flow, stock, event, population}` | Use the canonical enum |
-| Metric with absent, null, empty or whitespace-only `value_type:` (both layouts) | Declare a nonblank string explicitly; `number` is valid when intentional, including for ratio or derived metrics |
-| Buried `expression:` AST on metric kinds with direct named fields | Use direct fields (`kind: derived` and `kind: conversion` keep the AST) |
-| `measure.preferred_companion_metrics` | Drop on measures; allowed on metrics as advisory governance metadata |
-| `topics:` on any object | Drop — no validation, no scaling pattern |
-| `policy.kind: plan_constraint` | Drop — runtime no-op (the real kinds are `package_release`, `object_visibility`, `object_access`, `protected_object`, `metric_constraint`, `row_filter`) |
+| Refused | Current form | Upgrade rule |
+|---|---|---|
+| `package.schema_strict` (either value) | Delete it: one set of rules applies to every package | `package-schema-strict` |
+| A measure `publish:` mapping (`publish: {id: ..., label: ...}`) | Author the metric under `metrics:`; a measure never publishes one of its own name. `publish: false` still marks an [unoffered measure](#building-block-measures). A measure with no `publish:` key or with `publish: true` no longer publishes its metric either, and the upgrade can't detect it: [author those metrics by hand](#metrics-a-measure-published-implicitly) | `measure-auto-publish` |
+| `id:` on a graph entity, dimension or measure | The key derives the id; `as:` only to keep a public id | `object-as` |
+| A model `grain:` | The bound entity's key keys the model's rows; rows finer than an entity are an [entity of their own](#graphyml) | `model-grain` |
+| A singular `entity:` without `entities:`; `keys.foreign:`; `keys.primary:` beside `entities:` | List the model's entities under `entities:` | `model-primary-key` |
+| A model `joins:` block | One `graph.relationships` row per join | `model-joins` |
+| A model `id:` that differs from its key in a `models:` map | Delete it: the key is the model's id | |
+| `topics:` on a dimension, measure, metric or segment; `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) | |
+| A measure without `kind:` | `kind: aggregate`, `entity_count` or `lookup` | |
+| A metric with an absent, null or blank `value_type:` | Declare it; `number` is valid when intentional | |
+| `relations:` in a directory package's `package.yml` | `relations.yml` or `relations/` | |
+| Sibling `snapshot_policy:` | Nested `accumulation: { kind: stock, snapshot: end_of_period }` | `authoring-aliases` |
+| An `accumulation:` kind outside `{flow, stock, event, population}` | One of those kinds | |
+| A dimension or measure named in an entity's `disallowed_names:` | The canonical column, or an `expr:` rename | |
 
 Warnings (advisory only):
 
@@ -1842,6 +1889,24 @@ Warnings (advisory only):
   compatible temporal roles.
 - Entity pairs a question can need have two or more routes and no recorded
   decision (`ROUTES_UNDECIDED`; see [the route census](#route-census-and-route-changes)).
+
+### Metrics a measure published implicitly
+
+In a package that did not set `schema_strict: true`, a measure with no `publish:` key or with
+`publish: true` used to publish `metric.<namespace>.<measure>`. It no longer does: callers,
+saved queries and metric references that name such an id fail with an unknown-object error.
+`project upgrade` can't tell such a package from a current one and may report `up_to_date`, so
+author a metric under `metrics:` for each such id still in use. For a `revenue` measure in the
+`shop` namespace, this keeps `metric.shop.revenue`:
+
+```yaml
+metrics:
+  revenue:                  # the key derives metric.shop.revenue
+    label: Revenue
+    kind: aggregate
+    measure: revenue
+    value_type: currency
+```
 
 ## Path-finding behavior (entity hopping)
 
@@ -2318,8 +2383,7 @@ the default time role's column. Transaction queries use the model's `relation`.
 model:
   id: orders
   relation: order_fact
-  grain: [order_id]
-  entities:
+  entities:                           # graph.entities.order.model: orders
     order: {}
     customer: {}
     store: {}
@@ -2389,7 +2453,7 @@ Routing is conservative in the MVP:
   stock (semi-additive) measures, run on the base tables.
 - A `count_distinct` routes across rollup rows only when it counts the
   single-column row key of a model that isn't a fact model (for example distinct
-  `order_id` on an orders model with `grain: [order_id]`). Distinct counts of
+  `order_id` on an orders model keyed by `order_id`). Distinct counts of
   anything else, such as customers or one column of a composite key, can't be
   added up across rollup rows. A column declared `holds: count_distinct` still
   answers them at the rollup's own time grain when every rollup dimension is
@@ -2397,10 +2461,9 @@ Routing is conservative in the MVP:
   rollup row. The rollup must have one row per time bucket and dimension columns
   (and per key of any `grain.entities`); an `IN` list or a range on a rollup
   dimension that isn't grouped runs on the base tables.
-- A time role whose `column_timezone` differs from its `timezone`, and a query
-  with a non-default `calendar_id`, run on the base tables: the rollup path
-  buckets the stored column's clock, without the role's zone conversion, on the
-  default calendar.
+- A time role whose `column_timezone` differs from its `timezone` runs on the
+  base tables: the rollup path buckets the stored column's clock, without the
+  role's zone conversion.
 - A dimension column pre-joined from another model (for example `region` from
   customers) uses its full dimension ID in the variant's `columns:` and declares
   the relationships it was built along: `columns: {dimension.region: {column: region, path:
@@ -2475,6 +2538,26 @@ Metrics do NOT inherit a model's default time — they remain explicit because
 metrics often span entities.
 
 ## Examples and tests
+
+Examples also teach `plan` the package's own questions. An example answers only
+its exact question, with the authored Query IR and pattern `package_example`.
+Case and whitespace aside (and the contractions `plan` expands in every
+question, so "What's" reads as "What is"), any other wording gets normal
+planning: different punctuation, plurals, numbers, signs or symbols, a different
+top-N count, or another day or time phrase. The authored query is never edited.
+The author's groupings, filters, ordering and limit count as requested, and the
+whole matched question is recorded as a consumed span. The query still passes
+the normal validation and caller visibility checks. There is no fuzzy matching.
+Several valid, visible examples matching the same question require clarification with
+their IDs. Invalid examples fall through to normal planning with their IDs in
+`why.details.invalid_examples`. An example referring to a hidden object, in a value
+or in a mapping key such as `temporal_role_overrides`, is invalid for that caller,
+exactly as it would be in a package without the object; the response never names
+the hidden object.
+
+The runtime loads the same `examples/` entries that package validation checks,
+once per runtime generation. `reload` refreshes them. A runtime without a
+source path has no package examples.
 
 Package-local review assets:
 
@@ -2611,6 +2694,37 @@ CLI `segment-*` commands) could not serve:
 
 ### Unknown keys
 
+Loading a package runs the same authoring checks as `validate-config`, so `serve`, MCP, the
+Architect and `Runtime.from_path` refuse a package `validate-config` refuses, with one
+`INVALID_CONFIG` that lists every error in `details.errors`. These blocks have a closed key
+set: the document top level; `package:` and `package.seed`; `defaults:` and its `dimension`,
+`time`, `measure` and `relationship` entries; `graph:`, its `entities`, its `relationships`
+entries and their `rollup_safe`; both `path_policy` blocks; `semantic_caveats` rows and their
+`time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
+`dimensions`, `times`, `measures` (and each measure's `accumulation:`, which takes `kind` and
+`snapshot`, as does `defaults.measure.accumulation`), `joins` and `variants`, with each
+variant's `grain`, `time`, `excludes`, `selection`, `equivalence` and every `columns:`
+binding; metrics; segments and their `membership`. A `columns:` binding takes the keys of what
+its name resolves to: a measure (by key or by the one id the loader gives it: `as:` when set,
+else `id:`, else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
+dimension (by key, by `as:` when set, else `id:`, or a `dimension.` id, which the loader
+refuses when the package has no such dimension), or a key or foreign-key column the
+loader turns into a key dimension (including the key of a graph entity named after the model,
+which binds it by default). A name that resolves to none of them is refused, with the names it
+could mean: the loader would ignore it, and a measure it meant to bind would read the column
+named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
+`as:` value. `relations` entries are not closed yet. A key that starts
+with `_` is an annotation.
+
+In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,
+`relations.yml`, `metrics.yml` and `segments.yml` through `defaults:`, `graph:`,
+`relations:`, `metrics:` and `segments:`; a file under `models/`, `relations/`, `metrics/` or
+`segments/` through its plural or singular wrapper (`models:` or `model:`) when it has one.
+Any other root key is refused, as is a block file whose contents are not under its wrapper.
+`policies.yml` and `caveats.yml` may still hold a bare list. A root file or directory the
+loader doesn't read, a block declared in two files, and an object defined twice are refused
+too (see [Directory layout](#directory-layout)).
+
 `parse-config`, `validate-config` and `check` reject a metric or segment key the
 loader doesn't read, in every layout it reads: files under `metrics/` and
 `segments/`, root `metrics.yml` and `segments.yml`, and `package.yml`. The loader
@@ -2703,8 +2817,8 @@ hint:
 > Differentiate `label`, `name`, or `search_terms` on one of them.
 
 The detector fires conservatively — it skips ID-typed dimensions
-(`semantic_kind: id`, auto-generated from entity primary keys) and
-measure ↔ auto-published-metric pairs (same `name` is by design).
+(`semantic_kind: id`, auto-generated from entity primary keys) and a
+measure beside a plain metric of it that keeps its name and label.
 A zero-collision package is one where every object is distinguishable
 by label/name/search_terms from every other in its class. Treat any
 flagged pair as an authoring debt: tighten the label or differentiate
@@ -2759,7 +2873,10 @@ Every rewrite is proven or certified, and the report gives each rule's tier:
   baseline. A write refuses
   any `unverified` rule with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"` and `details.rule`; nothing
-  is written.
+  is written. When no baseline loads, the refusal and `next_actions` give the load error in
+  `details.difference.load_error`, and `details.rule` names the first other rule whose rewrite
+  would make the package load (it rewrites a refused form it can't certify; report it), or is
+  `null` when no rule covers the error.
 - The upgrade never picks a join route. Pairs left ambiguous appear in `next_actions`, to record as
   `graph.path_preferences` rows; examples that don't compile appear there with their codes.
 
@@ -2785,6 +2902,13 @@ named definition by hand before upgrading.
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
+| `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
+| `package-schema-strict` | 0.3.2 | `package.schema_strict` | Deleted (a drop: only that field of the fingerprint changes) |
+| `measure-auto-publish` | 0.3.2 | A measure's `publish:` mapping | In a package without `schema_strict: true`, the metric it published, authored under `metrics:` with the mapping's overrides, and `publish: false` on the measure; in a strict package, where the mapping was never read, deleted. A mapping with `topics`, or a metric key or id already taken, stops. A measure with no `publish:` key or with `publish: true` is left unchanged, and the upgrade may report `up_to_date`: [author its metric by hand](#metrics-a-measure-published-implicitly) |
+| `model-grain` | 0.3.2 | A model `grain:` beside `entities:` (or on a fact model) | Deleted when it equals the entity's key, binding that entity's `model:` when the grain chose it. A grain finer than the key stops: model those rows as their own entity |
+| `model-primary-key` | 0.3.2 | `keys:` and a singular `entity:` (and a block-less model's `grain:`) | An `entities:` block that states the same keys (`bridge: false` when the legacy keys inferred no relationship). A key with a role, keys that disagree with the block, or a model with no row key stop |
+| `model-joins` | 0.3.2 | A model `joins:` block | `graph.relationships` rows with the same ids (`traversal` becomes `allowed_directions`). A join that never read its cardinality as one, names no columns under a different key, or isn't on its entity's home model stops |
+| `object-as` | 0.3.2 | `id:` on graph entities, dimensions and measures | Renamed to `as:`, or deleted when the key derives the same id |
 
 ## Reference
 

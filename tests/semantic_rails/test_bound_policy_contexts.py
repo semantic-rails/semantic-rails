@@ -509,7 +509,7 @@ def test_metric_filter_entities_follow_package_entity_ids(tmp_path, monkeypatch,
     graph.write_text(
         graph.read_text().replace(
             "    order:\n      label: Order\n",
-            "    order:\n      id: orders\n      label: Order\n",
+            "    order:\n      as: orders\n      label: Order\n",
             1,
         )
     )

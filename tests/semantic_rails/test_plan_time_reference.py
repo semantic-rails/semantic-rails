@@ -77,6 +77,7 @@ model:
     day: {column: day, kind: date, class: as_of_time, default: true}
   measures:
     mrr_all:
+      kind: aggregate
       expr: mrr
       accumulation: {kind: stock, snapshot: end_of_period}
       publish: false
@@ -97,6 +98,7 @@ metrics:
   mrr:
     label: MRR
     kind: semi_additive
+    value_type: number
     temporal_role: temporal_role.subscriptions_account_day_day
     expression:
       kind: semi_additive
@@ -418,6 +420,7 @@ metrics:
     label: Purchase rate
     description: Orders per storefront session.
     kind: ratio
+    value_type: number
     numerator: orders_all
     denominator: sessions_all
     temporal_role: {SHOP_SESSIONS}

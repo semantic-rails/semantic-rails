@@ -152,7 +152,8 @@ FILES = {
         metric:
           id: metric.hist.{left}_plus_{right}
           label: {left.title()} plus {right}
-          kind: arithmetic
+          kind: derived
+          value_type: number
           expression:
             kind: arithmetic
             op: add

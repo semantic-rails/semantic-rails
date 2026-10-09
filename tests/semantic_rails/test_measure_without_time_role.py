@@ -41,7 +41,7 @@ CREATE TABLE payments AS SELECT * FROM (VALUES
 PACKAGE = """
 schema_version: 1
 package: {id: ins, namespace: ins, warehouse: duckdb, default_db: data/warehouse.duckdb,
-  seed: {kind: sql_script, source: data/seed.sql}, schema_strict: true}
+  seed: {kind: sql_script, source: data/seed.sql}}
 """
 CLAIMS = """
 model:

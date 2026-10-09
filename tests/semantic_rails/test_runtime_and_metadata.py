@@ -54,7 +54,6 @@ def _write_operational_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "operational_demo",
                 "name": "operational_demo",
                 "description": "Operational metadata demo",
@@ -126,10 +125,6 @@ def _write_operational_package(package_dir: Path) -> None:
                         "kind": "entity_count",
                         "time": "ordered_at",
                         "operational": {"tags": ["core"]},
-                        "publish": {
-                            "id": "metric.sales.orders",
-                            "operational": {"verified": True},
-                        },
                     }
                 },
             }
@@ -168,7 +163,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "generic_planning_demo",
                 "name": "generic_planning_demo",
                 "description": "Generic planning scoring demo",
@@ -251,7 +245,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "kind": "entity_count",
                         "entity_key": "event_id",
                         "time": "event_at",
-                        "publish": {"id": "metric.engagement.sends"},
                     },
                     "capacity": {
                         "kind": "aggregate",
@@ -260,7 +253,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "label": "Capacity",
                         "expr": "capacity",
                         "time": "event_at",
-                        "publish": {"id": "metric.engagement.capacity"},
                     },
                     "account_count": {
                         "as": "measure.demo.account_count",
@@ -269,7 +261,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "kind": "entity_count",
                         "entity_key": "account_id",
                         "time": "event_at",
-                        "publish": {"id": "metric.engagement.accounts"},
                     },
                 },
             }
@@ -664,7 +655,7 @@ def test_catalog_payload_groups_objects_by_kind(runtime_factory):
         capability_kinds = {row["kind"] for row in catalog["capabilities"]}
         assert "dense_fill" in capability_kinds
         assert "historical_joins" in capability_kinds
-        assert "alternate_calendars" in capability_kinds
+        assert "alternate_calendars" not in capability_kinds  # refused in this release
         assert "metric_predicates" in capability_kinds
         assert "percentile_metrics" in capability_kinds
         assert "conversion_metrics" in capability_kinds
@@ -1175,6 +1166,7 @@ def test_plan_generic_q4_bounds_and_paying_filter_not_group_by(tmp_path: Path):
 
 def test_plan_avoids_irrelevant_value_filters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
+    runtime._package_examples = []  # Exercise generic value-filter inference.
     try:
         top_stores = plan_candidate_envelope(
             runtime, intent="top stores by revenue", limit=2, verbosity="full"
@@ -1196,6 +1188,7 @@ def test_plan_avoids_irrelevant_value_filters(runtime_factory):
 
 def test_plan_does_not_invent_generic_dimension_value_filters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
+    runtime._package_examples = []  # Exercise generic value-filter inference.
     try:
         planned = plan_candidate_envelope(
             runtime, intent="top stores by revenue", limit=2, verbosity="full"

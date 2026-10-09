@@ -70,7 +70,7 @@ CREATE TABLE sessions AS SELECT * FROM (VALUES (1, 1, 'web'), (2, 2, 'app'), (3,
 PACKAGE = """
 schema_version: 1
 package: {id: scope, namespace: scope, warehouse: duckdb, default_db: data/warehouse.duckdb,
-  seed: {kind: sql_script, source: data/seed.sql}, schema_strict: true}
+  seed: {kind: sql_script, source: data/seed.sql}}
 """
 MODELS = {
     "customers": """

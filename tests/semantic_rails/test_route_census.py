@@ -748,6 +748,7 @@ def _small_package(tmp_path, entities, relationships, seed):
         },
     }
     (pkg / "graph.yml").write_text(yaml.safe_dump({"graph": graph}))
+    metrics = {}
     for key in entities:
         model = {
             "id": key,
@@ -764,7 +765,15 @@ def _small_package(tmp_path, entities, relationships, seed):
                     "value_type": "count",
                 }
             }
+            metrics[f"{key}_amount"] = {
+                "kind": "aggregate",
+                "label": f"{key.title()} Amount",
+                "measure": f"measure.small.{key}_amount",
+                "aggregation": "sum",
+                "value_type": "count",
+            }
         (pkg / "models" / f"{key}.yml").write_text(yaml.safe_dump({"model": model}))
+    (pkg / "metrics.yml").write_text(yaml.safe_dump({"metrics": metrics}))
     return pkg
 
 

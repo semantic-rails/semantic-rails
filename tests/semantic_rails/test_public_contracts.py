@@ -46,7 +46,6 @@ def typed_contract_project(tmp_path: Path) -> Path:
         "models": {
             "events": {
                 "relation": "analytics.fct_events",
-                "grain": ["event_id"],
                 "entities": {"event": {}},
                 "times": {"occurred_at": {"kind": "timestamp"}},
                 "dimensions": {
@@ -164,7 +163,6 @@ def test_export_semantic_contract_matches_catalog_identifiers(
     raw["graph"]["entities"]["event"]["key"] = "customer_id"
     raw["models"]["events"].update(
         relation=authored_relation,
-        grain=["customer_id"],
         times={"ordered_at": {"kind": "timestamp"}},
         dimensions={"customer_id": {"kind": "categorical"}},
     )
@@ -372,14 +370,12 @@ def test_export_semantic_contract_uses_expression_columns_without_invented_names
                 "models": {
                     "customers": {
                         "relation": "analytics.customers",
-                        "grain": ["customer_id"],
                         "entities": {"customer": {}},
                         "dimensions": {},
                         "measures": {},
                     },
                     "orders": {
                         "relation": "analytics.orders",
-                        "grain": ["order_id"],
                         "entities": {
                             "order": {},
                             "customer": {"expr": {"kind": "column", "column": "customer_id"}},
@@ -423,7 +419,9 @@ def test_export_semantic_contract_uses_expression_columns_without_invented_names
     assert all(not name.startswith(("{", "[")) for name in names)
 
 
-@pytest.mark.parametrize(("section", "label"), [("dimensions", "dimension"), ("times", "time")])
+@pytest.mark.parametrize(
+    ("section", "label"), [("dimensions", "dimension"), ("times", "times entry")]
+)
 def test_contract_export_refuses_ignored_expression_keys(
     typed_contract_project: Path, section: str, label: str
 ) -> None:
@@ -436,8 +434,7 @@ def test_contract_export_refuses_ignored_expression_keys(
     with pytest.raises(SemanticLayerError) as raised:
         export_semantic_contract(typed_contract_project)
     assert raised.value.code == "INVALID_CONFIG"
-    assert f"{label} 'authored_time'" in str(raised.value)
-    assert "['expr']" in str(raised.value)
+    assert f"{label} 'authored_time' has unknown key 'expr'" in str(raised.value)
 
 
 def test_semantic_contract_schema_allows_adapter_owned_binding() -> None:
@@ -704,7 +701,7 @@ def test_diff_semantic_contract_classifies_changes(typed_contract_project, chang
 @pytest.mark.parametrize(
     ("hint", "physical"),
     [
-        ("string", kind)
+        ("categorical", kind)
         for kind in ["string", "varchar(100)", "text", "character varying(9)", "char", "uuid"]
     ]
     + [

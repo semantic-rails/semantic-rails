@@ -47,6 +47,14 @@ def _flow(name: str, expr: str) -> str:
     )
 
 
+def _metric(name: str, role: str) -> str:
+    return (
+        f"  {name}:\n    kind: aggregate\n    label: {name}\n    measure: measure.plan.{name}\n"
+        f"    aggregation: sum\n    temporal_role: temporal_role.plan_{role}\n"
+        "    value_type: count\n"
+    )
+
+
 @pytest.fixture()
 def runtime(tmp_path: Path):
     root = tmp_path / "plan"
@@ -67,6 +75,12 @@ def runtime(tmp_path: Path):
               seed: {kind: sql_script, source: data/seed.sql}
             """
         )
+    )
+    (root / "metrics.yml").write_text(
+        "metrics:\n"
+        + _metric("arr", "snapshot_at")
+        + _metric("sms_sent", "sent_at")
+        + _metric("push_sent", "sent_at")
     )
     (root / "graph.yml").write_text(
         "graph:\n  entities:\n"

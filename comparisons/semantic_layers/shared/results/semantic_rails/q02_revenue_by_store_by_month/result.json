@@ -111,8 +111,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.984,
-      "compile_ms": 0.44,
+      "cache_lookup_ms": 0.882,
+      "compile_ms": 0.306,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2293,97 +2293,97 @@
   "rows": [
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 59714.46999999948,
+      "revenue_usd": 59714.46999999926,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 54589.11999999989,
+      "revenue_usd": 54589.11999999987,
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 50398.65999999979,
+      "revenue_usd": 50398.659999999814,
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 49970.74999999973,
+      "revenue_usd": 49970.749999999556,
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 49092.32999999986,
+      "revenue_usd": 49092.329999999994,
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 47980.20999999977,
+      "revenue_usd": 47980.209999999635,
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 47896.789999999906,
+      "revenue_usd": 47896.789999999855,
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 47657.12000000015,
+      "revenue_usd": 47657.120000000075,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 45017.94999999986,
+      "revenue_usd": 45017.94999999985,
       "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 44886.44000000002,
+      "revenue_usd": 44886.43999999999,
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 43358.11999999981,
+      "revenue_usd": 43358.11999999984,
       "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 41481.23000000024,
+      "revenue_usd": 41481.23000000005,
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 35677.60000000003,
+      "revenue_usd": 35677.600000000006,
       "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 35420.2000000002,
+      "revenue_usd": 35420.200000000375,
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 27916.82000000002,
+      "revenue_usd": 27916.81999999998,
       "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 24857.99000000026,
+      "revenue_usd": 24857.990000000278,
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 21923.95000000001,
+      "revenue_usd": 21923.950000000026,
       "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 18053.279999999988,
+      "revenue_usd": 18053.279999999995,
       "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:aac5e6deeae332b480c8e782df0d02116bab1711e756c910af6b285efd73f4de",
-  "source_fingerprint": "92a7dc155b7dfd213985fbfb14af23e8857dab2ebcbbca2b073e4f949609d910",
+  "semantic_fingerprint": "sha256:4580d1a69a70b25078c207bc3aad9ec478730725a4e300dd72a23a23ec266478",
+  "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
   "sql_plan": {
     "ctes": [
       {

@@ -31,7 +31,6 @@ def _write_minimal_package(
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "operational_demo",
                 "name": "operational_demo",
                 "description": "Operational metadata demo",
@@ -87,7 +86,6 @@ def _write_minimal_package(
                         "label": "Orders",
                         "kind": "entity_count",
                         "time": "ordered_at",
-                        "publish": {"id": "metric.sales.orders"},
                         **dict(measure_extra or {}),
                     }
                 },
@@ -130,7 +128,6 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "recursive_demo",
                 "name": "recursive_demo",
                 "description": "Recursive loader demo",
@@ -210,7 +207,6 @@ def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
                         "label": "Orders",
                         "kind": "entity_count",
                         "time": "ordered_at",
-                        "publish": {"id": "metric.sales.orders"},
                     }
                 },
             }
@@ -453,7 +449,6 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": "snowflake_loader_demo",
                 "name": "snowflake_loader_demo",
                 "description": "Snowflake loader demo",
@@ -509,7 +504,6 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
                         "description": "Orders",
                         "kind": "entity_count",
                         "time": "order_date",
-                        "publish": {"id": "metric.sales.orders"},
                     }
                 },
             }
@@ -564,10 +558,6 @@ def test_loader_applies_operational_metadata_contract_and_model_defaults(tmp_pat
         model_extra={"operational_defaults": {"owner": "finance", "team": "growth"}},
         measure_extra={
             "operational": {"tags": ["core"]},
-            "publish": {
-                "id": "metric.sales.orders",
-                "operational": {"verified": True},
-            },
         },
         orders_metric_extra={
             "operational": {

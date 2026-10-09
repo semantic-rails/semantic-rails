@@ -161,6 +161,7 @@ def warehouse(tmp_path):
                 name: {
                     "kind": "derived",
                     "compatible_temporal_roles": [ORDERED, SHIPPED],
+                    "value_type": "number",
                     "expression": expression,
                 }
                 for name, expression in {
@@ -192,6 +193,7 @@ def warehouse(tmp_path):
                 "signup_to_order_7d": {
                     "kind": "conversion",
                     "temporal_role": SIGNED_UP,
+                    "value_type": "number",
                     "expression": {
                         "kind": "conversion",
                         "entity": "entity.clocks_customer",

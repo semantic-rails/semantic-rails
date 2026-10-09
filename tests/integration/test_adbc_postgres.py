@@ -23,6 +23,11 @@ from semantic_rails.schema import ConnectionSpec, SeedSpec
 from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery, finalize_parameters
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_row_filters import BY_STORE, OWN_ORDERS, A, B, _package, _q
+from tests.semantic_rails.test_time_fill_calendar_buckets import (
+    _calendar_runtime,
+    _query_buckets,
+    _reference,
+)
 
 from .targets.postgres import TARGET
 
@@ -36,6 +41,39 @@ def adbc():
         yield adapter
     finally:
         adapter.close()
+
+
+@pytest.mark.parametrize("physical", ["TIMESTAMP", "TIMESTAMPTZ"])
+@pytest.mark.parametrize("shift", ["12 hours", "-1 day"], ids=["noon", "sunday"])
+def test_postgres_default_fill_ignores_authored_week_anchor(adbc, physical, shift):
+    runtime = _calendar_runtime(adbc, zone="America/Los_Angeles", warehouse="postgres")
+    try:
+        adbc.query(f"ALTER TABLE jaffle_calendar ALTER COLUMN week_start TYPE {physical}")
+        adbc.query(f"UPDATE jaffle_calendar SET week_start = week_start + INTERVAL '{shift}'")
+        expected = _reference(adbc)
+        assert [(str(day), count) for day, count in expected] == [
+            ("2024-05-06", 2),
+            ("2024-05-13", 0),
+        ]
+        assert _query_buckets(runtime) == expected
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("physical", ["TIMESTAMP", "TIMESTAMPTZ"])
+@pytest.mark.parametrize(("grain", "bucket"), [("day", "2024-05-07"), ("week", "2024-05-06")])
+def test_postgres_noon_day_keys_keep_an_intraday_window(adbc, physical, grain, bucket):
+    # The order at May 7 noon falls inside [11:00, 13:00); noon calendar days don't move it.
+    runtime = _calendar_runtime(adbc, warehouse="postgres")
+    try:
+        adbc.query(f"ALTER TABLE jaffle_calendar ALTER COLUMN date_day TYPE {physical}")
+        adbc.query("UPDATE jaffle_calendar SET date_day = date_day + INTERVAL '12 hours'")
+        window = ("2024-05-07T11:00:00", "2024-05-07T13:00:00")
+        rows = _query_buckets(runtime, grain=grain, window=window)
+    finally:
+        runtime.close()
+
+    assert [(str(day), count) for day, count in rows] == [(bucket, 1)]
 
 
 def test_postgres_exact_types(adbc):

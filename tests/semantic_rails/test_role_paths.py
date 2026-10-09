@@ -317,6 +317,25 @@ def _write_package(
             """
         )
     )
+    (pkg / "metrics.yml").write_text(
+        textwrap.dedent(
+            """
+            metrics:
+              seats:
+                kind: aggregate
+                label: Seats
+                measure: measure.air.seats
+                aggregation: sum
+                value_type: count
+              slots:
+                kind: aggregate
+                label: Slots
+                measure: measure.air.airport_slots
+                aggregation: sum
+                value_type: count
+            """
+        )
+    )
     return pkg
 
 

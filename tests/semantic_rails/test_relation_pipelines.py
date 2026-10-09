@@ -97,7 +97,6 @@ def _write_relation_demo(tmp_path: Path) -> Path:
     package = {
         "schema_version": 1,
         "package": {
-            "schema_strict": True,
             "id": "relation_demo",
             "namespace": "reldemo",
             "warehouse": "duckdb",
@@ -280,7 +279,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                     "valid_from": {
                         "label": "Valid from",
                         "kind": "date",
-                        "class": "snapshot_time",
+                        "class": "state_time",
                         "default": True,
                     }
                 },
@@ -307,7 +306,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                     "date_day": {
                         "label": "Date day",
                         "kind": "date",
-                        "class": "snapshot_time",
+                        "class": "state_time",
                         "default": True,
                     }
                 },
@@ -331,7 +330,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                     "next_valid_from": {
                         "label": "Next valid from",
                         "kind": "date",
-                        "class": "snapshot_time",
+                        "class": "state_time",
                         "default": True,
                     }
                 },
@@ -570,7 +569,6 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
     package = {
         "schema_version": 1,
         "package": {
-            "schema_strict": True,
             "id": "cycle_demo",
             "namespace": "cycle",
             "warehouse": "duckdb",
@@ -649,7 +647,6 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
     package = {
         "schema_version": 1,
         "package": {
-            "schema_strict": True,
             "id": "preagg_demo",
             "namespace": "preagg",
             "warehouse": "duckdb",

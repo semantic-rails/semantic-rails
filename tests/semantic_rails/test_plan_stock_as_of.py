@@ -67,7 +67,7 @@ def _package(root: Path, *, metric: bool, qualifying: bool = False) -> Path:
         "times": {"day": {"column": "day", "kind": "date", "class": "as_of_time", "default": True}},
         "dimensions": {"plan": {"kind": "categorical", "domain": ["basic", "pro"]}},
         "measures": {"mrr_all": {
-            "expr": "mrr", "accumulation": stock,
+            "kind": "aggregate", "expr": "mrr", "accumulation": stock,
             **({"publish": False} if metric else {"label": "MRR"}),
         }, **({"account_count": {
             "label": "Account count", "kind": "entity_count", "entity_key": "account_id",
@@ -78,12 +78,13 @@ def _package(root: Path, *, metric: bool, qualifying: bool = False) -> Path:
         "id": "user_totals", "relation": "user_totals", "entities": {"user_total": {}},
         "times": {"day": {"column": "day", "kind": "date", "class": "as_of_time", "default": True}},
         "measures": {"registered_users": {
-            "label": "Registered users", "expr": "registered", "accumulation": stock,
+            "label": "Registered users", "kind": "aggregate", "expr": "registered",
+            "accumulation": stock,
         }},
     }})  # fmt: skip
     if metric:
         put("metrics/billing.yml", {"metrics": {"mrr": {
-            "label": "MRR", "kind": "semi_additive",
+            "label": "MRR", "kind": "semi_additive", "value_type": "number",
             "temporal_role": ROLE,
             "expression": {"kind": "semi_additive", "measure": MEASURE},
         }}})  # fmt: skip
@@ -92,7 +93,8 @@ def _package(root: Path, *, metric: bool, qualifying: bool = False) -> Path:
             "id": "accounts", "relation": "accounts", "entities": {"account": {}},
         }})  # fmt: skip
         put("metrics/qualifying.yml", {"metrics": {"qualifying_accounts": {
-            "label": "Qualifying accounts", "kind": "aggregate", "temporal_role": ROLE,
+            "label": "Qualifying accounts", "kind": "aggregate", "value_type": "number",
+            "temporal_role": ROLE,
             "expression": {
                 "kind": "scoped_aggregate", "measure": "measure.billing.account_count",
                 "aggregation": "count_distinct", "predicates": [{

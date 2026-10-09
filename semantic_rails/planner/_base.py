@@ -13,8 +13,16 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from ..expressions import MeasureRefExpr, expr_to_dict
-from .visibility import visible_dimensions
+from ..config_parts.measure_governance import (
+    building_block_measures,
+    governed_form,
+    governing_metrics,
+    whole_aggregate,
+)
+from ..errors import SemanticLayerError
+from ..expressions import AggregateExpr, collect_object_references
+from ..naming import last_token as _last_token
+from .visibility import visible_dimensions, visible_object_ids
 
 
 @dataclass(frozen=True)
@@ -205,17 +213,6 @@ def _specificity_penalty(row: Any, terms: Iterable[str]) -> int:
     return sum(2 for item in _EXTRA_QUALIFIER_TERMS if item in text and item not in term_set)
 
 
-def _measure_metric_id(config: Any, measure_id: str) -> str:
-    for recipe in config.metric_recipes:
-        expr = getattr(recipe, "expression", None)
-        if isinstance(expr, MeasureRefExpr) and expr.measure == measure_id:
-            return recipe.id
-        payload = expr_to_dict(expr) if expr is not None else {}
-        if payload.get("measure") == measure_id:
-            return recipe.id
-    return ""
-
-
 def _resolved(row: Any, *, object_type: str = "") -> dict[str, Any]:
     return {
         "id": getattr(row, "id", ""),
@@ -238,27 +235,6 @@ def _metric(config: Any, terms: Iterable[str]) -> Any | None:
 
 def _object_by_id(rows: Iterable[Any], object_id: str) -> Any | None:
     return next((row for row in rows if getattr(row, "id", "") == object_id), None)
-
-
-def _last_token(value: str) -> str:
-    return str(value or "").split(".")[-1]
-
-
-def _slug(value: str, *, fallback: str = "value") -> str:
-    raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
-    parts = [part for part in raw.split("_") if part]
-    return "_".join(parts) or fallback
-
-
-def _semantic_token(value: str, *, fallback: str = "value") -> str:
-    raw_value = str(value or "")
-    token = _last_token(value)
-    if raw_value.startswith("entity.") and "_" in token:
-        token = token.split("_", 1)[1]
-    for prefix in ("jaffle_", "entity_", "metric_recipe_", "measure_"):
-        if token.startswith(prefix):
-            token = token[len(prefix) :]
-    return _slug(token, fallback=fallback)
 
 
 def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[list[Any], Any]:
@@ -405,7 +381,11 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
 
     Ties never select a metric. Single-word synonyms also name a metric; label and
     id forms retain the multi-word requirement used for ordinary measure-first lookup.
-    A label without its parenthetical never selects: it is a readiness form only.
+    A label without its parenthetical never selects: it is a readiness form only. A
+    measure name elsewhere in the question vetoes the metric only with a word its own
+    names (label, with and without the parenthetical, the id's last part, synonyms)
+    don't have: "accounts" leaves "accounts moved to a bigger plan" to Accounts that
+    upgraded, while "workspaces" doesn't.
     """
 
     spans = {row.id: _name_matches(row, text, short_label=False) for row in config.metric_recipes}
@@ -429,10 +409,16 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
     if not longest or len({item[3].id for item in longest}) != 1:
         return None
     _, first, last, metric = longest[0]
+    forms = _declared_name_forms(metric)
+    own = {
+        _singular(word)
+        for name in forms[:2] + forms[3:]  # every declared form but the full id
+        for word in re.findall(r"[^\W_]+", name.lower())
+    }
     if any(
-        not (first <= begin and end <= last)
+        not (first <= begin and end <= last) and not _name_fit(text, [(width, begin, end)]) <= own
         for row in config.measures
-        for _size, begin, end in _name_matches(row, text)
+        for width, begin, end in _name_matches(row, text)
     ):
         return None
     return metric, f"{text[:first]}{metric.id}{text[last:]}"
@@ -464,6 +450,85 @@ def _said_name(row: Any, text: str) -> frozenset[str]:
     )
 
 
+def _balance_body(recipe: Any) -> AggregateExpr | None:
+    """A metric's expression when it is one plain aggregate with no window, else None.
+
+    The one test for a metric that ``snapshot._balance`` shapes to a stock's read day; the
+    governed swap offers a stock only such a metric.
+    """
+
+    body = getattr(recipe, "expression", None)
+    return body if isinstance(body, AggregateExpr) and not body.window else None
+
+
+def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | None:
+    """The metric a one-select draft over a measure answers with instead.
+
+    The select reads a measure, or the metric that is its plain aggregate, and nothing else. A
+    metric governs it when the metric is that measure's aggregate, at the same aggregation,
+    through a filter (``governed_form``: bare or zero-filled; "Active stores" over "Active
+    stores (all kinds)"). It is the answer when the question's target phrase ``focus`` names it
+    (``_said_name``), and names no other such metric as fully nor the measure more fully; or
+    when the measure is a building block and this metric alone governs it. Never when the
+    draft filters or groups by something its filter reads, or cuts by the measure itself:
+    "demo stores" asks for rows the governed metric leaves out.
+    """
+
+    select = list(query.get("select") or [])
+    expression = select[0].get("expression") if len(select) == 1 else None
+    if not isinstance(expression, dict):
+        return None
+    keys = set(expression)
+    if keys != {"metric"} and not ("measure" in keys and keys <= {"measure", "aggregation"}):
+        return None
+    plain = _object_by_id(config.metric_recipes, str(expression.get("metric", "")))
+    whole = whole_aggregate(plain) if plain is not None else None
+    if plain is not None and (whole is None or whole[2]):
+        return None
+    measure_id, aggregation = whole[:2] if whole else (expression.get("measure"), "")
+    measure = _object_by_id(config.measures, str(measure_id or ""))
+    if measure is None:
+        return None
+    aggregation = aggregation or expression.get("aggregation") or measure.default_aggregation
+    governing = governing_metrics(config, measure.id)
+    visible = set(visible_object_ids(config, (metric.id for metric in governing)))
+    governing = [metric for metric in governing if metric.id in visible]
+    # A stock answers only with a metric snapshot._balance shapes to its read day: the same
+    # _balance_body test, so a scoped or wrapped governor never skips the complete-day holds.
+    stock = measure.measure_class == "semi_additive"
+    form = whole_aggregate if stock else governed_form
+    candidates = {
+        metric.id: (metric, governed[2])
+        for metric in governing
+        if (not stock or _balance_body(metric) is not None)
+        and (governed := form(metric)) is not None
+        and governed[0] == measure.id
+        and (governed[1] or measure.default_aggregation) == aggregation
+    }
+    named = {metric.id: words for metric in governing if (words := _said_name(metric, focus))}
+    widest = [key for key in named if all(words <= named[key] for words in named.values())]
+    if named:
+        chosen = widest[0] if len(widest) == 1 else ""
+    elif measure.id in building_block_measures(config) and len(governing) == 1:
+        chosen = governing[0].id
+    else:
+        chosen = ""
+    asked = _said_name(measure, focus) | (_said_name(plain, focus) if plain else frozenset())
+    if chosen not in candidates or not asked <= named.get(chosen, frozenset()):
+        return None
+    metric, narrowing = candidates[chosen]
+    try:
+        cuts = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
+        drafted = {measure.id, getattr(plain, "id", measure.id)}
+        if (drafted | set(collect_object_references(narrowing, config))) & set(
+            collect_object_references(cuts, config)
+        ):
+            return None
+    except SemanticLayerError:
+        return None
+    return metric
+
+
 _NAME_CONNECTORS = frozenset(
     {"a", "across", "along", "and", "at", "by", "during", "for", "from", "in", "of", "on", "over"}
     | {"per", "the", "to", "with"}
@@ -492,3 +557,43 @@ def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False
 
 def _runtime_composition_terms(text: str) -> set[str]:
     return set(_tokens(text))
+
+
+def _strip_leading_rank_count(raw: str) -> str:
+    rank_words = "|".join(re.escape(word) for word in sorted(_NUMBER_WORDS))
+    return re.sub(rf"^\s*(?:\d+|{rank_words})\s+", "", raw, count=1).strip()
+
+
+def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
+    """Record exactly where the existing grouping parser reads each term."""
+
+    lowered = str(text or "").lower()
+    top_by_match = re.search(
+        r"^\s*top\s+([a-z0-9 _-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
+        lowered,
+    )
+    match: re.Match[str] | None
+    if top_by_match:
+        match = top_by_match
+        raw_terms = _strip_leading_rank_count(match.group(1).strip())
+    else:
+        match = re.search(
+            r"\bby ([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
+            lowered,
+        )
+        raw_terms = match.group(1).strip() if match else ""
+    if not match or not raw_terms:
+        return []
+    offset = match.start(1) + match.group(1).find(raw_terms)
+    spans: list[tuple[int, int]] = []
+    start = 0
+    cuts = [
+        (part.start(), part.end()) for part in re.finditer(r"\s*(?:,| and | & | by )\s*", raw_terms)
+    ]
+    for end, next_start in [*cuts, (len(raw_terms), len(raw_terms))]:
+        term = raw_terms[start:end]
+        if term.strip():
+            low = start + len(term) - len(term.lstrip())
+            spans.append((offset + low, offset + low + len(term.strip())))
+        start = next_start
+    return spans

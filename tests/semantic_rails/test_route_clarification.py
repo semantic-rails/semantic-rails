@@ -152,6 +152,21 @@ _MODELS: dict[str, dict[str, Any]] = {
         }
     },
 }
+_METRICS: dict[str, dict[str, Any]] = {
+    name: {
+        "kind": "aggregate",
+        "label": label,
+        "measure": f"measure.bank.{name}",
+        "aggregation": aggregation,
+        "value_type": "count",
+    }
+    for name, label, aggregation in (
+        ("budget", "Budget", "sum"),
+        ("balance", "Balance", "sum"),
+        ("account_count", "Accounts", "count_distinct"),
+        ("seats", "Seats", "sum"),
+    )
+}
 
 
 @pytest.fixture(autouse=True)
@@ -215,6 +230,7 @@ def _write_package(root: Path, *, decisions: list[dict[str, Any]] | None = None)
         spec = {"id": f"{key}s", "relation": f"{key}es" if key == "branch" else f"{key}s"}
         spec.update({"entities": {key: {}}, **body})
         (pkg / "models" / f"{key}s.yml").write_text(yaml.safe_dump({"model": spec}))
+    (pkg / "metrics.yml").write_text(yaml.safe_dump({"metrics": _METRICS}, sort_keys=False))
     return pkg
 
 

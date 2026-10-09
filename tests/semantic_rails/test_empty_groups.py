@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -954,21 +955,45 @@ FUTURE_GOLD = (
 @pytest.mark.parametrize("fill", [False, True])
 @pytest.mark.parametrize("shape", ["count", "sum"])
 def test_a_never_matched_operand_reads_null_beyond_the_loaded_range(
-    future_shop: Runtime, shape: str, fill: bool
+    future_shop: Runtime, shape: str, fill: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _conditional_revenue(future_shop, IN_STORE_B) if shape == "sum" else future_shop
     try:
         b = SHOP_REVENUE if shape == "sum" else {"measure": "measure.shop.store_b_orders"}
-        response = rt.query(
-            {
-                "select": _select(b=b),
-                "time": {**SHOP_MONTH, "start": "2098-01-01", "end": "2098-02-01", "fill": fill},
-            }
-        )
+        query = {
+            "select": _select(b=b),
+            "time": {**SHOP_MONTH, "start": "2098-01-01", "end": "2098-02-01", "fill": fill},
+        }
+        response = rt.query(query)
         gold = _gold(rt, FUTURE_GOLD.format(value=FUTURE_B[shape], where=""))
         assert gold == [{"b": None}]
         assert [{"b": row["b"]} for row in typed_rows(response)] == gold
-        assert _warnings(response)[0]["details"]["outputs"] == ["b"]
+        with monkeypatch.context() as patch:
+            patch.setattr("semantic_rails.runtime._no_data_yet_warnings", lambda *a, **k: [])
+            undisclosed = rt.query(query)
+        assert (response["rows"], response["rendered_sql"]) == (
+            undisclosed["rows"],
+            undisclosed["rendered_sql"],
+        )
+        assert _warnings(undisclosed)[0]["details"]["outputs"] == ["b"]
+        if not fill:
+            # The unfilled leaf has no coverage guard: the NULL is store b's missing data.
+            assert response["warnings"] == undisclosed["warnings"]
+            return
+        # The filled series and the coverage marker bucket the same timestamps the same
+        # way, so the window's January 2098 is dated past the last loaded month.
+        last = _gold(
+            rt,
+            "SELECT CAST(date_trunc('month', MAX(ordered_at)) AS DATE) AS month FROM orders "
+            "WHERE ordered_at <= CURRENT_TIMESTAMP",
+        )
+        assert last == [{"month": date(2023, 11, 1)}] and last[0]["month"] < date(2098, 1, 1)
+        assert _warnings(response) == []
+        [warning] = _warnings(response, "NO_DATA_YET")
+        assert warning["details"]["outputs"] == ["b"]
+        assert warning["details"]["measures"] == [
+            {"id": b["measure"], "edge": last[0]["month"].isoformat(), "edge_source": "last_bucket"}
+        ]
     finally:
         if rt is not future_shop:
             rt.close()

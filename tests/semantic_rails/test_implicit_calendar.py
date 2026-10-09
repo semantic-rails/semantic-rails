@@ -60,7 +60,7 @@ STEP = {"day": "1 DAY", "week": "7 DAY", "month": "1 MONTH", "quarter": "3 MONTH
 PACKAGE = """
 schema_version: 1
 package: {id: cal, namespace: cal, warehouse: duckdb, default_db: data/warehouse.duckdb,
-  seed: {kind: sql_script, source: data/seed.sql}, schema_strict: true}
+  seed: {kind: sql_script, source: data/seed.sql}}
 """
 ORDERS = """
 model:
@@ -268,7 +268,8 @@ def test_windows_without_a_calendar_match_the_key_and_an_authored_calendar(
     authored_rows, authored_sql = _query(packages["authored"], query)
 
     assert "implicit_calendar" in sql
-    assert "dim_date" in authored_sql and "implicit_calendar" not in authored_sql
+    # An authored default calendar takes no part in the series: the same implicit spine.
+    assert "dim_date" not in authored_sql and "implicit_calendar" in authored_sql
     assert rows == _key(packages["none"], key)
     assert rows == authored_rows
 
@@ -416,7 +417,7 @@ def test_a_sentinel_date_widens_the_series_instead_of_dropping_the_row(tmp_path:
 @pytest.mark.parametrize(
     ("time", "code"),
     [
-        (_time("quarter", calendar_id="fiscal"), "INCOMPATIBLE_CALENDAR"),
+        (_time("quarter", calendar_id="fiscal"), "REWRITE_NOT_SUPPORTED"),
         (_time("quarter", calendar_id="fiscal", fill=True), "REWRITE_NOT_SUPPORTED"),
         (_time("year", calendar_id="Fiscal", fill=True), "REWRITE_NOT_SUPPORTED"),
     ],
@@ -428,6 +429,7 @@ def test_a_fiscal_question_without_a_fiscal_calendar_refuses(
         with pytest.raises(SemanticLayerError) as refused:
             _query(packages["none"], {"select": select, "time": time})
         assert refused.value.code == code
+        assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
 def test_a_default_question_never_borrows_a_fiscal_calendar(packages: dict[str, Path]) -> None:
@@ -441,16 +443,12 @@ def test_a_default_question_never_borrows_a_fiscal_calendar(packages: dict[str, 
         (date(2024, 1, 1), 28.0, 22.0),
         (date(2024, 4, 1), 13.0, 28.0),
     ]
-    fiscal_rows, fiscal_sql = _query(
-        packages["fiscal_only"],
-        {**query, "time": _time("quarter", calendar_id="fiscal", fill=True)},
-    )
-    assert "dim_fiscal" in fiscal_sql
-    assert [row[0] for row in fiscal_rows] == [
-        date(2023, 11, 1),
-        date(2024, 2, 1),
-        date(2024, 5, 1),
-    ]
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(
+            packages["fiscal_only"],
+            {**query, "time": _time("quarter", calendar_id="fiscal", fill=True)},
+        )
+    assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
 DISTRIBUTION = {
@@ -472,16 +470,17 @@ LARGE_ORDER = {
 }
 
 
-def test_a_query_compiled_as_sub_queries_refuses_the_implicit_calendar(
+def test_a_query_compiled_as_sub_queries_holds_the_implicit_calendar(
     packages: dict[str, Path],
 ) -> None:
+    # Each part is namespaced, the implicit calendar's generated day series included; an
+    # authored default calendar takes no part, so both packages compile the same series.
     query = _ask("month", DISTRIBUTION, _rolling("month", 3))
-    with pytest.raises(SemanticLayerError) as refused:
-        _query(packages["none"], query)
+    rows, sql = _query(packages["none"], query)
+    authored_rows, authored_sql = _query(packages["authored"], query)
 
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert "calendar entity" in str(refused.value)
-    _query(packages["authored"], query)  # an authored calendar still answers
+    assert "implicit_calendar" in sql and "dim_date" not in authored_sql
+    assert rows == authored_rows
 
 
 def _distribution(function: str, input_: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -534,7 +533,10 @@ def test_a_filled_distribution_refuses(
         _query(packages[package], query)
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert "time.fill isn't supported for distributions" in str(refused.value)
+    if package == "fiscal_only":
+        assert refused.value.details["reason"] == "calendar_not_supported_yet"
+    else:
+        assert "time.fill isn't supported for distributions" in str(refused.value)
 
 
 @pytest.mark.parametrize(
@@ -559,10 +561,11 @@ def test_an_unfilled_distribution_matches_the_key(
     ]
     # A prior-period sibling fills its own branch; the distribution reads NULL in February.
     beside = _ask("month", _prior("month"), select)
-    assert _query(packages["authored"], beside)[0] == _key(
-        packages["authored"],
-        _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
-    )
+    for package in ("authored", "none"):
+        assert _query(packages[package], beside)[0] == _key(
+            packages[package],
+            _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
+        )
 
 
 PRIOR_REVENUE = _prior("month")["expression"]
@@ -622,7 +625,7 @@ def test_a_call_may_not_name_the_calendar_generators(packages: dict[str, Path], 
         ("none", "duckdb", True),
         ("none", "clickhouse", False),
         ("fiscal_only", "clickhouse", False),
-        ("authored", "clickhouse", True),
+        ("authored", "clickhouse", False),
     ],
 )
 def test_dense_fill_capability_follows_the_calendar_that_would_fill(

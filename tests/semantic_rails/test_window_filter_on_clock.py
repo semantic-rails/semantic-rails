@@ -99,7 +99,7 @@ def _package(root: Path) -> Path:
     (package / "package.yml").write_text(
         "schema_version: 1\n"
         "package: {id: fees, namespace: fees, name: fees, warehouse: duckdb,\n"
-        "  default_db: data/fees.duckdb, seed: {kind: external}, schema_strict: true,\n"
+        "  default_db: data/fees.duckdb, seed: {kind: external},\n"
         "  environments: [development]}\n"
     )
     (package / "graph.yml").write_text(
@@ -621,7 +621,7 @@ DAY_INFO = {
 }
 # The warehouse resolves an unquoted column name without case, so these name the clock. The
 # key column in capitals is declared, so the loader adds no key dimension with the clock's id.
-DAY_KEY_LINE = "    day_key: {column: DATE_DAY, kind: id}\n"
+DAY_KEY_LINE = "    day_key: {column: DATE_DAY, kind: categorical}\n"
 DAY_INFO_IN_CAPITALS = {
     "graph": {
         GRAPH_ENTITIES: GRAPH_ENTITIES + "    day_info: {key: [DATE_DAY], model: day_infos}\n"
@@ -681,17 +681,6 @@ BY_TYPE = {
         },
         PRIOR_DAY,
         SNAPSHOT_DATE,
-        ">=",
-    ),
-    "clock-of-another-kind": (
-        {
-            "account_days": {
-                SNAPSHOT_DATE_LINE: "",
-                "kind: date, class: as_of_time": "kind: categorical, class: as_of_time",
-            }
-        },
-        PRIOR_DAY,
-        DAY,
         ">=",
     ),
     # Not the window's clock; still a date, so it may cut the lookback.
