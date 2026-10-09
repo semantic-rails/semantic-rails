@@ -14,7 +14,6 @@ layer.
 from __future__ import annotations
 
 import json
-import operator
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
@@ -1822,49 +1821,20 @@ def _predicate_where_condition(op: str, value: Any) -> Any:
     return build_filter_condition(alias_ref, op, value, path="metric_predicate")
 
 
-_ZERO_COMPARISONS: dict[str, Any] = {
-    "=": operator.eq,
-    "!=": operator.ne,
-    "<>": operator.ne,
-    "<": operator.lt,
-    "<=": operator.le,
-    ">": operator.gt,
-    ">=": operator.ge,
-}
-_INVERSE_THRESHOLD_OPS = {
-    "=": "!=",
-    "!=": "=",
-    "<>": "=",
-    "<": ">=",
-    "<=": ">",
-    ">": "<=",
-    ">=": "<",
-    "IN": "NOT IN",
-    "NOT IN": "IN",
-}
-
-
 # A distinct count of a population is 0 over no rows too; it stays out of the empty-group
 # settling of a query's groups, whose null semantics differ.
 _ZERO_ON_MISSING_PREDICATE_CLASSES = {*ZERO_MEASURE_CLASSES, "distinct_population"}
 
 
-def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
 def _zero_satisfies_threshold(op: str, value: Any) -> bool:
     """Whether a value of 0 passes the ``op value`` threshold of a metric_predicate."""
-    token = " ".join(str(op or "").upper().split())
-    if token in {"IN", "NOT IN"}:
-        values = list(value) if isinstance(value, (list, tuple)) else [value]
-        if not values:
-            return token == "NOT IN"  # NOT IN () is always true, IN () never
-        if not all(_is_number(item) for item in values):
-            return False
-        return (0 in values) == (token == "IN")
-    compare = _ZERO_COMPARISONS.get(token)
-    return compare is not None and _is_number(value) and bool(compare(0, value))
+    try:
+        word, value = operators.normalize_condition(
+            op, value, path="metric_predicate", internal=True
+        )
+    except SemanticLayerError:
+        return False
+    return operators.holds(word, value, 0)
 
 
 def _require_predicate_over_rows(
@@ -2724,13 +2694,17 @@ def _predicate_ctes_and_join(
         # query, so only an entity it doesn't list has no rows, and with no settled value at
         # all the gate below drops every row.
         value = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
-        where_condition = build_filter_condition(
-            value,
-            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
-            predicate.value,
-            path="metric_predicate",
+        word, threshold = operators.normalize_condition(
+            predicate.op, predicate.value, path="metric_predicate", internal=True
         )
-        if not earlier:
+        failing = operators.negation(word)
+        where_condition = build_filter_condition(value, failing, threshold, path="metric_predicate")
+        # ``not`` keeps unknown values; the earlier settlement counts them as passing.
+        if earlier and operators.OPERATORS[failing].keeps_unknown:
+            where_condition = SqlBinary(
+                where_condition, "AND", SqlBinary(value, "IS NOT", SqlLiteral(None))
+            )
+        elif not earlier and not operators.OPERATORS[failing].keeps_unknown:
             where_condition = SqlBinary(where_condition, "OR", SqlIsNull(value))
     set_query = SqlSelect(
         select=select_fields,

@@ -249,6 +249,39 @@ def pinned_value(op: str, value: Any) -> tuple[bool, Any]:
     return False, None
 
 
+# The word a known value fails ``word`` by: ``x op v`` is false exactly where this is true.
+_NEGATION = {"is": "not", "not": "is", "gt": "lte", "gte": "lt", "lt": "gte", "lte": "gt"}
+
+
+def negation(word: str) -> str:
+    """The comparison a known value meets when it fails ``word`` (a threshold's other side)."""
+    return _NEGATION[word]
+
+
+def holds(word: str, value: Any, known: Any) -> bool:
+    """Whether the known number ``known`` meets the comparison; numbers compare only with
+    numbers, and an engine-built membership over no values is false (``is``) or true (``not``)."""
+
+    def number(item: Any) -> bool:
+        return isinstance(item, (int, float)) and not isinstance(item, bool)
+
+    if word in {"is", "not"}:
+        values = values_of(word, value)
+        if not values:
+            return word == "not"
+        if not all(number(item) for item in values):
+            return False
+        return (known in values) == (word == "is")
+    if word in RANGE_WORDS and number(value):
+        return {
+            "gt": known > value,
+            "gte": known >= value,
+            "lt": known < value,
+            "lte": known <= value,
+        }[word]
+    return False
+
+
 def keeps_values(word: str) -> bool:
     """Whether the condition keeps only the values it names (the planner's "only")."""
     return word == "is"
