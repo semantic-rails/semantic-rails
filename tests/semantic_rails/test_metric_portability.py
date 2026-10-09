@@ -80,7 +80,7 @@ def portable(tmp_path):
 
 
 def _validate(payload):
-    query = load_contract("query_ir.v1.json")
+    query = load_contract("query.v2.json")
     registry = Registry().with_resource(query["$id"], Resource.from_contents(query))
     Draft202012Validator(load_contract("metric_portability.v1.json"), registry=registry).validate(
         payload
@@ -107,14 +107,14 @@ def test_authored_package_to_governed_bi_card(portable, tmp_path):
     spec.loader.exec_module(module)
     # A catalog cannot retarget a saved BI binding through a forged template.
     forged = deepcopy(artifact)
-    forged["metrics"][0]["query_template"]["select"][0]["expression"]["metric"] = "metric.foreign"
+    forged["metrics"][0]["query_template"]["select"][0]["expression"] = "metric.foreign"
     calls = []
     module.render_metric_card(
         forged,
         (corpus["namespace"], corpus["expected_metric_ids"][0]),
         lambda query: calls.append(query) or {},
     )
-    assert calls[0]["select"][0]["expression"]["metric"] == corpus["expected_metric_ids"][0]
+    assert calls[0]["select"][0]["expression"] == corpus["expected_metric_ids"][0]
     runtime = Runtime.from_path(str(package))
     try:
         card = module.render_metric_card(
@@ -190,7 +190,7 @@ def test_invalid_exports_fail_closed(portable, change):
     elif change == "definition":
         after["metrics"][0]["definition"]["value_type"] = "currency"
     else:
-        after["metrics"][0]["query_template"]["select"][0]["expression"]["metric"] = "other"
+        after["metrics"][0]["query_template"]["select"][0]["expression"] = "other"
     with pytest.raises(ValueError):
         compare_metric_portability(before, after)
 
