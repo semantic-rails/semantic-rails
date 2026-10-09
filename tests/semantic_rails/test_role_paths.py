@@ -87,21 +87,11 @@ def _gold_rows(select: str, where: str, role_column: str) -> list[tuple]:
 
 
 def _seats_query(**parts) -> dict:
-    return {
-        "version": 1,
-        "select": [{"expression": {"measure": SEATS}, "as": "seats"}],
-        **parts,
-    }
+    return {"select": [{"expression": SEATS, "as": "seats"}], **parts}
 
 
-_LARGE_AIRPORT = {
-    "kind": "metric_predicate",
-    "entity": "entity.air_airport",
-    "scope_mode": "entity_only",
-    "input": {"measure": SLOTS},
-    "op": ">=",
-    "value": 10,
-}
+# Airports with at least ten slots, over every row of the airport.
+_LARGE_AIRPORT = {"field": SLOTS, "op": "gte", "value": 10}
 
 # Every way a query reaches the airport, the key dimension included:
 # (query, the columns each result row is read as, gold SELECT list, gold WHERE).
@@ -116,26 +106,27 @@ ROLE_QUERIES = {
         "TRUE",
     ),
     "where_on_key": (
-        _seats_query(where=[{"field": CODE, "op": "=", "value": "JFK"}]),
+        _seats_query(where=[{"field": CODE, "op": "is", "value": "JFK"}]),
         [],
         "",
         "a.airport_code = 'JFK'",
     ),
     "where_on_city": (
-        _seats_query(where=[{"field": CITY, "op": "=", "value": "New York"}]),
+        _seats_query(where=[{"field": CITY, "op": "is", "value": "New York"}]),
         [],
         "",
         "a.city = 'New York'",
     ),
     "metric_predicate_on_airport": (
-        _seats_query(metric_filters=[{"expression": _LARGE_AIRPORT, "op": "=", "value": True}]),
+        _seats_query(
+            where=[{"entity": "entity.air_airport", "having": [_LARGE_AIRPORT], "over": "all_time"}]
+        ),
         [],
         "",
         "a.slots >= 10",
     ),
     "scoped_aggregate_predicate_on_airport": (
         {
-            "version": 1,
             "select": [
                 {
                     "as": "seats",
@@ -145,10 +136,11 @@ ROLE_QUERIES = {
                         "aggregation": "sum",
                         "predicates": [
                             {
-                                "measure": SLOTS,
+                                "input": SLOTS,
                                 "entity": "entity.air_airport",
-                                "op": ">=",
+                                "op": "gte",
                                 "value": 10,
+                                "over": "all_time",
                             }
                         ],
                     },

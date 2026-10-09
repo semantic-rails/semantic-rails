@@ -10,11 +10,15 @@ B7 — A query with ``time.temporal_role`` set but no ``time.grain``,
 
 from __future__ import annotations
 
+import pytest
 
-def test_ungrained_time_projection_fires_for_scalar_revenue_with_temporal_role(runtime_factory):
+from semantic_rails.errors import SemanticLayerError
+
+
+def test_time_with_only_a_temporal_role_is_refused_with_the_grain_fix(runtime_factory):
     """The exact shape that surprised the blind agent: select a measure,
     set temporal_role to bound the time window, but forget to set grain.
-    The planner groups by raw timestamp and returns thousands of rows."""
+    The call is refused before any row is read, and its fix adds a grain."""
     runtime = runtime_factory("jaffle_shop")
     try:
         query = {
@@ -30,17 +34,12 @@ def test_ungrained_time_projection_fires_for_scalar_revenue_with_temporal_role(r
             ],
             "time": {"temporal_role": "temporal_role.jaffle_order_time"},
         }
-        result = runtime.compile(query)
-        warnings = result.get("warnings") or []
-        codes = [w.get("code") for w in warnings]
-        assert "UNGRAINED_TIME_PROJECTION" in codes, (
-            f"expected UNGRAINED_TIME_PROJECTION warning; got codes={codes!r}"
-        )
-        warning = next(w for w in warnings if w.get("code") == "UNGRAINED_TIME_PROJECTION")
-        hints = warning.get("details", {}).get("recovery_hints") or []
-        assert hints, "expected recovery hints on UNGRAINED_TIME_PROJECTION"
-        # The only suggested patch is one the engine accepts: dropping temporal_role isn't.
-        assert hints[0]["suggested_patches"] == [{"add": {"time.grain": "month"}}]
+        with pytest.raises(SemanticLayerError) as exc:
+            runtime.compile(query)
+        assert exc.value.code == "INVALID_QUERY"
+        assert exc.value.details["path"] == "time"
+        (hint,) = exc.value.details["recovery_hints"]
+        assert '"grain"' in hint["message"]
         patched = {**query, "time": {**query["time"], "grain": "month"}}
         assert runtime.validate(patched)["ok"] is True
     finally:

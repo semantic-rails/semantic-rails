@@ -504,7 +504,7 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
             if grouped
             # A plain-SQL reference, where a sum of no rows is NULL: the query scope.
             else {
-                "where": [{"field": CODE, "op": "=", "value": "SFO"}],
+                "where": [{"field": CODE, "op": "is", "value": "SFO"}],
                 "observation_scope": "query",
             }
         )
@@ -812,9 +812,8 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
         "measure.small.a_amount",
         where=[
             {
-                "child": "entity.small_c",
-                "match": "any",
-                "where": [{"field": "dimension.small_d_name", "op": "=", "value": "yes"}],
+                "entity": "entity.small_c",
+                "any": [{"field": "dimension.small_d_name", "op": "is", "value": "yes"}],
             }
         ],
     )
@@ -882,9 +881,8 @@ def test_queries_without_authored_measures_require_explicit_decisions(tmp_path):
     """,
     )
     b_name, c_name = "dimension.small_b_name", "dimension.small_c_name"
-    distinct = {"version": 1, "select": [], "group_by": [b_name, c_name]}
+    distinct = {"select": [], "group_by": [b_name, c_name]}
     count = {
-        "version": 1,
         "select": [
             {
                 "as": "v",
