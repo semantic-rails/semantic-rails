@@ -437,15 +437,13 @@ def recovery_hints_for_error(
             allowed = list(details["allowed"])
             default = str(details.get("default_aggregation", "") or "")
             default_hint = (
-                f", or omit `aggregation` to use the measure's default ({default})"
-                if default in allowed
-                else ""
+                f"; omit `aggregation` for the default ({default})" if default in allowed else ""
             )
             return [
                 {
                     "kind": "use_supported_aggregation",
                     "message": (
-                        f"Choose an allowed aggregation for this measure: "
+                        f"Use one of this measure's aggregations: "
                         f"{', '.join(allowed)}{default_hint}."
                         if allowed
                         else "This measure allows no aggregations; inspect another measure."

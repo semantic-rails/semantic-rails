@@ -490,6 +490,8 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             node[key] = _operand(value, child, context)
         else:
             node[key] = value
+    if node.get("aggregation") and "measure" in node:
+        _check_aggregation(node, path, context)
     if kind in {"metric_predicate"}:
         node = _predicate(node, path)
     if kind == "scoped_aggregate":
@@ -519,6 +521,29 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             for key, value in dict(node["filter"]).items()
         }
     return node
+
+
+def _check_aggregation(node: dict[str, Any], path: str, context: CallContext) -> None:
+    """An ``aggregation`` override names one of the measure's allowed aggregations."""
+    measures = context.config.measures if context.config is not None else []
+    measure = next((row for row in measures if row.id == node["measure"]), None)
+    aggregation = node["aggregation"]
+    if measure is None or aggregation in measure.allowed_aggregations:
+        return
+    allowed = list(measure.allowed_aggregations)
+    raise refusal(
+        f"{path}.aggregation",
+        f"'{aggregation}' is not an aggregation of '{measure.id}'; it allows {allowed}",
+        fix=(
+            f"Use one of {allowed}, or omit aggregation for the default "
+            f"({measure.default_aggregation})."
+        ),
+        code="UNSUPPORTED_AGGREGATION",
+        measure=measure.id,
+        aggregation=aggregation,
+        allowed=allowed,
+        default_aggregation=measure.default_aggregation,
+    )
 
 
 def _inline_condition(item: Any, path: str, context: CallContext) -> Any:

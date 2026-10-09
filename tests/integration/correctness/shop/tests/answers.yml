@@ -234,6 +234,22 @@ tests:
       FROM orders
       GROUP BY 1, 2
       ORDER BY orders DESC, store_id ASC NULLS LAST, period ASC LIMIT 3
+  shop/largest-order-by-store-overrides-the-revenue-statistic:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue allows max, so the override reads each store's largest order amount, and the answer states the statistic and the rows it read.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union]
+    query:
+      select: [{expression: {kind: measure, measure: measure.shop.revenue, aggregation: max}, as: largest}]
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: null, largest: 6}
+      - {dimension.shop_order_store_id: a, largest: 20}
+      - {dimension.shop_order_store_id: b, largest: 9}
+    reference_sql: |
+      SELECT store_id, MAX(amount) AS largest
+      FROM orders
+      GROUP BY store_id
   shop/top-orders-by-revenue-rank-a-null-revenue-last:
     kind: query_matches_snapshot
     expect: answer

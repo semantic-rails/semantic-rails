@@ -5305,6 +5305,15 @@ def compile_query(
     from .top_n import limit_order
 
     sql_ast, limit_order_keys = limit_order(bound.sql_ast, _tie_breakers(plan))
+    outputs = {field.alias for field in sql_ast.select}
+    from .compiler_parts.sql_lowering import override_row_counts
+
+    # The hidden columns the runtime reads and removes: each re-aggregated measure's row count.
+    override_rows = {
+        alias: column
+        for alias, column in override_row_counts(plan, config).items()
+        if column in outputs
+    }
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,
@@ -5374,6 +5383,7 @@ def compile_query(
         "prepared_query": prepared,
         "limit_probe": limit_probe,
         "limit_order_keys": limit_order_keys,
+        "override_rows": override_rows,
         "explain": explain,
         "physical_plan": physical_plan,
         "performance_plan": performance_plan,

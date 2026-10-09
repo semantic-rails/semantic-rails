@@ -52,7 +52,7 @@ def test_unsupported_aggregation_hint_uses_measure_allowlist(package_config_fact
     assert hint["kind"] == "use_supported_aggregation"
     assert hint["aggregation_received"] == (aggregation or "count")
     assert hint["allowed"] == issue["details"]["allowed"] == ["sum", "avg"]
-    assert hint["message"] == "Choose an allowed aggregation for this measure: sum, avg."
+    assert hint["message"] == "Use one of this measure's aggregations: sum, avg."
 
 
 def test_unknown_aggregation_hint_does_not_invent_allowed_values():
@@ -83,7 +83,7 @@ def test_unsupported_aggregation_hint_names_the_actual_default(package_config_fa
     with pytest.raises(SemanticLayerError) as raised:
         _bind_measure(MeasureRefExpr(measure=measure.id, aggregation="count"), config, query)
     hint = exception_issue(raised.value, stage="bind")["recovery_hints"][0]
-    assert f"or omit `aggregation` to use the measure's default ({default})" in hint["message"]
+    assert f"; omit `aggregation` for the default ({default})." in hint["message"]
     assert hint["allowed"] == ["sum", "avg", "max"]
 
 

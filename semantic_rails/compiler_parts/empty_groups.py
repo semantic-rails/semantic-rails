@@ -239,6 +239,7 @@ def guard_empty_groups(
     observed: Mapping[str, LeafScope] | None = None,
     observed_buckets: Collection[str] = (),
     bucketed: bool = True,
+    keep: Iterable[str] = (),
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -261,6 +262,7 @@ def guard_empty_groups(
     source groups. Where the loaded-bucket check gates the output, their non-NULL count
     (including 0) proves that specific bucket was observed; the sum's matching-row count
     still prevents filling unknown amounts. Ungated, a retained leaf gets no such proof.
+    ``keep`` names source columns passed through unchanged.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
@@ -364,6 +366,7 @@ def guard_empty_groups(
                     whens=[SqlCaseWhen(seen, SqlCall("COALESCE", [value, SqlLiteral(0)]))],
                 )
         fields_.append(SqlField(value, alias))
+    fields_.extend(SqlField(SqlIdentifier(parts=["base", name]), name) for name in keep)
     guard = SqlSelect(
         select=fields_, from_table=SqlTableRef(name=source, alias="base"), joins=joins
     )

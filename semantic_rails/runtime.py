@@ -133,6 +133,7 @@ from .request_context import (
     without_trusted_attributes,
 )
 from .result_values import result_rows
+from .runtime_parts.assumptions import call_assumptions, split_hidden
 from .runtime_parts.disclosures import mixed_time_role_warnings
 from .runtime_parts.filtered_series import filtered_series_warnings
 from .runtime_parts.responses import (
@@ -1089,11 +1090,17 @@ def _compiled_warnings(
     return warnings
 
 
-def _window_total_fields(compiled) -> dict[str, Any]:
+def _window_total_fields(
+    config, compiled, hidden: dict[str, list[Any]] | None = None
+) -> dict[str, Any]:
     """``assumptions`` for every response, plus ``time_shape`` when the window was collapsed."""
+    stated = call_assumptions(config, compiled, hidden)
     if not compiled["logical_plan"].time.get("window_total"):
-        return {"assumptions": []}
-    return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
+        return {"assumptions": stated}
+    return {
+        "assumptions": [WINDOW_TOTAL_ASSUMPTION, *stated],
+        "time_shape": TIME_SHAPE_WINDOW_TOTAL,
+    }
 
 
 def _withheld_columns(policy_effects: list[dict[str, Any]]) -> set[str]:
@@ -2907,7 +2914,7 @@ class Runtime:
             out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
-            out.update(_window_total_fields(compiled))
+            out.update(_window_total_fields(self._config, compiled))
             out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
             out["freshness_by_leaf"] = freshness_rows
             out["freshness_as_of"] = _freshness_as_of(freshness_rows)
@@ -3008,7 +3015,7 @@ class Runtime:
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
-            **_window_total_fields(compiled),
+            **_window_total_fields(self._config, compiled),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -3113,6 +3120,7 @@ class Runtime:
                 from .top_n import limit_rows
 
                 rows, tie_warnings = limit_rows(rows, limit, compiled["limit_order_keys"])
+            rows, hidden = split_hidden(rows, compiled)
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -3164,7 +3172,7 @@ class Runtime:
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            **_window_total_fields(compiled),
+            **_window_total_fields(self._config, compiled, hidden),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),

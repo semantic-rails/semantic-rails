@@ -105,6 +105,7 @@ from .bind import (
     _freeze_payload,
     _parse_public_expr,
     _row_marker,
+    aggregation_overrides,
     earlier_settlement,
     earlier_settlement_applies,
 )
@@ -4941,16 +4942,20 @@ def build_performance_plan(
 _row_count_columns: ContextVar[Mapping[str, str] | None] = ContextVar(
     "row_count_columns", default=None
 )
+# The leaves that count their rows for the answer: the measures the call re-aggregates.
+_counted_overrides: ContextVar[Collection[str]] = ContextVar("counted_overrides", default=())
 
 
 @contextmanager
-def naming_row_counts(names: Mapping[str, str]) -> Iterator[None]:
+def naming_row_counts(names: Mapping[str, str], overrides: Collection[str] = ()) -> Iterator[None]:
     """Name the row count of each leaf lowered in this block (``_row_count_names``); a nested
-    compile names its own."""
+    compile names its own. A leaf in ``overrides`` counts its rows whatever its statistic."""
     token = _row_count_columns.set(names)
+    counted = _counted_overrides.set(overrides)
     try:
         yield
     finally:
+        _counted_overrides.reset(counted)
         _row_count_columns.reset(token)
 
 
@@ -5023,12 +5028,23 @@ def _row_markers(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> li
 
     The guard reads 0 only where that count is 0 (see ``empty_groups``); counts need none. A
     leaf lowered outside ``naming_row_counts`` counts nothing, and the guard refuses its sum.
+    A measure the call re-aggregates counts its rows too, for the answer to state.
     """
     bound = measure_plan.bound_measure
     name = (_row_count_columns.get() or {}).get(bound.alias)
-    if name is None or not counts_rows(bound.aggregation, measure):
+    if name is None or not (
+        counts_rows(bound.aggregation, measure) or bound.alias in _counted_overrides.get()
+    ):
         return []
     return [(_row_marker(value_expr), name)]
+
+
+def override_row_counts(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
+    """The column counting the source rows of each measure the call re-aggregates (a statistic
+    other than its default), by leaf alias."""
+    names = _row_count_names(plan, _names_in_use(plan, config))
+    overridden = aggregation_overrides(plan.query.get("select"), config)
+    return {alias: names[alias] for alias in overridden if alias in names}
 
 
 def _rows_fields(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[SqlField]:
@@ -5669,6 +5685,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     taken = _names_in_use(plan, config)
     row_counts = _row_count_names(plan, taken)
     refuse_shared_names(row_counts.values(), taken)
+    overrides = override_row_counts(plan, config) if plan_is_root() else {}
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
     # Under the dataset scope, each measure's own rows, which the query's where filters never
     # cut. A query metric predicate selects the rows measured, which no such probe reads.
@@ -5679,7 +5696,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
         # A window on the request's own query hides data outside it: keep what each leaf reads.
-        with recording_leaf_scopes() as scopes, naming_row_counts(row_counts):
+        with recording_leaf_scopes() as scopes, naming_row_counts(row_counts, overrides):
             for measure_group in measure_groups:
                 cte_name = measure_group[0].cte_name
                 # A folded group shares one scan, so its filters cut every leaf in it.
@@ -5890,6 +5907,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         base_name = "series_base"
         base_table = SqlTableRef(name=base_name, alias="base")
 
+    # The row counts the answer states beside a re-aggregated measure: hidden columns the
+    # runtime reads and removes.
+    counted = [name for name in overrides.values() if name in rows.values()]
     # The one place an empty group reads 0 instead of NULL: the projection below reads
     # every such measure through this CTE, so nothing after it can change what it sees.
     zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
@@ -5912,6 +5932,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 observed=observed,
                 observed_buckets=retained,
                 bucketed=bool(plan.time),
+                keep=counted,
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
@@ -6011,6 +6032,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             config,
             combined=False,
         )
+    projected_fields.extend(SqlField(SqlIdentifier(parts=["base", name]), name) for name in counted)
 
     if not final_where:
         # Inline the `projected` passthrough CTE directly into the final SELECT.
@@ -6051,7 +6073,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
 
     final_fields = [
         SqlField(SqlIdentifier(parts=["projected", alias]), alias)
-        for alias in [*key_aliases, *plan.post_aggregation_exprs.keys()]
+        for alias in [*key_aliases, *plan.post_aggregation_exprs.keys(), *counted]
     ]
 
     return _tier_internal_aliases(
