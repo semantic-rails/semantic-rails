@@ -99,6 +99,7 @@ from .compiler_parts.paths import (
     _leaf_time_role,
     _resolve_dimension_expr,
     inner_lookups,
+    unknown_as_null,
 )
 from .compiler_parts.post_aggregation import (
     _as_offset_window_expr,
@@ -1696,6 +1697,30 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
 
     Skip dimensions without a classified catalog data type.
     """
+    unknown = [
+        value
+        for value in operators.values_of(item.op, item.value)
+        if value in list(getattr(dim, "unknown_values", None) or [])
+    ]
+    if unknown:
+        # The dimension reads that spelling as unknown, so is / not never sees it.
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}.value: {unknown[0]!r} is how {dim.id} records an unknown value",
+            details={
+                "path": f"{path}.value",
+                "unknown_values": list(dim.unknown_values),
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": (
+                            f'Say missing: {{"field": "{dim.id}", "op": "missing", "value": '
+                            f"{'true' if item.op == 'is' else 'false'}}}."
+                        ),
+                    }
+                ],
+            },
+        )
     # ``missing`` takes a boolean, not a value of the dimension; ``contains`` takes text.
     if item.op in {"missing", "contains"}:
         return
@@ -2779,7 +2804,9 @@ def _predicate_ctes_and_join(
             join_condition,
             "AND",
             dialect_for_warehouse(config.package.warehouse).null_safe_eq(
-                _column_ref(_entity_index(config)[dim.entity].table, dim.column),
+                unknown_as_null(
+                    _column_ref(_entity_index(config)[dim.entity].table, dim.column), dim
+                ),
                 SqlIdentifier(parts=[set_name, dim_id]),
             ),
         )

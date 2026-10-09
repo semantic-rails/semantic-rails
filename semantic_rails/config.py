@@ -2077,6 +2077,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     filterable=bool(dim_spec.get("filterable", True)),
                     groupable=bool(dim_spec.get("groupable", True)),
                     value_domain=value_domain_id,
+                    unknown_values=list(dim_spec.get("unknown_values") or []),
                 )
             )
             dimension_lookup[(model_id, dim_key)] = dim_id

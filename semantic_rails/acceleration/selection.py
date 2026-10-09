@@ -338,6 +338,9 @@ def _select_aggregate_relation(
     ]
     dimensions = {str(item) for item in query.group_by} | {str(field) for field, _, _ in filters}
     dimensions.discard("")
+    if any(row.unknown_values for row in config.dimensions if row.id in dimensions):
+        # A rollup holds the raw spellings; the source read maps them to unknown.
+        return "", {row.id: "unknown_values" for row in rows}
     key = _measure_count_distinct_key_columns(measure, config)
     leaf = _Leaf(
         bound=bound,

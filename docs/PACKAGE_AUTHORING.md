@@ -1421,6 +1421,24 @@ Supported `kind:` values: `categorical`, `boolean`, `integer`, `continuous`,
 `number`, `percent`, `currency`, `date`, `timestamp`. `kind: id` is no longer
 authored — entity keys are auto-created from `graph.entities.<x>.key`.
 
+NULL is always unknown. Normalise other unknown spellings to NULL in your
+transformation layer when you can, and label empties that mean something (an
+empty referrer may be "direct"). When the source writes an unknown as a value you
+cannot change, declare it on that dimension:
+
+```yaml
+dimensions:
+  country:
+    kind: categorical
+    unknown_values: ['', 'XX']   # read as unknown wherever the dimension is read
+```
+
+Grouping puts those rows in the unknown (`null`) group, `missing: true` matches
+them, `not` keeps them (and the answer's `UNKNOWN_ROWS_KEPT` counts them), and a
+call that writes one of them in `is` or `not` is refused with the `missing` form.
+`unknown_values` is a non-empty list of strings or numbers on one dimension; it is
+never a package default. A rollup is not read for a query on such a dimension.
+
 ### Measures
 
 Each measure declares the explicit triple (`kind`, `accumulation`, `value_type`)
@@ -1742,7 +1760,10 @@ aggregates. There is intentionally no top-level `filter:` direct field on
 filter expression. Each `all:` item is either a dimension
 condition with `field`, `op`, and `value`, or an `expression:` containing a
 `metric_predicate`. All items are combined with AND. Other filter combinators,
-including `any:`, are unsupported.
+including `any:`, are unsupported. A condition uses the query's filter words
+(`is`, `not`, `gt`, `gte`, `lt`, `lte`, `contains`, `missing`) and accepts their SQL
+spellings (`=`, `!=`, `IN`, `NOT IN`, `>`, ...) with the same meaning: `not` and
+`!=` keep rows whose value is unknown; add `missing: false` to leave them out.
 
 ### Building-block measures
 

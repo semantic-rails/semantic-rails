@@ -172,6 +172,7 @@ from .paths import (
     _resolve_dimension_expr,
     inner_lookups,
     rollup_held_lookups,
+    unknown_as_null,
 )
 from .post_aggregation import _compile_post_expr, _expr_requires_dense_series, _namespace_sql_select
 from .predicate import (
@@ -2885,7 +2886,7 @@ def _source_rollup_leaf_select(
             source_relation_override=measure_source_override,
         )
         if dim.entity == measure.entity:
-            preagg_fields[dim_id] = _column_ref(source_table, dim.column)
+            preagg_fields[dim_id] = unknown_as_null(_column_ref(source_table, dim.column), dim)
             local_group_aliases.append(dim_id)
         elif direct is not None:
             preagg_fields[dim_id] = direct[0]

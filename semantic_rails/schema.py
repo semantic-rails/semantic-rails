@@ -121,6 +121,9 @@ class DimensionConfig:
     filterable: bool = True
     groupable: bool = True
     value_domain: str = ""
+    # Values the source writes for "unknown" (``''``, ``'XX'``): read as NULL wherever the
+    # dimension is read, so grouping, ``missing`` and ``not`` treat them as unknown.
+    unknown_values: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
