@@ -27,8 +27,8 @@ MAX_FILES = 20
 BUDGET_SECONDS = 290
 # Leave headroom above measured test durations when sizing or starting a repetition.
 FIT_MARGIN = 1.2
-# A repeated test running longer than this, or than its own longer @pytest.mark.timeout, is hung; unit tests
-# take about a second at most.
+# A repeated test runs under this limit unless it declares a longer @pytest.mark.timeout; unit tests take about a
+# second at most.
 TEST_TIMEOUT_SECONDS = 60
 
 
