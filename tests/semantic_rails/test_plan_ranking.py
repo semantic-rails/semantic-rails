@@ -74,6 +74,7 @@ def test_plan_prefers_revenue_usd_over_drink_revenue_for_generic_intent(
     signal the blind agent reads from `match_reasons`.
     """
     runtime = runtime_factory("jaffle_shop")
+    runtime._package_examples = []  # Exercise token scoring without authored answers.
     try:
         for intent in (
             "top stores by revenue",

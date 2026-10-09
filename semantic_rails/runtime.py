@@ -2169,6 +2169,26 @@ class Runtime:
         # Lazily loaded on first access; None = not yet looked up,
         # False = looked up and absent/stale (don't retry this call).
         self._manifest: dict[str, Any] | None | bool = None
+        self._package_examples: list[tuple[str, dict[str, Any]]] | None = None
+
+    def _get_package_examples(self) -> list[tuple[str, dict[str, Any]]]:
+        """Load the same authored entries project validation certifies, once per generation."""
+        from pathlib import Path
+
+        from .yaml_loader import load_named_entries
+
+        with self._cache_lock:
+            if self._package_examples is None:
+                self._package_examples = (
+                    load_named_entries(
+                        Path(self.package_root) / "examples",
+                        plural_key="examples",
+                        singular_key="example",
+                    )
+                    if self.source_path
+                    else []
+                )
+            return self._package_examples
 
     @property
     def snapshot(self) -> LoadedPackageSnapshot:
@@ -2510,6 +2530,7 @@ class Runtime:
                 else ""
             )
             self._manifest = None
+            self._package_examples = None
             self._package_fingerprint = new_fingerprint
             # Preserve an operator-injected cache backend. Cache keys include
             # the package fingerprint, so prior-generation entries cannot be
