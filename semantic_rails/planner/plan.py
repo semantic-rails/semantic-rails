@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import replace
 from typing import Any
 
@@ -81,7 +82,6 @@ _VERSION = 1
 
 
 # ---------------------------------------------------------------------------
-_QUOTED = QUOTED
 _CONTRACTION = r"\b(?P<word>[^\W_]+?)(?P<suffix>n['’]t|['’](?:s|re|ve|ll|d))\b"
 _IS = frozenset({"what", "who", "where", "when", "how", "it", "that", "there", "here"})
 _EXPANDED = {"'s": " is", "'re": " are", "'ve": " have", "'ll": " will", "'d": " would"}
@@ -105,7 +105,7 @@ def _normalize_question(text: str, declared: Iterable[str] = ()) -> str:
             return {"ca": "can", "wo": "will", "sha": "shall"}.get(word.lower(), word) + " not"
         return word + _EXPANDED[suffix]
 
-    pattern = rf"(?P<kept>{_QUOTED}|(?<!\w)(?:{kept})(?!\w))|{_CONTRACTION}"
+    pattern = rf"(?P<kept>{QUOTED}|(?<!\w)(?:{kept})(?!\w))|{_CONTRACTION}"
     return re.sub(pattern, expand, text, flags=re.IGNORECASE)
 
 
@@ -181,8 +181,9 @@ def plan_payload(
         if payload["status"] not in {"ok", "out_of_scope"} and _caller_sets_no_query(partial_query)
         else None
     )
-    if split is not None:
-        payload = _parts_payload(payload, split, plan_question, detail_level)
+    # When the engine refuses a part on its own, the whole question's hold stays.
+    with suppress(SemanticLayerError):
+        payload = _parts_payload(payload, split, plan_question, detail_level) if split else payload
     return _query_detail_payload(payload) if detail_level == "query" else payload
 
 

@@ -19,6 +19,9 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 
+import semantic_rails.cli.reports as reports
+from semantic_rails.config_validation import PackageReference
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import (
     MCP_SERVER_INSTRUCTIONS,
@@ -382,6 +385,49 @@ def test_a_part_warning_is_the_whole_payloads(
     payload = _plan(runtime, ANSWERED[0][0])
 
     assert payload["warnings"] == [warning]
+
+
+def test_a_part_the_engine_refuses_keeps_the_whole_questions_hold(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = ANSWERED[0][0]
+    planned = plan_module._question_payload
+    whole = planned(runtime, question, {"policy_context": NOW}, "best", 3, runtime._config)
+
+    def refused(runtime: Any, intent: str, *args: Any) -> dict[str, Any]:
+        if intent.endswith("MRR"):
+            raise SemanticLayerError("INVALID_QUERY", "refused")
+        return planned(runtime, intent, *args)
+
+    monkeypatch.setattr(plan_module, "_question_payload", refused)
+    payload = _plan(runtime, question, detail="best")
+
+    assert "parts" not in payload
+    assert (payload["status"], payload["why"]) == (whole["status"], whole["why"])
+    assert whole["status"] != "ok"
+
+
+def test_ask_never_runs_one_part_as_the_whole_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _package(tmp_path / NS, policy=False)
+    planned = reports.plan_payload
+
+    def at_now(runtime: Any, **kwargs: Any) -> dict[str, Any]:
+        return planned(runtime, **{**kwargs, "partial_query": {"policy_context": NOW}})
+
+    monkeypatch.setattr(reports, "plan_payload", at_now)
+    report = reports.ask_report(
+        PackageReference(source_path=str(root)), question=ANSWERED[0][0], execute=True
+    )
+
+    assert report["plan"] and report["ok"] is False
+    assert [error["code"] for error in report["errors"]] == ["PLAN_PARTS"]
+    assert report["errors"][0]["details"]["parts"] == [
+        "Last week, how many new accounts were there",
+        "Last week, what was the MRR",
+    ]
+    assert "result" not in report
 
 
 def test_a_caller_query_is_never_split_across_parts(runtime: Runtime) -> None:

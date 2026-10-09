@@ -200,6 +200,17 @@ def ask_report(
                 errors = [plan["why"]]
             out["errors"] = errors
             return out
+        if parts := list(plan.get("parts") or []):
+            # One run answers one part: asking each part on its own answers every part.
+            out["ok"] = False
+            out["errors"] = [
+                {
+                    "code": "PLAN_PARTS",
+                    "message": "The question asks several things; ask each part on its own.",
+                    "details": {"parts": [part["text"] for part in parts]},
+                }
+            ]
+            return out
         if not query:
             out["ok"] = False
             out["errors"] = [{"code": "NO_PLAN", "message": "No executable query was planned"}]
