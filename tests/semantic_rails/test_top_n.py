@@ -174,9 +174,9 @@ def test_runtime_cutoff_uses_warehouse_result_key_casing(
     try:
         result = runtime.query(
             {
-                "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": alias}],
+                "select": [{"expression": "measure.jaffle.order_count", "as": alias}],
                 "group_by": ["dimension.jaffle_store_name"],
-                "order_by": [{"field": alias, "direction": "DESC"}],
+                "order_by": [{"field": alias, "direction": "desc"}],
                 "limit": 2,
             }
         )

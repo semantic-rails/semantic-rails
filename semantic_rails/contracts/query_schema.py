@@ -1,6 +1,6 @@
 """The query call's JSON Schema, generated from the front door's own tables.
 
-The ``execute`` and ``plan`` MCP tools embed it, and ``query.v2.json`` is this document.
+``query.v2.json`` is this document; the ``execute`` MCP tool embeds a compact form of it.
 """
 
 from __future__ import annotations
@@ -252,3 +252,26 @@ def query_call_schema_document() -> dict[str, Any]:
         "x-fields": list(FIELDS),
         "$defs": defs,
     }
+
+
+def embedded_query_call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
+    """The call schema as a tool embeds it, and the ``$defs`` its references resolve against.
+
+    The published document's rules, with each kind's keys written out in one ``anyOf``
+    instead of an ``if``/``then`` chain over ``Kind_*`` definitions: about 4 KB less in every
+    ``tools/list``. A test holds both forms to the same verdicts.
+    """
+
+    document = query_call_schema_document()
+    definitions: dict[str, Any] = document.pop("$defs")
+    for key in ("$schema", "$id", "title", "x-fields"):
+        document.pop(key, None)
+    kinds = []
+    for name in sorted(name for name in definitions if name.startswith("Kind_")):
+        kind = definitions.pop(name)
+        kind.pop("type")
+        kinds.append(kind)
+    definitions["Expression"] = {
+        "anyOf": [{"$ref": "#/$defs/Ref"}, {"type": "object", "anyOf": kinds}]
+    }
+    return document, definitions

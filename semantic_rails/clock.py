@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .errors import SemanticLayerError
 
@@ -55,7 +55,16 @@ def format_now(now: datetime) -> str:
 
 
 def _zone(name: str) -> Any:
-    return UTC if not name or name == "UTC" else ZoneInfo(name)
+    if not name or name == "UTC":
+        return UTC
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise SemanticLayerError(
+            "INVALID_TEMPORAL_ROLE",
+            f"The clock's time zone '{name}' is not a known zone",
+            details={"timezone": name},
+        ) from exc
 
 
 def local_now(now: datetime, timezone: str) -> datetime:
@@ -149,7 +158,14 @@ class Window:
 
 def resolve_window(spec: dict[str, Any], *, now: datetime, timezone: str = "UTC") -> Window:
     """Resolve a time block's window keys (``last`` | ``this`` | ``start``/``end``)."""
-    today = local_now(now, timezone)
+    if "last" not in spec and "this" not in spec:
+        # Dated bounds need the zone only to say whether the window reaches past now.
+        try:
+            today = local_now(now, timezone)
+        except SemanticLayerError:
+            today = local_now(now, "UTC")
+    else:
+        today = local_now(now, timezone)
     if "last" in spec:
         last = spec["last"]
         unit, value = last["unit"], int(last["value"])

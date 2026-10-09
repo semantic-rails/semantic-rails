@@ -14,7 +14,6 @@ layer.
 from __future__ import annotations
 
 import json
-import operator
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
@@ -102,6 +101,7 @@ from .compiler_parts.paths import (
     _leaf_time_role,
     _resolve_dimension_expr,
     inner_lookups,
+    unknown_as_null,
 )
 from .compiler_parts.post_aggregation import (
     _as_offset_window_expr,
@@ -1715,6 +1715,30 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
 
     Skip dimensions without a classified catalog data type.
     """
+    unknown = [
+        value
+        for value in operators.values_of(item.op, item.value)
+        if value in list(getattr(dim, "unknown_values", None) or [])
+    ]
+    if unknown:
+        # The dimension reads that spelling as unknown, so is / not never sees it.
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}.value: {unknown[0]!r} is how {dim.id} records an unknown value",
+            details={
+                "path": f"{path}.value",
+                "unknown_values": list(dim.unknown_values),
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": (
+                            f'Say missing: {{"field": "{dim.id}", "op": "missing", "value": '
+                            f"{'true' if item.op == 'is' else 'false'}}}."
+                        ),
+                    }
+                ],
+            },
+        )
     # ``missing`` takes a boolean, not a value of the dimension; ``contains`` takes text.
     if item.op in {"missing", "contains"}:
         return
@@ -1840,49 +1864,20 @@ def _predicate_where_condition(op: str, value: Any) -> Any:
     return build_filter_condition(alias_ref, op, value, path="metric_predicate")
 
 
-_ZERO_COMPARISONS: dict[str, Any] = {
-    "=": operator.eq,
-    "!=": operator.ne,
-    "<>": operator.ne,
-    "<": operator.lt,
-    "<=": operator.le,
-    ">": operator.gt,
-    ">=": operator.ge,
-}
-_INVERSE_THRESHOLD_OPS = {
-    "=": "!=",
-    "!=": "=",
-    "<>": "=",
-    "<": ">=",
-    "<=": ">",
-    ">": "<=",
-    ">=": "<",
-    "IN": "NOT IN",
-    "NOT IN": "IN",
-}
-
-
 # A distinct count of a population is 0 over no rows too; it stays out of the empty-group
 # settling of a query's groups, whose null semantics differ.
 _ZERO_ON_MISSING_PREDICATE_CLASSES = {*ZERO_MEASURE_CLASSES, "distinct_population"}
 
 
-def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
 def _zero_satisfies_threshold(op: str, value: Any) -> bool:
     """Whether a value of 0 passes the ``op value`` threshold of a metric_predicate."""
-    token = " ".join(str(op or "").upper().split())
-    if token in {"IN", "NOT IN"}:
-        values = list(value) if isinstance(value, (list, tuple)) else [value]
-        if not values:
-            return token == "NOT IN"  # NOT IN () is always true, IN () never
-        if not all(_is_number(item) for item in values):
-            return False
-        return (0 in values) == (token == "IN")
-    compare = _ZERO_COMPARISONS.get(token)
-    return compare is not None and _is_number(value) and bool(compare(0, value))
+    try:
+        word, value = operators.normalize_condition(
+            op, value, path="metric_predicate", internal=True
+        )
+    except SemanticLayerError:
+        return False
+    return operators.holds(word, value, 0)
 
 
 def _require_predicate_over_rows(
@@ -2015,7 +2010,7 @@ def _inline_threshold_cte_and_where(
     )
     where_condition = SqlBinary(
         SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
-        str(predicate.op),
+        operators.COMPARISON_SQL[operators.word_of(predicate.op)],
         SqlIdentifier(parts=["predicate_threshold", "__threshold"]),
     )
     return [threshold_cte], [cross_join], where_condition
@@ -2273,6 +2268,47 @@ def _refuse_overridden_predicate_input(
     )
 
 
+def _predicate_input_clocks(
+    predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
+) -> set[str]:
+    """The clocks a predicate's input reads; a metric whose measures all pin one clock reads it."""
+    roles = _expr_compatible_temporal_roles(predicate.input, config, query)
+    if len(roles) < 2 or (query.time is not None and query.time.temporal_role in roles):
+        return roles
+    # Only the input's own pins count: the query's overrides never reach its source.
+    unpinned = replace(query, temporal_role_overrides={})
+    leaves = [
+        _expr_compatible_temporal_roles(expr, config, unpinned)
+        for expr in _window_measure_exprs(predicate.input, config)
+    ]
+    pinned = set.intersection(*leaves) & roles if leaves else set()
+    return pinned if len(pinned) == 1 else roles
+
+
+def _predicate_input_clock_error(
+    predicate: MetricPredicateExpr, query: NormalizedQuery, clocks: set[str], why: str
+) -> SemanticLayerError:
+    assert query.time is not None
+    return SemanticLayerError(
+        "INVALID_TEMPORAL_BINDING",
+        f"The entity filter on {_predicate_metric_label(predicate)!r} {why}",
+        details={
+            "requested": query.time.temporal_role,
+            "compatible": sorted(clocks),
+            "predicate": expr_to_dict(predicate),
+            "recovery_hints": [
+                {
+                    "code": "CHOOSE_PREDICATE_CLOCK",
+                    "message": (
+                        "Set time.temporal_role to one of `compatible`, filter by a package "
+                        "metric that pins one clock, or use over: all_time."
+                    ),
+                }
+            ],
+        },
+    )
+
+
 def _predicate_time_spec(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> dict[str, Any] | None:
@@ -2286,55 +2322,37 @@ def _predicate_time_spec(
                 "metric_predicate time_grain requires contextual scope with query.time",
             )
         if predicate.time_alignment in {"query_window", "rolling_window_in_period"}:
-            if query.time is None:
+            if query.time is None or query.time.start is None or query.time.end is None:
                 raise SemanticLayerError(
                     "PREDICATE_GRAIN_UNSAFE",
-                    "entity_only metric_predicate query-window alignment requires query.time",
+                    "an entity filter over the window needs a bounded time window",
+                    details={
+                        "recovery_hints": [
+                            {
+                                "code": "BOUND_THE_WINDOW",
+                                "message": (
+                                    "Add a window to time (last, this, or start and end), "
+                                    "or use over: all_time."
+                                ),
+                            }
+                        ]
+                    },
                 )
-            if query.time.start is None or query.time.end is None:
-                raise SemanticLayerError(
-                    "PREDICATE_GRAIN_UNSAFE",
-                    "entity_only metric_predicate query-window alignment requires bounded query.time start and end",
-                )
-            compatible_roles = _expr_compatible_temporal_roles(predicate.input, config, query)
+            # The window applies on the input's own clock: the entity's rows inside it.
+            compatible_roles = _predicate_input_clocks(predicate, query, config)
             predicate_temporal_role = query.time.temporal_role
             if query.time.temporal_role not in compatible_roles:
-                if len(compatible_roles) > 1:
-                    clocks = sorted(compatible_roles)
-                    raise SemanticLayerError(
-                        "INVALID_TEMPORAL_BINDING",
-                        "entity_only metric_predicate query-window alignment needs one "
-                        f"input clock; choose from {', '.join(clocks)}",
-                        details={
-                            "requested": query.time.temporal_role,
-                            "compatible": clocks,
-                            "predicate": expr_to_dict(predicate),
-                            "recovery_hints": [
-                                {
-                                    "code": "CHOOSE_PREDICATE_CLOCK",
-                                    "message": (
-                                        (
-                                            "Set query.time.temporal_role to one of the listed clocks. "
-                                            if isinstance(predicate.input, MetricRecipeRefExpr)
-                                            else "Set the predicate input's temporal_role to a candidate "
-                                            "clock, or pin its measures' clock in a package metric. "
-                                        )
-                                        + "Write over: all_time to apply the predicate over all time."
-                                    ),
-                                }
-                            ],
-                        },
+                if len(compatible_roles) != 1:
+                    raise _predicate_input_clock_error(
+                        predicate,
+                        query,
+                        compatible_roles,
+                        "reads several clocks (see `compatible`), so the window cannot "
+                        "choose which of the entity's rows fall inside it"
+                        if compatible_roles
+                        else "reads no clock, so none of the entity's rows fall inside the window",
                     )
-                predicate_temporal_role = next(iter(sorted(compatible_roles)), "")
-                if not predicate_temporal_role:
-                    raise SemanticLayerError(
-                        "PREDICATE_GRAIN_UNSAFE",
-                        "Metric predicate input does not expose a compatible temporal role",
-                        details={
-                            "compatible": sorted(compatible_roles),
-                            "predicate": expr_to_dict(predicate),
-                        },
-                    )
+                predicate_temporal_role = next(iter(compatible_roles))
             _validate_predicate_metric_clocks(predicate, query, config, predicate_temporal_role)
             return {
                 "temporal_role": predicate_temporal_role,
@@ -2349,9 +2367,23 @@ def _predicate_time_spec(
                 else {},
             }
         return None
+    per_period = predicate.scope_mode == "entity_period"
+    if per_period and (query.time is None or not query.time.grain):
+        raise SemanticLayerError(
+            "PREDICATE_GRAIN_UNSAFE",
+            "an entity filter per period needs time.grain",
+            details={
+                "recovery_hints": [
+                    {
+                        "code": "SET_TIME_GRAIN",
+                        "message": 'Add "grain" to time, or use over: window or all_time.',
+                    }
+                ]
+            },
+        )
     if query.time is None:
         return None
-    compatible_roles = _expr_compatible_temporal_roles(predicate.input, config, query)
+    compatible_roles = _predicate_input_clocks(predicate, query, config)
     predicate_temporal_role = query.time.temporal_role
     if query.time.temporal_role not in compatible_roles:
         if not compatible_roles:
@@ -2363,10 +2395,21 @@ def _predicate_time_spec(
                     "predicate": expr_to_dict(predicate),
                 },
             )
-        # Matching another clock's calendar buckets to the query's is only sound when the
-        # predicate asks for it and names exactly one clock; it is never a silent default.
-        if predicate.time_alignment != "same_query_period" or len(compatible_roles) != 1:
+        # A contextual predicate matches another clock's calendar buckets only when it asks
+        # for it and names exactly one clock; it is never a silent default. A per-period entity
+        # filter reads its input on the input's own clock, bucketed by the output period.
+        if not per_period and (
+            predicate.time_alignment != "same_query_period" or len(compatible_roles) != 1
+        ):
             raise _cross_clock_predicate_error(predicate, query, compatible_roles)
+        if len(compatible_roles) != 1:
+            raise _predicate_input_clock_error(
+                predicate,
+                query,
+                compatible_roles,
+                "reads several clocks (see `compatible`), none of them the query's, so its "
+                "periods are ambiguous",
+            )
         predicate_temporal_role = next(iter(compatible_roles))
     _validate_predicate_metric_clocks(predicate, query, config, predicate_temporal_role)
     outer_grain = str(query.time.grain or "").lower()
@@ -2694,13 +2737,17 @@ def _predicate_ctes_and_join(
         # query, so only an entity it doesn't list has no rows, and with no settled value at
         # all the gate below drops every row.
         value = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
-        where_condition = build_filter_condition(
-            value,
-            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
-            predicate.value,
-            path="metric_predicate",
+        word, threshold = operators.normalize_condition(
+            predicate.op, predicate.value, path="metric_predicate", internal=True
         )
-        if not earlier:
+        failing = operators.negation(word)
+        where_condition = build_filter_condition(value, failing, threshold, path="metric_predicate")
+        # ``not`` keeps unknown values; the earlier settlement counts them as passing.
+        if earlier and operators.OPERATORS[failing].keeps_unknown:
+            where_condition = SqlBinary(
+                where_condition, "AND", SqlBinary(value, "IS NOT", SqlLiteral(None))
+            )
+        elif not earlier and not operators.OPERATORS[failing].keeps_unknown:
             where_condition = SqlBinary(where_condition, "OR", SqlIsNull(value))
     set_query = SqlSelect(
         select=select_fields,
@@ -2775,7 +2822,9 @@ def _predicate_ctes_and_join(
             join_condition,
             "AND",
             dialect_for_warehouse(config.package.warehouse).null_safe_eq(
-                _column_ref(_entity_index(config)[dim.entity].table, dim.column),
+                unknown_as_null(
+                    _column_ref(_entity_index(config)[dim.entity].table, dim.column), dim
+                ),
                 SqlIdentifier(parts=[set_name, dim_id]),
             ),
         )

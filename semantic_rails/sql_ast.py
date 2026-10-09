@@ -628,9 +628,6 @@ def filter_rejects_null(op: Any, value: Any) -> bool:
     return operators.rejects_unknown(word, value)
 
 
-_RANGE_SQL = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
-
-
 def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "where") -> SqlExpr:
     """The SQL condition for a ``{field, op, value}`` filter, read from the operator table.
 
@@ -655,8 +652,8 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
             else SqlIn(expr, literal, negated=True)
         )
         return SqlBinary(differs, "OR", SqlIsNull(expr=expr))
-    if word in _RANGE_SQL:
-        return SqlBinary(expr, _RANGE_SQL[word], SqlLiteral(value))
+    if word in operators.RANGE_WORDS:
+        return SqlBinary(expr, operators.COMPARISON_SQL[word], SqlLiteral(value))
     return SqlLike(SqlCall("LOWER", [expr]), operators.contains_pattern(str(value)))
 
 

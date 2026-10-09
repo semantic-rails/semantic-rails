@@ -24,7 +24,7 @@ from semantic_rails.policies import (
     withheld_object_ids,
 )
 from semantic_rails.policy_rules import hidden_policy_ids, visible_only_listed
-from semantic_rails.request_context import TrustedAttributes
+from semantic_rails.request_context import TrustedAttributes, context_from_policy_context
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticCaveatConfig, SemanticPolicyConfig
 from semantic_rails.visible_view import hidden_object_ids
@@ -145,7 +145,9 @@ def test_every_policy_kind_checks_the_request_environment(
                     exc.value.code, str(exc.value), exc.value.details, config.package.environments
                 )
             result = SemanticLayerMCPAdapter(engine).call_tool(
-                "execute", {"query": QUERY, "mode": "run", "policy_context": context}
+                "execute",
+                {"query": QUERY, "mode": "run"},
+                request_context=context_from_policy_context(context),
             )
             assert result["ok"] is False
             assert result["errors"][0]["code"] == "INVALID_QUERY"

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
+from . import operators
 from .errors import SemanticLayerError
 
 if TYPE_CHECKING:
@@ -286,6 +287,12 @@ class OffsetWindowExpr:
     value: int = 0
     partition_by: list[str] = field(default_factory=list)
     window_scope: str = ""
+
+
+# How a predicate's input is taken per entity: grouped with the query's context
+# (``contextual``), over the entity's rows (``entity_only``), or per entity per output period
+# (``entity_period``: grouped by the entity keys and the query's time bucket, nothing else).
+PREDICATE_SCOPES = frozenset({"contextual", "entity_only", "entity_period"})
 
 
 @dataclass(frozen=True)
@@ -1797,6 +1804,12 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE", "metric_predicate expressions require 'op'"
             )
+        if operators.operator_word(op, path="metric_predicate.op") not in operators.COMPARISON_SQL:
+            raise SemanticLayerError(
+                "INVALID_METRIC_PREDICATE",
+                "metric_predicate.op compares an aggregate: use is, not, gt, gte, lt or lte",
+                details={"path": "metric_predicate.op", "received_value": op},
+            )
         if context == "config" and not scope_mode:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
@@ -1804,15 +1817,15 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
             )
         if context == "query" and not scope_mode:
             scope_mode = "contextual"
-        if scope_mode not in {"contextual", "entity_only"}:
+        if scope_mode not in PREDICATE_SCOPES:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
-                "metric_predicate scope_mode must be 'contextual' or 'entity_only'",
+                f"metric_predicate scope_mode must be one of {sorted(PREDICATE_SCOPES)}",
             )
-        if scope_mode == "entity_only" and time_grain:
+        if scope_mode != "contextual" and time_grain:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
-                "entity_only metric_predicate expressions cannot declare time_grain",
+                f"{scope_mode} metric_predicate expressions cannot declare time_grain",
             )
         if time_alignment and time_alignment not in {
             "same_query_period",

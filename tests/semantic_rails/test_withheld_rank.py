@@ -1,8 +1,8 @@
 """A ``withhold_values`` policy lets a caller rank by an object without seeing its values.
 
 "The three biggest stores by revenue" is answered with the stores only. Every other use of
-the withheld object (a selected expression, filter, threshold, comparison, segment or
-export) is refused with ``POLICY_DENIED`` on every surface, and no response carries a value.
+the withheld object (a selected expression, filter, threshold, comparison or segment) is
+refused with ``POLICY_DENIED`` on every surface, and no response carries a value.
 The numbers themselves are checked against reference SQL in the correctness suite.
 """
 
@@ -22,6 +22,8 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import _tool_content
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.policies import enforce_query_policies, withheld_measure_ids, withheld_shape
+from semantic_rails.query_call import read_call
+from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.conftest import copy_package_config, opened
@@ -34,11 +36,10 @@ STORE = "dimension.jaffle_store_name"
 ROLE = "temporal_role.jaffle_order_time"
 SALES = {"roles": ["sales"]}
 RANK = {
-    "select": [{"expression": {"measure": REVENUE}, "as": "revenue"}],
+    "select": [{"expression": REVENUE, "as": "revenue"}],
     "group_by": [STORE],
-    "order_by": [{"field": "revenue", "direction": "DESC"}],
+    "order_by": [{"field": "revenue", "direction": "desc"}],
     "limit": 3,
-    "policy_context": SALES,
 }
 MONTHLY = {"time": {"temporal_role": ROLE, "grain": "month"}}
 
@@ -81,35 +82,51 @@ def _value(expression: dict[str, Any], alias: str = "other") -> dict[str, Any]:
     return {"expression": expression, "as": alias}
 
 
-def _threshold(input_: dict[str, Any]) -> dict[str, Any]:
-    predicate = {"kind": "metric_predicate", "entity": "entity.jaffle_customer"}
-    predicate |= {"scope_mode": "entity_only", "input": input_, "op": ">=", "value": 100}
-    return {"expression": predicate, "op": "=", "value": True}
+def _patched(patch: dict[str, Any]) -> dict[str, Any]:
+    """RANK with ``patch``; a key patched to None leaves the call."""
+    return {key: value for key, value in {**RANK, **patch}.items() if value is not None}
+
+
+def _threshold(measure: str) -> dict[str, Any]:
+    """Customers with at least 100 of ``measure``, over every row of the customer."""
+    having = [{"field": measure, "op": "gte", "value": 100}]
+    return {"entity": "entity.jaffle_customer", "having": having, "over": "all_time"}
 
 
 CONDITIONAL = {
     "kind": "aggregate_if",
     "aggregation": "sum",
-    "condition": _threshold({"measure": REVENUE})["expression"],
+    "condition": {
+        "kind": "metric_predicate",
+        "entity": "entity.jaffle_customer",
+        "input": REVENUE,
+        "op": "gte",
+        "value": 100,
+        "over": "all_time",
+    },
     "value": {"kind": "column", "entity": "entity.jaffle_order", "column": "order_total_cents"},
 }
 
 
 # Every refused shape, with the reason the guard gives.
 REFUSALS = {
-    "selected_unordered": ({"order_by": [{"field": STORE, "direction": "ASC"}]}, "not_ranked"),
+    "selected_unordered": ({"order_by": [{"field": STORE, "direction": "asc"}]}, "not_ranked"),
     "wrapped_aggregation": (
-        {"select": [_value({"measure": REVENUE, "aggregation": "max"}, "revenue")]},
+        {
+            "select": [
+                _value({"kind": "measure", "measure": REVENUE, "aggregation": "max"}, "revenue")
+            ]
+        },
         "not_ranked",
     ),
-    "ratio_selected": (_select(_value({"metric": AOV})), "value_dependency"),
+    "ratio_selected": (_select(_value(AOV)), "value_dependency"),
     "arithmetic_selected": (
         _select(
             _value(
                 {
                     "kind": "arithmetic",
                     "op": "multiply",
-                    "left": {"measure": REVENUE},
+                    "left": REVENUE,
                     "right": {"kind": "literal", "value": 2},
                 }
             )
@@ -122,7 +139,7 @@ REFUSALS = {
                 {
                     "kind": "comparison",
                     "op": ">",
-                    "left": {"measure": REVENUE},
+                    "left": REVENUE,
                     "right": {"kind": "literal", "value": 1000},
                 }
             )
@@ -136,7 +153,7 @@ REFUSALS = {
                 _value(
                     {
                         "kind": "prior_period",
-                        "input": {"measure": REVENUE},
+                        "input": REVENUE,
                         "offset": {"unit": "month", "value": 1},
                     }
                 )
@@ -151,7 +168,7 @@ REFUSALS = {
                 _value(
                     {
                         "kind": "rolling",
-                        "input": {"measure": REVENUE},
+                        "input": REVENUE,
                         "window": {"unit": "month", "value": 3},
                     }
                 )
@@ -160,48 +177,42 @@ REFUSALS = {
         "value_dependency",
     ),
     "cumulative": (
-        {**MONTHLY, **_select(_value({"kind": "cumulative", "input": {"measure": REVENUE}}))},
+        {**MONTHLY, **_select(_value({"kind": "cumulative", "input": REVENUE}))},
         "value_dependency",
     ),
     "window": (
         {
             **MONTHLY,
-            **_select(
-                _value({"kind": "period_to_date", "input": {"measure": REVENUE}, "period": "year"})
-            ),
+            **_select(_value({"kind": "period_to_date", "input": REVENUE, "period": "year"})),
         },
         "value_dependency",
     ),
-    "metric_filter": (
-        {"metric_filters": [{"expression": {"measure": REVENUE}, "op": ">", "value": 1000}]},
+    "result_filter": (
+        {"having": [{"field": REVENUE, "op": "gt", "value": 1000}]},
         "value_dependency",
     ),
-    "threshold": ({"metric_filters": [_threshold({"measure": REVENUE})]}, "value_dependency"),
+    "threshold": ({"where": [_threshold(REVENUE)]}, "value_dependency"),
     "derived_threshold": (
-        {"metric_filters": [{"expression": {"metric": AOV}, "op": ">", "value": 10}]},
+        {"having": [{"field": AOV, "op": "gt", "value": 10}]},
         "value_dependency",
     ),
-    "other_withheld_threshold": (
-        {"metric_filters": [_threshold({"measure": LIFETIME})]},
-        "value_dependency",
-    ),
+    "other_withheld_threshold": ({"where": [_threshold(LIFETIME)]}, "value_dependency"),
     # A derived metric reading the withheld measure cannot stand in for it in order_by.
     "derived_ordered": (
         {
-            "select": [_value({"metric": AOV}, "aov")],
-            "order_by": [{"field": "aov", "direction": "DESC"}],
+            "select": [_value(AOV, "aov")],
+            "order_by": [{"field": "aov", "direction": "desc"}],
         },
         "not_ranked",
     ),
-    "export": ({"export": True}, "export"),
     "over_max_rank": ({"limit": 11}, "rank_limit"),
     "no_limit": ({"limit": None}, "rank_limit"),
     "ungrouped": ({"group_by": []}, "ungrouped"),
     "opposite_ties": (
         {
             "order_by": [
-                {"field": "revenue", "direction": "DESC"},
-                {"field": STORE, "direction": "ASC"},
+                {"field": "revenue", "direction": "desc"},
+                {"field": STORE, "direction": "asc"},
             ]
         },
         "tie_order",
@@ -220,15 +231,19 @@ INEXPRESSIBLE = {
 
 
 def _codes(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, Any]]:
-    """The code and details of validate, compile, execute and MCP execute."""
-    report = engine.validate(query)
+    """The code and details of validate, compile, execute and MCP execute, asked by sales."""
+    report = engine.validate(query, context=SALES)
     outcomes = [(report["errors"][0]["code"], report["errors"][0]["details"])]
     for call in (engine.compile, engine.query):
         with pytest.raises(SemanticLayerError) as exc:
-            call(query)
+            call(query, context=SALES)
         outcomes.append((exc.value.code, exc.value.details))
     mcp = SemanticLayerMCPAdapter(engine)
-    tool = mcp.call_tool("execute", {"query": query, "mode": "run"})
+    tool = mcp.call_tool(
+        "execute",
+        {"query": query, "mode": "run"},
+        request_context=context_from_policy_context(SALES),
+    )
     issue = tool["errors"][0]
     outcomes.append((issue["code"], issue.get("details", {})))
     return outcomes
@@ -237,8 +252,7 @@ def _codes(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, Any]]:
 @pytest.mark.parametrize("name", REFUSALS)
 def test_every_other_use_is_refused_on_every_surface(engine, name):
     patch, reason = REFUSALS[name]
-    query = {**RANK, **patch}
-    for code, details in _codes(engine, query):
+    for code, details in _codes(engine, _patched(patch)):
         assert code == "POLICY_DENIED"
         assert details["reason"] == f"withheld_{reason}"
         assert REVENUE in details["withheld_objects"] or LIFETIME in details["withheld_objects"]
@@ -253,19 +267,19 @@ def test_invalid_ir_is_refused_independently_of_policy(package, name, with_polic
     runtime = Runtime.from_config(config, source_path=str(package))
     patch, expected_code = INEXPRESSIBLE[name]
     try:
-        for code, _ in _codes(runtime, {**RANK, **patch}):
+        for code, _ in _codes(runtime, _patched(patch)):
             assert code == expected_code
     finally:
         runtime.close()
 
 
 def test_rank_returns_keys_only_and_flips_with_the_direction(engine):
-    bucket = f"{ROLE}__month"
+    bucket = "period"
     window = {"time": {**MONTHLY["time"], "start": "2017-01-01", "end": "2017-04-01"}}
-    unrestricted = engine.query({**RANK, **window, "limit": None, "policy_context": {}})["rows"]
+    unrestricted = engine.query(_patched({**window, "limit": None}))["rows"]
     every = len(unrestricted)
     assert 3 < every <= 10
-    result = engine.query({**RANK, **window})
+    result = engine.query({**RANK, **window}, context=SALES)
     assert result["withheld"] == [REVENUE]
     assert all(set(row) == {STORE, bucket} for row in result["rows"])
     assert [row["field"] for row in result["output_columns"]] == [STORE, bucket]
@@ -279,15 +293,16 @@ def test_rank_returns_keys_only_and_flips_with_the_direction(engine):
                 **window,
                 "limit": every,
                 "order_by": [{"field": "revenue", "direction": direction}],
-            }
+            },
+            context=SALES,
         )["rows"]
-        for direction in ("ASC", "DESC")
+        for direction in ("asc", "desc")
     }
-    assert rows["ASC"] == rows["DESC"][::-1]
-    assert result["rows"] == rows["DESC"][:3]
+    assert rows["asc"] == rows["desc"][::-1]
+    assert result["rows"] == rows["desc"][:3]
     ranked = sorted(unrestricted, key=lambda row: (row["revenue"], row[STORE], row[bucket]))
-    assert rows["ASC"] == [{STORE: row[STORE], bucket: row[bucket]} for row in ranked]
-    assert engine.compile({**RANK, **window})["normalized_query"]["order_by"] == [
+    assert rows["asc"] == [{STORE: row[STORE], bucket: row[bucket]} for row in ranked]
+    assert engine.compile({**RANK, **window}, context=SALES)["normalized_query"]["order_by"] == [
         {"field": "revenue", "direction": "DESC"},
         {"field": STORE, "direction": "DESC"},
         {"field": bucket, "direction": "DESC"},
@@ -295,18 +310,24 @@ def test_rank_returns_keys_only_and_flips_with_the_direction(engine):
 
 
 def test_no_response_carries_a_withheld_value(engine):
-    values = {row["revenue"] for row in engine.query({**RANK, "policy_context": {}})["rows"]}
+    values = {row["revenue"] for row in engine.query(RANK)["rows"]}
     texts = {text for value in values for text in (str(value), f"{float(value):.2f}")}
     assert all(len(text) >= 5 for text in texts)
-    full = {**RANK, "verbosity": "full"}
+    full = {"context": SALES, "verbosity": "full"}
     mcp = SemanticLayerMCPAdapter(engine)
+    sales = context_from_policy_context(SALES)
+
+    def tool(query: dict[str, Any]) -> Any:
+        arguments = {"query": query, "mode": "run", "verbosity": "full"}
+        return _tool_content(mcp.call_tool("execute", arguments, request_context=sales))
+
     responses = [
-        engine.query(full),
-        engine.compile(full),
-        engine.validate(full),
-        _tool_content(mcp.call_tool("execute", {"query": full, "mode": "run"})),
-        _tool_content(mcp.call_tool("execute", {"query": {**full, "limit": 11}, "mode": "run"})),
-        engine.validate({**full, **REFUSALS["metric_filter"][0]}),
+        engine.query(RANK, **full),
+        engine.compile(RANK, **full),
+        engine.validate(RANK, **full),
+        tool(RANK),
+        tool({**RANK, "limit": 11}),
+        engine.validate(_patched(REFUSALS["result_filter"][0]), **full),
     ]
     for response in responses:
         serialized = json.dumps(response, default=str)
@@ -315,7 +336,11 @@ def test_no_response_carries_a_withheld_value(engine):
 
 def test_valid_values_never_anchors_on_a_withheld_measure(engine):
     result = valid_values_payload(
-        engine, dimension_id=STORE, query=RANK, allow_live_query=True, include_counts=True
+        engine,
+        dimension_id=STORE,
+        query=engine.engine_payload(RANK, context=SALES),
+        allow_live_query=True,
+        include_counts=True,
     )
     assert result["values"]
     assert result["anchor_measure"] not in {REVENUE, LIFETIME}
@@ -324,19 +349,23 @@ def test_valid_values_never_anchors_on_a_withheld_measure(engine):
 def test_a_withheld_metric_ranks_and_keeps_its_measures_from_valid_values(package):
     policy = replace(_policy(), object_ids=[CUSTOMERS])
     runtime = _engine(package, policy)
-    rank = {**RANK, "select": [_value({"metric": CUSTOMERS}, "revenue")]}
+    rank = {**RANK, "select": [_value(CUSTOMERS, "revenue")]}
     try:
-        result = runtime.query(rank)
+        result = runtime.query(rank, context=SALES)
         assert result["withheld"] == [CUSTOMERS]
         assert result["rows"] and all(set(row) == {STORE} for row in result["rows"])
         reads = withheld_measure_ids(runtime._config, roles=["sales"])
         assert reads and reads <= {row.id for row in runtime._config.measures}
         values = valid_values_payload(
-            runtime, dimension_id=STORE, query=rank, allow_live_query=True, include_counts=True
+            runtime,
+            dimension_id=STORE,
+            query=runtime.engine_payload(rank, context=SALES),
+            allow_live_query=True,
+            include_counts=True,
         )
         assert values["values"] and values["anchor_measure"] not in reads
         # Selected a second time, beside the rank, its values would show.
-        twice = {**rank, "select": [*rank["select"], _value({"metric": CUSTOMERS})]}
+        twice = {**rank, "select": [*rank["select"], _value(CUSTOMERS)]}
         for code, details in _codes(runtime, twice):
             assert (code, details["reason"]) == ("POLICY_DENIED", "withheld_value_dependency")
     finally:
@@ -344,11 +373,11 @@ def test_a_withheld_metric_ranks_and_keeps_its_measures_from_valid_values(packag
 
 
 @pytest.mark.parametrize("action", ["deny"])
-@pytest.mark.parametrize("patch", [{}, REFUSALS["metric_filter"][0]], ids=["ordered", "filtered"])
+@pytest.mark.parametrize("patch", [{}, REFUSALS["result_filter"][0]], ids=["ordered", "filtered"])
 def test_deny_still_refuses_ordering_and_filtering(package, action, patch):
     runtime = _engine(package, _policy(action))
     try:
-        for code, details in _codes(runtime, {**RANK, **patch}):
+        for code, details in _codes(runtime, _patched(patch)):
             assert code == "POLICY_DENIED"
             assert REVENUE in details["blocked_objects"]
             assert "withheld_objects" not in details
@@ -359,7 +388,7 @@ def test_deny_still_refuses_ordering_and_filtering(package, action, patch):
 def test_max_rank_bounds_the_limit(package):
     runtime = _engine(package, _policy(max_rank=2))
     try:
-        assert len(runtime.query({**RANK, "limit": 2})["rows"]) == 2
+        assert len(runtime.query({**RANK, "limit": 2}, context=SALES)["rows"]) == 2
         for code, details in _codes(runtime, RANK):
             assert (code, details["reason"], details["max_rank"]) == (
                 "POLICY_DENIED",
@@ -375,7 +404,7 @@ def test_invalid_max_rank_is_refused(package, max_rank):
     runtime = _engine(package, _policy(max_rank=max_rank))
     try:
         with pytest.raises(SemanticLayerError, match="max_rank") as exc:
-            runtime.compile({**RANK, "policy_context": {}})
+            runtime.compile(RANK)
         assert exc.value.code == "INVALID_CONFIG"
     finally:
         runtime.close()
@@ -398,13 +427,14 @@ def test_guard_refuses_without_a_binding(engine):
     assert exc.value.details["reason"] == "withheld_unbound"
     # A tie order the runtime would have added is still required of a direct caller.
     with pytest.raises(SemanticLayerError) as exc:
-        enforce_query_policies(engine._config, [REVENUE], roles=["sales"], query=RANK)
+        enforce_query_policies(engine._config, [REVENUE], roles=["sales"], query=read_call(RANK)[0])
     assert exc.value.details["reason"] == "withheld_tie_order"
 
 
 def test_guard_refuses_unresolved_cuts_on_every_surface(engine, monkeypatch):
-    query = {**RANK, "order_by": [*RANK["order_by"], {"field": STORE, "direction": "DESC"}]}
-    binding = replace(bind_query(engine._config, None, query), unresolved_cuts=("unknown_filter",))
+    query = {**RANK, "order_by": [*RANK["order_by"], {"field": STORE, "direction": "desc"}]}
+    bound = bind_query(engine._config, None, read_call(query, config=engine._config)[0])
+    binding = replace(bound, unresolved_cuts=("unknown_filter",))
     refusal = withheld_shape(engine._config, binding, {REVENUE: 10})
     assert refusal is not None and refusal.details["reason"] == "withheld_unproven"
     original = engine._bind
@@ -421,20 +451,18 @@ def test_guard_refuses_unresolved_cuts_on_every_surface(engine, monkeypatch):
 @pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
 def test_granted_rank_retains_withholding_and_redacted_descriptors(package, verbosity, operation):
     runtime = _engine(package, replace(_policy(), object_ids=[AOV]))
-    query = {
-        **RANK,
-        "select": [_value({"metric": AOV}, "revenue")],
-        "verbosity": verbosity,
-        "policy_context": {**SALES, "metric_allowlist": [AOV], "dimension_allowlist": [STORE]},
-    }
+    query = {**RANK, "select": [_value(AOV, "revenue")]}
+    grant = {**SALES, "metric_allowlist": [AOV], "dimension_allowlist": [STORE]}
     try:
-        values = runtime.query({**query, "policy_context": {}})["rows"]
+        values = runtime.query(query)["rows"]
         if operation == "mcp":
             result = SemanticLayerMCPAdapter(runtime).call_tool(
-                "execute", {"query": query, "mode": "run"}
+                "execute",
+                {"query": query, "mode": "run", "verbosity": verbosity},
+                request_context=context_from_policy_context(grant),
             )
         else:
-            result = getattr(runtime, operation)(query)
+            result = getattr(runtime, operation)(query, context=grant, verbosity=verbosity)
         assert result["ok"]
         assert result["withheld"] == [AOV]
         assert [column["field"] for column in result["output_columns"]] == [STORE]

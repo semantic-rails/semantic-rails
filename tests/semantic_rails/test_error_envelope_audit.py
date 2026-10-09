@@ -239,10 +239,10 @@ def test_http_bare_exception_surfaces_as_structured_internal_error(runtime_facto
 
 
 def test_error_codes_module_is_self_consistent() -> None:
-    """Sanity check — ERROR_CODES is a non-empty set of strings. Codes
+    """Sanity check — ERROR_CODES is a non-empty frozen set of strings. Codes
     we add to envelopes (like INTERNAL_ERROR) that are not raised via
     SemanticLayerError do not need to be in this set, but the set
     itself must be coherent."""
-    assert isinstance(ERROR_CODES, set)
+    assert isinstance(ERROR_CODES, frozenset)
     assert ERROR_CODES
     assert all(isinstance(code, str) and code for code in ERROR_CODES)

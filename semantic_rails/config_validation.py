@@ -20,6 +20,7 @@ from typing import Any
 
 import yaml
 
+from . import operators
 from .ast import NormalizedQuery
 from .compiler import (
     NonAdditiveRefusal,
@@ -1346,25 +1347,28 @@ def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:
     return _run_probe(runtime, kind="metric", object_id=recipe.id, query=retry_query, repair=True)
 
 
-# A filter with these operators matches rows only when its literal is a value in the data.
-_VALUE_FILTER_OPS = frozenset({"=", "!=", "<>", "IN", "NOT IN"})
-
-
 def _metric_filter_literals(config) -> Iterator[tuple[str, str, str]]:
     """(metric id, dimension id, literal) for each string a metric filter compares a column to."""
     string_dimensions = {row.id for row in config.dimensions if row.data_type == "string"}
     for recipe in config.metric_recipes:
         for node in _expression_nodes(recipe.expression):
             for clause in node.filter.get("all", []) if isinstance(node, AggregateExpr) else []:
-                op = " ".join(str(clause.get("op") or "=").split()).upper()
-                if "field" not in clause or op not in _VALUE_FILTER_OPS:
+                if "field" not in clause:
+                    continue
+                try:
+                    word, value = operators.normalize_condition(
+                        clause.get("op", "is"), clause.get("value"), path="filter", internal=True
+                    )
+                except SemanticLayerError:
+                    continue
+                # Only is / not compare a column to values the data must hold.
+                if word not in {"is", "not"}:
                     continue
                 try:
                     dimension_id = resolve_filter_dimension(str(clause["field"]), config)
                 except SemanticLayerError:
                     continue  # the metric's probe reports the unknown field
-                raw = clause.get("value")
-                for literal in raw if isinstance(raw, list) else [raw]:
+                for literal in operators.values_of(word, value):
                     if dimension_id in string_dimensions and isinstance(literal, str):
                         yield recipe.id, dimension_id, literal
 
