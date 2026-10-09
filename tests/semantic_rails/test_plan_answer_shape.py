@@ -127,6 +127,16 @@ HELD = [
 ]
 
 
+# Questions whose clauses plan can't plan alone: a part points back ("them"), names nothing, or
+# lacks the window another part states. The parts hold keeps the whole question's hold
+# (test_plan_question_parts.py).
+PARTS_HELD = {
+    "How many orders last week and who placed them?",
+    "How many orders and how much revenue last week?",
+    "Last week, how many orders, how many , and what was the revenue?",
+}
+
+
 @pytest.mark.parametrize(("question", "kind", "clause"), HELD)
 def test_one_value_never_answers_a_question_asking_for_more(
     jaffle: Runtime, question: str, kind: str, clause: str
@@ -135,8 +145,14 @@ def test_one_value_never_answers_a_question_asking_for_more(
 
     assert payload["status"] == "low_confidence"
     assert "ready_for" not in payload["next"]
-    assert payload["why"]["code"] == GAP
-    [gap] = _gaps(payload)
+    why = payload["why"]
+    if question in PARTS_HELD:
+        assert why["code"] == "PLAN_PARTS_HELD"
+        # The kept draft's gaps stay where a single question's are.
+        assert why["details"]["gaps"] == why["details"]["question_why"]["details"]["gaps"]
+        why = why["details"]["question_why"]
+    assert why["code"] == GAP
+    [gap] = why["details"]["gaps"]
     assert (gap["kind"], gap["clause"]) == (kind, clause)
     assert clause in gap["message"]
     # The draft stays for inspection, unchanged: one value.

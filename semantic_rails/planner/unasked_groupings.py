@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -71,16 +72,26 @@ def _without_windows(question: str) -> str:
 _SERIES_RE = re.compile(r"\b(?:over\s+time|trends?|trending|time\s+series)\b")
 
 
-def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) -> bool:
-    """Whether the question's own words, outside every time window it states, ask for the
-    grain's buckets: its unit or "-ly" form ("by month", "monthly", "month level", "per
-    week", "daily"); a series ("over time", "trend", "trending", "time series"), which plan
-    buckets at its default grain; or, for days, a listed grouping that names the query's clock
-    ("by order date")."""
+def _asks_grain(question: str, grains: Iterable[str]) -> bool:
+    """Whether the question's own words, outside every time window it states, ask for one of
+    the grains' buckets: its unit or "-ly" form ("by month", "monthly", "month level", "per
+    week", "daily"), or a series ("over time", "trend", "trending", "time series"), which plan
+    buckets at its default grain."""
 
     lowered = _without_windows(question)
-    forms = {grain, f"{grain}s", "daily" if grain == "day" else f"{grain}ly"}
-    if forms & set(re.findall(r"[^\W\d_]+", lowered)) or _SERIES_RE.search(lowered):
+    forms = {
+        form
+        for grain in grains
+        for form in (grain, f"{grain}s", "daily" if grain == "day" else f"{grain}ly")
+    }
+    return bool(forms & set(re.findall(r"[^\W\d_]+", lowered)) or _SERIES_RE.search(lowered))
+
+
+def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) -> bool:
+    """Whether the question asks for the grain's buckets (``_asks_grain``) or, for days, lists
+    a grouping that names the query's clock ("by order date")."""
+
+    if _asks_grain(question, (grain,)):
         return True
     clocks = _query_clocks(config, query)
     return grain == "day" and any(

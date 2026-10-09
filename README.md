@@ -257,6 +257,8 @@ In the current release:
   "revenue by store before today" it plans today alone and reports `ok` with only that
   warning, and `ask` runs it. Check the Query IR, or `ask`'s "Interpreted as" line,
   before you rely on the numbers.
+- `ask` runs one query, so it refuses a question that `plan` answers as several parts
+  (`PLAN_PARTS`) and lists them: ask each part on its own.
 - `ask` rounds its tables, but JSON results (`query`, `ask --json`, MCP `execute` and the
   HTTP API) return the warehouse's floating-point values as they are, for example
   `486468.17999985756` for a currency total.
