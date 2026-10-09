@@ -1214,8 +1214,7 @@
       "additionalProperties": false,
       "properties": {
         "input": {
-          "pattern": "^(measure|metric)\\.",
-          "type": "string"
+          "$ref": "#/$defs/Ref"
         },
         "kind": {
           "const": "share"

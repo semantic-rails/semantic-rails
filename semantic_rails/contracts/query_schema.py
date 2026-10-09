@@ -15,7 +15,7 @@ def _kind_property(kind: str, key: str) -> dict[str, Any]:
     if kind == "share":
         # A share reads one id, over group_by ids or "period" (a parser rule checks which).
         if key == "input":
-            return {"type": "string", "pattern": "^(measure|metric)\\."}
+            return {"$ref": "#/$defs/Ref"}
         if key == "over":
             return {"type": "array", "items": {"type": "string"}, "minItems": 1}
     if key in EXPRESSION_KEYS or key == "else" or (key == "over" and kind == "distribution"):
