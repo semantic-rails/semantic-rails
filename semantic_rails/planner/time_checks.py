@@ -54,8 +54,36 @@ def _is_prior_period_offset(
 def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
     """The draft doesn't carry the window the question names, or carries another one."""
 
-    expected = _time_window(text, policy_context=query.get("policy_context")).bounds
+    reading = _time_window(text, policy_context=query.get("policy_context"))
+    expected = reading.bounds
     if not expected:
+        if reading.windows and all(not bounds for _span, bounds in reading.windows):
+            if gaps := _caller_window_gaps(runtime, text, query):
+                return gaps
+            # Resolve authored references, including nested recipes, rather than assuming
+            # an unbounded draft can represent an all-time balance. No warehouse read.
+            try:
+                ids = bind_query(runtime._config, None, query).object_ids
+                has_stock = any(
+                    row.id in ids and row.measure_class == "semi_additive"
+                    for row in runtime._config.measures
+                )
+            except SemanticLayerError:
+                has_stock = True  # unknown semantics cannot prove an all-time value
+            if has_stock:
+                return [
+                    CoverageGap(
+                        kind="stock_as_of_unrealized",
+                        clause="all time",
+                        message="A balance has no all-time value; choose an as-of day.",
+                        expected={"grain": "day"},
+                        actual={"time": _time_block(query) or None},
+                        recovery_hint={
+                            "kind": "ask_for_one_day",
+                            "message": "Ask for the balance on one day.",
+                        },
+                    )
+                ]
         return []
     if _is_prior_period_offset(runtime, query, [expected]):
         return []
@@ -476,6 +504,11 @@ def _window_agrees(
 
     if not windows:
         return True
+    if any(not bounds for _span, bounds in windows):
+        # All time cannot be silently narrowed by a caller or a generated draft.
+        return all(not bounds for _span, bounds in windows) and not any(
+            time.get(key) for key in ("start", "end", "range")
+        )
     carried = _window_days(time, policy_context, timezone=timezone)
     starts: list[date] = []
     ends: list[date] = []

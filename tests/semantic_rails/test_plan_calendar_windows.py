@@ -154,8 +154,6 @@ def test_quantities_are_not_years(text: str) -> None:
         # Dates it can't read unambiguously, or at all.
         ("orders on 4/3/2017", "4/3/2017"),
         ("revenue on Feb 30, 2017", "feb 30, 2017"),
-        ("revenue for Q2", "q2"),
-        ("revenue in March", "in march"),
         # "and" names two periods; only "between ... and ..." is a range.
         ("revenue in March and May 2017", "march and may 2017"),
         ("revenue in January and December 2017", "january and december 2017"),
@@ -556,3 +554,18 @@ def test_a_callers_start_is_never_dropped(runtime_factory: Any) -> None:
         runtime.close()
     assert _best(payload)["time"]["start"] == "2017-01-01"
     assert (payload.get("why") or {}).get("code") != "TIME_WINDOW_START_DROPPED"
+
+
+@pytest.mark.parametrize(
+    ("text", "bounds"),
+    [
+        ("revenue for Q2", {"start": "2026-04-01", "end": "2026-07-01"}),
+        ("revenue in March", {"start": "2026-03-01", "end": "2026-04-01"}),
+    ],
+)
+def test_named_calendar_forms_resolve_on_a_fixed_clock(text, bounds):
+    from semantic_rails.planner.time_windows import _time_window
+
+    read = _time_window(text, {"now": "2026-10-05T06:00:00Z"})
+    assert read.bounds == bounds
+    assert not read.unresolved

@@ -7367,3 +7367,63 @@ tests:
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-01T00:00:00', seats: 1006}
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-08T00:00:00', seats: null}
       - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-15T00:00:00', seats: 0}
+
+  shop/plan-signups-in-latest-named-month:
+    kind: query_matches_snapshot
+    expect: answer
+    why: June is the latest completed June on the caller's July clock; only customers 106 and 107 signed up then.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/MCP_INTERFACE.md#plan]
+    tags: [planner, time-window]
+    intent: signups in June
+    partial_query: {policy_context: {now: '2024-07-05T06:00:00Z'}}
+    query:
+      select: [{as: signups, expression: {measure: measure.shop.signup_count}}]
+      time: {temporal_role: temporal_role.shop_customer_signed_up_at, grain: month, start: '2024-06-01', end: '2024-07-01'}
+    expected_rows: [{temporal_role.shop_customer_signed_up_at__month: '2024-06-01T00:00:00', signups: 2}]
+    reference_sql: |
+      SELECT date_trunc('month', signed_up_at), COUNT(DISTINCT customer_id) FROM signups
+      WHERE signed_up_at >= TIMESTAMP '2024-06-01' AND signed_up_at < TIMESTAMP '2024-07-01'
+      GROUP BY 1
+  shop/plan-signups-since-launch:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Since launch reads all seven authored signup events with no date bounds.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/MCP_INTERFACE.md#plan]
+    tags: [planner, time-window]
+    intent: signups since launch
+    partial_query: {policy_context: {now: '2024-07-05T06:00:00Z'}}
+    query:
+      select: [{as: signups, expression: {measure: measure.shop.signup_count}}]
+    expected_rows: [{signups: 7}]
+    reference_sql: SELECT COUNT(DISTINCT customer_id) FROM signups
+  shop/plan-signups-outside-june-excluding-store:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Non-store signups outside June are customers 101 and 103; a positive June window would incorrectly count only 106.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [planner, time-window]
+    intent: signups not in June
+    known_wrong: {planner: "The planner holds excluded time periods until it can represent their complement. This xfail can't tell that hold from a wrong number; tests/semantic_rails/test_plan_named_periods.py::test_excluded_period_never_becomes_a_positive_window pins the hold (PLAN_INTENT_COVERAGE_GAP, negation_unrealized on a time item)."}
+    partial_query:
+      policy_context: {now: '2024-07-05T06:00:00Z'}
+      where: [{field: dimension.shop_customer_channel, op: '!=', value: store}]
+    query:
+      select:
+        - as: signups
+          expression:
+            kind: arithmetic
+            op: subtract
+            left: {measure: measure.shop.signup_count}
+            right:
+              kind: aggregate
+              measure: measure.shop.signup_count
+              aggregation: count_distinct
+              filter:
+                all:
+                  - {field: dimension.shop_customer_signed_up_at, op: '>=', value: '2024-06-01'}
+                  - {field: dimension.shop_customer_signed_up_at, op: '<', value: '2024-07-01'}
+      where: [{field: dimension.shop_customer_channel, op: '!=', value: store}]
+    expected_rows: [{signups: 2}]
+    reference_sql: |
+      SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel <> 'store'
+      AND (signed_up_at < TIMESTAMP '2024-06-01' OR signed_up_at >= TIMESTAMP '2024-07-01')
