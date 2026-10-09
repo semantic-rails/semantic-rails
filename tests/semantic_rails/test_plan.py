@@ -1087,3 +1087,48 @@ def test_every_store_but_one_is_the_stores_an_exclusion_keeps(runtime_factory) -
     reference = [counts.get(month, 0) if month <= last else None for month in months]
     assert [row["period"] for row in rows] == months
     assert [row["order_count"] for row in rows] == reference
+
+
+def test_every_date_plan_resolves_comes_from_the_request_clock(runtime_factory) -> None:
+    """A named month and a balance's day are read on the request's now, never the wall clock,
+    and the assumptions name the dates the draft reads."""
+    now = "2017-11-04T00:00:00Z"
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        september = plan_payload(runtime, intent="revenue in September", now=now)
+        assert september["status"] == "ok", september.get("why")
+        time = september["best"]["query"]["time"]
+        assert (time["start"], time["end"]) == ("2017-09-01", "2017-10-01")
+        assert any("2017-09-01" in text for text in september["assumptions"])
+        [row] = runtime.query(september["best"]["query"], now=now)["rows"]
+        balance = plan_payload(runtime, intent="active menu count", now="2017-04-02T12:00:00Z")
+        assert balance["status"] == "ok", balance.get("why")
+        assert balance["best"]["query"]["time"]["last"] == {"unit": "day", "value": 1}
+        [read] = balance["assumptions"]
+        assert "2017-04-01" in read
+        [day] = runtime.query(balance["best"]["query"], now="2017-04-02T12:00:00Z")["rows"]
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            (revenue,) = connection.execute(
+                "SELECT SUM(order_total_cents / 100.0) FROM jaffle_order "
+                "WHERE ordered_at >= '2017-09-01' AND ordered_at < '2017-10-01'"
+            ).fetchone()
+            (menu,) = connection.execute(
+                "SELECT SUM(active_menu_count) FROM jaffle_store_inventory_snapshot "
+                "WHERE date_day = DATE '2017-04-01'"
+            ).fetchone()
+    finally:
+        runtime.close()
+    assert row["revenue_usd"] == pytest.approx(revenue)
+    assert day["period"] == "2017-04-01"
+    assert day["active_menu_count_eop"] == menu
+
+
+@pytest.mark.parametrize("intent", ["revenue by fiscal quarter", "revenue by FY quarter"])
+def test_a_fiscal_quarter_is_never_answered_in_gregorian_quarters(runtime_factory, intent) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent=intent, now="2017-11-04T00:00:00Z")
+    finally:
+        runtime.close()
+    assert payload["status"] != "ok", payload.get("why")
+    assert "execute" not in payload["next"].get("ready_for", [])
