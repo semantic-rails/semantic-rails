@@ -41,10 +41,19 @@ from .._base import (
     _said_name,
     _tokens,
 )
+from ..coverage import CoverageGap, _coverage_why
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
-from ..groupings import _explicit_grain, _maybe_group_by, _time_spec
+from ..groupings import (
+    _display_entities,
+    _entity_grouping,
+    _entity_stand_ins,
+    _explicit_grain,
+    _maybe_group_by,
+    _time_spec,
+)
 from ..intent_ir import _FALLBACK_STOPWORDS
 from ..qualifiers import _add_order, _target_measure_terms, _top_n_intent
+from ..ranking_checks import _dimension_nouns, _ranking_request, _ranking_words, _superlative
 from ..time_windows import _time_bounds_from_text, _time_window
 from ..visibility import visible_object_ids
 from ._protocol import IntentPattern
@@ -204,8 +213,69 @@ _TIME_SERIES_PHRASES = (
 )
 
 
+def _listed(
+    config: Any, question: str, query: dict[str, Any]
+) -> tuple[list[str], dict[str, Any] | None]:
+    """The stand-ins of what a clause opening with "which" or "who" lists, or why plan asks.
+
+    The entity the clause names ("which accounts"), else, for "who" naming none, the one entity
+    with a display the draft's subject reaches. Several such entities ask which; none, or a
+    term naming no single entity, lists nothing (the answer-shape check holds the draft). A
+    superlative no ranking reads ("who had the most MRR") lists nothing either.
+    """
+
+    from ..answer_shape import _clause_entity, _list_clauses  # noqa: WPS433 - imports patterns
+
+    words = [word for word, _start, _end in _ranking_words(question)]
+    if any(_superlative(words, index) for index in range(len(words))):
+        return [], None
+    lowered = question.lower()
+    windows = list(_time_window(question).spans)
+    for word, clause in _list_clauses(config, question):
+        if word not in {"which", "who", "whom"}:
+            continue
+        term = _clause_entity(config, lowered, windows, clause)
+        if term is not None or word == "which":
+            entity = _entity_grouping(config, term) if term is not None else None
+            return (entity[1] if entity is not None else []), None
+        entities = _display_entities(config, query)
+        if len(entities) == 1:
+            return [*(ids for part in _entity_stand_ins(config, entities[0]) for ids in part)], None
+        if not entities:
+            return [], None
+        options = [
+            {
+                "entity": row.id,
+                "label": row.label,
+                "group_by": [*(ids for part in _entity_stand_ins(config, row) for ids in part)],
+            }
+            for row in entities
+        ]
+        labels = ", ".join(str(row.label) for row in entities)
+        gap = CoverageGap(
+            kind="list_unrealized",
+            clause=f'"{word}"',
+            message=(
+                f'The question asks "{word}", and what it counts reaches several entities with '
+                f"a display name ({labels}), so plan doesn't pick whose rows to list."
+            ),
+            expected={"answer": "rows", "entities": [row.id for row in entities]},
+            actual={"group_by": list(query.get("group_by") or [])},
+            recovery_hint={
+                "kind": "ask_whose_rows",
+                "message": "Ask the user which they mean, then plan again naming it, or apply "
+                "an option's group_by to best.query_ir.",
+            },
+        )
+        why = _coverage_why([gap]) or {}
+        clarification = {"question": f"Whose rows: {labels}?", "options": options}
+        return [], {**why, "details": {**why.get("details", {}), "clarification": clarification}}
+    return [], None
+
+
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
     config = runtime._config
+    question = text
     named = _named_metric(config, text)
     if named is not None:
         text = named[1]
@@ -218,7 +288,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         or _target_measure_terms(text, terms)
         or sorted(target_focus_terms - _FALLBACK_STOPWORDS)
     )
-    group_by = _maybe_group_by(config, text, target_terms=target_terms)
+    group_by = _maybe_group_by(config, text, target_terms=target_terms, each=True)
     metric_first = bool(
         (set(target_terms) | target_focus_terms)
         & {
@@ -295,7 +365,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         # The grouping above, without the clock, only picked measure or metric.
         role = _object_by_id(config.temporal_roles, temporal_role)
         clock = str(getattr(role, "label", "") or "")
-        group_by = _maybe_group_by(config, text, target_terms=target_terms, clock=clock)
+        group_by = _maybe_group_by(config, text, target_terms=target_terms, clock=clock, each=True)
         time_spec = _time_spec(temporal_role, text, clock)
         if (
             not _explicit_grain(text, clock)
@@ -330,6 +400,17 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if time_spec is not None:
         query["time"] = time_spec
 
+    # A ranking keeps what the ranking parser reads: its count ("top three"), its direction
+    # ("bottom", "least") and the entity it ranks ("which 2 accounts had the most MRR").
+    request = _ranking_request(question, _dimension_nouns(config))
+    direction = "DESC"
+    if request is not None and request["direction"] and (is_top or request["limit"] is not None):
+        is_top, direction = True, str(request["direction"])
+        top_n = request["limit"] if request["limit"] is not None else top_n
+        ranked = _entity_grouping(config, str(request["noun"]))
+        group_by = list(dict.fromkeys([*group_by, *(ranked[1] if ranked is not None else [])]))
+    listed, ask = ([], None) if is_top else _listed(config, question, query)
+    group_by = list(dict.fromkeys([*group_by, *listed]))
     if group_by:
         query["group_by"] = group_by
     query = _normalize_value_filters(
@@ -346,9 +427,19 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         select_alias = _semantic_token(target_id, fallback="value")
         query["select"] = [{"as": select_alias, "expression": {"metric": target_id}}]
     if is_top:
-        query["order_by"] = [{"field": select_alias, "direction": "DESC"}]
+        query["order_by"] = [{"field": select_alias, "direction": direction}]
         query["limit"] = top_n
-
+    elif listed:
+        # A list keeps the rows the subject counts, by name: the package examples' shape.
+        value = dict(query["select"][0]["expression"])
+        query["metric_filters"] = [{"expression": value, "op": "!=", "value": 0}]
+        first = listed[-1]
+        rest = [item for item in group_by if item != first]
+        query["order_by"] = [
+            {"field": first, "direction": "ASC"},
+            *([{"field": "time", "direction": "ASC"}] if query.get("time") else []),
+            *({"field": item, "direction": "ASC"} for item in rest),
+        ]
     else:
         _add_order(query)
 
@@ -373,6 +464,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             "is_top_intent": is_top,
             "top_n": top_n if is_top else None,
         },
+        blocked_reason=ask or {},
         score=_CATCH_ALL_SCORE,
     )
 

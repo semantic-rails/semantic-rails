@@ -35,6 +35,7 @@ from .examples import example_plan
 from .faithfulness import intent_faithfulness_why, intent_subject_why, named_subject_why
 from .generators import blocked_object_not_found, fallback_drafts
 from .grouping_checks import _dropped_grouping_why
+from .groupings import _key_only_assumptions
 from .intent_holds import (
     _conversion_intent_why,
     _dropped_value_why,
@@ -522,6 +523,8 @@ def plan_payload(
         )
     assumptions = _time_assumptions(intent_str, best_draft.query) if best_ok else []
     assumptions += [read.reading] if read is not None and read.reading else []
+    if best_ok:
+        assumptions += _key_only_assumptions(runtime._config, best_draft.query, partial_query)
     if assumptions:
         payload["assumptions"] = assumptions
     if unmatched:
@@ -647,7 +650,10 @@ def _planned_row(
         merged_draft.resolved,
     )
     if merged_draft.blocked_reason:
-        return _blocked_row(merged_draft, pattern, dict(merged_draft.blocked_reason), blocked)
+        why = dict(merged_draft.blocked_reason)
+        # A pattern that asks (whose rows "who" lists) blocks with the options to pick from.
+        clarify = bool((why.get("details") or {}).get("clarification"))
+        return _blocked_row(merged_draft, pattern, why, blocked, clarify=clarify)
     # A balance reads the one day the question names (planner/snapshot.py).
     shaped, ask = shape_snapshot(runtime, intent, merged_draft.query, partial_query)
     if ask is not None:

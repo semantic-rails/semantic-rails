@@ -8,7 +8,7 @@ from typing import Any
 
 from ._base import _object_by_id, _singular
 from .grouping_checks import _entity_grouping_dimensions, _query_clocks, _reads_grouping, _time_of
-from .groupings import _listed_grouping_terms
+from .groupings import _listed_grouping_terms, _named_run
 from .plan_query import _where_filters
 from .ranking_checks import _dimension_nouns, _ranking_request
 from .time_phrases import _TIME_UNITS, _names_time_axis
@@ -98,19 +98,27 @@ _PER_GROUPING_RE = re.compile(
 )
 
 
-def _asked_grouping_terms(config: Any, question: str) -> list[str]:
+def _asked_grouping_terms(config: Any, question: str, query: dict[str, Any]) -> list[str]:
     """What the question asks to group by: each grouping it lists (``_listed_grouping_terms``),
-    the noun a ranking ranks ("which 5 stores had the most orders"), and the words after
-    "per", "each" or "every" ("revenue per store"). Windows are not part of any of them."""
+    the noun a ranking ranks ("which 5 stores had the most orders"), the words after "per",
+    "each" or "every" ("revenue per store"; "each plan" in "did each plan make", where a name
+    ends), and what a clause opening with "which" or "who" lists (``_listed_entity_terms``).
+    Windows are not part of any of them."""
+
+    from .answer_shape import _listed_entity_terms  # noqa: WPS433 - answer_shape imports this
 
     request = _ranking_request(question, _dimension_nouns(config))
+    lowered = _without_windows(question)
+    each: list[str] = []
+    for match in _PER_GROUPING_RE.finditer(lowered):
+        run = _named_run(config, lowered, match.start(1))
+        named = run is not None and run[1] <= match.end(1)
+        each.append(lowered[run[0] : run[1]] if run and named else match.group(1).strip())
     return [
         *_listed_grouping_terms(question, config),
         *([str(request["noun"])] if request else []),
-        *(
-            match.group(1).strip()
-            for match in _PER_GROUPING_RE.finditer(_without_windows(question))
-        ),
+        *each,
+        *_listed_entity_terms(config, question, query),
     ]
 
 
@@ -146,7 +154,7 @@ def _unasked_grouping_why(
     grain_traced = not splits or (
         _time_of(caller).get("grain") == grain or _names_grain(config, question, query, grain)
     )
-    terms = _asked_grouping_terms(config, question)
+    terms = _asked_grouping_terms(config, question, query)
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
     # A dimension the draft filters to the values the question names splits the rows into
     # those values only; the filter-value check holds a filter that keeps any other.

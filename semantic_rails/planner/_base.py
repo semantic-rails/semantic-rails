@@ -472,7 +472,7 @@ def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
 
     lowered = str(text or "").lower()
     top_by_match = re.search(
-        r"^\s*top\s+([a-z0-9 _-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
+        r"^\s*(?:top|bottom)\s+([a-z0-9 _-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
         lowered,
     )
     match: re.Match[str] | None

@@ -10,28 +10,18 @@ from ..errors import SemanticLayerError
 from ._base import _NAME_CONNECTORS, _last_token, _object_by_id, _strip_leading_rank_count
 from .generators import _grouping_term_matches
 from .groupings import (
+    _entity_stand_ins,
     _grouping_matches,
     _is_temporal_grouping_term,
     _listed_grouping_terms,
-    _name_forms,
+    _named_run,
+    _names_whole_entity,
     _term_matches_value_domain,
 )
 from .plan_query import _validate_query, _where_filters
 from .time_phrases import _names_time_axis
 from .time_windows import _time_window
 from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
-
-
-def _names_whole_entity(term: str, entity: Any) -> bool:
-    """Whether a grouping term names an entity by every word of its label: "customer" names
-    Customer, but not Customer history or Customer segment membership."""
-
-    content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
-    label = str(entity.label or _last_token(entity.name)).lower()
-    return _grouping_matches(term, entity, entity=True) and all(
-        _name_forms({word}) & content
-        for word in set(re.findall(r"[^\W_]+", label)) - _NAME_CONNECTORS
-    )
 
 
 def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
@@ -67,8 +57,8 @@ def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
     # Rankings put the grouping before "by"; ordinary clauses put it after their
     # introducer. Whitespace and commas don't erase the obligation.
     clauses = re.finditer(
-        r"^\s*(?:the\s+)?(?:top|highest|lowest)\s+(?P<ranked>[a-z0-9\s_,&-]+?)\s+by\b"
-        r"|\b(?:by|per|(?:for\s+)?each|every)(?:\s+|\s*,\s*)(?P<listed>[a-z0-9\s_,&-]+?)"
+        r"^\s*(?:the\s+)?(?:top|bottom|highest|lowest)\s+(?P<ranked>[a-z0-9\s_,&-]+?)\s+by\b"
+        r"|\b(?P<cue>by|per|(?:for\s+)?each|every)(?:\s+|\s*,\s*)(?P<listed>[a-z0-9\s_,&-]+?)"
         r"(?=\s+(?:by|per|each|every|at|where|for|from|in|with|during|over|having|who|that|"
         r"last|this|current|next|prior|sorted)\b|[.?!;]|$)",
         lowered,
@@ -80,6 +70,10 @@ def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
             low <= match.start() and end <= high for low, high in value_spans
         ):
             continue
+        if str(match.group("cue") or "").endswith(("each", "every")):
+            # The name "each" asks a row of ends at the first word naming nothing more.
+            run = _named_run(config, lowered, start)
+            end = run[1] if run is not None and run[1] <= end else end
         if group == "ranked":
             raw = match.group(group)
             stripped = _strip_leading_rank_count(raw)
@@ -121,29 +115,20 @@ def _entity_grouping_dimensions(config: Any, term: str) -> set[str] | None:
     """The dimensions that may stand for a listed grouping naming an entity, or None when the
     term names no entity.
 
-    Only an entity the term names by its whole label, with a one-column key, has any: its key
-    dimension, and its one declared dimension whose own words name the term when no other
-    does. A clock the entity declares is not one of them. Another entity's dimension never
+    Only an entity the term names by its whole label or a synonym, with a one-column key, has
+    any: its stand-ins (``_entity_stand_ins``), the key dimension and its display (else its one
+    declared dimension whose own words name the term). Another entity's dimension never
     stands in, and a composite key has none, so the grouping stays unmatched.
     """
 
     entities = [row for row in config.entities if _grouping_matches(term, row, entity=True)]
     if not entities:
         return None
-    clocks = {row.dimension for row in config.temporal_roles}
     allowed: set[str] = set()
     for entity in entities:
-        if len(entity.key) != 1 or not _names_whole_entity(term, entity):
-            continue
-        owned = [row for row in config.dimensions if row.entity == entity.id]
-        allowed |= {row.id for row in owned if row.column == entity.key[0]}
-        named = [
-            row.id
-            for row in owned
-            if row.column != entity.key[0] and row.id not in clocks and _grouping_matches(term, row)
-        ]
-        if len(named) == 1:
-            allowed |= set(named)
+        if _names_whole_entity(term, entity):
+            keys, shown = _entity_stand_ins(config, entity, term)
+            allowed |= {*keys, *shown}
     return allowed
 
 
