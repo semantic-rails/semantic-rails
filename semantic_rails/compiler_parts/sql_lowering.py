@@ -186,6 +186,7 @@ from .temporal import (
     _fractional_second,
     _time_bound_relationship_ids,
     refuse_authored_calendar,
+    window_total_refusal,
 )
 
 
@@ -734,11 +735,8 @@ def _refuse_varying_time_key(plan: LogicalPlan, leaf: Any) -> None:
     if not plan.time.get("window_total"):
         return
     if varying := _varying_time_keys(leaf, _time_alias_for_plan(plan)):
-        raise SemanticLayerError(
-            "WINDOW_TOTAL_UNSUPPORTED",
-            "This query can't be returned as one total over the window: part of it still "
-            "groups by the raw time column. Set time.grain, or remove time.start and time.end.",
-            details={"temporal_role": plan.time.get("temporal_role"), "time_keys": varying},
+        raise window_total_refusal(
+            plan.time, "part of this query still groups by the raw time", time_keys=varying
         )
 
 
@@ -3961,9 +3959,7 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
         dim = dimensions[role.dimension]
         raw_expr = _column_ref(entities[dim.entity].table, dim.column)
         raw_expr = _apply_role_timezone(raw_expr, role, config)
-        time_expr = (
-            _dialect(config).date_trunc(time["grain"], raw_expr) if time.get("grain") else raw_expr
-        )
+        time_expr = _time_bucket_expr(time, raw_expr, config)
         time_alias = time_output_alias(time)
         select_fields.append(SqlField(time_expr, time_alias))
         group_fields.append(time_expr)
@@ -5828,8 +5824,11 @@ def lower_to_sql(
 
 
 def _refuse_per_period_total(plan: LogicalPlan) -> None:
-    """A request's window with no grain is one total; a predicate tested per output period
-    has none, so the request asks for a grain rather than a row per raw timestamp."""
+    """A request's window with no grain is one total, never a row per raw timestamp.
+
+    Planning settles every other request as a total or refuses it; a predicate tested per
+    output period is refused here, once lowering has raised any refusal of its own.
+    """
     time = plan.time
     if (
         not plan_is_root()
@@ -5837,20 +5836,19 @@ def _refuse_per_period_total(plan: LogicalPlan) -> None:
         or time.get("grain")
         or time.get("window_total")
         or (time.get("start") is None and time.get("end") is None)
-        or not plan.post_aggregation_exprs
     ):
         return
     predicates = [
         *(p for row in plan.measure_plans for p in _bound_metric_predicates(row.bound_measure)),
         *_query_metric_predicates(plan),
     ]
-    if any(predicate.scope_mode != "entity_only" for predicate in predicates):
-        raise SemanticLayerError(
-            "WINDOW_TOTAL_UNSUPPORTED",
-            "This query's predicate is tested per output period, so it has no total over the "
-            "window. Add time.grain to answer one row per period.",
-            details={"path": "time.grain", "temporal_role": time.get("temporal_role")},
-        )
+    per_period = any(predicate.scope_mode != "entity_only" for predicate in predicates)
+    raise window_total_refusal(
+        time,
+        "an entity filter in it is tested per period"
+        if per_period
+        else "it would group by the raw time",
+    )
 
 
 def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: bool) -> SqlSelect:

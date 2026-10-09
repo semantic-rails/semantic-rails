@@ -1102,8 +1102,6 @@ def _compiled_warnings(
         canonical, notes = payload, list(payload.get("_call_notes") or [])
         warnings.extend(caveat_warnings(config, compiled, canonical))
         warnings.extend(_expression_normalized_away_warnings(canonical, compiled))
-        if not compiled["logical_plan"].time.get("window_total"):
-            warnings.extend(_ungrained_time_projection_warnings(canonical))
         warnings.extend(_shorthand_normalized_warnings(notes))
     return warnings
 
@@ -1254,113 +1252,6 @@ def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str
             details=note,
         )
         for note in notes
-    ]
-
-
-_UNGRAINED_INLINE_WINDOW_KINDS = frozenset(
-    {
-        "prior_period",
-        "rolling",
-        "cumulative",
-        "period_to_date",
-        # conversion + offset_window carry their own time semantics
-        # (event-pair anchor / per-row window); they aggregate over their
-        # own clock, so the outer query.time.grain isn't needed for a
-        # well-defined result.
-        "conversion",
-        "offset_window",
-    }
-)
-
-
-def _contains_inline_window_kind(expr: Any) -> bool:
-    """Walk an expression dict looking for any nested kind in
-    ``_UNGRAINED_INLINE_WINDOW_KINDS``. Returns True if the suppression
-    list matches anywhere in the tree — the outer kind (`ratio`, `case`,
-    `scoped_aggregate`, arithmetic / boolean wrappers) doesn't reveal
-    what's underneath.
-    """
-    if not isinstance(expr, dict):
-        return False
-    kind = str(expr.get("kind", "") or "").strip()
-    if kind in _UNGRAINED_INLINE_WINDOW_KINDS:
-        return True
-    # Recurse into every dict-valued child + list-valued children of
-    # known expression-container keys. This is deliberately permissive:
-    # any nested expression we recognise as a window kind suppresses,
-    # even if it's only one branch of a case/ratio. False negatives
-    # (missing the suppression and firing a spurious warning) are worse
-    # than false positives (suppressing on a legit nested window).
-    for value in expr.values():
-        if isinstance(value, dict):
-            if _contains_inline_window_kind(value):
-                return True
-        elif isinstance(value, list):
-            for item in value:
-                if _contains_inline_window_kind(item):
-                    return True
-    return False
-
-
-def _ungrained_time_projection_warnings(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Warn when ``time.temporal_role`` is set without ``time.grain`` AND the
-    query has no group_by AND no inline window expression that carries its
-    own grain. The agent expected a scalar; without grain the planner groups
-    by the raw timestamp column and returns one row per distinct value
-    (5,480 rows for a scalar revenue query in the round-six benchmark).
-
-    Narrow on purpose: legitimate timestamp-detail queries set a group_by
-    or use an inline window expression, both of which suppress the warning.
-    """
-    time_block = dict(payload.get("time", {}) or {})
-    if not time_block:
-        return []
-    temporal_role = str(time_block.get("temporal_role", "") or "").strip()
-    grain = str(time_block.get("grain", "") or "").strip()
-    if not temporal_role or grain:
-        return []
-    group_by = list(payload.get("group_by", []) or [])
-    if group_by:
-        return []
-    # Inline window kinds carry their own grain (prior_period.grain,
-    # rolling.window.unit, etc.) — exempt those queries. Walk nested
-    # expressions because window kinds can be wrapped in ratio / case /
-    # scoped_aggregate / boolean / arithmetic at any depth, and the
-    # outer expression's `kind` doesn't reveal what's underneath.
-    select_rows = list(payload.get("select", []) or [])
-    has_inline_window = any(
-        _contains_inline_window_kind(row.get("expression", {}) or {})
-        for row in select_rows
-        if isinstance(row, dict)
-    )
-    if has_inline_window:
-        return []
-    return [
-        semantic_issue(
-            code="UNGRAINED_TIME_PROJECTION",
-            message=(
-                "query.time.temporal_role is set without time.grain; the "
-                "planner will group by the raw timestamp and return one row "
-                "per distinct value. Set time.grain (e.g. 'month', 'day') for "
-                "a bucketed result, or to a grain whose one calendar bucket "
-                "covers the window (e.g. 'quarter') for one total."
-            ),
-            severity="warning",
-            stage="validate",
-            details={
-                "temporal_role": temporal_role,
-                "recovery_hints": [
-                    {
-                        "code": "SET_TIME_GRAIN",
-                        "message": (
-                            "Add time.grain to bucket the result; a grain whose "
-                            "one calendar bucket covers the window returns one total."
-                        ),
-                        "suggested_patches": [{"add": {"time.grain": "month"}}],
-                    }
-                ],
-            },
-        )
     ]
 
 

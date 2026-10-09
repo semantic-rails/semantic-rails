@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import difflib
+import json
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timedelta
@@ -465,6 +466,37 @@ def refuse_authored_calendar(grain: Any, clocks: Iterable[str], config: PackageC
         "without a grain.",
         details=details,
     )
+
+
+def window_total_refusal(
+    time: Mapping[str, Any], why: str, *, grain: str = "", **details: Any
+) -> SemanticLayerError:
+    """A window with no grain is one total; ``why`` says what in the request has none.
+
+    The one hint is the call's own time block with a grain: ``grain`` when the request needs
+    one of its own (:func:`series_grain`), else the window's unit for ``last`` or ``this``,
+    else ``month``.
+    """
+    from ..query_call import call_from_query, refusal
+
+    grain = grain or time.get("last_unit") or time.get("this") or "month"
+    block = {**call_from_query({"time": dict(time)})["time"], "grain": grain}
+    return refusal(
+        "time.grain",
+        f"without a grain the answer is one total over the window, and {why}",
+        fix=f"Add a grain for one row per period: {json.dumps({'time': block})}.",
+        code="WINDOW_TOTAL_UNSUPPORTED",
+        temporal_role=time.get("temporal_role"),
+        **details,
+    )
+
+
+def series_grain(expr: SemanticExpr, config: PackageConfig) -> str:
+    """The grain a window in ``expr`` answers at: its own unit, or days for a period to date."""
+    lookback = _unsafe_windowed_lookback(expr, config) or {}
+    if lookback.get("kind") in {"PeriodToDateExpr", "OffsetWindowExpr[period_to_date]"}:
+        return "day"
+    return str(lookback.get("unit") or "")
 
 
 def _collect_conversion_bindings(

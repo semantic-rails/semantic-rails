@@ -130,6 +130,8 @@ from .compiler_parts.temporal import (
     _validate_query_temporal_bindings,
     _validate_restrictive_time_semantics,
     _window_measure_exprs,
+    series_grain,
+    window_total_refusal,
 )
 from .config_parts.lookup_measures import lookup_links
 from .config_parts.route_rows import (
@@ -393,25 +395,31 @@ _SUMMING_WRAPPERS = (
 _TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, PriorPeriodExpr, ConversionExpr)
 
 
-def _uses_time_axis(expr: Any, config: PackageConfig) -> bool:
-    # An entity's aggregate over all its rows, or over the query window, reads no output time.
+def _time_axis_kind(expr: Any, config: PackageConfig) -> str:
+    """The kind of the first construct in ``expr`` that reads a time axis, else ``""``."""
+    # An entity's aggregate over all its rows, or over the query window, reads no output time,
+    # and neither does a scoped aggregate filtered only by such aggregates.
     if isinstance(expr, MetricPredicateExpr) and expr.scope_mode == "entity_only":
-        return False
+        return ""
+    if (
+        isinstance(expr, ScopedAggregateExpr)
+        and not (expr.anchor or expr.window)
+        and all(predicate.get("scope_mode") == "entity_only" for predicate in expr.predicates)
+    ):
+        return ""
     if isinstance(expr, _TIME_AXIS_EXPRS):
-        return True
+        return expr_kind(expr)
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
-        return recipe is not None and _uses_time_axis(recipe.expression, config)
+        return _time_axis_kind(recipe.expression, config) if recipe is not None else ""
     if not is_dataclass(expr):
-        return False
+        return ""
     for item in fields(expr):
         value = getattr(expr, item.name)
-        if any(
-            _uses_time_axis(child, config)
-            for child in (value if isinstance(value, list) else [value])
-        ):
-            return True
-    return False
+        for child in value if isinstance(value, list) else [value]:
+            if kind := _time_axis_kind(child, config):
+                return kind
+    return ""
 
 
 def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool:
@@ -434,33 +442,44 @@ def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool
     return known_zone(str(getattr(role, "timezone", "") or "UTC"))
 
 
-def _is_window_total(
+def _window_total(
     query: NormalizedQuery, config: PackageConfig, bound_measures: Iterable[BoundMeasure]
 ) -> bool:
     """A time window with no grain answers one total per group, never a row per timestamp.
 
     A predicate taken over each entity's own rows (all time, or the query window) reads no
     output time, so the total takes it. One tested per output row (a package metric's
-    contextual predicate) has no total over the window: the request is refused, asking for a
-    grain, once lowering has raised any refusal of its own.
+    contextual predicate) has no total over the window: lowering refuses the request, asking
+    for a grain, once it has raised any refusal of its own. A select or result filter that
+    reads a time axis (a running total, a comparison, a distribution) has none either, and is
+    refused here.
     """
     time = query.time
     if time is None or not time.temporal_role or time.grain or time.fill:
         return False
     if time.start is None and time.end is None:
         return False
-    if any(
-        predicate.scope_mode != "entity_only"
-        for bound in bound_measures
-        for predicate in _bound_metric_predicates(bound)
-    ):
-        return False  # lowering refuses it (``refuse_per_period_total``)
-    expressions = [item.expression for item in query.select] + [
-        item.expression for item in query.metric_filters
+    predicates = [
+        *(predicate for bound in bound_measures for predicate in _bound_metric_predicates(bound)),
+        *(item.expression for item in query.metric_filters),
     ]
-    return bool(query.select) and not any(
-        expr is not None and _uses_time_axis(expr, config) for expr in expressions
-    )
+    if any(
+        isinstance(predicate, MetricPredicateExpr) and predicate.scope_mode != "entity_only"
+        for predicate in predicates
+    ):
+        return False  # lowering refuses it (``_refuse_per_period_total``)
+    readers = [(f"'{item.as_}'", item.expression) for item in query.select] + [
+        ("a result filter", item.expression) for item in query.metric_filters
+    ]
+    for reader, expr in readers:
+        if expr is not None and (kind := _time_axis_kind(expr, config)):
+            raise window_total_refusal(
+                asdict(time),
+                f"{reader} reads a {kind}, which is answered per period",
+                grain=series_grain(expr, config),
+                expression=expr_to_dict(expr),
+            )
+    return bool(query.select or query.group_by)
 
 
 def _measures_under_summing_wrappers(
@@ -4818,7 +4837,7 @@ def _plan_query(
         if item.expression is not None
     }
     plan_time = asdict(query.time) if query.time else {}
-    if collapse_window and bound_measures and _is_window_total(query, config, bound_measures):
+    if collapse_window and _window_total(query, config, bound_measures):
         plan_time["window_total"] = True
     plan = LogicalPlan(
         version=2,

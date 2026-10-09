@@ -26,7 +26,6 @@ from .catalog_service import resolve_catalog
 from .diagnostics import (
     enrich_object_not_found,
     exception_issue,
-    semantic_issue,
 )
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
 from .mcp_query import coerce_arguments
@@ -58,7 +57,7 @@ from .request_payload import (
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
 from .runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
-from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
+from .runtime_parts.responses import resolve_verbosity
 from .schema import PackageConfig
 
 __all__ = [
@@ -1147,44 +1146,7 @@ def _max_rows_arg(value: Any) -> int | None:
     return int(value)
 
 
-def _ungrained_time(query: Mapping[str, Any]) -> bool:
-    """A time block with no grain: unless the window collapses to one total, rows group by
-    the raw timestamp."""
-
-    time = query.get("time")
-    return isinstance(time, Mapping) and not time.get("grain")
-
-
-# Expression kinds that aggregate over their own clock, so a grouped query
-# using them doesn't project the raw timestamp. Running totals (cumulative,
-# period_to_date) are not among them: their buckets come from time.grain.
-_OWN_CLOCK_KINDS = frozenset({"prior_period", "rolling", "conversion", "offset_window"})
-
-
-def _uses_own_clock(expression: Any) -> bool:
-    if not isinstance(expression, Mapping):
-        return False
-    if str(expression.get("kind", "") or "") in _OWN_CLOCK_KINDS:
-        return True
-    for value in expression.values():
-        items = value if isinstance(value, list) else [value]
-        if any(_uses_own_clock(item) for item in items):
-            return True
-    return False
-
-
-def _collapsed_window(result: Mapping[str, Any]) -> bool:
-    """Whether the runtime aggregated a grainless time window as one total."""
-
-    return result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL
-
-
-def _narrowing_advice(query: Mapping[str, Any], result: Mapping[str, Any]) -> str:
-    if _ungrained_time(query) and not _collapsed_window(result):
-        return (
-            "set time.grain (for example 'month' or 'year'); without a grain, rows group by the "
-            "raw timestamp"
-        )
+def _narrowing_advice(query: Mapping[str, Any]) -> str:
     if isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
         return "use a coarser time.grain, filter, or group by fewer dimensions"
     return "filter, or group by fewer dimensions"
@@ -1203,7 +1165,7 @@ def _truncate_rows(result: dict[str, Any], *, cap: int, query: Mapping[str, Any]
     if len(rows) <= cap and not result.get("truncated"):
         return result
     kept = rows[:cap]
-    advice = _narrowing_advice(query, result)
+    advice = _narrowing_advice(query)
     warning = {
         "code": "EXECUTE_ROWS_TRUNCATED",
         "severity": "warning",
@@ -1219,57 +1181,6 @@ def _truncate_rows(result: dict[str, Any], *, cap: int, query: Mapping[str, Any]
         "total_row_count": None,
         "warnings": [*list(result.get("warnings") or []), warning],
     }
-
-
-def _grouped_ungrained_time_warning(
-    query: Mapping[str, Any], result: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    """Warn about a time window with no grain in a grouped query.
-
-    The runtime's ``UNGRAINED_TIME_PROJECTION`` covers ungrouped queries
-    only. A grouped one hits the same trap, each group returning one row per
-    distinct timestamp, so MCP adds its own code with the same shape. A window the
-    runtime aggregated as one total per group has no such rows.
-    """
-
-    if _collapsed_window(result):
-        return None
-    if not query.get("group_by") or not _ungrained_time(query):
-        return None
-    if any(
-        _uses_own_clock(item.get("expression"))
-        for item in query.get("select") or []
-        if isinstance(item, Mapping)
-    ):
-        return None
-    return semantic_issue(
-        code="UNGRAINED_GROUPED_TIME_PROJECTION",
-        message=(
-            "query.time has no grain in a grouped query, so each group returns one row per "
-            "distinct timestamp. Set time.grain (for example 'month' or 'year') to bucket the "
-            "result."
-        ),
-        severity="warning",
-        stage="mcp",
-        details={
-            "recovery_hints": [
-                {
-                    "code": "SET_TIME_GRAIN",
-                    "message": "Add time.grain to bucket each group's rows.",
-                    "suggested_patches": [{"add": {"time.grain": "month"}}],
-                }
-            ],
-        },
-    )
-
-
-def _with_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> dict[str, Any]:
-    if warning is None or not bool(result.get("ok", True)):
-        return result
-    existing = list(result.get("warnings") or [])
-    if any(isinstance(item, Mapping) and item.get("code") == warning["code"] for item in existing):
-        return result
-    return {**result, "warnings": [*existing, warning]}
 
 
 def _max_result_chars() -> int:
@@ -1387,7 +1298,7 @@ def _bound_response(
         counted = f"{total:,}" if total is not None else f"more than {returned:,}"
         message = (
             f"The result has {counted} rows and exceeds the {limit:,}-character response budget "
-            f"without optional details. No rows returned; {_narrowing_advice(query, result)}, "
+            f"without optional details. No rows returned; {_narrowing_advice(query)}, "
             "lower max_rows or select fewer columns."
         )
         details.update(row_count=returned, total_row_count=total)
@@ -2297,15 +2208,13 @@ class SemanticLayerMCPAdapter:
 
     def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            result = self.runtime.validate(args["query"], **self._call_options(args))
-            return _with_warning(result, _grouped_ungrained_time_warning(args["query"], result))
+            return self.runtime.validate(args["query"], **self._call_options(args))
 
         return self._guarded(arguments, _run)
 
     def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            result = self.runtime.compile(args["query"], **self._call_options(args))
-            return _with_warning(result, _grouped_ungrained_time_warning(args["query"], result))
+            return self.runtime.compile(args["query"], **self._call_options(args))
 
         return self._guarded(arguments, _run)
 
@@ -2317,7 +2226,6 @@ class SemanticLayerMCPAdapter:
             result = self.runtime.query(call, limits={"max_rows": cap}, **self._call_options(args))
             if bool(result.get("ok", True)):
                 result = _truncate_rows(result, cap=cap, query=call)
-                result = _with_warning(result, _grouped_ungrained_time_warning(call, result))
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
             # execute returns 0 rows and the user authored no filters —
             # the most common "successful but wrong" outcome from a
