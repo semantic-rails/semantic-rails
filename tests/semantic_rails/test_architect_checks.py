@@ -19,17 +19,16 @@ from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse, write_orders
 COUNTRY = "dimension.shop_customer_customer_country"
 
 
-def _query(expression: dict[str, Any], alias: str = "value", **extra: Any) -> dict[str, Any]:
+def _query(expression: Any, alias: str = "value", **extra: Any) -> dict[str, Any]:
     return {
-        "version": 1,
         "select": [{"expression": expression, "as": alias}],
         "group_by": [COUNTRY],
         **extra,
     }
 
 
-ORDERS = _query({"measure": "measure.shop.order_count"}, "orders")
-UNKNOWN = _query({"measure": "measure.shop.refunds"})
+ORDERS = _query("measure.shop.order_count", "orders")
+UNKNOWN = _query("measure.shop.refunds")
 
 
 @pytest.fixture()
@@ -62,8 +61,10 @@ def test_mcp_session_previews_rows_and_writes_tests_and_an_example_that_pass(
         },
         "revenue_sums_order_totals": {
             "kind": "metric_equals_query",
-            "metric_query": _query({"metric": "metric.shop.revenue"}),
-            "expected_query": _query({"measure": "measure.shop.order_total", "aggregation": "sum"}),
+            "metric_query": _query("metric.shop.revenue"),
+            "expected_query": _query(
+                {"kind": "measure", "measure": "measure.shop.order_total", "aggregation": "sum"}
+            ),
         },
         "no_unknown_measures": {
             "kind": "validate_fails_with_code",

@@ -40,13 +40,12 @@ def test_top_n_cutoff_ties_match_reference_on_repeated_calls(request, backend, m
     "changes",
     [
         {"limit": 2},
-        {"limit": 0},
         {"limit": None},
         {"order_by": []},
         {
             "order_by": [
-                {"field": "orders", "direction": "DESC"},
-                {"field": "dimension.shop_order_store_id", "direction": "DESC"},
+                {"field": "orders", "direction": "desc"},
+                {"field": "dimension.shop_order_store_id", "direction": "desc"},
             ]
         },
         {
@@ -60,7 +59,12 @@ def test_top_n_cutoff_ties_match_reference_on_repeated_calls(request, backend, m
 )
 def test_no_cutoff_warning_without_a_boundary_tie(duckdb_backend, changes):
     runtime = duckdb_backend.runtimes["utc_authored"]
-    query = {**deepcopy(SPEC["query"]), **changes}
+    # None removes the key: a call without a limit.
+    query = {
+        key: value
+        for key, value in {**deepcopy(SPEC["query"]), **changes}.items()
+        if value is not None
+    }
     result = runtime.query(query)
     assert not any(warning["code"] == "TIES_AT_LIMIT" for warning in result["warnings"])
     if query.get("limit") is None:
@@ -73,7 +77,7 @@ def test_no_cutoff_warning_without_a_boundary_tie(duckdb_backend, changes):
 )
 def test_row_cap_is_preserved(duckdb_backend, cap, expected_count, truncated):
     runtime = duckdb_backend.runtimes["utc_authored"]
-    result = runtime.query({**SPEC["query"], "limit": 2, "limits": {"max_rows": cap}})
+    result = runtime.query({**SPEC["query"], "limit": 2}, limits={"max_rows": cap})
     assert result["row_count"] == expected_count
     assert result["truncated"] is truncated
     assert not any(warning["code"] == "TIES_AT_LIMIT" for warning in result["warnings"])
@@ -82,7 +86,7 @@ def test_row_cap_is_preserved(duckdb_backend, cap, expected_count, truncated):
 @pytest.mark.parametrize("limit", [1, 2, 3])
 def test_larger_tie_group_uses_nulls_last_and_an_observed_count(duckdb_backend, limit):
     runtime = duckdb_backend.runtimes["utc_authored"]
-    measure = {"measure": "measure.shop.order_count"}
+    measure = "measure.shop.order_count"
     query = {
         "select": [
             {

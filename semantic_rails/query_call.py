@@ -262,6 +262,15 @@ def read_call(
     return internal, context.notes
 
 
+def engine_where(
+    where: Any, *, grain: str = "", config: PackageConfig | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """A call's ``where`` in the engine's form: ``(row filters and child groups, entity filters
+    as metric_filters)``. For a clarification option the engine re-binds."""
+    context = CallContext(config=config, now=parse_now(None))
+    return _where(where, context, {"time": {"grain": grain}} if grain else {})
+
+
 def _check_top_level(payload: Mapping[str, Any]) -> None:
     for key in payload:
         if key in FIELDS or key in IGNORED or str(key).startswith("_"):
@@ -368,6 +377,13 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
 _KINDLESS_FIX = 'A reference is the id string itself, e.g. "metric.<id>" or "measure.<id>".'
 
 
+def _operand(raw: Any, path: str, context: CallContext) -> Any:
+    """An operand inside a kind: a reference or kind is read; a literal passes to the parser."""
+    if isinstance(raw, Mapping) or (isinstance(raw, str) and raw.startswith(REFERENCE_PREFIXES)):
+        return _expression(raw, path, context)
+    return raw
+
+
 def _expression(raw: Any, path: str, context: CallContext) -> Any:
     """An inline expression with its references expanded to the engine's ref objects."""
     if isinstance(raw, str):
@@ -412,15 +428,15 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             or key == "value"
             and kind in {"aggregate_if", "nullif"}
         ):
-            node[key] = _expression(value, child, context)
+            node[key] = _operand(value, child, context)
         elif key in EXPRESSION_LISTS and isinstance(value, list):
             node[key] = [
-                _expression(item, f"{child}[{index}]", context) for index, item in enumerate(value)
+                _operand(item, f"{child}[{index}]", context) for index, item in enumerate(value)
             ]
         elif key == "whens" and isinstance(value, list):
             node[key] = [
                 {
-                    name: _expression(part, f"{child}[{index}].{name}", context)
+                    name: _operand(part, f"{child}[{index}].{name}", context)
                     for name, part in dict(when).items()
                 }
                 if isinstance(when, Mapping)
@@ -428,7 +444,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
                 for index, when in enumerate(value)
             ]
         elif key == "else":
-            node[key] = _expression(value, child, context)
+            node[key] = _operand(value, child, context)
         else:
             node[key] = value
     if kind in {"metric_predicate"}:

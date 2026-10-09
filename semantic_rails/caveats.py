@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from . import operators
 from .ast import child_groups, every_filter
 from .diagnostics import semantic_issue
 from .expressions import collect_object_references, expr_to_dict
@@ -219,7 +220,7 @@ def _signals_for_query(
 
 def _where_values(row: dict[str, Any]) -> set[str]:
     op = str(row.get("op", "") or "").strip().lower()
-    if op not in {"=", "==", "eq", "in"}:
+    if operators.ALIASES.get(op, op) != "is":
         return set()
     raw = row.get("value")
     if isinstance(raw, list):

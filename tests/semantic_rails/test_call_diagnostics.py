@@ -569,7 +569,9 @@ def test_warehouse_type_error_is_redacted_on_every_call_path(package, path):
             }
             (package / "relations.yml").write_text(yaml.safe_dump({"relations": relations}))
         model_path.write_text(yaml.safe_dump(raw))
-        payload = query({"measure": "measure.numbers.amount", "aggregation": "max"})
+        payload = query(
+            {"kind": "measure", "measure": "measure.numbers.amount", "aggregation": "max"}
+        )
     runtime = Runtime.from_path(str(package))
     try:
         assert runtime.validate(payload)["ok"]

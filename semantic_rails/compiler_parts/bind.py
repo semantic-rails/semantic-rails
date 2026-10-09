@@ -7,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any
 
+from .. import operators
 from ..ast import NormalizedQuery, normalize_query
 from ..dialects import SqlDialect, dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -671,13 +672,11 @@ def _bound_filter_clauses(bound: BoundMeasure, config: PackageConfig) -> list[di
             continue
         with binding_cut():
             dimension_id = _resolve_filter_dimension(field, config)
-        out.append(
-            {
-                "field": dimension_id,
-                "op": str(clause.get("op", "=")),
-                "value": clause.get("value"),
-            }
+        # Every reader of a bound clause sees the filter word, whatever spelling it was authored in.
+        op, value = operators.normalize_condition(
+            clause.get("op", "is"), clause.get("value"), path=f"filter.{field}", internal=True
         )
+        out.append({"field": dimension_id, "op": op, "value": value})
     return out
 
 

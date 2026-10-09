@@ -11,7 +11,15 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import plan_payload
 
 from . import answer_ledger
-from .answer_ledger import LEDGER, comparable, encode, for_backend, load_entries, messages
+from .answer_ledger import (
+    LEDGER,
+    call_arguments,
+    comparable,
+    encode,
+    for_backend,
+    load_entries,
+    messages,
+)
 from .test_correctness import CASES
 
 ENTRIES = load_entries()
@@ -49,21 +57,23 @@ def test_engine_answer(request, backend, case_id, spec):
     ]
     report = package_tools._run_test(runtime, case_id, spec)
     assert report["ok"], report
+    call = call_arguments(spec)
     if spec["expect"] == "answer":
         if spec["query"].get("order_by"):
-            assert comparable(runtime.query(spec["query"]), ordered=True) == comparable(
+            assert comparable(runtime.query(spec["query"], **call), ordered=True) == comparable(
                 encode(runtime, spec), ordered=True
             )
         return
     with pytest.raises(SemanticLayerError) as raised:
-        runtime.query(spec["query"])
+        runtime.query(spec["query"], **call)
     assert raised.value.code == spec["code"]
     if spec["expect"] == "clarify":
         assert_clarification(runtime, spec, spec["query"])
 
 
 def assert_clarification(runtime, spec, query):
-    report = runtime.validate(query)
+    call = call_arguments(spec)
+    report = runtime.validate(query, **call)
     assert not report["ok"], report
     error = report["errors"][0]
     assert error["code"] == spec["code"], error
@@ -71,7 +81,7 @@ def assert_clarification(runtime, spec, query):
     assert clarification["question"].strip()
     assert [option["id"] for option in clarification["options"]] == spec["clarify"]["options"]
     for option in clarification["options"]:
-        assert runtime.validate({**query, "where": option["where"]})["ok"], option
+        assert runtime.validate({**query, "where": option["where"]}, **call)["ok"], option
 
 
 @pytest.mark.parametrize("backend,case_id,spec", list(parameters("reference")))
@@ -156,6 +166,10 @@ def test_hygiene_accepts_definition_or_decision(duckdb_backend, citation):
         ({"expected_rows_by_backend": {"postgres": None}}, {}, "invalid backend expectation"),
         ({"partial_query": {}}, {}, "invalid partial_query"),
         ({"intent": "revenue", "partial_query": True}, {}, "invalid partial_query"),
+        ({"now": "last tuesday"}, {}, "invalid now"),
+        ({"now": ""}, {}, "invalid now"),
+        ({"context": {}}, {}, "invalid context"),
+        ({"context": ["analyst"]}, {}, "invalid context"),
         (
             {"expect": "refuse", "kind": "validate_fails_with_code"},
             {},
@@ -195,7 +209,12 @@ def test_planner_answer(request, backend, case_id, spec):
     runtime = request.getfixturevalue(f"{backend}_backend").runtimes[
         spec.get("variant", "utc_authored")
     ]
-    plan = plan_payload(runtime, intent=spec["intent"], partial_query=spec.get("partial_query"))
+    plan = plan_payload(
+        runtime,
+        intent=spec["intent"],
+        partial_query=spec.get("partial_query"),
+        now=spec.get("now"),
+    )
     assert_planner_outcome(runtime, spec, plan)
 
 
@@ -209,7 +228,7 @@ def assert_planner_outcome(runtime, spec, plan):
         assert error["code"] == spec["code"], plan
         if plan["best"]:
             query = plan["best"]["query_ir"]
-            report = runtime.validate(query)
+            report = runtime.validate(query, **call_arguments(spec))
             assert not report["ok"], report
             assert report["errors"][0]["code"] == spec["code"], report
         if spec["expect"] == "clarify":
@@ -218,7 +237,7 @@ def assert_planner_outcome(runtime, spec, plan):
         return
     assert plan["status"] == "ok", plan
     assert "execute" in plan["next"].get("ready_for", []), plan
-    actual = runtime.query(plan["best"]["query_ir"])
+    actual = runtime.query(plan["best"]["query_ir"], **call_arguments(spec))
     expected = encode(runtime, spec)
     ordered = bool(spec["query"].get("order_by"))
     assert comparable(actual, positional=True, ordered=ordered) == comparable(
@@ -249,7 +268,12 @@ def test_planner_expectations_reject_incomplete_outcomes(
     }
     spec = dict(ENTRIES)[ids[outcome]]
     runtime = duckdb_backend.runtimes["utc_authored"]
-    plan = plan_payload(runtime, intent=spec["intent"], partial_query=spec.get("partial_query"))
+    plan = plan_payload(
+        runtime,
+        intent=spec["intent"],
+        partial_query=spec.get("partial_query"),
+        now=spec.get("now"),
+    )
     if defect == "not_ready":
         plan["next"] = {}
     elif defect == "execute":
@@ -259,8 +283,8 @@ def test_planner_expectations_reject_incomplete_outcomes(
     else:
         validate = runtime.validate
 
-        def incomplete(query):
-            report = deepcopy(validate(query))
+        def incomplete(query, **call):
+            report = deepcopy(validate(query, **call))
             if not report["ok"] and report["errors"][0]["code"] == spec["code"]:
                 clarification = report["errors"][0]["details"]["clarification"]
                 if defect == "empty_question":
@@ -269,7 +293,7 @@ def test_planner_expectations_reject_incomplete_outcomes(
                     clarification["options"][0]["id"] = "unknown"
                 else:
                     clarification["options"][0]["where"] = [
-                        {"field": "dimension.shop_order_store_id", "op": "IS", "value": "x"}
+                        {"field": "dimension.shop_order_store_id", "op": "like", "value": "x"}
                     ]
             return report
 
