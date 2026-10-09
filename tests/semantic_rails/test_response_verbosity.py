@@ -54,7 +54,7 @@ _MINIMAL_EXECUTE_KEYS = frozenset(
 def test_validate_minimal_keeps_only_ok_errors_warnings(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.validate({**_BASE_QUERY, "verbosity": "minimal"})
+        result = runtime.validate(_BASE_QUERY, verbosity="minimal")
 
         # Only the minimal keys remain.
         assert set(result.keys()) <= _MINIMAL_NONEXECUTE_KEYS, (
@@ -102,7 +102,7 @@ def test_validate_compact_drops_heavy_keys(runtime_factory):
 def test_validate_full_preserves_legacy_envelope(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.validate({**_BASE_QUERY, "verbosity": "full"})
+        result = runtime.validate(_BASE_QUERY, verbosity="full")
 
         # Every heavy key must be back.
         for key in ("compile_stats", "performance_plan", "semantic_summary"):
@@ -119,7 +119,7 @@ def test_validate_sql_profile_off_strips_rendered_sql(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         # sql_profile=off works at any verbosity. Test at compact (default).
-        result = runtime.validate({**_BASE_QUERY, "sql_profile": "off"})
+        result = runtime.validate(_BASE_QUERY, sql_profile="off")
 
         assert result.get("sql_profile") == "off"
         assert "rendered_sql" not in result
@@ -143,7 +143,7 @@ def test_compile_minimal_keeps_sql_plus_envelope(runtime_factory):
     """
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.compile({**_BASE_QUERY, "verbosity": "minimal"})
+        result = runtime.compile(_BASE_QUERY, verbosity="minimal")
 
         assert set(result.keys()) <= _MINIMAL_COMPILE_KEYS
         assert result["ok"] is True
@@ -183,7 +183,7 @@ def test_compile_compact_drops_heavy_keys(runtime_factory):
 def test_compile_full_preserves_legacy_envelope(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.compile({**_BASE_QUERY, "verbosity": "full"})
+        result = runtime.compile(_BASE_QUERY, verbosity="full")
 
         for key in ("compile_stats", "performance_plan", "semantic_summary", "physical_plan"):
             assert key in result, f"full compile must keep {key}"
@@ -197,7 +197,7 @@ def test_compile_full_preserves_legacy_envelope(runtime_factory):
 def test_compile_sql_profile_off_strips_sql_and_plan(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.compile({**_BASE_QUERY, "sql_profile": "off"})
+        result = runtime.compile(_BASE_QUERY, sql_profile="off")
 
         assert result.get("sql_profile") == "off"
         assert "rendered_sql" not in result
@@ -215,7 +215,7 @@ def test_compile_sql_profile_off_at_full_verbosity_still_strips(runtime_factory)
     try:
         # Verbosity full keeps the heavy plans, but sql_profile=off must
         # still suppress rendered_sql + sql_plan.
-        result = runtime.compile({**_BASE_QUERY, "verbosity": "full", "sql_profile": "off"})
+        result = runtime.compile(_BASE_QUERY, verbosity="full", sql_profile="off")
 
         assert "rendered_sql" not in result
         assert "sql_plan" not in result
@@ -234,7 +234,7 @@ def test_compile_sql_profile_off_at_full_verbosity_still_strips(runtime_factory)
 def test_execute_minimal_keeps_rows_and_envelope(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.query({**_BASE_QUERY, "verbosity": "minimal"})
+        result = runtime.query(_BASE_QUERY, verbosity="minimal")
 
         # rows / row_count must survive even in minimal mode.
         assert set(result.keys()) <= _MINIMAL_EXECUTE_KEYS
@@ -274,7 +274,7 @@ def test_execute_compact_drops_heavy_keys_but_keeps_rows_and_sql(runtime_factory
 def test_execute_full_preserves_legacy_envelope(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.query({**_BASE_QUERY, "verbosity": "full"})
+        result = runtime.query(_BASE_QUERY, verbosity="full")
 
         for key in ("compile_stats", "performance_plan", "semantic_summary", "physical_plan"):
             assert key in result, f"full execute must keep {key}"
@@ -287,7 +287,7 @@ def test_execute_full_preserves_legacy_envelope(runtime_factory):
 def test_execute_sql_profile_off_strips_rendered_sql_and_plan(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        result = runtime.query({**_BASE_QUERY, "sql_profile": "off"})
+        result = runtime.query(_BASE_QUERY, sql_profile="off")
 
         assert result.get("sql_profile") == "off"
         assert "rendered_sql" not in result
@@ -371,7 +371,7 @@ def test_mcp_execute_defaults_to_record_rows(runtime_factory):
 def test_mcp_execute_columns_row_format_preserves_values_and_counts(runtime_factory):
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
-    query = {**_BASE_QUERY, "order_by": [{"field": "time", "direction": "ASC"}]}
+    query = {**_BASE_QUERY, "order_by": [{"field": "period", "direction": "asc"}]}
     runtime = runtime_factory("jaffle_shop")
     try:
         adapter = SemanticLayerMCPAdapter(runtime)
@@ -521,8 +521,8 @@ def test_mcp_plan_tool_schema_advertises_query_detail():
 def test_minimal_response_is_dramatically_smaller_than_full(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        minimal = runtime.validate({**_BASE_QUERY, "verbosity": "minimal"})
-        full = runtime.validate({**_BASE_QUERY, "verbosity": "full"})
+        minimal = runtime.validate(_BASE_QUERY, verbosity="minimal")
+        full = runtime.validate(_BASE_QUERY, verbosity="full")
 
         minimal_size = len(json.dumps(minimal, default=str))
         full_size = len(json.dumps(full, default=str))

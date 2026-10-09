@@ -242,7 +242,7 @@ model:
 
 
 ZONE_ROLE = "temporal_role.zones_order_ordered_at"
-ZONE_REVENUE = [{"expression": {"measure": "measure.zones.revenue"}, "as": "revenue"}]
+ZONE_REVENUE = [{"expression": "measure.zones.revenue", "as": "revenue"}]
 
 
 def _zone_runtime(root: Path, column: str, zones: str) -> Runtime:
@@ -301,12 +301,7 @@ def test_answers_do_not_follow_the_session_time_zone(
             {"temporal_role": ZONE_ROLE, "grain": "month"},
         ):
             result = runtime.query({"select": ZONE_REVENUE, "time": time})
-            answers.append(
-                {
-                    str(row[f"{ZONE_ROLE}__{time['grain']}"])[:10]: row["revenue"]
-                    for row in result["rows"]
-                }
-            )
+            answers.append({str(row["period"])[:10]: row["revenue"] for row in result["rows"]})
         # The zone ended with each query's cursor: the connection the host sees, and any
         # cursor made from it later, still read Los Angeles.
         conn = runtime._get_adapter()._db.conn  # noqa: SLF001
@@ -324,8 +319,8 @@ def test_the_whole_query_runs_in_its_zone(tmp_path: Path) -> None:
     A query whose measures use a role in another zone runs in its own role's zone, and says so.
     """
     runtime = _zone_runtime(tmp_path, "ordered_at_tz", "")
-    hours = [{"expression": {"measure": "measure.zones.hours"}, "as": "hours"}]
-    tokyo = [{"expression": {"measure": "measure.zones.tokyo_revenue"}, "as": "tokyo"}]
+    hours = [{"expression": "measure.zones.hours", "as": "hours"}]
+    tokyo = [{"expression": "measure.zones.tokyo_revenue", "as": "tokyo"}]
     time = {"temporal_role": ZONE_ROLE, "grain": "month"}
     try:
         # The UTC hours 2, 6, 23 and 4, where Los Angeles would read 18, 22, 15 and 20.
@@ -333,8 +328,8 @@ def test_the_whole_query_runs_in_its_zone(tmp_path: Path) -> None:
         codes = [
             [item["code"] for item in runtime.query(query).get("warnings", [])]
             for query in (
-                {"version": 1, "select": ZONE_REVENUE, "time": time},
-                {"version": 1, "select": ZONE_REVENUE + tokyo, "time": time},
+                {"select": ZONE_REVENUE, "time": time},
+                {"select": ZONE_REVENUE + tokyo, "time": time},
             )
         ]
     finally:
@@ -438,9 +433,9 @@ def test_postgres_restores_the_current_session_zone(zone: str) -> None:
     )
 
 
-@pytest.mark.parametrize("zone,offset", [("Asia/Tokyo", "+09:00"), ("Europe/Berlin", "+01:00")])
+@pytest.mark.parametrize("zone", ["Asia/Tokyo", "Europe/Berlin"])
 def test_eastern_zone_month_buckets_keep_their_first_day(
-    tmp_path: Path, zone: str, offset: str, monkeypatch
+    tmp_path: Path, zone: str, monkeypatch
 ) -> None:
     runtime = _zone_runtime(tmp_path, "ordered_at_tz", f", timezone: {zone}")
     try:
@@ -450,7 +445,7 @@ def test_eastern_zone_month_buckets_keep_their_first_day(
                 "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
             }
         )
-        assert result["rows"][0][f"{ZONE_ROLE}__month"][:10] == "2023-12-01"
+        assert result["rows"][0]["period"][:10] == "2023-12-01"
         # Exercise a native aware bucket too: a driver may return either a
         # local naive clock or an aware instant for the same calendar bucket.
         from datetime import datetime
@@ -459,7 +454,7 @@ def test_eastern_zone_month_buckets_keep_their_first_day(
         bucket = datetime(2023, 12, 1, tzinfo=ZoneInfo(zone))
         monkeypatch.setattr(
             "semantic_rails.runtime._adapter_query",
-            lambda *args, **kwargs: [{f"{ZONE_ROLE}__month": bucket, "revenue": 15}],
+            lambda *args, **kwargs: [{"period": bucket, "revenue": 15}],
         )
         result = runtime.query(
             {
@@ -467,12 +462,8 @@ def test_eastern_zone_month_buckets_keep_their_first_day(
                 "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
             }
         )
-        assert result["rows"] == [
-            {f"{ZONE_ROLE}__month": f"2023-12-01T00:00:00{offset}", "revenue": 15}
-        ]
-        assert result["column_types"][f"{ZONE_ROLE}__month"] == {
-            "type": "timestamp",
-            "timezone": "aware",
-        }
+        assert result["rows"] == [{"period": "2023-12-01", "revenue": 15}]
+        # A month is a calendar date, whatever zone the driver read it in.
+        assert result["column_types"]["period"] == {"type": "date"}
     finally:
         runtime.close()
