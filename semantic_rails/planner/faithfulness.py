@@ -46,13 +46,10 @@ from .coverage import (
     _query_contains_prior_period,
     _referenced_ids,
 )
+from .exclusions import exclusion_gaps
 from .filter_checks import (
     _contradictory_filter_gaps,
-    _excluded_value_spans,
-    _exclusion_matches,
     _filter_value_gaps,
-    _positive_filter_evidence,
-    _query_has_negative_semantics,
     _where_clause_gaps,
 )
 from .generators import _target_focus_text
@@ -303,46 +300,9 @@ def intent_faithfulness_why(
             )
         )
 
-    # Named-value coverage suppresses a reversal when this check reports it,
-    # so every exclusion clause must be inspected, not only the first one.
-    negation_matches = _exclusion_matches(text)
-    excluded_spans = _excluded_value_spans(text)
-    for negation_match in negation_matches:
-        excluded_span = next(
-            (span for span in excluded_spans if span[0] == negation_match.start("value")),
-            negation_match.span("value"),
-        )
-        excluded_text = text[excluded_span[0] : excluded_span[1]].strip()
-        positive_filters = _positive_filter_evidence(runtime, query, excluded_text)
-        reversed_clause = bool(positive_filters)
-        negative_present = _query_has_negative_semantics(query)
-        # A matching positive predicate is still a reversal when an unrelated
-        # (or even contradictory) negative predicate also happens to exist.
-        if reversed_clause or not negative_present:
-            gaps.append(
-                CoverageGap(
-                    kind=("negation_reversed" if reversed_clause else "negation_unrealized"),
-                    clause=negation_match.group(0).strip(),
-                    message=(
-                        "The excluded value is encoded by a positive filter, reversing the request."
-                        if reversed_clause
-                        else "The question contains an exclusion, but the draft has no negative predicate."
-                    ),
-                    expected={"filter_polarity": "negative", "excluded_text": excluded_text},
-                    actual={
-                        "where": list(query.get("where") or []),
-                        "positive_matches": positive_filters,
-                        "negative_predicate_present": negative_present,
-                    },
-                    recovery_hint={
-                        "kind": "provide_negative_filter",
-                        "message": (
-                            "Pass an explicit Query IR/partial_query filter using != or NOT IN for "
-                            "the excluded value, then validate before execution."
-                        ),
-                    },
-                )
-            )
+    # Every exclusion clause holds: the planner doesn't answer exclusions yet.
+    window = _time_window(text, policy_context=query.get("policy_context"))
+    gaps.extend(exclusion_gaps(runtime._config, text, query, window))
 
     requested_subjects = _conjoined_subjects(runtime, text)
     if len(requested_subjects) >= 2:
