@@ -984,6 +984,15 @@ def _routes(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def route_entry(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A route decision row as the call's ``routes`` entry: ``{from, to, via}``."""
+    return {
+        "from": row["source_entity"],
+        "to": row["target_entity"],
+        "via": list(row["relationship_path"]),
+    }
+
+
 def route_options(call: Any, details: dict[str, Any]) -> None:
     """Make each option of an ``AMBIGUOUS_PATH`` refusal a complete call: ``call`` with the
     option's route added to ``routes``, ready to send."""
@@ -991,12 +1000,7 @@ def route_options(call: Any, details: dict[str, Any]) -> None:
     if not isinstance(call, Mapping) or not options:
         return
     for option in options:
-        decision = option["decision"]
-        route = {
-            "from": decision["source_entity"],
-            "to": decision["target_entity"],
-            "via": list(decision["relationship_path"]),
-        }
+        route = route_entry(option["decision"])
         option["query"] = {**call, "routes": [*list(call.get("routes") or []), route]}
     details["hint"] = (
         "Which route is meant is a business definition. Ask which option the question means, "
@@ -1062,14 +1066,7 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
     if query.get("limit") is not None:
         call["limit"] = query["limit"]
     if query.get("route_decisions"):
-        call["routes"] = [
-            {
-                "from": row["source_entity"],
-                "to": row["target_entity"],
-                "via": list(row["relationship_path"]),
-            }
-            for row in query["route_decisions"]
-        ]
+        call["routes"] = [route_entry(row) for row in query["route_decisions"]]
     if query.get("observation_scope"):
         call["observation_scope"] = query["observation_scope"]
     return call

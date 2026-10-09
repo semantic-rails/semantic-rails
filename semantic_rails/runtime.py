@@ -134,7 +134,7 @@ from .policies import (
     row_filters_for_context,
     withheld_rank_order,
 )
-from .query_call import call_from_query, call_where, read_call, route_options
+from .query_call import call_from_query, call_where, read_call, route_entry, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_select_for_profile
@@ -434,7 +434,8 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
                 if exc.code == "AMBIGUOUS_PATH":
                     options = list(exc.details.get("clarification", {}).get("options", []))
         chosen = next((option for option in options if option["relationship_path"] == path), None)
-        alternatives = [option["decision"] for option in options if option != chosen]
+        others = [option for option in options if option != chosen]
+        alternatives = [route_entry(option["decision"]) for option in others]
         shown = min(3, len(alternatives))
         while True:
             if chosen is not None:
@@ -443,9 +444,10 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
                 message = f"Chosen meaning: {chosen['meaning']} (chosen by this query). "
                 if shown:
                     message += (
-                        "Other meanings (one-step switches): "
-                        + "; ".join(alternative["label"] for alternative in alternatives[:shown])
-                        + ". Send one as routes: [{from, to, via}]. "
+                        "Other meanings (one-step switches), in the order of "
+                        "details.route_alternatives: "
+                        + "; ".join(option["meaning"] for option in others[:shown])
+                        + ". Send one in place of this route in routes. "
                     )
                 if len(alternatives) > shown:
                     details["more_alternatives"] = len(alternatives) - shown
