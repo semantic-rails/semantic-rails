@@ -926,7 +926,7 @@ def score_plan_response(
         refused = status in REFUSAL_STATUSES
         outcome, mismatched = (PASS, ()) if refused else (wrong, ("answered",))
     else:
-        query = (response.get("best") or {}).get("query_ir")
+        query = (response.get("best") or {}).get("query")
         if status in REFUSAL_STATUSES or not isinstance(query, Mapping):
             outcome, mismatched = wrong, ("refused",)
         else:
