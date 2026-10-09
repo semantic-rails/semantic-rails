@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from semantic_rails.architect_service import ArchitectProject
-from semantic_rails.config import load_package_config
+from semantic_rails.config import _load_package_source, load_package_config
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.conftest import copy_package_config
@@ -1196,10 +1196,30 @@ _DELETE = object()
             ("measure 'widget_count' has unknown accumulation kind 'rolling_population'",),
             id="freeform-accumulation",
         ),
+        pytest.param(
+            "package.yml",
+            ("defaults", "measure"),
+            {"accumulation": {"kind": "stok"}},
+            ("defaults.measure has unknown accumulation kind 'stok'",),
+            id="defaults-accumulation-kind",
+        ),
+        pytest.param(
+            "package.yml",
+            ("defaults", "measure"),
+            {"accumulation": "stok"},
+            ("defaults.measure has unknown accumulation kind 'stok'",),
+            id="defaults-accumulation-scalar",
+        ),
     ],
 )
+@pytest.mark.parametrize("layout", ["directory", "single_file"])
 def test_legacy_authoring_form_is_refused_at_load(
-    tmp_path: Path, file: str, path: tuple[str, ...], value: Any, expected: tuple[str, ...]
+    tmp_path: Path,
+    file: str,
+    path: tuple[str, ...],
+    value: Any,
+    expected: tuple[str, ...],
+    layout: str,
 ) -> None:
     """Every package is read with one set of authoring rules: a legacy form is refused at
     load with an error that names it, and no package flag opts in or out."""
@@ -1227,12 +1247,55 @@ def test_legacy_authoring_form_is_refused_at_load(
     else:
         block[key] = value
     _write_yaml(document, raw)
+    if layout == "single_file":
+        merged = _load_package_source(str(pkg))
+        pkg = pkg / "package.yml"
+        _write_yaml(pkg, merged)
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
     assert exc.value.code == "INVALID_CONFIG"
     errors = exc.value.details["errors"]
     assert any(all(part in error for part in expected) for error in errors), errors
     assert any(all(part in error for part in expected) for error in validate_runtime_package(pkg))
+
+
+def test_measure_inherits_defaults_accumulation_kind(tmp_path: Path) -> None:
+    """A measure with no `accumulation:` of its own takes `defaults.measure.accumulation`."""
+    pkg = _write_synthetic_package(
+        tmp_path / "defaults_stock",
+        models={
+            "widgets": {
+                "relation": "widget",
+                "entities": {"widget": {}},
+                "times": {
+                    "created_at": {
+                        "label": "Created at",
+                        "column": "created_at",
+                        "kind": "timestamp",
+                        "class": "event_time",
+                        "default": True,
+                    },
+                },
+                "measures": {
+                    "balance_usd": {
+                        "label": "Balance (USD)",
+                        "description": "Balance.",
+                        "kind": "aggregate",
+                        "expr": "balance_usd",
+                        "value_type": "currency",
+                    },
+                },
+            },
+        },
+    )
+    document = pkg / "package.yml"
+    raw = yaml.safe_load(document.read_text(encoding="utf-8"))
+    raw["defaults"]["measure"] = {"accumulation": {"kind": "stock"}}
+    _write_yaml(document, raw)
+    config = load_package_config(str(pkg))
+    balance = next(m for m in config.measures if "balance_usd" in m.id)
+    assert balance.measure_class == "semi_additive"
+    assert balance.default_aggregation == "last_value"
 
 
 # ---------------------------------------------------------------------------

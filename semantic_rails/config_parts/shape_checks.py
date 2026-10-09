@@ -614,24 +614,7 @@ def _check_model_shape(
                 f"{measure_label} has unknown kind {kind_value!r}. Valid kinds: "
                 f"{', '.join(sorted(_VALID_MEASURE_KINDS))}.",
             )
-        accumulation = measure_raw.get("accumulation")
-        acc_kind = ""
-        if isinstance(accumulation, dict):
-            _unknown_key_errors(
-                accumulation,
-                _ACCUMULATION_KEYS,
-                label=f"{measure_label} accumulation",
-                errors=errors,
-            )
-            acc_kind = str(accumulation.get("kind", "") or "").strip().lower()
-        elif accumulation is not None:
-            acc_kind = str(accumulation or "").strip().lower()
-        if acc_kind and acc_kind not in _VALID_ACCUMULATION_KINDS:
-            add_error(
-                errors,
-                f"{measure_label} has unknown accumulation kind {acc_kind!r}. Valid "
-                f"kinds: {', '.join(sorted(_VALID_ACCUMULATION_KINDS))}.",
-            )
+        _check_accumulation(measure_raw.get("accumulation"), label=measure_label, errors=errors)
 
     variants = model.get("variants")
     if isinstance(variants, dict):
@@ -797,6 +780,24 @@ def _check_metric(
         )
 
 
+def _check_accumulation(accumulation: Any, *, label: str, errors: list[str]) -> None:
+    """Unknown keys and the kind of an ``accumulation:`` value, in the mapping or scalar form."""
+    acc_kind = ""
+    if isinstance(accumulation, dict):
+        _unknown_key_errors(
+            accumulation, _ACCUMULATION_KEYS, label=f"{label} accumulation", errors=errors
+        )
+        acc_kind = str(accumulation.get("kind", "") or "").strip().lower()
+    elif accumulation is not None:
+        acc_kind = str(accumulation or "").strip().lower()
+    if acc_kind and acc_kind not in _VALID_ACCUMULATION_KINDS:
+        add_error(
+            errors,
+            f"{label} has unknown accumulation kind {acc_kind!r}. Valid "
+            f"kinds: {', '.join(sorted(_VALID_ACCUMULATION_KINDS))}.",
+        )
+
+
 def _check_publish(spec: dict[str, Any], *, label: str, errors: list[str]) -> None:
     """``publish: false`` marks a building-block measure; a measure publishes no metric itself."""
     if "publish" in spec and not isinstance(spec["publish"], bool):
@@ -868,13 +869,8 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
         measure = defaults.get("measure")
         if isinstance(measure, dict):
             _check_publish(measure, label=f"{label}.measure", errors=errors)
-        accumulation = measure.get("accumulation") if isinstance(measure, dict) else None
-        if isinstance(accumulation, dict):
-            _unknown_key_errors(
-                accumulation,
-                _ACCUMULATION_KEYS,
-                label=f"{label}.measure accumulation",
-                errors=errors,
+            _check_accumulation(
+                measure.get("accumulation"), label=f"{label}.measure", errors=errors
             )
     caveats = raw.get("semantic_caveats")
     for index, row in enumerate(caveats if isinstance(caveats, list) else ()):
