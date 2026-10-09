@@ -231,8 +231,9 @@ def test_a_second_calendar_is_refused_in_this_release(workspace: Path) -> None:
     finally:
         engine.close()
 
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["reason"] == "calendar_not_supported_yet"
+    # A call cannot pick a calendar: the clock's own calendar applies.
+    assert refused.value.code == "INVALID_QUERY"
+    assert refused.value.details["path"] == "time.calendar_id"
 
 
 def test_one_calendar_per_calendar_id(workspace: Path) -> None:
