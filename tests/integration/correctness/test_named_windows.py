@@ -140,3 +140,32 @@ def test_a_day_grain_meets_a_required_snapshot_day(per_day_balances, time, group
     with pytest.raises(SemanticLayerError) as refused:
         per_day_balances.query(call, now="2024-01-16T09:00:00Z")
     assert refused.value.code == "POLICY_DENIED"
+
+
+@pytest.mark.parametrize(
+    ("window", "path"),
+    [
+        ({"last": {"unit": "week", "value": 2}}, "time.last"),
+        ({"this": "month"}, "time.this"),
+        ({"start": "2024-04-01", "end": "2024-05-06"}, "time.start"),
+    ],
+)
+def test_a_comparison_beside_a_named_window_asks_for_the_series(shop: Runtime, window, path):
+    prior = {
+        "kind": "prior_period",
+        "input": "measure.shop.revenue",
+        "offset": {"unit": "week", "value": 1},
+    }
+    call = {
+        "select": [{"expression": prior, "as": "week_before"}],
+        "time": {"temporal_role": ORDER_CLOCK, "grain": "week", **window},
+    }
+    (error,) = shop.validate(call, now="2024-05-10T00:00:00Z")["errors"]
+    assert error["code"] == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+    assert error["details"]["path"] == path
+    assert "comparison beside a named window is not supported yet" in error["message"]
+    (hint,) = error["recovery_hints"]
+    assert hint["kind"] == "ask_for_a_series" and "time.start" not in hint["message"]
+    series = {**call, "time": hint["patch"]["replace"]["time"]}
+    assert series["time"] == {"temporal_role": ORDER_CLOCK, "grain": "week"}
+    assert shop.validate(series, now="2024-05-10T00:00:00Z")["ok"] is True
