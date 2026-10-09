@@ -2,11 +2,12 @@
 
 A billing package: customers a and b and internal account c each have a daily MRR row from
 2026-09-01 to 2026-10-04, except that neither customer has a row on 2026-09-15. "Customer MRR"
-is the customers' balance zero-filled (``COALESCE(<filtered last value>, 0)``) and "Customer
-ARR" is twelve times that metric. Neither is one plain aggregate, so plan doesn't shape them to
-a read day; a draft over either that reads a day not yet complete is held as a plain balance's
-is. The clock is 2026-10-05T06:00Z, so the last complete day is 2026-10-04. Every answer is
-checked against plain SQL on the seed.
+is the customers' balance zero-filled (``COALESCE(<filtered last value>, 0)``), "Customer ARR"
+is twelve times that metric, and "Customer balance" is a scoped aggregate of the customers'
+rows. None is one plain aggregate, so plan doesn't shape them to a read day; a draft over any of
+them that reads a day not yet complete is held as a plain balance's is. The clock is
+2026-10-05T06:00Z, so the last complete day is 2026-10-04. Every answer is checked against
+plain SQL on the seed.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ MRR_ALL = f"measure.{NS}.mrr_all"
 METRICS = {
     "Customer MRR": (f"metric.{NS}.customer_mrr", 1),
     "Customer ARR": (f"metric.{NS}.customer_arr", 12),
+    "Customer balance": (f"metric.{NS}.customer_balance", 1),
 }
 SEED = """
 CREATE TABLE accounts (account_id VARCHAR, segment VARCHAR);
@@ -88,6 +90,12 @@ def _package(root: Path) -> Path:
             "expression": {"kind": "arithmetic", "op": "multiply",
                            "left": {"kind": "metric", "metric": f"metric.{NS}.customer_mrr"},
                            "right": {"kind": "literal", "value": 12}},
+        },
+        "customer_balance": {
+            "label": "Customer balance", "kind": "derived", "value_type": "currency",
+            "temporal_role": CLOCK,
+            "expression": {"kind": "scoped_aggregate", "measure": MRR_ALL,
+                           "aggregation": "last_value", "where": [customers]},
         },
     }})  # fmt: skip
     with duckdb.connect(str(root / "billing.duckdb")) as connection:
@@ -218,7 +226,7 @@ def test_these_were_held_already(engine: Runtime, label: str, intent: str) -> No
     [
         ("{} yesterday", "2026-10-04"),
         ("{} on 2026-09-30", "2026-09-30"),
-        # The zero fill answers 0 on a day without customer rows.
+        # A day without customer rows answers 0, where the balance alone is NULL.
         ("{} on 2026-09-15", "2026-09-15"),
     ],
 )
