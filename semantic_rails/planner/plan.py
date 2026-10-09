@@ -756,6 +756,13 @@ def _planned_row(
         )
         if retry_validation["ok"]:
             merged_draft, validation = replace(merged_draft, query=reshaped), retry_validation
+    if (child_scope := _child_scope_ask(merged_draft.query, validation)) is not None:
+        # The engine asks whether filters on a child entity hold on one of its rows: each
+        # reading is the merged draft with that reading's entity filters in place of the
+        # caller's flat ones.
+        ask = _with_ready_options(runtime, child_scope)
+        if ask["details"]["options"]:
+            return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
     # A question needs two readings the engine runs; with one, the draft is that reading.
     ask = _with_ready_options(runtime, merged_draft.ask, partial_query) if merged_draft.ask else {}
     if len(ask.get("details", {}).get("options") or []) < 2:
@@ -770,6 +777,45 @@ def _planned_row(
         "blocked": False,
         "start_dropped": start_dropped,
         **({"ask": ask} if ask else {}),
+    }
+
+
+def _child_scope_ask(query: Call, validation: dict[str, Any]) -> dict[str, Any] | None:
+    """The engine's AMBIGUOUS_CHILD_SCOPE question as plan's, each option a whole call: the
+    draft with the flat conditions the option scopes replaced by its entity filters."""
+
+    errors = validation.get("errors") or []
+    if validation.get("ok") or len(errors) != 1 or errors[0].get("code") != "AMBIGUOUS_CHILD_SCOPE":
+        return None
+    clarification = (errors[0].get("details") or {}).get("clarification") or {}
+    readings = [row for row in clarification.get("options") or [] if isinstance(row, dict)]
+    scoped = [
+        condition
+        for row in readings
+        for item in row.get("where") or []
+        for key in ("any", "none")
+        for condition in (item.get(key) or [])
+    ]
+    base = query.to_call()
+    kept = [row for row in base.get("where") or [] if row not in scoped]
+    options = [
+        {
+            "id": row.get("id"),
+            "reads": row.get("meaning"),
+            "call": {**base, "where": [*kept, *(row.get("where") or [])]},
+        }
+        for row in readings
+    ]
+    return {
+        "code": "AMBIGUOUS_CHILD_SCOPE",
+        "message": str(errors[0].get("message") or ""),
+        "details": {
+            "clarification": {"question": clarification.get("question")},
+            "options": options,
+        },
+        "recovery_hints": [
+            {"kind": "choose_child_scope", "message": "Send the call of the reading you mean."}
+        ],
     }
 
 
