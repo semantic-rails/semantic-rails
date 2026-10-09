@@ -2817,7 +2817,7 @@ class Runtime:
             payload = self.engine_payload(query, now=now, context=context, **options)
         except SemanticLayerError as exc:
             issue = exception_issue(exc, stage="validate")
-            return {"ok": False, "status": "error", "errors": [issue], "warnings": []}
+            return {"ok": False, "status": "error", "errors": [issue]}
         result = self.validate_internal(payload)
         for error in result.get("errors") or []:
             if error.get("code") == "AMBIGUOUS_PATH":

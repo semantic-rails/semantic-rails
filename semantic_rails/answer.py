@@ -91,7 +91,9 @@ def answer_fields(
     assumptions.extend(_entity_filter_over(plan.query))
     if time.get("grain") or time.get("start") is not None or time.get("end") is not None:
         window = engine_window(time, now=now, timezone=zone)
-        shown = {"start": window.start, "end": window.end, "now": format_now(now)}
+        # A ``this`` window ends at now: state that instant with its offset, as ``now`` is.
+        end = _instant(now, zone) if "this" in window.spec else window.end
+        shown = {"start": window.start, "end": end, "now": format_now(now)}
         out["window"] = {key: value for key, value in shown.items() if value is not None}
         if window.start is not None or window.end is not None:
             out["window"]["partial"] = window.partial
@@ -118,6 +120,12 @@ def answer_fields(
     out["routes"] = routes_taken(config, compiled)
     out["assumptions"] = assumptions
     return out
+
+
+def _instant(now: datetime, zone: str) -> str:
+    """``now`` as wall time in the clock's zone with its offset (``Z`` for UTC)."""
+    local = now.astimezone(ZoneInfo(zone)).isoformat(timespec="seconds")
+    return local.replace("+00:00", "Z")
 
 
 def _entity_filter_over(query: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -205,10 +213,14 @@ def finish(
     engine writes) moves to ``assumptions`` as ``{code, message, **details}``: registering a
     code there is all a new disclosure needs. ``query`` and ``normalized_query`` echo the call
     (``call_from_query``), never the engine form with its identity and clock. Empty fields go,
-    except ``rows``."""
+    from the response (except ``rows``) and from each warning."""
     warnings = list(out.get("warnings") or [])
     stated = [row for row in warnings if CODES.get(str(row.get("code"))) == ASSUMPTION]
-    out["warnings"] = [row for row in warnings if row not in stated]
+    out["warnings"] = [
+        {key: value for key, value in row.items() if value not in _EMPTY}
+        for row in warnings
+        if row not in stated
+    ]
     out["assumptions"] = [
         *(out.get("assumptions") or []),
         *(
