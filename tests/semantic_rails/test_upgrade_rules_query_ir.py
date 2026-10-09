@@ -1,12 +1,18 @@
-"""Golden rows for the Query IR rule: version 2 queries become version 1."""
+"""Golden rows for the Query IR rules: version 2 queries become version 1, and each retired
+expression spelling becomes the one that parses to the same node."""
 
 from __future__ import annotations
 
 import pytest
 
+from semantic_rails.config import load_package_config
+from semantic_rails.errors import SemanticLayerError
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.upgrade.model import PackageFiles, plan
 from semantic_rails.upgrade.registry import RULES
 from semantic_rails.upgrade.rules_query_ir import RULES as QUERY_IR_RULES
+from semantic_rails.upgrade.service import upgrade_project
+from tests.semantic_rails.conftest import write_single_file_package
 
 CASES = {
     "examples/block.yml": (
@@ -175,3 +181,33 @@ def test_retired_expression_spellings_become_current(tmp_path):
     ]
     upgraded = PackageFiles(files.source, contents={**files.contents, **result.files})
     assert plan(upgraded, RULES, {}).findings == ()
+
+
+def test_a_retired_expression_upgrade_loads_with_the_same_semantics(tmp_path):
+    source = write_single_file_package(tmp_path / "project")
+    baseline = load_package_snapshot(source)
+    text = source.read_text()
+    current = (
+        "      kind: arithmetic\n      op: divide\n"
+        "      left:  { kind: metric, metric: revenue_usd }\n"
+        "      right: { kind: measure, measure: measure.shop.line_revenue_usd }\n"
+    )
+    assert text.count(current) == 1
+    source.write_text(
+        text.replace(
+            current,
+            current.replace("arithmetic", "binary").replace("kind: measure,", "kind: measure_ref,"),
+        )
+    )
+    with pytest.raises(SemanticLayerError, match="Write kind 'arithmetic'"):
+        load_package_config(str(source))
+
+    report = upgrade_project(source, workspace_root=tmp_path, dry_run=False)
+
+    assert report["ok"] and report["status"] == "upgraded", report
+    assert {rule["id"]: rule["tier"] for rule in report["rules"]} == {
+        "expression-arithmetic": "certified"
+    }
+    assert source.read_text() == text
+    assert load_package_snapshot(source).semantic_fingerprint == baseline.semantic_fingerprint
+    assert upgrade_project(source, workspace_root=tmp_path)["status"] == "up_to_date"

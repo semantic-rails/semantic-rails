@@ -19,7 +19,18 @@
       "type": "object"
     },
     "graph": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "path_policy": {
+          "type": "object"
+        },
+        "path_preferences": {
+          "type": [
+            "object",
+            "array"
+          ]
+        }
+      }
     },
     "models": {
       "oneOf": [
@@ -88,15 +99,6 @@
       }
     },
     "semantic_caveats": {
-      "type": [
-        "object",
-        "array"
-      ]
-    },
-    "path_policy": {
-      "type": "object"
-    },
-    "path_preferences": {
       "type": [
         "object",
         "array"
