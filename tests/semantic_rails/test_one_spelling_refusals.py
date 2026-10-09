@@ -21,22 +21,23 @@ from semantic_rails.sql_ast import SqlField, SqlLiteral, SqlSelect
 from semantic_rails.yaml_loader import safe_load
 from tests.semantic_rails.conftest import copy_package_config, write_single_file_package
 
-# Semantic fingerprints of the bundled packages before the retired spellings were refused.
+# Semantic fingerprints of the bundled packages, which refusing the retired spellings leaves
+# unchanged (re-pinned only when main adds a snapshot field, such as an entity's `display`).
 FINGERPRINTS = {
     "configs/semantic_rails/jaffle_shop": (
-        "sha256:8d436d8ae0bb440f5324bae2c99fe99f5a0b11ea56069c27ba420234cc77149a"
+        "sha256:b4ecb69f5b11043e5ee7398af1fac9a082e510e33ccfd27ad5865cf8d3f9e46d"
     ),
     "configs/semantic_rails/tpch_sf1_showcase": (
-        "sha256:1411788e25b3b8136edf871151cfac1ad903bbd9d1096f7b9434db38d07ed5a1"
+        "sha256:01d3f52c240e4a19b21229f2d248a39f36af5d1721f207d8bb131b58d67f96e9"
     ),
     "comparisons/semantic_layers/semantic_rails/package": (
-        "sha256:4580d1a69a70b25078c207bc3aad9ec478730725a4e300dd72a23a23ec266478"
+        "sha256:1a5d94abd3a0f8af654bb4cf3ac84b8dd8170810b83f826b57a9d890b5beb450"
     ),
     "tests/integration/correctness/shop": (
-        "sha256:e0efc0e78506590c1fa56ae062541ad26cc07b2ce17120520c2928534aa88e42"
+        "sha256:8e6b8a0d9e0cc8b9bf0dcef16c55705f953fe3b2c5503d98b291a5fe18a059b8"
     ),
     "configs/examples/semantic_rails_package_starter.yml": (
-        "sha256:200c1a2cb8f72112f9a6453d501724c89a06061f3f0eafbf9def0c3f9a805290"
+        "sha256:481652e9ddd60ced3dd89a335d3128a7c65249383b81adb4037839ab747af341"
     ),
 }
 
