@@ -1676,15 +1676,6 @@ def _lower_agent_dag_to_sql(
     if guard_empty:
         refuse_unsettled(projected, plan, config, combined=True)
 
-    def _final_order_field(field: str) -> str:
-        if field == "time":
-            if not plan.time:
-                raise SemanticLayerError(
-                    "INVALID_ORDER_BY", "'time' order_by requires a query time axis"
-                )
-            return key_aliases[-1]
-        return field
-
     return SqlSelect(
         ctes=[SqlCte(name=final_source, query=projected)],
         select=[
@@ -1695,22 +1686,37 @@ def _lower_agent_dag_to_sql(
             ],
         ],
         from_table=SqlTableRef(name=final_source),
-        order_by=[
-            SqlOrder(
-                SqlIdentifier(
-                    parts=[
-                        final_source,
-                        _final_order_field(
-                            str(expression_field(item, "field", expression_position="order_by"))
-                        ),
-                    ]
-                ),
-                str(item.get("direction", "ASC")) if isinstance(item, dict) else "ASC",
-            )
-            for item in list(plan.query.get("order_by", []) or [])
-        ],
+        order_by=_requested_order(plan, final_source),
         limit=plan.query.get("limit"),
     )
+
+
+def _requested_order(plan: LogicalPlan, source: str) -> list[SqlOrder]:
+    """The query's requested order_by terms over ``source``'s output columns.
+
+    Every requested term sorts NULLs last in both directions on every backend, rather
+    than by the backend's default, which puts NULLs first under DESC on Postgres and
+    Snowflake and would rank a NULL value first in a limited ranking.
+    """
+
+    def _field(item: Any) -> str:
+        field = str(expression_field(item, "field", expression_position="order_by"))
+        if field != "time":
+            return field
+        if not plan.time:
+            raise SemanticLayerError(
+                "INVALID_ORDER_BY", "'time' order_by requires a query time axis"
+            )
+        return _query_key_aliases(plan)[-1]
+
+    return [
+        SqlOrder(
+            SqlIdentifier(parts=[source, _field(item)]),
+            str(item.get("direction", "ASC")) if isinstance(item, dict) else "ASC",
+            nulls_last=True,
+        )
+        for item in list(plan.query.get("order_by", []) or [])
+    ]
 
 
 def _and_conditions(conditions: list[Any]) -> Any:
@@ -3799,30 +3805,7 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     ]
     final_fields.append(SqlField(ratio_expr, anchored.output_alias))
     group_by: list[SqlExpr] = [SqlIdentifier(parts=["anchor", alias]) for alias in key_aliases]
-
-    def _final_order_field(field: str) -> str:
-        if field == "time":
-            if not plan.time:
-                raise SemanticLayerError(
-                    "INVALID_ORDER_BY", "'time' order_by requires a query time axis"
-                )
-            return key_aliases[-1]
-        return field
-
-    order_by = [
-        SqlOrder(
-            SqlIdentifier(
-                parts=[
-                    "anchor",
-                    _final_order_field(
-                        str(expression_field(item, "field", expression_position="order_by"))
-                    ),
-                ]
-            ),
-            str(item.get("direction", "ASC")) if isinstance(item, dict) else "ASC",
-        )
-        for item in list(plan.query.get("order_by", []) or [])
-    ]
+    order_by = _requested_order(plan, "anchor")
     ctes: list[SqlCte] = []
     for predicate_set in predicate_sets:
         ctes.extend(predicate_set.ctes)
@@ -5662,6 +5645,12 @@ def lower_to_sql(
             "EMPTY_GROUPS_UNSETTLED", "A coverage-dependent plan must read the base relation."
         )
     select = _lower_query_to_sql(plan, config, guard_empty)
+    if plan.query.get("order_by") and not all(term.nulls_last for term in select.order_by):
+        # Requested terms come only from _requested_order; a lowering that built its own
+        # would leave NULL placement to the backend's default.
+        raise SemanticLayerError(
+            "INVALID_ORDER_BY", "Every requested order_by term must sort NULLs last."
+        )
     if plan.time.get("window_total"):
         # One total over the window: the constant time key isn't a column.
         time_alias = _time_alias_for_plan(plan)
@@ -6025,29 +6014,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 build_filter_condition(projected_ref, op, value, path="metric_filters")
             )
 
-    def _final_order_field(field: str) -> str:
-        if field == "time":
-            if not plan.time:
-                raise SemanticLayerError(
-                    "INVALID_ORDER_BY", "'time' order_by requires a query time axis"
-                )
-            return key_aliases[-1]
-        return field
-
-    order_by = [
-        SqlOrder(
-            SqlIdentifier(
-                parts=[
-                    "projected",
-                    _final_order_field(
-                        str(expression_field(item, "field", expression_position="order_by"))
-                    ),
-                ]
-            ),
-            str(item.get("direction", "ASC")) if isinstance(item, dict) else "ASC",
-        )
-        for item in list(plan.query.get("order_by", []) or [])
-    ]
+    order_by = _requested_order(plan, "projected")
     if plan.time.get("window_total"):
         # A single row per group has no time order.
         order_by = [
@@ -6081,6 +6048,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 and item.expression.parts[0] == "projected"
                 else item.expression,
                 item.direction,
+                nulls_last=item.nulls_last,
             )
             for item in order_by
         ]

@@ -23,7 +23,7 @@ def limit_order(query: SqlSelect) -> tuple[SqlSelect, tuple[str, ...]]:
             and len(expression.whens) == 1
             and isinstance(expression.whens[0].condition, SqlIsNull)
             and expression
-            == SqlCase([SqlCaseWhen(expression.whens[0].condition, SqlLiteral(0))], SqlLiteral(1))
+            == SqlCase([SqlCaseWhen(expression.whens[0].condition, SqlLiteral(1))], SqlLiteral(0))
         ):
             expression = expression.whens[0].condition.expr
         matches = [

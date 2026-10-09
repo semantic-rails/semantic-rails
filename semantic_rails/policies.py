@@ -398,8 +398,9 @@ def withheld_rank_order(
 ) -> BoundQuery:
     """Bind missing tie keys and give each withheld order key a portable NULL indicator.
 
-    Only the accepted rank gets this SQL order. The indicators follow the rank direction,
-    so NULLs sort first on ASC and last on DESC, including in nullable tie keys.
+    Only the accepted rank gets this SQL order. Each indicator reads 1 for NULL and 0
+    otherwise and always sorts ascending, so NULLs sort last in both directions,
+    including in nullable tie keys, like every requested order_by term.
     """
     require_base(config)
     query = binding.plan.query
@@ -446,8 +447,8 @@ def withheld_rank_order(
         sql_order.extend(
             [
                 SqlOrder(
-                    SqlCase([SqlCaseWhen(SqlIsNull(expression), SqlLiteral(0))], SqlLiteral(1)),
-                    term.direction,
+                    SqlCase([SqlCaseWhen(SqlIsNull(expression), SqlLiteral(1))], SqlLiteral(0)),
+                    "ASC",
                 ),
                 term,
             ]
