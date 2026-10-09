@@ -163,6 +163,7 @@ from .expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     expr_kind,
     expr_to_dict,
     is_constant_expression,
@@ -555,6 +556,18 @@ def _validate_non_additive_sums(
             if recipe is not None:
                 validate_window(recipe.expression)
             return
+        if isinstance(expr, ShareExpr) and (
+            len(_summing_window_parts(expr.input, config, construct="share")) != 1
+        ):
+            raise SemanticLayerError(
+                "ROLLUP_UNSAFE",
+                "A share's input must add up across the rows it shares; a ratio does not. "
+                "Share its numerator, or ask for the ratio by group.",
+                details={
+                    "unsupported_construct": "non_additive_window_input",
+                    "construct": "share",
+                },
+            )
         window = _as_offset_window_expr(expr)
         if window is not None and window.aggregate == "sum":
             _summing_window_parts(window.input, config, construct=window.kind)
@@ -5306,14 +5319,14 @@ def compile_query(
 
     sql_ast, limit_order_keys = limit_order(bound.sql_ast, _tie_breakers(plan))
     outputs = {field.alias for field in sql_ast.select}
-    from .compiler_parts.sql_lowering import override_row_counts
+    from .compiler_parts.sql_lowering import override_row_counts, share_group_counts
 
-    # The hidden columns the runtime reads and removes: each re-aggregated measure's row count.
-    override_rows = {
-        alias: column
-        for alias, column in override_row_counts(plan, config).items()
-        if column in outputs
-    }
+    # The hidden columns the runtime reads and removes: each re-aggregated measure's row count,
+    # and the rows each share's total spans.
+    override_rows, share_groups = (
+        {alias: column for alias, column in names.items() if column in outputs}
+        for names in (override_row_counts(plan, config), share_group_counts(plan, config))
+    )
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,
@@ -5384,6 +5397,7 @@ def compile_query(
         "limit_probe": limit_probe,
         "limit_order_keys": limit_order_keys,
         "override_rows": override_rows,
+        "share_groups": share_groups,
         "explain": explain,
         "physical_plan": physical_plan,
         "performance_plan": performance_plan,

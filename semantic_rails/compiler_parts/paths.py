@@ -29,6 +29,7 @@ from ..expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     expr_kind,
 )
 from ..fanout import (
@@ -271,6 +272,7 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
             PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
+            ShareExpr,
         ),
     ):
         return _expression_root_entity(expr.input, config)

@@ -89,3 +89,109 @@ def test_an_aggregation_the_measure_does_not_allow_is_refused_at_its_path(duckdb
     assert hint["message"] == (
         "Use one of ['count_distinct'], or omit aggregation for the default (count_distinct)."
     )
+
+
+STORE = "dimension.shop_order_store_id"
+ORDER_TIME = "temporal_role.shop_order_ordered_at"
+
+
+def _share(input_id, over, alias="share"):
+    return {"expression": {"kind": "share", "input": input_id, "over": over}, "as": alias}
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_a_share_states_its_denominator_and_unit(request, backend):
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    spec = ENTRIES["shop/store-share-of-orders-is-a-fraction-of-the-kept-total"]
+    [[stores]] = source.reference("SELECT COUNT(DISTINCT COALESCE(store_id, '-')) FROM orders")
+    result = runtime.query(spec["query"])
+    assert result["assumptions"] == [
+        {
+            "code": "SHARE_OF_TOTAL",
+            "column": "order_share",
+            "input": "measure.shop.order_count",
+            "over": [STORE],
+            "unit": "fraction",
+            "rows": stores,
+        }
+    ]
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_a_share_over_period_is_taken_within_each_store(request, backend):
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    call = {
+        "select": ["measure.shop.revenue", _share("measure.shop.revenue", ["period"])],
+        "group_by": [STORE],
+        "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
+    }
+    reference = source.reference(
+        "SELECT store_id, date_trunc('quarter', ordered_at) AS period, SUM(amount) AS revenue, "
+        "SUM(amount) / CAST(SUM(SUM(amount)) OVER (PARTITION BY store_id) AS DOUBLE PRECISION) "
+        "FROM orders GROUP BY 1, 2 ORDER BY 1 NULLS LAST, 2"
+    )
+    result = runtime.query({**call, "order_by": [{"field": STORE}, {"field": "period"}]})
+    rows = [(row[STORE], row["period"], row["share"]) for row in result["rows"]]
+    assert [(store, share) for store, _, share in rows] == [
+        (store, None if share is None else pytest.approx(float(share), abs=1e-12))
+        for store, _, _, share in reference
+    ]
+    by_store: dict = {}
+    for store, _, share in rows:
+        by_store[store] = by_store.get(store, 0) + (share or 0)
+    assert all(total == pytest.approx(1) for total in by_store.values())
+
+
+def test_a_share_is_taken_before_limit_and_filtered_by_having_after(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    spec = ENTRIES["shop/store-share-of-orders-is-a-fraction-of-the-kept-total"]
+    call = {
+        **spec["query"],
+        "having": [{"field": "order_share", "op": "lt", "value": 0.5}],
+        "order_by": [{"field": "order_share", "direction": "desc"}],
+        "limit": 1,
+    }
+    result = runtime.query(call)
+    assert [(row[STORE], row["order_share"]) for row in result["rows"]] == [
+        ("b", pytest.approx(4 / 11))
+    ]
+
+
+def test_a_share_of_a_zero_or_unknown_total_is_null(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    # Store b's store-a amount is 0, so its total is 0; no refund has a tax amount.
+    zero = {
+        "select": [_share("measure.shop.store_a_amount", [STORE])],
+        "group_by": [STORE],
+        "where": [{"field": STORE, "op": "is", "value": "b"}],
+    }
+    unknown = {"select": [_share("measure.shop.tax_refunded", [STORE])], "group_by": [STORE]}
+    for call in (zero, unknown):
+        assert {row["share"] for row in runtime.query(call)["rows"]} == {None}
+
+
+@pytest.mark.parametrize(
+    ("input_id", "over", "code", "path"),
+    [
+        ("measure.shop.average_order", [STORE], "ROLLUP_UNSAFE", None),
+        ("metric.shop.average_order_value", [STORE], "ROLLUP_UNSAFE", None),
+        ("measure.shop.order_count", ["period"], "INVALID_QUERY", "select[0].expression.over[0]"),
+        (
+            "measure.shop.order_count",
+            ["dimension.shop_customer_channel"],
+            "INVALID_QUERY",
+            "select[0].expression.over[0]",
+        ),
+    ],
+)
+def test_a_share_needs_an_additive_input_over_its_own_columns(
+    duckdb_backend, input_id, over, code, path
+):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {"select": [_share(input_id, over)], "group_by": [STORE]}
+    [error] = runtime.validate(call)["errors"]
+    assert error["code"] == code
+    if path:
+        assert error["details"]["path"] == path

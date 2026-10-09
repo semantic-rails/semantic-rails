@@ -19,7 +19,10 @@ from ..schema import PackageConfig, base_of
 
 def hidden_columns(compiled: dict[str, Any]) -> list[str]:
     """The columns the SQL carries for the answer's assumptions, never for its rows."""
-    return list(dict(compiled.get("override_rows") or {}).values())
+    return [
+        *dict(compiled.get("override_rows") or {}).values(),
+        *dict(compiled.get("share_groups") or {}).values(),
+    ]
 
 
 def split_hidden(
@@ -124,6 +127,33 @@ def governed_metric_exists(config: PackageConfig, compiled: dict[str, Any]) -> l
     ]
 
 
+def share_of_total(
+    compiled: dict[str, Any], hidden: dict[str, list[Any]] | None = None
+) -> list[dict[str, Any]]:
+    """``SHARE_OF_TOTAL`` for each share column: a fraction of its input's total over the
+    ``over`` columns, among the rows the query keeps, and how many rows that total spans when
+    every returned row's total spans the same number."""
+    columns = dict(compiled.get("share_groups") or {})
+    out: list[dict[str, Any]] = []
+    for row in compiled["logical_plan"].query.get("select") or []:
+        expression = row.get("expression") or {}
+        if expression.get("kind") != "share":
+            continue
+        source = expression.get("input") or {}
+        entry: dict[str, Any] = {
+            "code": "SHARE_OF_TOTAL",
+            "column": row.get("as"),
+            "input": source.get("measure") or source.get("metric"),
+            "over": list(expression.get("over") or []),
+            "unit": "fraction",
+        }
+        spans = set((hidden or {}).get(columns.get(row.get("as"), ""), []))
+        if len(spans) == 1:
+            entry["rows"] = int(spans.pop())
+        out.append(entry)
+    return out
+
+
 def call_assumptions(
     config: PackageConfig, compiled: dict[str, Any], hidden: dict[str, list[Any]] | None = None
 ) -> list[dict[str, Any]]:
@@ -131,4 +161,5 @@ def call_assumptions(
     return [
         *aggregation_override(config, compiled, hidden),
         *governed_metric_exists(config, compiled),
+        *share_of_total(compiled, hidden),
     ]

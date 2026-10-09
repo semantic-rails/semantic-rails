@@ -119,3 +119,31 @@ def test_a_governor_hidden_from_the_caller_withholds_the_raw_number(
     # A caller who sees every governor gets the number and the names.
     seen = runtime.query({"select": [ORDERS]}, context={"audience": "internal"})
     assert [entry["metric"] for entry in seen["assumptions"]] == GOVERNORS
+
+
+def test_brooklyns_share_of_revenue_matches_reference_sql(runtime: Runtime) -> None:
+    share = {"kind": "share", "input": REVENUE, "over": [STORE]}
+    result = runtime.query(
+        {"select": [REVENUE, {"expression": share, "as": "store_share"}], "group_by": [STORE]}
+    )
+    reference = runtime._get_adapter().query(
+        "SELECT s.store_name AS store, SUM(o.order_total_cents / 100.0) "
+        "/ SUM(SUM(o.order_total_cents / 100.0)) OVER () AS share "
+        "FROM jaffle_order o LEFT JOIN jaffle_store s ON o.store_id = s.store_id GROUP BY 1"
+    )
+    assert {row[STORE]: row["store_share"] for row in result["rows"]} == {
+        row["store"]: pytest.approx(row["share"], rel=1e-12) for row in reference
+    }
+    assert {row[STORE]: round(row["store_share"], 4) for row in result["rows"]} == {
+        "Brooklyn": 0.3478,
+        "Philadelphia": 0.6522,
+    }
+    [stated] = [entry for entry in result["assumptions"] if entry["code"] == "SHARE_OF_TOTAL"]
+    assert stated == {
+        "code": "SHARE_OF_TOTAL",
+        "column": "store_share",
+        "input": REVENUE,
+        "over": [STORE],
+        "unit": "fraction",
+        "rows": 2,
+    }

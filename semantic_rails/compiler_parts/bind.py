@@ -38,6 +38,7 @@ from ..expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     collect_column_refs,
     expr_to_dict,
     parse_semantic_expression,
@@ -847,7 +848,15 @@ def _collect_measure_refs(
             _collect_measure_refs(expr.else_expr, config, query, out)
         return
     if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
+        expr,
+        (
+            CumulativeExpr,
+            RollingExpr,
+            PriorPeriodExpr,
+            PeriodToDateExpr,
+            OffsetWindowExpr,
+            ShareExpr,
+        ),
     ):
         _collect_measure_refs(expr.input, config, query, out)
         return
@@ -911,6 +920,7 @@ def _collect_conversion_exprs(
             PeriodToDateExpr,
             MetricPredicateExpr,
             OffsetWindowExpr,
+            ShareExpr,
         ),
     ):
         _collect_conversion_exprs(expr.input, config, out)

@@ -46,6 +46,7 @@ from ..expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     collect_column_refs,
     expr_to_dict,
     expression_field,
@@ -173,7 +174,12 @@ from .paths import (
     inner_lookups,
     rollup_held_lookups,
 )
-from .post_aggregation import _compile_post_expr, _expr_requires_dense_series, _namespace_sql_select
+from .post_aggregation import (
+    _compile_post_expr,
+    _expr_requires_dense_series,
+    _namespace_sql_select,
+    share_partition,
+)
 from .predicate import (
     _all_metric_predicates,
     _predicate_ctes_and_join,
@@ -986,7 +992,15 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
         return specs
 
     if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
+        expr,
+        (
+            CumulativeExpr,
+            RollingExpr,
+            PriorPeriodExpr,
+            PeriodToDateExpr,
+            OffsetWindowExpr,
+            ShareExpr,
+        ),
     ):
         return _expression_scan_specs(expr.input, config)
 
@@ -5047,6 +5061,22 @@ def override_row_counts(plan: LogicalPlan, config: PackageConfig) -> dict[str, s
     return {alias: names[alias] for alias in overridden if alias in names}
 
 
+def share_group_counts(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
+    """The column counting the rows each selected share's total spans, by output alias."""
+    taken = _names_in_use(plan, config)
+    taken |= {name.casefold() for name in _row_count_names(plan, taken).values()}
+    names: dict[str, str] = {}
+    for index, (alias, payload) in enumerate(plan.post_aggregation_exprs.items(), start=1):
+        if payload.get("kind") != "share":
+            continue
+        name, suffix = f"s{index}_groups", 2
+        while name.casefold() in taken:
+            name, suffix = f"s{index}_groups_{suffix}", suffix + 1
+        taken.add(name.casefold())
+        names[alias] = name
+    return names
+
+
 def _rows_fields(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[SqlField]:
     """Beside a sum's value: how many of the group's rows it read."""
     return [
@@ -5907,9 +5937,14 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         base_name = "series_base"
         base_table = SqlTableRef(name=base_name, alias="base")
 
-    # The row counts the answer states beside a re-aggregated measure: hidden columns the
-    # runtime reads and removes.
-    counted = [name for name in overrides.values() if name in rows.values()]
+    # What the answer states beside its rows, in hidden columns the runtime reads and removes:
+    # each re-aggregated measure's row count, and how many rows each share's total spans.
+    hidden = [
+        SqlField(SqlIdentifier(parts=["base", name]), name)
+        for name in overrides.values()
+        if name in rows.values()
+    ]
+    shares = share_group_counts(plan, config) if plan_is_root() else {}
     # The one place an empty group reads 0 instead of NULL: the projection below reads
     # every such measure through this CTE, so nothing after it can change what it sees.
     zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
@@ -5932,7 +5967,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 observed=observed,
                 observed_buckets=retained,
                 bucketed=bool(plan.time),
-                keep=counted,
+                keep=[field.alias for field in hidden],
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
@@ -5951,6 +5986,14 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 table_alias="base",
             )
         projected_fields.append(SqlField(compiled_output, alias))
+        if alias in shares:
+            share = _parse_public_expr(post_expr)
+            assert isinstance(share, ShareExpr)
+            spanned = SqlWindow(
+                function=SqlCall("COUNT", [SqlLiteral(1)]),
+                partition_by=share_partition(share, "base", group_aliases, time_alias),
+            )
+            hidden.append(SqlField(spanned, shares[alias]))
         # Only an output that follows the rule (a sum, count or difference of them): a
         # prior-period, ratio or window output is NULL for reasons other than no data.
         if zero and expr_resolves_to_zero(_parse_public_expr(post_expr), config):
@@ -6032,7 +6075,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             config,
             combined=False,
         )
-    projected_fields.extend(SqlField(SqlIdentifier(parts=["base", name]), name) for name in counted)
+    projected_fields.extend(hidden)
 
     if not final_where:
         # Inline the `projected` passthrough CTE directly into the final SELECT.
@@ -6073,7 +6116,11 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
 
     final_fields = [
         SqlField(SqlIdentifier(parts=["projected", alias]), alias)
-        for alias in [*key_aliases, *plan.post_aggregation_exprs.keys(), *counted]
+        for alias in [
+            *key_aliases,
+            *plan.post_aggregation_exprs.keys(),
+            *(field.alias for field in hidden),
+        ]
     ]
 
     return _tier_internal_aliases(

@@ -202,6 +202,8 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
                 )
                 if source_measure is not None:
                     value_type = source_measure.value_type
+        if expr.get("kind") == "share":
+            value_type = "fraction"  # of its input's total, whatever the input's unit
         columns.append(
             {
                 "field": alias,

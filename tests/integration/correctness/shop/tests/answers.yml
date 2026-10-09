@@ -250,6 +250,25 @@ tests:
       SELECT store_id, MAX(amount) AS largest
       FROM orders
       GROUP BY store_id
+  shop/store-share-of-orders-is-a-fraction-of-the-kept-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each store's orders divided by the orders of every store the query keeps, the unknown store included; the shares add up to 1.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union]
+    query:
+      select:
+        - {expression: measure.shop.order_count, as: orders}
+        - {expression: {kind: share, input: measure.shop.order_count, over: [dimension.shop_order_store_id]}, as: order_share}
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: null, orders: 1, order_share: 0.09090909090909091}
+      - {dimension.shop_order_store_id: a, orders: 6, order_share: 0.5454545454545454}
+      - {dimension.shop_order_store_id: b, orders: 4, order_share: 0.36363636363636365}
+    reference_sql: |
+      SELECT store_id, COUNT(order_id) AS orders,
+        COUNT(order_id) / CAST(SUM(COUNT(order_id)) OVER () AS DOUBLE PRECISION) AS order_share
+      FROM orders
+      GROUP BY store_id
   shop/top-orders-by-revenue-rank-a-null-revenue-last:
     kind: query_matches_snapshot
     expect: answer

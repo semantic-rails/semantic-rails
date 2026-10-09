@@ -261,6 +261,7 @@ shorthands for the most common cases:
 | Rolling | `{ "kind": "rolling", "input": {...}, "window": {"unit": "day", "value": 28} }` |
 | Cumulative | `{ "kind": "cumulative", "input": {...} }` |
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
+| Share | `{ "kind": "share", "input": "measure.<id>", "over": ["dimension.<id>"] }` — see below. |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
 **Summing windows require values that add up across periods.** `rolling`, `cumulative`,
@@ -285,6 +286,15 @@ before SQL executes. Ask for a ratio of windowed additive parts, or query the me
 own aggregation without a summing window. This rule also applies through derived
 metrics, metric filters, and every execution transport. `prior_period` reads one
 period with `LAG` and keeps its existing input semantics.
+
+**A share is a fraction of a total.** `share` divides its input by the input's total over the
+`over` columns (each a `group_by` id, or `period` when `time` has a grain), within each
+combination of the other group columns, among the rows the query keeps (its `where`, `time`,
+entity filters and the caller's policies). The total is taken before `limit`; `having`
+filters after it. A zero or unknown total reads `NULL`. The input is one measure or metric id
+whose values add up, under the summing-window rule above. The answer's `assumptions` carries
+`SHARE_OF_TOTAL {column, input, over, unit: "fraction", rows}`, where `rows` is how many rows
+the total spans when every returned row's total spans the same number.
 
 These windows read periods before the ones they return, so a cut from below would drop rows
 they need. With a `prior_period`, `rolling`, `period_to_date` or `cumulative` window in `select`

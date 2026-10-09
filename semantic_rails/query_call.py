@@ -148,6 +148,7 @@ KIND_REQUIRED: dict[str, tuple[str, ...]] = {
     "metric_predicate": ("entity", "input", "op", "value", "over"),
     "aggregate_if": ("aggregation", "condition"),
     "ratio": ("numerator", "denominator"),
+    "share": ("input", "over"),
     "entity_value": ("entity", "input"),
     "distribution": ("function", "over"),
     "conversion": ("base", "converted", "entity", "window", "matching_mode"),
@@ -216,6 +217,10 @@ class CallContext:
     default_clock: Callable[[str], str] | None = None
     partial: bool = False
     notes: list[dict[str, Any]] = field(default_factory=list)
+    # The call's group_by ids (dimensions lifted from select join it) and whether its time
+    # has a grain: the columns a share may take its total over.
+    group_by: list[str] = field(default_factory=list)
+    timed: bool = False
 
 
 def read_call(
@@ -234,14 +239,19 @@ def read_call(
             fix=V2_POINTER,
             received=type(payload).__name__,
         )
-    context = CallContext(
-        config=config, now=parse_now(now), default_clock=default_clock, partial=partial
-    )
     _check_top_level(payload)
     group_by = _group_by(payload.get("group_by"))
     raw_time = payload.get("time")
     timed = isinstance(raw_time, Mapping) and bool(raw_time.get("grain"))
-    select = _select(payload.get("select"), group_by, context, timed=timed)
+    context = CallContext(
+        config=config,
+        now=parse_now(now),
+        default_clock=default_clock,
+        partial=partial,
+        group_by=group_by,
+        timed=timed,
+    )
+    select = _select(payload.get("select"), group_by, context)
     internal: dict[str, Any] = {"select": select, "group_by": group_by}
     where, entity_having = _where(payload.get("where"), context, payload)
     internal["where"] = where
@@ -332,9 +342,7 @@ def _reference(raw: str, path: str) -> dict[str, Any]:
     )
 
 
-def _select(
-    raw: Any, group_by: list[str], context: CallContext, *, timed: bool = False
-) -> list[dict[str, Any]]:
+def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[str, Any]]:
     if raw is None:
         return []
     if not isinstance(raw, list):
@@ -381,7 +389,7 @@ def _select(
         sources.append((path, item))
     for index, row in enumerate(out):
         row.setdefault("as", f"expr_{index + 1}")
-    _refuse_duplicate_columns(out, sources, group_by, timed)
+    _refuse_duplicate_columns(out, sources, group_by, context.timed)
     return out
 
 
@@ -462,6 +470,8 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
         )
     if not (kind == "prior_period" and "measure" in raw):
         _check_keys(raw, tuple(dict.fromkeys(("kind", *kinds[kind]))), path)
+    if kind == "share":
+        _check_share(raw, path, context)
     node: dict[str, Any] = {}
     for key, value in raw.items():
         child = f"{path}.{key}"
@@ -521,6 +531,36 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             for key, value in dict(node["filter"]).items()
         }
     return node
+
+
+def _check_share(raw: Mapping[str, Any], path: str, context: CallContext) -> None:
+    """A share reads a measure or metric id, and takes its total over group_by ids or period."""
+    columns = [*context.group_by, *([TIME_AXIS] if context.timed else [])]
+    if not isinstance(raw.get("input"), str) or not raw["input"].startswith(REFERENCE_PREFIXES):
+        raise refusal(
+            f"{path}.input",
+            "a share's input is a measure or metric id",
+            fix='Write "input": "measure.<id>" or "metric.<id>".',
+        )
+    over = raw.get("over")
+    if not isinstance(over, list) or not over:
+        raise refusal(
+            f"{path}.over",
+            "lists the columns the total is taken over",
+            fix=f'Write "over": {json.dumps(columns[:1] or [TIME_AXIS])}.',
+        )
+    for index, column in enumerate(over):
+        if column not in columns or column in over[:index]:
+            raise refusal(
+                f"{path}.over[{index}]",
+                f"'{column}' is not a group_by id or the period of this call, once each",
+                fix=(
+                    f"Use one of {columns}."
+                    if columns
+                    else "Add the dimension to group_by, or set time.grain to share over period."
+                ),
+                over_allowed=columns,
+            )
 
 
 def _check_aggregation(node: dict[str, Any], path: str, context: CallContext) -> None:

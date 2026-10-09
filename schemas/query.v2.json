@@ -510,6 +510,18 @@
               "then": {
                 "$ref": "#/$defs/Kind_semi_additive"
               }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "share"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_share"
+              }
             }
           ],
           "properties": {
@@ -542,7 +554,8 @@
                 "ratio",
                 "rolling",
                 "scoped_aggregate",
-                "semi_additive"
+                "semi_additive",
+                "share"
               ]
             }
           },
@@ -1194,6 +1207,31 @@
       "required": [
         "kind",
         "measure"
+      ],
+      "type": "object"
+    },
+    "Kind_share": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "pattern": "^(measure|metric)\\.",
+          "type": "string"
+        },
+        "kind": {
+          "const": "share"
+        },
+        "over": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "over"
       ],
       "type": "object"
     },

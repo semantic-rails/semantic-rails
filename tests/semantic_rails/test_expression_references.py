@@ -135,6 +135,8 @@ def _cases():
             example["period"] = "month"
         if kind == "metric_predicate":
             example.update({"op": ">", "value": 0})
+        if kind == "share":
+            example.update({"input": MEASURE, "over": [DIMENSION]})
         for key, spec in props.items():
             probes: list[tuple[Any, str, bool]] = []
             if kind == "aggregate_if" and key in {"condition", "value"}:
@@ -159,6 +161,11 @@ def _cases():
                 probes.append(({"kind": "measure", "measure": measure_id}, measure_id, True))
             elif kind == "conversion" and key == "entity":
                 probes.append(("entity.jaffle_customer", "entity.jaffle_customer", True))
+            elif kind == "share" and key == "input":
+                # A call names the id; the engine's form, which the walkers read, is a ref.
+                probes.append((deepcopy(REF), MEASURE, False))
+            elif kind == "share" and key == "over":
+                probes.append(([DIMENSION], DIMENSION, True))
             elif kind == "entity_value" and key == "where":
                 continue  # value predicates are scalar data, not dimension references
             elif kind == "distribution" and key == "over":
@@ -274,6 +281,8 @@ def _schema_query(case, nested=False):
             query["group_by"] = list(expression["partition_by"])
     if kind == "conversion" and expression.get("dimension_bindings"):
         query["group_by"] = list(expression["dimension_bindings"])
+    if kind == "share":
+        query["group_by"] = list(expression["over"])
     if kind == "entity_value":
         expression = {"kind": "distribution", "function": "avg", "over": expression}
     if kind == "metric_predicate":
