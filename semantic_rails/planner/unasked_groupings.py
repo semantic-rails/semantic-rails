@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -98,14 +99,12 @@ _PER_GROUPING_RE = re.compile(
 )
 
 
-def _asked_grouping_terms(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+def _asked_grouping_terms(config: Any, question: str, listed: Iterable[str] = ()) -> list[str]:
     """What the question asks to group by: each grouping it lists (``_listed_grouping_terms``),
     the noun a ranking ranks ("which 5 stores had the most orders"), the words after "per",
     "each" or "every" ("revenue per store"; "each plan" in "did each plan make", where a name
-    ends), and what a clause opening with "which" or "who" lists (``_listed_entity_terms``).
-    Windows are not part of any of them."""
-
-    from .answer_shape import _listed_entity_terms  # noqa: WPS433 - answer_shape imports this
+    ends), and ``listed``: what a clause opening with "which" or "who" lists
+    (``answer_shape._listed_entity_terms``). Windows are not part of any of them."""
 
     request = _ranking_request(question, _dimension_nouns(config))
     lowered = _without_windows(question)
@@ -118,7 +117,7 @@ def _asked_grouping_terms(config: Any, question: str, query: dict[str, Any]) -> 
         *_listed_grouping_terms(question, config),
         *([str(request["noun"])] if request else []),
         *each,
-        *_listed_entity_terms(config, question, query),
+        *listed,
     ]
 
 
@@ -127,12 +126,14 @@ def _unasked_grouping_why(
     question: str,
     query: dict[str, Any],
     partial_query: dict[str, Any] | None = None,
+    listed: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     """Every grouping the draft adds traces to the question, or the plan is not ready.
 
     A group_by dimension traces when a grouping the question asks for reads it
-    (``_asked_grouping_terms``, read as ``_dropped_grouping_why`` reads a listed one), when the
-    caller's ``partial_query`` group_by has it, when the draft's own ``=`` or ``IN`` filter
+    (``_asked_grouping_terms``, with ``listed``, what its "which" and "who" clauses list; read
+    as ``_dropped_grouping_why`` reads a listed one), when the caller's ``partial_query``
+    group_by has it, when the draft's own ``=`` or ``IN`` filter
     keeps only values of it the question names, or when it is the clock's own date dimension
     beside a day grain on that clock: it adds no row (a metric constraint may require it on a
     balance, ``snapshot.shape_snapshot``). The time block's grain traces when the
@@ -154,7 +155,7 @@ def _unasked_grouping_why(
     grain_traced = not splits or (
         _time_of(caller).get("grain") == grain or _names_grain(config, question, query, grain)
     )
-    terms = _asked_grouping_terms(config, question, query)
+    terms = _asked_grouping_terms(config, question, listed)
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
     # A dimension the draft filters to the values the question names splits the rows into
     # those values only; the filter-value check holds a filter that keeps any other.
