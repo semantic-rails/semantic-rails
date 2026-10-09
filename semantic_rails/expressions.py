@@ -1655,22 +1655,17 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
                     "INVALID_EXPRESSION_AST",
                     "Prior-period (shorthand) expressions require a 'grain' (e.g. year, quarter, month, week, day)",
                 )
-            aggregation = str(expr.get("aggregation", "sum")).strip() or "sum"
-            inner = AggregateExpr(
-                measure=measure_id,
-                aggregation=aggregation,
-                temporal_role="",
-                parameters={},
-                filter={},
-                window={},
-            )
-            return OffsetWindowExpr(
-                input=inner,
-                kind="prior_period",
-                aggregate="lag",
-                unit=unit,
-                value=abs(offset_int),
-            )
+            # Rewrite to the IR shape and parse that, so a shorthand without
+            # ``aggregation`` uses the measure's default exactly like
+            # ``input: {measure: <id>}`` does.
+            measure_input: dict[str, Any] = {"measure": measure_id}
+            if "aggregation" in expr:
+                measure_input["aggregation"] = expr["aggregation"]
+            expr = {
+                "kind": "prior_period",
+                "input": measure_input,
+                "offset": {"unit": unit, "value": abs(offset_int)},
+            }
         raw_offset = expr.get("offset", {}) or {}
         if not isinstance(raw_offset, dict):
             raise SemanticLayerError(

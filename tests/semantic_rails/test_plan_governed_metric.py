@@ -30,6 +30,7 @@ from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import discover_payload
 from semantic_rails.planner import faithfulness, plan_payload
+from semantic_rails.planner import plan as planner
 from semantic_rails.planner.patterns import metric_by_dimension_rollup
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -184,7 +185,7 @@ def test_a_draft_over_the_measure_is_held_naming_the_metric(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch, intent: str, forced: bool
 ) -> None:
     if forced:
-        monkeypatch.setattr(metric_by_dimension_rollup, "_governed_target", lambda *_: None)
+        monkeypatch.setattr(planner, "_governed_target", lambda *_: None)
     plan = _plan(runtime, intent)
     assert plan["status"] == "low_confidence"
     assert "ready_for" not in plan["next"]

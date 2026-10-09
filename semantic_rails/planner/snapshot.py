@@ -18,8 +18,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from ..expressions import AggregateExpr
-from ..naming import semantic_token as _semantic_token
-from ._base import _object_by_id, _said_name
+from ._base import _balance_body, _object_by_id, _said_name
 from .coverage import (
     _COMPARISON_PHRASE_RE,
     _COMPARISON_WORDS,
@@ -29,9 +28,7 @@ from .coverage import (
     _query_contains_prior_period,
     _time_block,
 )
-from .generators import _target_focus_text
 from .grouping_checks import _declared_name_spans
-from .patterns.metric_by_dimension_rollup import _governed_target
 from .time_checks import _multi_series_stocks, _stock_as_of_gaps, _window_days
 from .time_reference import time_timezone
 from .time_windows import _RANGE_END_UNITS, _time_window
@@ -107,8 +104,8 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
         if not isinstance(expression, dict) or set(expression) - _PLAIN_SELECT:
             return None
         recipe = recipes.get(str(expression.get("metric") or ""))
-        body = recipe.expression if recipe is not None else None
-        if recipe is not None and not (isinstance(body, AggregateExpr) and not body.window):
+        body = _balance_body(recipe) if recipe is not None else None
+        if recipe is not None and body is None:
             return None
         measure = measures.get(
             body.measure
@@ -289,32 +286,6 @@ def _day_dimension(config: Any, clock: str) -> str | None:
     return str(row.id) if row is not None and row.data_type == "date" else None
 
 
-def _governed(
-    config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None
-) -> dict[str, Any]:
-    """A building-block stock measure answers with its governed metric once read on the clock.
-
-    The rule ``metric_by_dimension_rollup`` applies when a draft's time is on the metric's clock;
-    a balance read now has that time block. A caller's select is never rewritten.
-    """
-
-    if "select" in (partial_query or {}):
-        return query
-    metric = _governed_target(config, _target_focus_text(question) or question, query)
-    if metric is None or metric.temporal_role != _time_block(query).get("temporal_role"):
-        return query
-    [item] = query["select"]
-    alias = _semantic_token(str(metric.id), fallback="value")
-    order_by = [
-        {**row, "field": alias}
-        if isinstance(row, dict) and row.get("field") == item.get("as")
-        else row
-        for row in query.get("order_by") or []
-    ]
-    swapped = {**query, "select": [{"as": alias, "expression": {"metric": metric.id}}]}
-    return {**swapped, "order_by": order_by} if order_by else swapped
-
-
 def _ask_why(ask: _Ask, query: dict[str, Any]) -> dict[str, Any]:
     """Why plan asks instead of drafting more than one read of a balance."""
 
@@ -405,7 +376,7 @@ def shape_snapshot(
         # Daily values over a stated window each read one day already.
         and not (expected.source == "window" and _time_block(query).get("grain") == "day")
     ):
-        shaped = _governed(config, question, {**query, "time": expected.time}, partial_query)
+        shaped = {**query, "time": expected.time}
     if required:
         added = set(required) - {day_dimension}
         if not per_day or added or _time_block(shaped).get("grain") != "day":
