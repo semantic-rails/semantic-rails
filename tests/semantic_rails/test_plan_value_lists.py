@@ -173,7 +173,7 @@ def test_multi_value_draft_executes_combined_values_per_group(runtime_factory) -
         (
             "revenue not Brooklyn by month",
             "low_confidence",
-            [{"field": STORE, "op": "=", "value": "Brooklyn"}],
+            [{"field": STORE, "op": "IS DISTINCT FROM", "value": "Brooklyn"}],
             [],
         ),
         (
@@ -205,7 +205,8 @@ def test_single_values_negation_and_distinct_dimensions_keep_their_behavior(
     assert query.get("group_by", []) == expected_groups
     if status == "low_confidence" and intent != "item revenue for food from Brooklyn by store":
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert "negation_reversed" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+        # The planner drafts the null-keeping exclusion, and every exclusion holds.
+        assert "negation_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])

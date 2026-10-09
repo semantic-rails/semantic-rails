@@ -32,6 +32,7 @@ from ..temporal_support import validate_temporal_support
 from ._base import _governed_target, _resolved, _semantic_token
 from .answer_shape import _answer_shape_why
 from .consumed_spans import unconsumed_terms
+from .examples import example_plan
 from .faithfulness import intent_faithfulness_why, intent_subject_why, named_subject_why
 from .generators import _target_focus_text, blocked_object_not_found, fallback_drafts
 from .grouping_checks import _dropped_grouping_why
@@ -177,6 +178,30 @@ def plan_payload(
     if detail_level not in {"query", "best", "full", "debug"}:
         detail_level = "best"
 
+    example, invalid_examples = example_plan(
+        runtime,
+        intent_str,
+        partial_query,
+        normalize=lambda text: _normalize_question(text, _apostrophe_names(catalog_config)),
+        planned_row=_planned_row,
+        detail=detail_level,
+    )
+
+    def finish(payload: dict[str, Any]) -> dict[str, Any]:
+        if invalid_examples:
+            payload.setdefault(
+                "why",
+                {
+                    "code": "PLAN_INVALID_EXAMPLE",
+                    "message": "An authored example failed validation; normal planning was used.",
+                },
+            )
+            payload["why"].setdefault("details", {})["invalid_examples"] = invalid_examples
+        return _query_detail_payload(payload) if detail_level == "query" else payload
+
+    if example is not None:
+        return _query_detail_payload(example) if detail_level == "query" else example
+
     if intent_str:
         classification = classify_question(intent_str)
         if classification.category != "data_query":
@@ -185,7 +210,7 @@ def plan_payload(
                 intent_ir=parse_intent(runtime, intent),
                 out_of_scope=scope_block_payload(intent_str, classification),
             )
-            return _query_detail_payload(payload) if detail_level == "query" else payload
+            return finish(payload)
         catalog_tokens = _catalog_token_index(
             catalog_config,
             search_index=(
@@ -202,7 +227,7 @@ def plan_payload(
                     intent_str, overlap_tokens=overlap, catalog_token_sample=sample
                 ),
             )
-            return _query_detail_payload(payload) if detail_level == "query" else payload
+            return finish(payload)
         grounded, _strong = _intent_passes_grounding_floor(
             intent_str,
             catalog_tokens,
@@ -217,7 +242,7 @@ def plan_payload(
                     intent_str, overlap_tokens=overlap, catalog_token_sample=sample
                 ),
             )
-            return _query_detail_payload(payload) if detail_level == "query" else payload
+            return finish(payload)
 
     collision_why = named_subject_why(runtime, intent_str, partial_query)
     if collision_why is not None:
@@ -230,7 +255,7 @@ def plan_payload(
             "why": collision_why,
             "next": {"action": "clarify"},
         }
-        return _query_detail_payload(payload) if detail_level == "query" else payload
+        return finish(payload)
 
     validate_temporal_support(runtime._config, partial_query or {})
     # compose and every fallback helper inherit the request's time reference.
@@ -281,7 +306,7 @@ def plan_payload(
             },
             "blocked": [blocked_object_not_found(intent_str)] if detail_level != "best" else [],
         }
-        return _query_detail_payload(payload) if detail_level == "query" else payload
+        return finish(payload)
 
     planned: list[dict[str, Any]] = []
     for draft, pattern in draft_rows:
@@ -562,7 +587,7 @@ def plan_payload(
                     else value
                     for key, value in gap["actual"].items()
                 }
-    return _query_detail_payload(payload) if detail_level == "query" else payload
+    return finish(payload)
 
 
 # ---------------------------------------------------------------------------

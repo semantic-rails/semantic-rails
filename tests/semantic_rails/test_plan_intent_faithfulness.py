@@ -31,9 +31,10 @@ def _gap_kinds(payload: dict) -> set[str]:
             "Revenue and order count by store last quarter",
             "multiple_subjects_unrealized",
         ),
+        # The draft drops Brooklyn, but not the other product types.
         (
             "Food or drink orders by store excluding Brooklyn",
-            "negation_reversed",
+            "filter_values_unrealized",
         ),
     ],
 )

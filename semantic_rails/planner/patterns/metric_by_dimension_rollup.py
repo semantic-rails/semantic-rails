@@ -265,7 +265,9 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
 
     if group_by:
         query["group_by"] = group_by
-    query = _normalize_value_filters(query, _matched_value_rows(runtime, query, text), text=text)
+    query = _normalize_value_filters(
+        query, _matched_value_rows(runtime, query, text), text=text, config=config
+    )
     if is_top:
         query["order_by"] = [{"field": select_alias, "direction": "DESC"}]
         query["limit"] = top_n

@@ -546,7 +546,14 @@ with `REWRITE_NOT_SUPPORTED`; select the distribution separately.
 
 Supported `op` values (all compile end-to-end):
 `=`, `!=`, `<`, `<=`, `>`, `>=`, `IN`, `NOT IN`, `LIKE`, `NOT LIKE`,
-`IS NULL`, `IS NOT NULL`.
+`IS NULL`, `IS NOT NULL`, `IS DISTINCT FROM`.
+
+`IS DISTINCT FROM` with a scalar excludes one value and keeps rows with no
+value: "signups excluding web" is `{"field": "dimension.shop_customer_channel",
+"op": "IS DISTINCT FROM", "value": "web"}`, which counts the signups with no
+channel. `!=` and `NOT IN` drop those rows too. A hand-written query with this
+filter runs; `plan` drafts an exclusion this way but holds every question that
+excludes values for now (see [Plan](MCP_INTERFACE.md#plan)).
 
 `value` rules:
 
@@ -1235,6 +1242,33 @@ filter never gets it either: its filters kept no row, which says nothing of the 
 data elsewhere. For a non-empty all-`NULL` output under `dataset`, a bounded read of the
 settlement's observation probes checks whether its measures have data elsewhere; unknown
 amounts alone do not trigger the warning. Under `query`, no extra read is needed.
+
+When the compiled empty-group guard has time coverage, an output that reads `NULL` in any
+returned bucket after its last bucket with data carries one `NO_DATA_YET` warning, even
+when earlier buckets have values. Its `details.outputs` names the affected output aliases;
+`details.measures` lists each affected measure as `{id, edge, edge_source}`. A series uses
+`edge_source: "last_bucket"`: for example, "No data yet after the week of 2026-09-07, the
+last week with data, so later weeks read NULL, not 0." This date names the bucket, not the
+raw last event day; moving an event within the same bucket leaves the warning unchanged.
+Series compare only the SQL-produced bucket keys from the same calendar and timezone,
+at their full precision. Day and coarser edges are dates; sub-day edges are full ISO
+timestamps. Incompatible adapter types retain existing warnings. An empty series with
+dated coverage makes no dated claim and keeps `EMPTY_RESULT_WINDOW` and other warnings.
+
+An empty window total whose visible data all precedes the window uses the resolved window
+start as its `edge`, with `edge_source: "before_window"`: "No data yet in this window: its
+data ends before 2026-09-21, the window start, so the total reads NULL, not 0." With no visible
+data the warning has `edge: null` and `edge_source: null` and names no date. A proven empty total beyond coverage
+gets `NO_DATA_YET` in place of `EMPTY_RESULT_WINDOW`; affected outputs do not also get
+`NO_DATA_IN_SCOPE`. Data only after the window, an unresolved window start, and other
+unproven edges retain the existing warnings.
+
+This disclosure re-executes only the guard's compiled coverage CTEs, under the same caller
+row filters and query limits, when an eligible output is `NULL` or a bounded answer is empty.
+It never changes the main query SQL, numbers, or row shape. If there is no coverage CTE or
+the coverage read fails, existing warnings remain unchanged. Resource grants expose the
+warning only when all measures it names are granted; a metric grant alone reveals no
+underlying measure IDs.
 
 ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
 unless the join yields NULLs, so every ClickHouse statement ends with
