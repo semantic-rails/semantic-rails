@@ -118,6 +118,20 @@ INSERT INTO order_fact VALUES
     )
 
 
+# The order count's metric, as its measure used to publish it.
+ORDERS_METRIC = {
+    "as": "metric.sales.orders",
+    "name": "sales.orders",
+    "label": "Orders",
+    "description": "Order count",
+    "kind": "aggregate",
+    "measure": "measure.demo.order_count",
+    "aggregation": "count_distinct",
+    "value_type": "number",
+    "temporal_role": "temporal_role.demo_order_time",
+}
+
+
 def _write_minimal_package(
     package_dir: Path,
     *,
@@ -139,7 +153,7 @@ def _write_minimal_package(
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -152,10 +166,8 @@ def _write_minimal_package(
     model_payload = {
         "model": {
             "id": "orders",
-            "entity": "order",
             "relation": "order_fact",
-            "grain": ["order_id"],
-            "keys": {"primary": ["order_id"]},
+            "entities": {"order": {}},
             "times": {
                 "ordered_at": {
                     "id": "temporal_role.demo_order_time",
@@ -169,14 +181,12 @@ def _write_minimal_package(
             },
             "measures": {
                 "order_count": {
-                    "id": "measure.demo.order_count",
+                    "as": "measure.demo.order_count",
                     "name": "sales.orders",
                     "label": "Orders",
                     "description": "Order count",
                     "kind": "entity_count",
                     "time": "ordered_at",
-                    "topics": ["orders"],
-                    "publish": {"id": "metric.sales.orders"},
                 },
                 **dict(extra_measures or {}),
             },
@@ -189,11 +199,7 @@ def _write_minimal_package(
     _write_yaml(package_dir / "models" / "orders.yml", model_payload)
     _write_yaml(
         package_dir / "metrics.yml",
-        {
-            "metrics": {
-                **dict(extra_metrics or {}),
-            }
-        },
+        {"metrics": {"orders": ORDERS_METRIC, **dict(extra_metrics or {})}},
     )
     _write_seed_sql(package_dir / "data" / "seed_example.sql")
 
@@ -206,7 +212,7 @@ def test_runtime_validation_probes_constrained_objects(tmp_path, target, constra
     _write_minimal_package(
         package_dir,
         extra_dimensions={
-            "kind": {"id": field, "column": "kind", "kind": "categorical"},
+            "kind": {"as": field, "column": "kind", "kind": "categorical"},
         },
     )
     (package_dir / "data" / "seed_example.sql").write_text(
@@ -283,8 +289,8 @@ def test_runtime_validation_does_not_repair_segment_constraints(tmp_path, constr
     _write_minimal_package(
         package_dir,
         extra_dimensions={
-            "kind": {"id": field, "column": "kind", "kind": "categorical"},
-            "order_key": {"id": key, "column": "order_id", "kind": "number"},
+            "kind": {"as": field, "column": "kind", "kind": "categorical"},
+            "order_key": {"as": key, "column": "order_id", "kind": "number"},
         },
     )
     (package_dir / "data" / "seed_example.sql").write_text(
@@ -335,10 +341,10 @@ def test_probe_combines_required_grouping_with_non_additive_grain(tmp_path):
     field = "dimension.demo_order_kind"
     _write_minimal_package(
         package_dir,
-        extra_dimensions={"kind": {"id": field, "column": "kind", "kind": "categorical"}},
+        extra_dimensions={"kind": {"as": field, "column": "kind", "kind": "categorical"}},
         extra_measures={
             "stored_value": {
-                "id": "measure.demo.stored_value",
+                "as": "measure.demo.stored_value",
                 "kind": "aggregate",
                 "expr": "order_id",
                 "additive": False,
@@ -380,7 +386,7 @@ def test_constrained_probe_preserves_denials_and_policy_scope(tmp_path, constrai
     _write_minimal_package(
         package_dir,
         extra_dimensions={
-            "order_key": {"id": field, "column": "order_id", "kind": "categorical"},
+            "order_key": {"as": field, "column": "order_id", "kind": "categorical"},
         },
     )
     policy = {
@@ -443,7 +449,7 @@ def test_duplicate_measure_warning_respects_constraint_identity(tmp_path, target
         package_dir,
         extra_measures={
             "constrained_orders": {
-                "id": "measure.demo.constrained_orders",
+                "as": "measure.demo.constrained_orders",
                 "kind": "entity_count",
                 "time": "ordered_at",
             }
@@ -466,15 +472,14 @@ def test_measure_aggregation_warning(tmp_path: Path):
         package_dir,
         extra_measures={
             "customer_distinct_bad": {
-                "id": "measure.demo.customer_distinct_bad",
+                "as": "measure.demo.customer_distinct_bad",
                 "name": "sales.bad_customer_distinct",
                 "label": "Bad customer distinct",
                 "description": "Badly authored customer distinct count",
+                "kind": "aggregate",
                 "expr": "order_id",
                 "aggregation": "count_distinct",
                 "time": "ordered_at",
-                "topics": ["customers"],
-                "publish": {"id": "metric.sales.bad_customer_distinct"},
             }
         },
     )
@@ -515,7 +520,7 @@ def _write_monolithic_package(path: Path, package_id: str) -> None:
     payload["graph"] = {
         "entities": {
             "order": {
-                "id": "entity.demo_order",
+                "as": "entity.demo_order",
                 "name": "demo.Order",
                 "label": "Order",
                 "key": ["order_id"],
@@ -526,10 +531,8 @@ def _write_monolithic_package(path: Path, package_id: str) -> None:
     payload["models"] = {
         "orders": {
             "id": "orders",
-            "entity": "order",
             "relation": "order_fact",
-            "grain": ["order_id"],
-            "keys": {"primary": ["order_id"]},
+            "entities": {"order": {}},
             "times": {
                 "ordered_at": {
                     "id": "temporal_role.demo_order_time",
@@ -542,19 +545,17 @@ def _write_monolithic_package(path: Path, package_id: str) -> None:
             },
             "measures": {
                 "order_count": {
-                    "id": "measure.demo.order_count",
+                    "as": "measure.demo.order_count",
                     "name": "sales.orders",
                     "label": "Orders",
                     "description": "Order count",
                     "kind": "entity_count",
                     "time": "ordered_at",
-                    "topics": ["orders"],
-                    "publish": {"id": "metric.sales.orders"},
                 }
             },
         }
     }
-    payload["metrics"] = {}
+    payload["metrics"] = {"orders": ORDERS_METRIC}
     _write_yaml(path, payload)
 
 
@@ -566,7 +567,7 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.tpch_order",
+                        "as": "entity.tpch_order",
                         "name": "tpch.Order",
                         "label": "Order",
                         "key": ["O_ORDERKEY"],
@@ -581,13 +582,11 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
                 "relation": "SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.ORDERS",
-                "grain": ["O_ORDERKEY"],
-                "keys": {"primary": ["O_ORDERKEY"]},
+                "entities": {"order": {}},
                 "dimensions": {
                     "order_priority": {
-                        "id": "dimension.tpch_order_priority",
+                        "as": "dimension.tpch_order_priority",
                         "name": "tpch.Order.priority",
                         "label": "Order priority",
                         "column": "O_ORDERPRIORITY",
@@ -606,25 +605,22 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
                 },
                 "measures": {
                     "order_count": {
-                        "id": "measure.tpch.order_count",
+                        "as": "measure.tpch.order_count",
                         "name": "sales.orders",
                         "label": "Orders",
                         "description": "Count of TPCH orders.",
                         "kind": "entity_count",
                         "entity_key": ["O_ORDERKEY"],
                         "time": "order_date",
-                        "topics": ["orders"],
-                        "publish": {"id": "metric.sales.orders"},
                     },
                     "revenue": {
-                        "id": "measure.tpch.revenue",
+                        "as": "measure.tpch.revenue",
                         "name": "sales.revenue",
                         "label": "Revenue",
                         "description": "TPCH order revenue.",
+                        "kind": "aggregate",
                         "expr": {"kind": "column", "column": "O_TOTALPRICE"},
                         "time": "order_date",
-                        "topics": ["revenue"],
-                        "publish": {"id": "metric.sales.revenue"},
                     },
                 },
             }
@@ -634,21 +630,44 @@ def _write_minimal_snowflake_package(package_dir: Path) -> None:
         package_dir / "metrics.yml",
         {
             "metrics": {
+                # The two metrics its measures used to publish.
+                "orders": {
+                    "as": "metric.sales.orders",
+                    "name": "sales.orders",
+                    "label": "Orders",
+                    "description": "Count of TPCH orders.",
+                    "kind": "aggregate",
+                    "measure": "measure.tpch.order_count",
+                    "aggregation": "count_distinct",
+                    "value_type": "number",
+                    "temporal_role": "temporal_role.tpch_order_date",
+                },
+                "revenue": {
+                    "as": "metric.sales.revenue",
+                    "name": "sales.revenue",
+                    "label": "Revenue",
+                    "description": "TPCH order revenue.",
+                    "kind": "aggregate",
+                    "measure": "measure.tpch.revenue",
+                    "aggregation": "sum",
+                    "value_type": "number",
+                    "temporal_role": "temporal_role.tpch_order_date",
+                },
                 "sales.average_order_value": {
                     "id": "metric.sales.average_order_value",
                     "name": "sales.average_order_value",
                     "label": "Average order value",
                     "description": "Revenue divided by orders.",
                     "kind": "derived",
+                    "value_type": "number",
                     "temporal_role": "temporal_role.tpch_order_date",
-                    "topics": ["revenue", "orders"],
                     "expression": {
                         "kind": "binary",
                         "op": "divide",
                         "left": {"kind": "metric", "metric": "metric.sales.revenue"},
                         "right": {"kind": "metric", "metric": "metric.sales.orders"},
                     },
-                }
+                },
             }
         },
     )
@@ -1153,24 +1172,22 @@ def test_validate_config_warns_on_semantic_collision(tmp_path: Path):
         package_dir,
         extra_measures={
             "revenue_a": {
-                "id": "measure.demo.revenue_a",
+                "as": "measure.demo.revenue_a",
                 "name": "sales.revenue_a",
                 "label": "Revenue",
                 "description": "Revenue computed via path A",
                 "kind": "aggregate",
                 "expr": "revenue_a",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
             "revenue_b": {
-                "id": "measure.demo.revenue_b",
+                "as": "measure.demo.revenue_b",
                 "name": "sales.revenue_b",
                 "label": "Revenue",
                 "description": "Revenue computed via path B",
                 "kind": "aggregate",
                 "expr": "revenue_b",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
         },
     )
@@ -1203,7 +1220,7 @@ def test_validate_config_warns_on_alias_vs_canonical_name_collision(tmp_path: Pa
         package_dir,
         extra_measures={
             "booked_revenue": {
-                "id": "measure.demo.booked_revenue",
+                "as": "measure.demo.booked_revenue",
                 "name": "finance.booked_revenue",
                 "label": "Booked revenue",
                 "synonyms": ["Sales Revenue"],
@@ -1211,17 +1228,15 @@ def test_validate_config_warns_on_alias_vs_canonical_name_collision(tmp_path: Pa
                 "kind": "aggregate",
                 "expr": "booked_revenue",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
             "recognized_revenue": {
-                "id": "measure.demo.recognized_revenue",
+                "as": "measure.demo.recognized_revenue",
                 "name": "sales.revenue",
                 "label": "Recognized revenue",
                 "description": "Revenue after recognition",
                 "kind": "aggregate",
                 "expr": "recognized_revenue",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
         },
     )
@@ -1245,24 +1260,22 @@ def test_validate_config_warns_on_single_edit_semantic_term_collision(tmp_path: 
         package_dir,
         extra_measures={
             "recurring_revenue": {
-                "id": "measure.demo.recurring_revenue",
+                "as": "measure.demo.recurring_revenue",
                 "name": "sales.recurring_revenue",
                 "label": "Recurring revenue",
                 "description": "Recurring revenue",
                 "kind": "aggregate",
                 "expr": "recurring_revenue",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
             "recurring_revenue_typo": {
-                "id": "measure.demo.recurring_revenue_typo",
+                "as": "measure.demo.recurring_revenue_typo",
                 "name": "sales.recurring_revenue_typo",
                 "label": "Recurring reveneu",
                 "description": "Recurring revenue from a second source",
                 "kind": "aggregate",
                 "expr": "recurring_revenue_typo",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
         },
     )
@@ -1284,24 +1297,22 @@ def test_validate_config_does_not_warn_on_qualified_semantic_siblings(tmp_path: 
         package_dir,
         extra_measures={
             "gross_revenue": {
-                "id": "measure.demo.gross_revenue",
+                "as": "measure.demo.gross_revenue",
                 "name": "finance.revenue",
                 "label": "Revenue (gross)",
                 "description": "Revenue before deductions",
                 "kind": "aggregate",
                 "expr": "gross_revenue",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
             "net_revenue": {
-                "id": "measure.demo.net_revenue",
+                "as": "measure.demo.net_revenue",
                 "name": "sales.revenue",
                 "label": "Revenue (net)",
                 "description": "Revenue after deductions",
                 "kind": "aggregate",
                 "expr": "net_revenue",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
         },
     )
@@ -1326,14 +1337,13 @@ def test_validate_config_no_collision_warning_when_labels_differ(tmp_path: Path)
         package_dir,
         extra_measures={
             "gross_revenue": {
-                "id": "measure.demo.gross_revenue",
+                "as": "measure.demo.gross_revenue",
                 "name": "sales.gross_revenue",
                 "label": "Gross revenue",
                 "description": "Top-line revenue before refunds",
                 "kind": "aggregate",
                 "expr": "gross_revenue",
                 "time": "ordered_at",
-                "topics": ["revenue"],
             },
         },
     )
@@ -1360,8 +1370,8 @@ def test_validate_config_generates_query_time_for_time_required_metrics(tmp_path
                 "label": "Cumulative orders",
                 "description": "Cumulative orders",
                 "kind": "cumulative",
+                "value_type": "number",
                 "temporal_role": "temporal_role.demo_order_time",
-                "topics": ["orders"],
                 "expression": {
                     "kind": "cumulative",
                     "input": {"kind": "metric", "metric": "metric.sales.orders"},
@@ -1401,7 +1411,7 @@ def test_validation_warns_on_a_filter_value_the_data_lacks(
         package_dir,
         extra_dimensions={
             "status": {
-                "id": "dimension.demo_order_status",
+                "as": "dimension.demo_order_status",
                 "column": "status",
                 "kind": "categorical",
             }
@@ -1411,6 +1421,7 @@ def test_validation_warns_on_a_filter_value_the_data_lacks(
                 "id": "metric.sales.completed_orders",
                 "label": "Completed orders",
                 "kind": "aggregate",
+                "value_type": "number",
                 "expression": {
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
@@ -1448,14 +1459,13 @@ def test_validate_config_continues_after_failures_and_reports_execution_errors(t
         package_dir,
         extra_measures={
             "broken_orders": {
-                "id": "measure.demo.broken_orders",
+                "as": "measure.demo.broken_orders",
                 "name": "sales.broken_orders",
                 "label": "Broken orders",
                 "description": "Broken orders",
                 "kind": "entity_count",
                 "expr": {"kind": "column", "column": "missing_order_id"},
                 "time": "ordered_at",
-                "topics": ["orders"],
                 "publish": False,
             }
         },
@@ -1466,8 +1476,8 @@ def test_validate_config_continues_after_failures_and_reports_execution_errors(t
                 "label": "Broken cumulative orders",
                 "description": "Broken cumulative orders",
                 "kind": "cumulative",
+                "value_type": "number",
                 "temporal_role": "temporal_role.missing",
-                "topics": ["orders"],
                 "expression": {
                     "kind": "cumulative",
                     "input": {"kind": "metric", "metric": "metric.sales.orders"},
@@ -1555,14 +1565,13 @@ def test_cli_validate_config_exits_nonzero_on_failure(
         package_dir,
         extra_measures={
             "broken_orders": {
-                "id": "measure.demo.broken_orders",
+                "as": "measure.demo.broken_orders",
                 "name": "sales.broken_orders",
                 "label": "Broken orders",
                 "description": "Broken orders",
                 "kind": "entity_count",
                 "expr": {"kind": "column", "column": "missing_order_id"},
                 "time": "ordered_at",
-                "topics": ["orders"],
                 "publish": False,
             }
         },
@@ -1654,11 +1663,17 @@ def test_key_roles_default_and_derive_relationship_cardinality(tmp_path: Path):
             "graph": {
                 "entities": {
                     "parent": {
-                        "id": "entity.demo_parent",
+                        "as": "entity.demo_parent",
                         "name": "demo.Parent",
+                        "key": {"columns": ["parent_id"], "role": "unique"},
                         "model": "parents",
                     },
-                    "child": {"id": "entity.demo_child", "name": "demo.Child", "model": "children"},
+                    "child": {
+                        "as": "entity.demo_child",
+                        "name": "demo.Child",
+                        "key": ["child_id"],
+                        "model": "children",
+                    },
                 }
             }
         },
@@ -1669,23 +1684,19 @@ def test_key_roles_default_and_derive_relationship_cardinality(tmp_path: Path):
             "models": {
                 "parents": {
                     "relation": "parent_dim",
-                    "keys": {"primary": {"columns": ["parent_id"], "role": "unique"}},
-                    "dimensions": {"parent_id": {"id": "dimension.demo_parent_id"}},
+                    "entities": {"parent": {}},
+                    "dimensions": {"parent_id": {"as": "dimension.demo_parent_id"}},
                 },
                 "children": {
                     "relation": "child_fact",
-                    "keys": {
-                        "primary": ["child_id"],
-                        "foreign": {"parent": {"columns": ["parent_id"], "role": "foreign"}},
-                    },
-                    "joins": {"parent": {"to": "parent"}},
+                    "entities": {"child": {}, "parent": {}},
                     "dimensions": {
-                        "child_id": {"id": "dimension.demo_child_id"},
-                        "parent_id": {"id": "dimension.demo_child_parent_id"},
+                        "child_id": {"as": "dimension.demo_child_id"},
+                        "parent_id": {"as": "dimension.demo_child_parent_id"},
                     },
                     "measures": {
                         "child_count": {
-                            "id": "measure.demo.child_count",
+                            "as": "measure.demo.child_count",
                             "kind": "entity_count",
                             "expr": {"kind": "column", "column": "child_id"},
                             "publish": False,
@@ -1767,8 +1778,8 @@ def test_docs_minimal_example_validates_when_copy_pasted(tmp_path: Path):
 
     Pre-fix: the example used `key: order_id` (scalar), authored `grain:`
     alongside `entities:`, omitted `model:` on graph entities, and shipped
-    a metric file that duplicated an auto-published metric. All four
-    failed validation under `schema_strict: true`.
+    a metric file that duplicated an auto-published metric. All four are
+    refused now.
 
     This test extracts every fenced ```yaml`` block from the "Minimal
     example" section by filename comment, drops them into a tmp package,
@@ -1855,7 +1866,7 @@ def test_parse_config_rejects_typo_in_times_kind(tmp_path: Path):
     assert any("date" in msg and "timestamp" in msg for msg in messages), messages
 
 
-def _write_strict_minimal_package(
+def _write_current_minimal_package(
     package_dir: Path,
     *,
     extra_metrics: dict | None = None,
@@ -1863,11 +1874,9 @@ def _write_strict_minimal_package(
     measure_overrides: dict | None = None,
     package_overrides: dict | None = None,
 ) -> None:
-    """Build a minimal strict-mode-compliant package, then optionally
-    inject violations. Use this as the baseline for strict-mode tests
-    so a single violation under test is the only failure surfaced."""
+    """Build a minimal package in the current authoring forms, then optionally
+    inject violations, so a single violation under test is the only failure surfaced."""
     pkg = _minimal_package_payload(package_dir.name)
-    pkg["package"]["schema_strict"] = True
     if package_overrides:
         pkg["package"].update(package_overrides)
     _write_yaml(package_dir / "package.yml", pkg)
@@ -1894,7 +1903,6 @@ def _write_strict_minimal_package(
         "entity_key": "order",
         "accumulation": {"kind": "event"},
         "value_type": "count",
-        "publish": False,  # author explicit metric below; avoids dup
     }
     if measure_overrides:
         measure_payload.update(measure_overrides)
@@ -1919,8 +1927,8 @@ def _write_strict_minimal_package(
         model_payload["model"]["dimensions"] = dict(extra_dimensions)
     _write_yaml(package_dir / "models" / "orders.yml", model_payload)
 
-    # Always author one valid metric. Tests that want to violate strict
-    # mode on metrics pass extra_metrics that overrides or adds new ones.
+    # Always author one valid metric. Tests that want an invalid metric
+    # pass extra_metrics that overrides or adds new ones.
     metrics = {
         "order_count_metric": {
             "label": "Order count",
@@ -1968,7 +1976,7 @@ def test_strict_rejects_metric_without_value_type(
 ):
     # Missing value_type must not silently default to "number" in strict mode.
     package_dir = tmp_path / package_name
-    _write_strict_minimal_package(package_dir, extra_metrics={metric_name: metric_spec})
+    _write_current_minimal_package(package_dir, extra_metrics={metric_name: metric_spec})
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
@@ -1982,7 +1990,7 @@ def test_strict_rejects_metric_without_value_type(
 def test_strict_accepts_metric_with_value_type(tmp_path: Path):
     """Baseline: a strict package with all metrics declaring value_type validates."""
     package_dir = tmp_path / "strict_ok"
-    _write_strict_minimal_package(package_dir)
+    _write_current_minimal_package(package_dir)
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
@@ -2010,7 +2018,7 @@ def test_strict_accepts_an_explicit_number_value_type(tmp_path: Path, kind: str)
             "left": {"kind": "metric", "metric": "order_count_metric"},
             "right": {"kind": "literal", "value": 2},
         }
-    _write_strict_minimal_package(package_dir, extra_metrics={"explicit_number": spec})
+    _write_current_minimal_package(package_dir, extra_metrics={"explicit_number": spec})
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
@@ -2021,7 +2029,7 @@ def test_strict_accepts_an_explicit_number_value_type(tmp_path: Path, kind: str)
 def test_strict_rejects_an_empty_value_type(tmp_path: Path, value_type):
     # The loader turns a null or empty value_type into the "number" default.
     package_dir = tmp_path / "strict_empty_vt"
-    _write_strict_minimal_package(
+    _write_current_minimal_package(
         package_dir,
         extra_metrics={
             "empty_vt": {
@@ -2080,13 +2088,12 @@ def test_strict_rejects_a_missing_value_type_in_every_layout(package_config_fact
     [("omitted", 1), (None, 1), ("", 1), ("number", 0)],
     ids=["omitted", "null", "empty", "number"],
 )
-def test_strict_single_file_package_requires_an_authored_value_type(
+def test_single_file_package_requires_an_authored_value_type(
     tmp_path: Path, value_type, expected_errors
 ):
     package_file = tmp_path / "monolithic.yml"
     _write_monolithic_package(package_file, "monolithic_demo")
     payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
-    payload["package"]["schema_strict"] = True
     spec = {
         "label": "Orders over orders",
         "description": "a ratio metric",
@@ -2106,19 +2113,14 @@ def test_strict_single_file_package_requires_an_authored_value_type(
         assert "metric 'orders_ratio': missing 'value_type:'" in errors[0]
 
 
-def _write_metric_shape_case(
-    tmp_path: Path, layout: str, strict: bool, shape: str, value_type
-) -> Path:
+def _write_metric_shape_case(tmp_path: Path, layout: str, shape: str, value_type) -> Path:
     if layout == "single_file":
         source = tmp_path / "monolithic.yml"
         _write_monolithic_package(source, "monolithic_demo")
     else:
-        source = tmp_path / "strict_shape"
-        _write_strict_minimal_package(source)
+        source = tmp_path / "shape"
+        _write_current_minimal_package(source)
     package_yml = source if source.is_file() else source / "package.yml"
-    package = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
-    package["package"]["schema_strict"] = strict
-    _write_yaml(package_yml, package)
 
     spec = {
         "label": "Orders ratio",
@@ -2154,14 +2156,13 @@ def _write_metric_shape_case(
 @pytest.mark.parametrize(
     "value_type", ["omitted", None, "", "number"], ids=["missing", "null", "empty", "number"]
 )
-@pytest.mark.parametrize("strict", [False, True], ids=["legacy", "strict"])
-def test_metric_value_type_shape_matrix(tmp_path, layout, shape, value_type, strict):
-    source = _write_metric_shape_case(tmp_path, layout, strict, shape, value_type)
+def test_metric_value_type_shape_matrix(tmp_path, layout, shape, value_type):
+    source = _write_metric_shape_case(tmp_path, layout, shape, value_type)
 
     errors = validate_runtime_package(source)
     report, config = parse_config_report(resolve_package_reference(path=str(source)))
 
-    if strict and value_type != "number":
+    if value_type != "number":
         assert any("metric 'orders_ratio': missing 'value_type:'" in error for error in errors)
         assert report["ok"] is False
         assert any(
@@ -2178,9 +2179,8 @@ def test_metric_value_type_shape_matrix(tmp_path, layout, shape, value_type, str
 @pytest.mark.parametrize(
     "value_type", ["omitted", None, "", "number"], ids=["missing", "null", "empty", "number"]
 )
-@pytest.mark.parametrize("strict", [False, True], ids=["legacy", "strict"])
-def test_pair_encoded_package_keeps_strict_metric_rule(tmp_path, value_type, strict):
-    source = _write_metric_shape_case(tmp_path, "single_file", strict, "mapping", value_type)
+def test_pair_encoded_package_keeps_the_metric_rule(tmp_path, value_type):
+    source = _write_metric_shape_case(tmp_path, "single_file", "mapping", value_type)
     raw = yaml.safe_load(source.read_text(encoding="utf-8"))
     raw["package"] = [[key, value] for key, value in raw["package"].items()]
     _write_yaml(source, raw)
@@ -2188,7 +2188,7 @@ def test_pair_encoded_package_keeps_strict_metric_rule(tmp_path, value_type, str
     errors = validate_runtime_package(source)
     report, config = parse_config_report(resolve_package_reference(path=str(source)))
 
-    if strict and value_type != "number":
+    if value_type != "number":
         assert any("metric 'orders_ratio': missing 'value_type:'" in error for error in errors)
         assert report["ok"] is False
         assert any(
@@ -2204,9 +2204,8 @@ def test_pair_encoded_package_keeps_strict_metric_rule(tmp_path, value_type, str
 
 @pytest.mark.parametrize("layout", ["single_file", "package_yml", "root_file", "metric_file"])
 @pytest.mark.parametrize("shape", ["invalid_block", "invalid_spec"])
-@pytest.mark.parametrize("strict", [False, True], ids=["legacy", "strict"])
-def test_invalid_metric_shapes_return_errors(tmp_path, layout, shape, strict):
-    source = _write_metric_shape_case(tmp_path, layout, strict, "mapping", "number")
+def test_invalid_metric_shapes_return_errors(tmp_path, layout, shape):
+    source = _write_metric_shape_case(tmp_path, layout, "mapping", "number")
     if layout == "single_file":
         target = source
     elif layout == "package_yml":
@@ -2230,7 +2229,7 @@ def test_invalid_metric_shapes_return_errors(tmp_path, layout, shape, strict):
 def test_strict_accepts_measure_rollup_semantics(tmp_path: Path):
     """Model variants rely on measure rollup semantics in strict packages."""
     package_dir = tmp_path / "strict_measure_rollup"
-    _write_strict_minimal_package(
+    _write_current_minimal_package(
         package_dir,
         measure_overrides={"rollup": "additive"},
     )
@@ -2246,7 +2245,7 @@ def test_strict_accepts_measure_rollup_semantics(tmp_path: Path):
         pytest.param(
             "strict_id_measure",
             {"measure_overrides": {"id": "measure.custom.explicit"}},
-            ["authors 'id:'"],
+            ["unknown key 'id'", "as:"],
             id="id_on_measure",
         ),
         pytest.param(
@@ -2280,7 +2279,7 @@ def test_strict_accepts_measure_rollup_semantics(tmp_path: Path):
                     }
                 }
             },
-            ["topics"],
+            ["unknown key 'topics'"],
             id="topics_on_dimension",
         ),
     ],
@@ -2289,7 +2288,7 @@ def test_strict_rejects_unsupported_authoring(
     tmp_path: Path, package_name, package_options, message_parts
 ):
     package_dir = tmp_path / package_name
-    _write_strict_minimal_package(package_dir, **package_options)
+    _write_current_minimal_package(package_dir, **package_options)
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
@@ -3126,7 +3125,7 @@ def test_strict_directory_checks_run_for_a_quoted_schema_version(
     }
     if value_type != "omitted":
         spec["value_type"] = value_type
-    _write_strict_minimal_package(package_dir, extra_metrics={"quoted_ratio": spec})
+    _write_current_minimal_package(package_dir, extra_metrics={"quoted_ratio": spec})
     _quote_schema_version(package_dir)
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
@@ -3139,7 +3138,7 @@ def test_strict_directory_checks_run_for_a_quoted_schema_version(
 
 def test_key_checks_run_for_a_quoted_schema_version(tmp_path: Path):
     package_dir = tmp_path / "strict_quoted_keys"
-    _write_strict_minimal_package(
+    _write_current_minimal_package(
         package_dir,
         extra_metrics={
             "typo": {

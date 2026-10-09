@@ -77,6 +77,7 @@ model:
     plan: {kind: categorical, domain: [basic, pro]}
   measures:
     recurring_balance:
+      kind: aggregate
       expr: mrr
       accumulation: {kind: stock, snapshot: end_of_period}
       publish: false
@@ -114,6 +115,7 @@ model:
     metrics["mrr"] = {
         "label": "MRR (USD)",
         "kind": "semi_additive",
+        "value_type": "number",
         "temporal_role": DAY_CLOCK,
         "expression": {
             "kind": "semi_additive",

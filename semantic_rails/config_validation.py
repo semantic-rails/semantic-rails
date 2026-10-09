@@ -536,7 +536,13 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
         if not list(measure.topics or []):
             add_error(errors, f"{prefix} must declare topics")
 
+    measure_metric_ids = {
+        f"metric.{(measure.name or measure.id.split('measure.', 1)[-1])}"
+        for measure in config.measures
+    }
     for recipe in config.metric_recipes:
+        if recipe.id in measure_metric_ids and recipe.kind in {"aggregate", "semi_additive"}:
+            continue
         prefix = f"{source_path}: curated metric {recipe.id}"
         if not str(recipe.description or "").strip():
             add_error(errors, f"{prefix} must declare a description")
@@ -926,7 +932,13 @@ def _compiled_package_warnings(
             measure.compatible_temporal_roles or []
         ):
             warnings.append(f"{prefix} should declare default_temporal_role explicitly")
+    measure_metric_ids = {
+        f"metric.{(measure.name or measure.id.split('measure.', 1)[-1])}"
+        for measure in config.measures
+    }
     for recipe in config.metric_recipes:
+        if recipe.id in measure_metric_ids and recipe.kind in {"aggregate", "semi_additive"}:
+            continue
         meta = dict(getattr(recipe, "meta", {}) or {})
         prefix = f"{source_path}: curated metric {recipe.id}"
         if not str(meta.get("owner_team", "") or "").strip():
