@@ -58,15 +58,19 @@ graph:
       # disallowed_names rejects any model that introduces a forbidden
       # alias for this entity — explicit anti-pattern guard.
       disallowed_names: [cust_id, custid]
+      model: customers
     order:
       label: Order
       key: order_id
+      model: orders
     order_item:
       label: Order item
       key: order_item_id
+      model: order_items
     product:
       label: Product
       key: product_id
+      model: products
 
   # Most relationships are inferred from each model's `entities:` block.
   # Author an explicit entry only for non-default rules (per-direction
@@ -77,7 +81,6 @@ models:
   # whichever entity's canonical key matches `model.grain`.
   customers:
     relation: shop_customer
-    grain: [customer_id]
     entities:
       customer: {}                          # primary
     times:
@@ -96,7 +99,6 @@ models:
 
   orders:
     relation: shop_order
-    grain: [order_id]
     entities:
       order: {}                             # primary
       customer: {}                          # FK — column = customer_id
@@ -140,7 +142,6 @@ models:
 
   order_items:
     relation: shop_order_item
-    grain: [order_item_id]
     entities:
       order_item: {}                        # primary
       order: {}                             # FK
@@ -164,7 +165,6 @@ models:
 
   products:
     relation: shop_product
-    grain: [product_id]
     entities:
       product: {}                           # primary
     dimensions:
