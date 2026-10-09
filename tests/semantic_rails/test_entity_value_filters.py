@@ -152,8 +152,8 @@ def test_valid_value_filter_matches_reference_sql(engine, tagged, dimension_filt
 
 
 def test_published_schema_closes_value_filter_items():
-    validator = Draft202012Validator(load_contract("query_ir.v1.json"))
-    valid = _query([{"kind": "value_filter", "op": ">", "value": 1}])
+    validator = Draft202012Validator(load_contract("query.v2.json"))
+    valid = _query([{"kind": "value_filter", "op": "gt", "value": 1}])
     validator.validate(valid)
     invalid = _query([FIELD_FILTER])
     assert list(validator.iter_errors(invalid))

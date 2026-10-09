@@ -54,23 +54,14 @@ MARCH = {"start": "2024-03-01", "end": "2024-04-01"}
 
 
 def _select(measure: str, alias: str, **query: Any) -> dict[str, Any]:
-    return {
-        "select": [{"expression": {"measure": f"measure.teams.{measure}"}, "as": alias}]
-    } | query
+    return {"select": [{"expression": f"measure.teams.{measure}", "as": alias}]} | query
 
 
 MEMBERS_BY_TIER = _select("member_count", "members", group_by=[TIER])
-PRO_MEMBERS = _select("member_count", "members", where=[{"field": TIER, "op": "=", "value": "pro"}])
+PRO = {"field": TIER, "op": "is", "value": "pro"}
+PRO_MEMBERS = _select("member_count", "members", where=[PRO])
 PRO_MEMBERS_GROUP = _select(
-    "member_count",
-    "members",
-    where=[
-        {
-            "child": MEMBER_EVENT,
-            "match": "any",
-            "where": [{"field": TIER, "op": "=", "value": "pro"}],
-        }
-    ],
+    "member_count", "members", where=[{"entity": MEMBER_EVENT, "any": [PRO]}]
 )
 VALID_PLAN = """
   LEFT JOIN team_billing_history h ON h.team_id = {team} AND h.valid_from <= {at}
@@ -233,7 +224,7 @@ def _pass_through(out: dict[str, Any]) -> dict[str, Any]:
 def test_a_route_through_another_tables_rows_says_what_it_counts(
     teams, query, reference, verbosity
 ):
-    out = teams.runtimes["base"].query({**query, "verbosity": verbosity})
+    out = teams.runtimes["base"].query(query, verbosity=verbosity)
     assert _values(out) == teams.reference(reference)  # pro 3 (Ann, Bo, Cy), free 2 (Ann, Ed)
     note = _pass_through(out)
     meaning = "the Team of any of the Member's Member events"
@@ -287,7 +278,7 @@ def test_the_pass_through_warning_shows_on_every_surface(teams):
 def test_minimal_answers_disclose_the_route_basis(teams, surface, variant):
     runtime = teams.runtimes[variant]
     out = (
-        runtime.query({**MEMBERS_BY_TIER, "verbosity": "minimal"})
+        runtime.query(MEMBERS_BY_TIER, verbosity="minimal")
         if surface == "runtime"
         else SemanticLayerMCPAdapter(runtime).call_tool(
             "execute", {"query": MEMBERS_BY_TIER, "mode": "run", "verbosity": "minimal"}
@@ -358,13 +349,13 @@ def test_the_key_fix_names_a_column_the_start_already_reads(teams):
         (
             "base",
             _select(
-                "team_count", "teams", where=[{"field": EVENT_KIND, "op": "=", "value": "post"}]
+                "team_count", "teams", where=[{"field": EVENT_KIND, "op": "is", "value": "post"}]
             ),
             "teams_with_posts",
         ),
         (
             "base",
-            _select("new_teams", "new", where=[{"field": EVENT_KIND, "op": "=", "value": "post"}]),
+            _select("new_teams", "new", where=[{"field": EVENT_KIND, "op": "is", "value": "post"}]),
             "signups_with_posts",
         ),
     ],
@@ -383,7 +374,7 @@ def test_the_key_fix_names_a_column_the_start_already_reads(teams):
 def test_a_declared_crossing_or_no_crossing_answers_without_the_warning(
     teams, variant, query, reference
 ):
-    out = teams.runtimes[variant].query({**query, "verbosity": "full"})
+    out = teams.runtimes[variant].query(query, verbosity="full")
     assert _values(out) == teams.reference(reference)
     assert not _codes(out, "ROUTE_PASS_THROUGH")
 
@@ -399,10 +390,8 @@ def test_an_authored_bridge_is_kept_on_the_entity_and_in_the_fingerprint(package
 
 
 def test_a_query_that_decides_the_route_gets_only_its_own_note(teams):
-    row = {"source_entity": MEMBER, "target_entity": TEAM, "relationship_path": THROUGH_EVENTS}
-    out = teams.runtimes["base"].query(
-        {**MEMBERS_BY_TIER, "route_decisions": [row], "verbosity": "full"}
-    )
+    route = {"from": MEMBER, "to": TEAM, "via": THROUGH_EVENTS}
+    out = teams.runtimes["base"].query({**MEMBERS_BY_TIER, "routes": [route]}, verbosity="full")
     assert _values(out) == teams.reference("members_by_tier")
     assert not _codes(out, "ROUTE_PASS_THROUGH")
     (note,) = _codes(out, "ROUTE_CHOSEN_BY_QUERY")
@@ -415,9 +404,7 @@ def test_a_caller_who_cannot_see_the_link_table_reads_nothing_naming_it(packages
     runtime = Runtime.from_config(hidden, source_path=str(packages["base"]))
     try:
         with pytest.raises(SemanticLayerError) as refused:
-            runtime.query(
-                {**MEMBERS_BY_TIER, "verbosity": "full", "policy_context": {"roles": ["support"]}}
-            )
+            runtime.query(MEMBERS_BY_TIER, verbosity="full", context={"roles": ["support"]})
     finally:
         runtime.close()
     text = json.dumps({"message": str(refused.value), "details": refused.value.details})
@@ -446,15 +433,9 @@ def test_a_withheld_rank_never_discloses_its_values_in_history_warnings(packages
     config = load_package_config(str(packages["base"]))
     policy = access_policy("withhold_values", "measure.teams.new_teams", config={"max_rank": 3})
     runtime = Runtime.from_config(with_policies(config, policy), source_path=str(packages["base"]))
-    query = _new_teams(
-        JANUARY,
-        order_by=[{"field": "new_teams", "direction": "DESC"}],
-        limit=3,
-        verbosity="minimal",
-        policy_context={"roles": ["support"]},
-    )
+    query = _new_teams(JANUARY, order_by=[{"field": "new_teams", "direction": "desc"}], limit=3)
     try:
-        out = runtime.query(query)
+        out = runtime.query(query, verbosity="minimal", context={"roles": ["support"]})
         assert out["rows"] == [{PLAN_NAME: None}]
         (warning,) = _history(out)
         assert warning["message"] == STATIC
@@ -467,7 +448,7 @@ def test_a_withheld_rank_never_discloses_its_values_in_history_warnings(packages
 def test_complete_redacted_rows_use_only_visible_outputs_for_history_totals(teams, packages):
     runtime = teams.runtimes["base"]
     query = _new_teams(JANUARY)
-    compiled = compile_query(runtime.config, None, query)
+    compiled = compile_query(runtime.config, None, runtime.engine_payload(query))
     # The complete-result diagnostic consumes the same rows the caller sees.
     visible_rows = [{PLAN_NAME: None}]
     warnings = runtime.validate(query)["warnings"]
@@ -483,11 +464,8 @@ def test_complete_redacted_rows_use_only_visible_outputs_for_history_totals(team
     try:
         with pytest.raises(SemanticLayerError) as refused:
             governed.query(
-                {
-                    **query,
-                    "order_by": [{"field": "new_teams", "direction": "DESC"}],
-                    "policy_context": {"roles": ["support"]},
-                }
+                {**query, "order_by": [{"field": "new_teams", "direction": "desc"}]},
+                context={"roles": ["support"]},
             )
         assert refused.value.code == "POLICY_DENIED"
         assert refused.value.details["reason"] == "withheld_rank_limit"
@@ -495,23 +473,19 @@ def test_complete_redacted_rows_use_only_visible_outputs_for_history_totals(team
         governed.close()
 
 
-@pytest.mark.parametrize("incomplete", ["limit", "metric_filter", "truncated"])
+@pytest.mark.parametrize("incomplete", ["limit", "having", "truncated"])
 def test_an_incomplete_empty_history_group_keeps_the_static_warning(teams, incomplete):
     from semantic_rails.db import QueryRows
 
     runtime = teams.runtimes["base"]
     extras = {
         "limit": {"limit": 3},
-        "metric_filter": {
-            "metric_filters": [
-                {"expression": {"measure": "measure.teams.new_teams"}, "op": ">", "value": 0}
-            ]
-        },
+        "having": {"having": [{"field": "new_teams", "op": "gt", "value": 0}]},
         "truncated": {},
     }[incomplete]
     query = _new_teams(JANUARY, **extras)
     if incomplete == "truncated":
-        compiled = compile_query(runtime.config, None, query)
+        compiled = compile_query(runtime.config, None, runtime.engine_payload(query))
         rows = QueryRows([{PLAN_NAME: None, "new_teams": 2}], truncated=True)
         out = {
             "warnings": _history_result_warnings(
@@ -542,20 +516,26 @@ def test_history_totals_are_not_summed_across_a_fanout_grouping(teams):
     assert "measures" not in warning["details"]
 
 
-@pytest.mark.parametrize("op", ["IS NULL", "=", "is null", " IS   NULL ", "IS", "is"])
-def test_a_null_accepting_history_filter_never_says_it_leaves_rows_out(teams, op):
+@pytest.mark.parametrize(
+    ("op", "value", "sql"),
+    [
+        ("missing", True, "p.plan_name IS NULL"),
+        ("not", "Builder", "(p.plan_name <> 'Builder' OR p.plan_name IS NULL)"),
+    ],
+)
+def test_a_null_accepting_history_filter_never_says_it_leaves_rows_out(teams, op, value, sql):
     runtime = teams.runtimes["base"]
     query = _select(
         "new_teams",
         "new_teams",
-        where=[{"field": PLAN_NAME, "op": op, "value": None}],
+        where=[{"field": PLAN_NAME, "op": op, "value": value}],
         time={"temporal_role": SIGNED_UP, **JANUARY},
     )
     out = runtime.query(query)
     reference = "SELECT COUNT(*) FROM team_signups s"
     reference += VALID_PLAN.format(team="s.team_id", at="s.signed_up_at")
     reference += " WHERE s.signed_up_at >= TIMESTAMP '2024-01-01'"
-    reference += " AND s.signed_up_at < TIMESTAMP '2024-02-01' AND p.plan_name IS NULL"
+    reference += f" AND s.signed_up_at < TIMESTAMP '2024-02-01' AND {sql}"
     assert _values(out) == _rows(runtime, reference) == [(2,)]
     for response in (out, runtime.validate(query), runtime.compile(query)):
         assert not _history(response)
@@ -568,8 +548,9 @@ def test_null_rejecting_history_filters_warn_once_per_dimension(teams):
         "new_teams",
         "new_teams",
         where=[
-            {"field": PLAN_NAME, "op": "!=", "value": "Enterprise"},
-            {"field": PLAN_NAME, "op": "NOT IN", "value": ["Legacy"]},
+            {"field": PLAN_NAME, "op": "not", "value": "Enterprise"},
+            {"field": PLAN_NAME, "op": "not", "value": ["Legacy"]},
+            {"field": PLAN_NAME, "op": "missing", "value": False},
         ],
         time={"temporal_role": SIGNED_UP, **MARCH},
     )
@@ -636,7 +617,7 @@ def test_a_filter_through_a_history_says_it_leaves_rows_out(teams):
     query = _select(
         "new_teams",
         "new_teams",
-        where=[{"field": PLAN_NAME, "op": "=", "value": "Builder"}],
+        where=[{"field": PLAN_NAME, "op": "is", "value": "Builder"}],
         time={"temporal_role": SIGNED_UP, **JANUARY},
     )
     out = runtime.query(query)

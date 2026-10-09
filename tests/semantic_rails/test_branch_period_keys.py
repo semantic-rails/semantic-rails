@@ -19,6 +19,7 @@ import pytest
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from tests.semantic_rails.test_implicit_calendar import (
     DISTRIBUTION,
@@ -69,7 +70,8 @@ def packages(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
 def _sql(package: Path, warehouse: str, query: dict[str, Any]) -> str:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    return str(compile_query(config, Registry(config), {"version": 1, **query})["sql"])
+    engine_query, _ = read_call(query, config=config)
+    return str(compile_query(config, Registry(config), engine_query)["sql"])
 
 
 def _run_postgres_sql(package: Path, query: dict[str, Any]) -> list[tuple[Any, ...]]:
@@ -135,10 +137,8 @@ def test_every_warehouse_joins_the_items_on_the_period_as_its_date_trunc_type(
             _sql(packages["authored"], warehouse, query)
         return
     sql = _sql(packages["authored"], warehouse, query)
-    # BigQuery renames the alias to temporal_role_cal_order_ordered_at__month_<hash>.
-    period = (
-        r"(CAST\()?(left_side|right_side)\.[`\"]?temporal_role[._]cal_order_ordered_at__month\w*"
-    )
+    # BigQuery renames the alias to period_<hash>.
+    period = r"(CAST\()?(left_side|right_side)\.[`\"]?period\w*"
     refs = re.findall(period + r"[`\"]?( AS (\w+)\))?", sql)
 
     # Two joins; each casts the period on both sides of its COALESCE and join condition.

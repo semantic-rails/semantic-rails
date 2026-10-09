@@ -1,4 +1,4 @@
-"""Window answers checked against independent SQL; unsupported calendars refuse."""
+"""Window answers checked against independent SQL; unsafe windows refuse."""
 
 import pytest
 
@@ -32,7 +32,7 @@ def test_average_order_window_matches_ratio_of_totals(
 ):
     backend = _backend(request, backend_name)
     inputs = {
-        "metric": {"metric": "metric.shop.average_order_value"},
+        "metric": "metric.shop.average_order_value",
         "ratio": {"kind": "ratio", "numerator": REVENUE, "denominator": ORDERS},
         "divide": {"kind": "arithmetic", "op": "divide", "left": REVENUE, "right": ORDERS},
     }
@@ -111,26 +111,6 @@ def test_rolling_additive_arithmetic_keeps_its_totals(request, backend_name, for
     """
     case = Case("rolling_flow", "utc_authored", query, reference)
     _assert_rows(backend.reference(reference), _answer(backend, case), case.name)
-
-
-@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize("clock", ["utc", "ny"])
-@pytest.mark.parametrize("grain", ["month", "quarter"])
-@pytest.mark.parametrize("period", ["year", "quarter"])
-def test_fiscal_period_to_date_refuses_before_sql(
-    request, backend_name, clock, grain, period, monkeypatch
-):
-    runtime = _backend(request, backend_name).runtimes[f"{clock}_authored"]
-    expression = {"kind": "period_to_date", "input": REVENUE, "period": period}
-    query = _ask(grain, _item(expression, "to_date"), calendar_id="fiscal", fill=True)
-    monkeypatch.setattr(runtime, "_get_adapter", lambda: pytest.fail("refuse before SQL"))
-    report = runtime.validate(query)
-    assert report["ok"] is False
-    assert report["errors"][0]["code"] == "REWRITE_NOT_SUPPORTED"
-    with pytest.raises(SemanticLayerError) as raised:
-        runtime.query(query)
-    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
-    assert raised.value.details["calendar_id"] == "fiscal"
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])

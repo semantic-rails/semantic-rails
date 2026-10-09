@@ -48,7 +48,7 @@ tests:
       select:
         - expression: {kind: unknown_kind}
           as: x
-    code: INVALID_EXPRESSION_AST
+    code: INVALID_QUERY
 
   prior_period_grain_mismatch_rejected:
     # `kind: prior_period` with a month-unit offset cannot be evaluated
@@ -103,29 +103,6 @@ tests:
         start: "2017-01-01"
         end: "2017-01-08"
     code: WINDOWED_TIME_FILTER_UNSUPPORTED
-
-  contextual_predicate_finer_than_query_grain_rejected:
-    kind: validate_fails_with_code
-    query:
-      select:
-        - expression: measure.jaffle.order_count
-          as: orders
-      time:
-        temporal_role: temporal_role.jaffle_order_time
-        grain: month
-      metric_filters:
-        - expression:
-            kind: metric_predicate
-            entity: entity.jaffle_customer
-            input:
-              measure: measure.jaffle.order_count
-            op: ">"
-            value: 10
-            scope_mode: contextual
-            time_grain: day
-          op: "="
-          value: true
-    code: PREDICATE_GRAIN_UNSAFE
 
   unknown_metric_id_rejected:
     kind: validate_fails_with_code
@@ -286,9 +263,8 @@ tests:
     code: INVALID_QUERY
 
   fiscal_calendar_on_gregorian_role_without_fill_rejected:
-    # Authored non-default calendars are refused in this release, with or
-    # without `fill: true`; Gregorian SQL under fiscal labels would be a
-    # silently wrong answer.
+    # A call cannot pick a calendar: `time.calendar_id` is refused, so
+    # Gregorian SQL never carries fiscal labels.
     kind: validate_fails_with_code
     query:
       select:
@@ -298,4 +274,4 @@ tests:
         temporal_role: temporal_role.jaffle_order_time
         grain: quarter
         calendar_id: fiscal
-    code: REWRITE_NOT_SUPPORTED
+    code: INVALID_QUERY

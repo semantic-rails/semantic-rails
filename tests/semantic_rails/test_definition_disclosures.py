@@ -57,7 +57,6 @@ def _agg(measure: str) -> dict[str, Any]:
 
 def _query(*selects: dict[str, Any], **extra: Any) -> dict[str, Any]:
     return {
-        "version": 1,
         "select": [{"expression": expr, "as": f"v{index}"} for index, expr in enumerate(selects)],
         "group_by": [CUSTOMER],
         **extra,
@@ -123,13 +122,7 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
             RATIO,
             time={"temporal_role": SESSION_TIME, "start": "2016-09-01", "end": "2016-10-01"},
         ),
-        _query(
-            RATIO,
-            time={"temporal_role": SESSION_TIME, "range": {"last": {"unit": "month", "value": 1}}},
-            policy_context={"now": "2016-10-01T00:00:00Z"},
-        ),
-        # A role alone groups by raw timestamp, not all of history.
-        _query(RATIO, time={"temporal_role": SESSION_TIME}),
+        _query(RATIO, time={"temporal_role": SESSION_TIME, "last": {"unit": "month", "value": 1}}),
         # With a time grain each row is one period, not all of history.
         _query(ORDERS, SESSIONS, time=SESSION_MONTHS),
         # Items and orders share the order's clock.
@@ -137,15 +130,14 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
         # One fact.
         _query(ORDERS, _agg("revenue_usd")),
         # A governed metric over two clocks, alone, is the package's own definition.
-        _query({"metric": ORDERS_PER_SESSION}),
+        _query(ORDERS_PER_SESSION),
         # Undated measures are not clocks, even beside a dated measure.
         _query(ORDERS, SESSIONS_IF),
         _query(SESSIONS_IF, ORDERS_IF),
     ],
     ids=[
         "window",
-        "range",
-        "role-only",
+        "last",
         "grain",
         "shared-role",
         "one-fact",
@@ -155,7 +147,7 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
     ],
 )
 def test_no_mixed_clock_warning(runtime, query):
-    assert _mixed(runtime.query(query)) == []
+    assert _mixed(runtime.query(query, now="2016-10-01T00:00:00Z")) == []
 
 
 @pytest.mark.parametrize(
@@ -191,7 +183,7 @@ def test_no_mixed_clock_warning(runtime, query):
         ),
         # A governed metric is one clock, with every role it combines.
         (
-            [{"metric": ORDERS_PER_SESSION}, _agg("delivered_orders")],
+            [ORDERS_PER_SESSION, _agg("delivered_orders")],
             [
                 f"{ORDERS_PER_SESSION} by {ORDER_TIME} and {SESSION_TIME}",
                 f"measure.jaffle.delivered_orders by {DELIVERED_TIME}",
@@ -256,8 +248,8 @@ def test_date_filtered_ratio_discloses_roles_without_claiming_all_history(
 
     def bounded(measure, dimension):
         bounds = [
-            {"field": dimension, "op": ">=", "value": "2016-09-01"},
-            {"field": dimension, "op": "<", "value": "2016-10-01"},
+            {"field": dimension, "op": "gte", "value": "2016-09-01"},
+            {"field": dimension, "op": "lt", "value": "2016-10-01"},
         ]
         return {
             **measure,
@@ -289,7 +281,7 @@ def test_date_filtered_ratio_discloses_roles_without_claiming_all_history(
         isolated.close()
 
 
-def test_role_only_ratio_covers_each_timestamp_not_all_history(runtime, tmp_path):
+def test_daily_ratio_covers_each_day_not_all_history(runtime, tmp_path):
     # Use the real package semantics with three orders and two sessions for one customer.
     isolated = Runtime.from_config(runtime.config, source_path=runtime.source_path)
     db_path = str(tmp_path / "ratio.duckdb")
@@ -312,7 +304,7 @@ def test_role_only_ratio_covers_each_timestamp_not_all_history(runtime, tmp_path
         """)
     isolated.set_adapter(DuckDBAdapter(db_path))
     try:
-        timed_query = _query(RATIO, time={"temporal_role": SESSION_TIME})
+        timed_query = _query(RATIO, time={"temporal_role": SESSION_TIME, "grain": "day"})
         timed = isolated.query(timed_query)
         total = isolated.query(_query(RATIO))
 

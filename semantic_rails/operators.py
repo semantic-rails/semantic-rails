@@ -210,7 +210,7 @@ def normalize_condition(
         return "missing", False
     if internal and spelling == "is" and isinstance(value, bool):
         return "is", value
-    word = operator_word(op, path=f"{path}.op")
+    word = operator_word(spelling if internal else op, path=f"{path}.op")
     if internal and word in {"is", "not"} and isinstance(value, (list, tuple)) and not value:
         # Engine-built membership over no values: vacuously false (is) or true (not).
         return word, []

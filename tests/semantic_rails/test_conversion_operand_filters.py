@@ -50,27 +50,25 @@ def _conversion_query(
     }
     if dimension_bindings is not None:
         expression["dimension_bindings"] = dimension_bindings
-    query: dict = {
-        "select": [{"as": "a_then_b_conversion_rate", "expression": expression}],
-        "verbosity": "full",
-    }
+    query: dict = {"select": [{"as": "a_then_b_conversion_rate", "expression": expression}]}
     if group_by:
         query["group_by"] = list(group_by)
     return query
 
 
 _PRODUCT_A_FILTER = {
-    "all": [{"field": "dimension.jaffle_product_name", "op": "=", "value": "adele-ade"}]
+    "all": [{"field": "dimension.jaffle_product_name", "op": "is", "value": "adele-ade"}]
 }
 _PRODUCT_B_FILTER = {
-    "all": [{"field": "dimension.jaffle_product_name", "op": "=", "value": "chai and mighty"}]
+    "all": [{"field": "dimension.jaffle_product_name", "op": "is", "value": "chai and mighty"}]
 }
 
 
 def test_base_and_converted_operand_filters_land_in_compiled_sql(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     report = runtime.validate(
-        _conversion_query(base_filter=_PRODUCT_A_FILTER, converted_filter=_PRODUCT_B_FILTER)
+        _conversion_query(base_filter=_PRODUCT_A_FILTER, converted_filter=_PRODUCT_B_FILTER),
+        verbosity="full",
     )
     assert report["ok"] is True
     rendered = report["explain"]["rendered_sql"]
@@ -122,7 +120,7 @@ def test_operand_filters_apply_alongside_group_by(runtime_factory):
         converted_filter=_PRODUCT_B_FILTER,
         group_by=["dimension.jaffle_store_name"],
     )
-    report = runtime.validate(query)
+    report = runtime.validate(query, verbosity="full")
     assert report["ok"] is True
     rendered = report["explain"]["rendered_sql"]
     assert "adele-ade" in rendered
@@ -152,10 +150,10 @@ def test_operand_expression_filter_clause_is_rejected_not_dropped(runtime_factor
                         "expression": {
                             "kind": "metric_predicate",
                             "entity": "entity.jaffle_customer",
-                            "scope_mode": "entity_only",
-                            "input": {"measure": "measure.jaffle.lifetime_order_count"},
-                            "op": ">",
+                            "input": "measure.jaffle.lifetime_order_count",
+                            "op": "gt",
                             "value": 1,
+                            "over": "all_time",
                         }
                     }
                 ]
@@ -172,12 +170,12 @@ def test_operand_expression_filter_clause_is_rejected_not_dropped(runtime_factor
     [
         # `any:` fails as an invalid AST before conversion checks run.
         pytest.param(
-            {"any": [{"field": "dimension.jaffle_product_name", "op": "=", "value": "adele-ade"}]},
+            {"any": [{"field": "dimension.jaffle_product_name", "op": "is", "value": "adele-ade"}]},
             "INVALID_EXPRESSION_AST",
             id="unsupported-combinator",
         ),
         pytest.param(
-            {"all": [{"field": "dimension.does_not_exist", "op": "=", "value": "x"}]},
+            {"all": [{"field": "dimension.does_not_exist", "op": "is", "value": "x"}]},
             "OBJECT_NOT_FOUND",
             id="unknown-dimension",
         ),
@@ -192,7 +190,7 @@ def test_invalid_operand_filter_is_rejected(runtime_factory, base_filter, code):
 
 def test_unfiltered_conversion_sql_is_unchanged_by_the_filter_path(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
-    report = runtime.validate(_conversion_query())
+    report = runtime.validate(_conversion_query(), verbosity="full")
     assert report["ok"] is True
     rendered = report["explain"]["rendered_sql"]
     assert "jaffle_item" not in rendered
@@ -234,10 +232,10 @@ def test_operand_measure_counting_another_column_is_rejected(runtime_factory):
 
 
 _NEW_CUSTOMER_ORDER = {
-    "all": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "=", "value": True}]
+    "all": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "is", "value": True}]
 }
 _REPEAT_ORDER = {
-    "all": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "=", "value": False}]
+    "all": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "is", "value": False}]
 }
 
 
@@ -373,7 +371,7 @@ def test_curated_conversion_metric_on_an_expression_measure_fails_package_valida
 
 
 _REPEAT_CUSTOMER = {
-    "all": [{"field": "dimension.jaffle_customer_type", "op": "=", "value": "repeat"}]
+    "all": [{"field": "dimension.jaffle_customer_type", "op": "is", "value": "repeat"}]
 }
 
 

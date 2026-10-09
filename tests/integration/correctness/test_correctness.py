@@ -32,17 +32,17 @@ ROLE = "temporal_role.shop_order_ordered_at"
 SIGNUP_ROLE = "temporal_role.shop_customer_signed_up_at"
 STORE = "dimension.shop_order_store_id"
 CHANNEL = "dimension.shop_customer_channel"  # looked up from the order's customer
-REVENUE = {"measure": "measure.shop.revenue"}
-ORDERS = {"measure": "measure.shop.order_count"}
-AVERAGE = {"measure": "measure.shop.average_order"}
-SMALLEST = {"measure": "measure.shop.smallest_order"}
-LARGEST = {"measure": "measure.shop.largest_order"}
-REFUNDS = {"measure": "measure.shop.refund_count"}
-GOODS = {"measure": "measure.shop.goods_refunded"}
-SHIPPING = {"measure": "measure.shop.shipping_refunded"}
-TAX = {"measure": "measure.shop.tax_refunded"}
+REVENUE = "measure.shop.revenue"
+ORDERS = "measure.shop.order_count"
+AVERAGE = "measure.shop.average_order"
+SMALLEST = "measure.shop.smallest_order"
+LARGEST = "measure.shop.largest_order"
+REFUNDS = "measure.shop.refund_count"
+GOODS = "measure.shop.goods_refunded"
+SHIPPING = "measure.shop.shipping_refunded"
+TAX = "measure.shop.tax_refunded"
 REFUND_TYPE = "dimension.shop_refund_refund_type"
-SEATS = {"measure": "measure.shop.seats"}
+SEATS = "measure.shop.seats"
 SEAT_ROLE = "temporal_role.shop_account_day_snapshot_day"
 SEAT_DAY = "dimension.shop_account_day_snapshot_day"
 PLAN = "dimension.shop_account_day_plan"
@@ -55,7 +55,7 @@ PLAIN = {
     "smallest": (SMALLEST, "MIN(o.amount)"),
     "largest": (LARGEST, "MAX(o.amount)"),
     "average_value": (
-        {"metric": "metric.shop.average_order_value"},
+        "metric.shop.average_order_value",
         "1.0 * SUM(o.amount) / COUNT(*)",
     ),
 }
@@ -91,13 +91,16 @@ class Case:
 # -- query builders ---------------------------------------------------------------------
 
 
-def _item(expression: dict[str, Any], alias: str) -> dict[str, Any]:
+def _item(expression: Any, alias: str) -> Any:
+    """A select item: the id itself when its last segment is the alias."""
+    if isinstance(expression, str) and expression.split(".")[-1] == alias:
+        return expression
     return {"expression": expression, "as": alias}
 
 
 def _ask(grain: str, *select: dict[str, Any], role: str = ROLE, **extra: Any) -> dict[str, Any]:
     time = {"temporal_role": role, "grain": grain}
-    for key in ("start", "end", "fill", "calendar_id"):
+    for key in ("start", "end", "fill"):
         if key in extra:
             time[key] = extra.pop(key)
     return {"select": list(select), "time": time, **extra}
@@ -121,16 +124,19 @@ def _distribution(function: str, alias: str, **extra: Any) -> dict[str, Any]:
     return _item({"kind": "distribution", "function": function, "over": over, **extra}, alias)
 
 
-def _predicate(entity: str, scope: str, measure: dict[str, Any], op: str, value: Any) -> dict:
-    expression = {"kind": "metric_predicate", "entity": entity, "scope_mode": scope}
-    expression |= {"input": measure, "op": op, "value": value}
-    return {"expression": expression, "op": "=", "value": True}
+def _having(entity: str, over: str, field_id: str, op: str, value: Any) -> dict[str, Any]:
+    """Entities whose aggregate passes, taken ``over`` all_time, window or period."""
+    return {
+        "entity": entity,
+        "having": [{"field": field_id, "op": op, "value": value}],
+        "over": over,
+    }
 
 
-LARGE_ORDER = _predicate("entity.shop_order", "contextual", REVENUE, ">", 5)
-SMALL_ORDER = _predicate("entity.shop_order", "contextual", REVENUE, "<", 5)
-REPEAT_CUSTOMER = _predicate("entity.shop_customer", "entity_only", ORDERS, ">=", 2)
-BIG_CUSTOMER_MONTH = _predicate("entity.shop_customer", "contextual", REVENUE, ">", 7)
+LARGE_ORDER = _having("entity.shop_order", "period", REVENUE, "gt", 5)
+SMALL_ORDER = _having("entity.shop_order", "period", REVENUE, "lt", 5)
+REPEAT_CUSTOMER = _having("entity.shop_customer", "all_time", ORDERS, "gte", 2)
+BIG_CUSTOMER_MONTH = _having("entity.shop_customer", "period", REVENUE, "gt", 7)
 
 # -- reference builders -----------------------------------------------------------------
 
@@ -389,7 +395,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
     )
     # A filter that matches nothing: amounts and orders have data elsewhere in the dataset, so
     # a sum and a count of nothing read 0 (the default dataset scope).
-    absent = [{"field": STORE, "op": "=", "value": "zzz"}]
+    absent = [{"field": STORE, "op": "is", "value": "zzz"}]
     yield Case(
         "absent_filter_reads_null",  # retain the frozen case ID when the default answer changes
         "utc_authored",
@@ -406,7 +412,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
     )
     # ...also beside an input that has data: an authored filter keeps observed buckets at 0.
     absent_only = _item(
-        {"kind": "aggregate", "measure": REVENUE["measure"], "filter": {"all": absent}}, "absent"
+        {"kind": "aggregate", "measure": REVENUE, "filter": {"all": absent}}, "absent"
     )
     yield Case(
         "absent_filtered_input_beside_an_observed_one",
@@ -416,7 +422,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
     )
     # A ratio over an unknown numerator is unknown: store a's May amounts are all NULL, though
     # its one order counts.
-    average_value = _item({"metric": "metric.shop.average_order_value"}, "aov")
+    average_value = _item("metric.shop.average_order_value", "aov")
     yield Case(
         "ratio_over_an_unknown_numerator",
         "utc_authored",
@@ -437,7 +443,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
     yield Case(
         "unknown_day_filled",
         "utc_implicit",
-        _ask("day", revenue, orders, fill=True, **may_6),
+        _ask("day", revenue, orders, **may_6),
         """
         SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END,
           COUNT(o.order_id)
@@ -454,9 +460,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         "utc_authored",
         "day",
         "average_value",
-        metric_filters=[
-            {"expression": {"metric": "metric.shop.average_order_value"}, "op": "<", "value": 5}
-        ],
+        having=[{"field": "metric.shop.average_order_value", "op": "lt", "value": 5}],
         sql_having="1.0 * SUM(o.amount) / COUNT(*) < 5",
     )
     # Store a in May (order 7) is unknown on the base table and on the rollup alike, beside a
@@ -491,18 +495,7 @@ def _absent_entity_cases() -> Iterator[Case]:
     customers 101 and 103 have an order of 10 or more. A count of the orders at or above a floor
     is 0, not NULL, for a customer whose orders all fall short, and no order reaches 1000.
     """
-    signups = _item({"measure": "measure.shop.signup_count"}, "signups")
-    floor_10 = {"measure": "measure.shop.large_order_count"}
-    floor_1000 = {"measure": "measure.shop.huge_order_count"}
-
-    def count_if(floor: int) -> dict[str, Any]:
-        condition = {
-            "kind": "comparison",
-            "op": ">=",
-            "left": {"kind": "column", "column": "amount", "entity": "entity.shop_order"},
-            "right": {"kind": "literal", "value": floor},
-        }
-        return {"kind": "aggregate_if", "aggregation": "count", "condition": condition}
+    signups = _item("measure.shop.signup_count", "signups")
 
     def reference(floor: int, count: str) -> str:
         # The rule: with some order at or above the floor, a customer with none reads 0 (the
@@ -514,24 +507,26 @@ def _absent_entity_cases() -> Iterator[Case]:
                    WHERE o.customer_id = s.customer_id AND o.amount >= {floor}) = 0
         """
 
-    for form, floor_10_input, floor_1000_input in (
-        ("case_count", floor_10, floor_1000),
-        ("aggregate_if", count_if(10), count_if(1000)),
+    for name, count_id, floor, count in (
+        ("one_match_keeps_every_other_customer", "measure.shop.large_order_count", 10, "COUNT(*)"),
+        (
+            "no_match_keeps_no_customer",
+            "measure.shop.huge_order_count",
+            1000,
+            "NULLIF(COUNT(*), 0)",
+        ),
     ):
-        for name, predicate_input, floor, count in (
-            ("one_match_keeps_every_other_customer", floor_10_input, 10, "COUNT(*)"),
-            ("no_match_keeps_no_customer", floor_1000_input, 1000, "NULLIF(COUNT(*), 0)"),
-        ):
-            predicate = _predicate("entity.shop_customer", "entity_only", predicate_input, "=", 0)
-            yield Case(
-                f"customers_with_no_large_orders-{form}-{name}",
-                "utc_authored",
-                {"select": [signups], "metric_filters": [predicate]},
-                reference(floor, count),
-            )
+        none_large = _having("entity.shop_customer", "all_time", count_id, "is", 0)
+        yield Case(
+            f"customers_with_no_large_orders-case_count-{name}",
+            "utc_authored",
+            {"select": [signups], "where": [none_large]},
+            reference(floor, count),
+        )
 
 
 def _null_comparison_cases() -> Iterator[Case]:
+    """A comparison with a NULL literal tests for NULL: each order with no amount counts once."""
     for op, sql_op in (("=", "IS NULL"), ("!=", "IS NOT NULL"), ("<>", "IS NOT NULL")):
         conditional = {
             "kind": "aggregate_if",
@@ -546,12 +541,7 @@ def _null_comparison_cases() -> Iterator[Case]:
         yield Case(
             f"predicate-conditional_count-null-{op}",
             "utc_authored",
-            {
-                "select": [_item(ORDERS, "n")],
-                "metric_filters": [
-                    _predicate("entity.shop_order", "entity_only", conditional, ">", 0)
-                ],
-            },
+            {"select": [_item(conditional, "n")]},
             f"SELECT COUNT(*) FROM orders WHERE amount {sql_op}",
         )
 
@@ -584,7 +574,7 @@ def _child_filter_cases() -> Iterator[Case]:
         return {"kind": "ratio", "numerator": numerator, "denominator": denominator}
 
     def refunded(refund_type: str) -> list[dict[str, Any]]:
-        return [{"field": REFUND_TYPE, "op": "=", "value": refund_type}]
+        return [{"field": REFUND_TYPE, "op": "is", "value": refund_type}]
 
     def has_refund(refund_type: str) -> str:
         return (
@@ -707,7 +697,7 @@ def _cases() -> Iterator[Case]:
         "store_is_null",
         "utc_implicit",
         "month",
-        where=[{"field": STORE, "op": "IS NULL"}],
+        where=[{"field": STORE, "op": "missing", "value": True}],
         sql_where="o.store_id IS NULL",
     )
     yield from _empty_group_cases(revenue, orders)
@@ -719,33 +709,32 @@ def _cases() -> Iterator[Case]:
         (CHANNEL, "c.channel", "LEFT JOIN signups c ON c.customer_id = o.customer_id"),
     ):
         for op in ("IS", "IS NOT"):
+            missing = {"field": dimension, "op": "missing", "value": op == "IS"}
             yield Case(
                 f"is_operand-{dimension}-{op}-null",
                 "utc_authored",
-                {"select": [orders], "where": [{"field": dimension, "op": op, "value": None}]},
+                {"select": [orders], "where": [missing]},
                 f"SELECT COUNT(*) FROM orders o {join} WHERE {column} {op} NULL",
             )
+    # A boolean result kept with is (IS) or not (IS NOT, which keeps an unknown result).
+    over_3 = {
+        "kind": "comparison",
+        "op": ">",
+        "left": ORDERS,
+        "right": {"kind": "literal", "value": 3},
+    }
     for op in ("IS", "IS NOT"):
         for value in (True, False):
+            word = "is" if op == "IS" else "not"
             yield Case(
                 f"is_operand-{op}-{value}",
                 "utc_authored",
                 {
-                    "select": [orders],
-                    "metric_filters": [
-                        {
-                            "expression": {
-                                "kind": "comparison",
-                                "op": ">",
-                                "left": ORDERS,
-                                "right": {"kind": "literal", "value": 3},
-                            },
-                            "op": op,
-                            "value": value,
-                        }
-                    ],
+                    "select": [orders, _item(over_3, "over_3")],
+                    "having": [{"field": "over_3", "op": word, "value": value}],
                 },
-                f"SELECT COUNT(*) FROM orders HAVING (COUNT(*) > 3) {op} {str(value).upper()}",
+                "SELECT COUNT(*), COUNT(*) > 3 FROM orders"
+                f" HAVING (COUNT(*) > 3) {op} {str(value).upper()}",
             )
     yield from _child_filter_cases()
     for name, variant, grain, start, end, routes in (
@@ -776,11 +765,10 @@ def _cases() -> Iterator[Case]:
         ("repeat_customers", "quarter", "revenue orders", REPEAT_CUSTOMER, REPEAT_CUSTOMER_SQL),
         ("big_customer_months", "month", "revenue", BIG_CUSTOMER_MONTH, BIG_CUSTOMER_MONTH_SQL),
     ):
-        yield _plain(
-            name, "utc_authored", grain, aliases, sql_where=where, metric_filters=[predicate]
-        )
+        yield _plain(name, "utc_authored", grain, aliases, sql_where=where, where=[predicate])
     # A lookup keeps orders it finds no customer for (order 11): they group under NULL with
-    # signup 105's, and a filter on the looked-up column drops them unless it asks for NULL.
+    # signup 105's. "Not web" keeps them (an unknown channel is not web); "missing" asks for
+    # them alone.
     orders = _item(ORDERS, "orders")
     lookup = f"SELECT {ORDER_CHANNEL}, SUM(o.amount), COUNT(*) FROM orders AS o"
     yield Case(
@@ -790,18 +778,23 @@ def _cases() -> Iterator[Case]:
         f"{lookup} GROUP BY 1",
     )
     for name, op, value, where in (
-        ("lookup_channel_is_null", "IS NULL", None, "IS NULL"),
-        ("lookup_channel_not_web", "!=", "web", "<> 'web'"),
+        ("lookup_channel_is_null", "missing", True, f"{ORDER_CHANNEL} IS NULL"),
+        (
+            "lookup_channel_not_web",
+            "not",
+            "web",
+            f"({ORDER_CHANNEL} <> 'web' OR {ORDER_CHANNEL} IS NULL)",
+        ),
     ):
-        filter_ = {"field": CHANNEL, "op": op, **({"value": value} if value else {})}
+        filter_ = {"field": CHANNEL, "op": op, "value": value}
         yield Case(
             name,
             "utc_authored",
             {"select": [revenue, orders], "group_by": [CHANNEL], "where": [filter_]},
-            f"{lookup} WHERE {ORDER_CHANNEL} {where} GROUP BY 1",
+            f"{lookup} WHERE {where} GROUP BY 1",
         )
-    store_a = {"all": [{"field": STORE, "op": "=", "value": "a"}]}
-    only_a = _item({"kind": "aggregate", "measure": REVENUE["measure"], "filter": store_a}, "a")
+    store_a = {"all": [{"field": STORE, "op": "is", "value": "a"}]}
+    only_a = _item({"kind": "aggregate", "measure": REVENUE, "filter": store_a}, "a")
     yield Case(
         "filtered_input",
         "utc_authored",
@@ -820,7 +813,7 @@ def _cases() -> Iterator[Case]:
     # Dense fill: zero for additive measures, NULL for the rest, over the window.
     for variant in ("utc_authored", "utc_implicit", "ny_implicit", "date_authored", "tz_implicit"):
         clock = variant.split("_")[0]
-        query = _ask("month", revenue, average, start="2023-10-01", end="2024-09-01", fill=True)
+        query = _ask("month", revenue, average, start="2023-10-01", end="2024-09-01")
         reference = FILL_WINDOW.format(clock=CLOCK[clock])
         # Coverage-dependent plans use the base even when a monthly rollup is available.
         reference = reference.replace(
@@ -833,7 +826,7 @@ def _cases() -> Iterator[Case]:
     yield Case(
         "fill_empty_window",
         "utc_authored",
-        _ask("month", revenue, start="2024-02-01", end="2024-03-01", fill=True),
+        _ask("month", revenue, start="2024-02-01", end="2024-03-01"),
         "SELECT TIMESTAMP '2024-02-01', 0",
     )
 
@@ -951,13 +944,13 @@ def _cases() -> Iterator[Case]:
     yield Case(
         "fill_by_store",
         "utc_authored",
-        _ask("month", revenue, group_by=[STORE], start="2023-11-01", end="2024-08-01", fill=True),
+        _ask("month", revenue, group_by=[STORE], start="2023-11-01", end="2024-08-01"),
         _by_store(STORE_NOW, bounds=("2023-11-01", "2024-07-01")),
     )
 
     # Conversion within 7 days of signup (half-open), by the signup's bucket. A ratio and a
     # conversion rate stay NULL in a month without a denominator.
-    rate = _item({"metric": "metric.shop.signup_to_order_7d"}, "rate")
+    rate = _item("metric.shop.signup_to_order_7d", "rate")
     for grain in ("month", "quarter"):
         query = _ask(grain, rate, role=SIGNUP_ROLE)
         yield Case(f"conversion_by_{grain}", "utc_authored", query, CONVERSION.format(grain=grain))
@@ -965,7 +958,7 @@ def _cases() -> Iterator[Case]:
         "filled_ratio",
         "utc_authored",
         "month",
-        [_item({"metric": "metric.shop.average_order_value"}, "aov")],
+        [_item("metric.shop.average_order_value", "aov")],
         "(SELECT 1.0 * SUM(o.amount) / COUNT(*) FROM orders AS o"
         " WHERE date_trunc('month', o.ordered_at) = s.b)",
         fill=True,
@@ -1015,8 +1008,7 @@ def _cases() -> Iterator[Case]:
             role=SEAT_ROLE,
             start="2024-01-01",
             end="2024-01-22",
-            fill=True,
-            where=[{"field": PLAN, "op": "=", "value": "builder"}],
+            where=[{"field": PLAN, "op": "is", "value": "builder"}],
         ),
         f"""
         SELECT g.b, CASE WHEN COUNT(CASE WHEN {builder} THEN 1 END) > 0
@@ -1101,7 +1093,7 @@ def _assert_rows(expected: list[tuple[Any, ...]], actual: list[tuple[Any, ...]],
 
 
 def _answer(backend: Backend, case: Case) -> list[tuple[Any, ...]]:
-    result = backend.runtimes[case.variant].query({"version": 1, **case.query})
+    result = backend.runtimes[case.variant].query(case.query)
     if case.routes is not None:
         routed = "orders_monthly" in str(result.get("rendered_sql") or "")
         assert routed is case.routes, f"{case.name}: rollup routing is {routed} on {backend.name}"
@@ -1130,8 +1122,8 @@ def _backend(request: pytest.FixtureRequest, name: str) -> Backend:
 
 @pytest.mark.parametrize("backend_name", BACKENDS)
 @pytest.mark.parametrize("field", [STORE, CHANNEL])
-@pytest.mark.parametrize("op", ["IS", "IS NOT"])
-def test_is_operand_refused_before_execution(request, backend_name, field, op):
+@pytest.mark.parametrize("op", ["IS NULL", "IS NOT NULL"])
+def test_null_test_spellings_refused_before_execution(request, backend_name, field, op):
     runtime = _backend(request, backend_name).runtimes["utc_authored"]
     query = {
         "select": [_item(ORDERS, "orders")],
@@ -1139,8 +1131,12 @@ def test_is_operand_refused_before_execution(request, backend_name, field, op):
     }
     report = runtime.validate(query)
     assert report["ok"] is False
-    assert report["errors"][0]["code"] == "INVALID_QUERY"
-    assert report["recovery_hints"][0]["code"] == "USE_EQUALITY_FOR_SCALAR"
+    error = report["errors"][0]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "where[0].op"
+    hint = error["details"]["recovery_hints"][0]
+    assert hint["code"] == "USE_FILTER_WORD"
+    assert '"op": "missing"' in hint["message"]
     with pytest.raises(SemanticLayerError) as exc:
         runtime.query(query)
     assert exc.value.code == "INVALID_QUERY"
@@ -1181,5 +1177,5 @@ def test_every_case_settles_its_empty_groups_in_the_guard(
 ) -> None:
     """The answers above are right because one CTE settles empty groups: hold every query to it."""
     runtime = _backend(request, "duckdb").runtimes[case.variant]
-    compiled = compile_query(runtime.config, runtime.registry, {"version": 1, **case.query})
+    compiled = compile_query(runtime.config, runtime.registry, runtime.engine_payload(case.query))
     assert_settled_in_one_place(compiled, runtime.config)

@@ -1,11 +1,11 @@
-"""Regression tests for the published worked-example IR files under
+"""Regression tests for the published worked-example query calls under
 ``examples/``.
 
 These examples are the durable artifacts callers reference instead of
 trial-and-erroring against the runtime. Each file must:
 
 1. Validate against the published JSON Schema
-   (``schemas/query_ir.v1.json``).
+   (``schemas/query.v2.json``).
 2. Pass ``Runtime.validate()`` with ``ok: true`` against the active
    jaffle_shop package.
 3. Compile to non-empty ``rendered_sql``.
@@ -30,7 +30,7 @@ from tests.semantic_rails.conftest import opened
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
-SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
+SCHEMA_PATH = REPO_ROOT / "schemas" / "query.v2.json"
 
 
 def _load_examples() -> list[tuple[str, dict[str, Any]]]:
@@ -68,7 +68,7 @@ def test_example_validates_against_schema(name: str, ir: dict[str, Any]) -> None
     schema = json.loads(SCHEMA_PATH.read_text())
     validator = jsonschema.Draft202012Validator(schema)
     errors = sorted(validator.iter_errors(ir), key=lambda e: list(e.absolute_path))
-    assert not errors, f"examples/{name} does not satisfy schemas/query_ir.v1.json: " + "; ".join(
+    assert not errors, f"examples/{name} does not satisfy schemas/query.v2.json: " + "; ".join(
         f"{list(e.absolute_path)}: {e.message[:120]}" for e in errors[:5]
     )
 

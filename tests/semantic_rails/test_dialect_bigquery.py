@@ -24,6 +24,7 @@ from semantic_rails.db_parts.bigquery import (
 )
 from semantic_rails.dialects import BigQueryDialect, dialect_for_warehouse, warehouse_connector
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr, render_select
 from semantic_rails.schema import ConnectionSpec, PackageMeta, SeedSpec
@@ -604,7 +605,8 @@ def test_jaffle_battery_compiles_for_bigquery():
 
     compiled: dict[str, str] = {}
     for case in load_battery():
-        sql = compile_query(config, registry, case.payload)["sql"]
+        query, _ = read_call(case.payload, config=config)
+        sql = compile_query(config, registry, query)["sql"]
         assert sql and sql.strip(), f"{case.name}: empty rendered SQL"
         compiled[case.name] = sql
 

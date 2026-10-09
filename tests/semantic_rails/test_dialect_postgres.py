@@ -24,6 +24,7 @@ from semantic_rails.dialects import (
     warehouse_connector,
 )
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.schema import ConnectionSpec, PackageMeta
@@ -588,7 +589,8 @@ def test_postgres_compiles_every_battery_case():
     assert cases, "battery must not be empty"
 
     for case in cases:
-        sql = compile_query(config, registry, case.payload)["sql"]
+        query, _ = read_call(case.payload, config=config)
+        sql = compile_query(config, registry, query)["sql"]
         assert sql.strip(), f"{case.name}: empty SQL"
         for forbidden in (
             "DATE_DIFF(",
