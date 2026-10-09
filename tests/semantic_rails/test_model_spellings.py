@@ -17,19 +17,19 @@ ROOT = Path(__file__).resolve().parents[2]
 # changes its authored bytes, never its meaning, so these hold across every spelling migration.
 BUNDLED_FINGERPRINTS = {
     "configs/semantic_rails/jaffle_shop": (
-        "sha256:4c9c3c67ae11859916c86019cf76af49d977cdbc8ee90344b6d1d81a3b037860"
+        "sha256:95d61430cc39b21a20d7ad36b3c593b7945aebd99f0db07c91f39c37bb1b8ffe"
     ),
     "configs/semantic_rails/tpch_sf1_showcase": (
-        "sha256:1411788e25b3b8136edf871151cfac1ad903bbd9d1096f7b9434db38d07ed5a1"
+        "sha256:01d3f52c240e4a19b21229f2d248a39f36af5d1721f207d8bb131b58d67f96e9"
     ),
     "comparisons/semantic_layers/semantic_rails/package": (
-        "sha256:a2b5c027a17f2e09c81de1c04947685c251446da628ceee33eff125d9a6c25c5"
+        "sha256:9e0042e27e1669a621f91895f74e4dc4c124ba6bde966d2f99feac1826ea7fda"
     ),
     "tests/integration/correctness/shop": (
-        "sha256:e0efc0e78506590c1fa56ae062541ad26cc07b2ce17120520c2928534aa88e42"
+        "sha256:8e6b8a0d9e0cc8b9bf0dcef16c55705f953fe3b2c5503d98b291a5fe18a059b8"
     ),
     "configs/examples/semantic_rails_package_starter.yml": (
-        "sha256:200c1a2cb8f72112f9a6453d501724c89a06061f3f0eafbf9def0c3f9a805290"
+        "sha256:481652e9ddd60ced3dd89a335d3128a7c65249383b81adb4037839ab747af341"
     ),
 }
 
