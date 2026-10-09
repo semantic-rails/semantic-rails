@@ -5,6 +5,7 @@ Gold values come from raw SQL against the seeded tables, not from the compiler.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
@@ -486,7 +487,8 @@ def test_a_capped_result_that_is_still_too_large_names_the_full_count(
     response = mcp.call_tool("execute", {"query": raw_times})
     error = response["errors"][0]
     assert error["code"] == "RESULT_TOO_LARGE"
-    assert "more than 10,000 rows" in error["message"]
+    # The rows past the fetch cap are never counted: the message says "more than".
+    assert re.search(r"more than [\d,]+ rows", error["message"])
     assert "time.grain" in error["message"]
 
 

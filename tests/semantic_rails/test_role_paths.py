@@ -399,7 +399,8 @@ def test_query_through_two_roles_is_refused_whatever_the_declaration_order(tmp_p
     assert candidates == _relationship_ids(config, "entity.air_leg", "entity.air_airport")
     assert all(len(option["relationship_path"]) == 1 for option in options)
     hint = err.details["hint"]
-    assert "path_preferences" in hint
+    # The hint sends one option's query, or records its decision as the package default.
+    assert "option's query" in hint and "package default" in hint
     assert all(option["meaning"] in str(err) for option in options)
 
 

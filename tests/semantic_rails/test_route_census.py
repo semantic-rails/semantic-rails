@@ -128,6 +128,17 @@ DIMENSION = {
 }
 
 
+def _package_part(details: dict) -> dict:
+    """A route refusal without what only a query has: each option's call and the hint."""
+    clarification = details["clarification"]
+    options = [
+        {key: value for key, value in option.items() if key != "query"}
+        for option in clarification["options"]
+    ]
+    rest = {key: value for key, value in details.items() if key != "hint"}
+    return {**rest, "clarification": {**clarification, "options": options}}
+
+
 def test_the_census_lists_each_refused_pair_with_the_refusal_its_query_raises(tmp_path):
     pkg = _write_package(tmp_path)
     config = load_package_config(str(pkg))
@@ -145,7 +156,18 @@ def test_the_census_lists_each_refused_pair_with_the_refusal_its_query_raises(tm
             else:
                 resolve_path(config, start=start, target=target)
         assert exc_info.value.code == "AMBIGUOUS_PATH"
-        assert exc_info.value.details == details
+        assert _package_part(exc_info.value.details) == _package_part(details)
+        # A query's refusal also hands back each option as that query with its route.
+        for option in exc_info.value.details["clarification"]["options"]:
+            if start in MEASURE:
+                decision = option["decision"]
+                assert option["query"]["routes"] == [
+                    {
+                        "from": decision["source_entity"],
+                        "to": decision["target_entity"],
+                        "via": decision["relationship_path"],
+                    }
+                ]
     # Only multi-route own-key choices ask for confirmation.
     assert census["assumed"] == [
         {

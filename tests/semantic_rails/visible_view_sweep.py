@@ -29,7 +29,10 @@ from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr
 from semantic_rails.fanout import package_route
+from semantic_rails.http_core import SemanticHTTPService
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.query_call import read_call
+from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig, PackageConfig
 from tests.semantic_rails.hidden_absent import (
@@ -38,9 +41,7 @@ from tests.semantic_rails.hidden_absent import (
     absent,
     envelope,
     hidden_tokens,
-    http_call,
     leaks,
-    mcp_call,
     object_rows,
     visibility_policy,
     with_policies,
@@ -84,6 +85,23 @@ def _public(value: Any, *, in_effects: bool = False) -> Any:
 Request = tuple[str, Callable[[Runtime], Any], Any]
 
 
+def mcp_as(runtime: Runtime, tool: str, arguments: dict[str, Any], context: Any) -> dict[str, Any]:
+    """An MCP tool call asked by ``context``: identity is the transport's, never an argument."""
+    caller = context_from_policy_context(context)
+    return SemanticLayerMCPAdapter(runtime).call_tool(tool, arguments, request_context=caller)
+
+
+def http_as(runtime: Runtime, route: str, body: dict[str, Any], context: Any) -> dict[str, Any]:
+    """A REST call asked by ``context``, with its status, raised refusals as payloads."""
+    service = SemanticHTTPService(runtime)
+    caller = context_from_policy_context(context)
+    try:
+        response, status = service.handle("POST", route, body, context=caller)
+    except SemanticLayerError as exc:
+        response, status = service.exception_payload(exc, stage="http", context=caller)
+    return {**response, "http_status": status}
+
+
 def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[Request]:
     """(label, call, what the request itself names) for every request the sweep makes. Objects
     more than one hop from the hidden ones are inspected at minimal verbosity only and get no
@@ -92,10 +110,10 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
     out: list[Request] = []
 
     def mcp(tool: str, arguments: dict[str, Any]) -> Callable[[Runtime], Any]:
-        return lambda runtime: mcp_call(runtime, tool, {**arguments, "policy_context": CALLER})
+        return lambda runtime: mcp_as(runtime, tool, arguments, CALLER)
 
     def http(route: str, body: dict[str, Any]) -> Callable[[Runtime], Any]:
-        return lambda runtime: http_call(runtime, route, {**body, "policy_context": CALLER})
+        return lambda runtime: http_as(runtime, route, body, CALLER)
 
     for terms in TERMS:
         for verbosity in ("compact", "full"):

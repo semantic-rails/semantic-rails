@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 _BASE_QUERY = {
     "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
     "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
@@ -414,7 +416,8 @@ def test_mcp_execute_rejects_invalid_row_format(runtime_factory):
     assert envelope["errors"][0]["details"]["field"] == "row_format"
 
 
-def test_mcp_execute_top_level_ir_row_format_does_not_leak_to_runtime(runtime_factory):
+def test_mcp_execute_refuses_a_call_spread_beside_its_arguments(runtime_factory):
+    """The call travels as ``query``; its keys beside ``row_format`` are refused, never read."""
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
     runtime = runtime_factory("jaffle_shop")
@@ -424,44 +427,32 @@ def test_mcp_execute_top_level_ir_row_format_does_not_leak_to_runtime(runtime_fa
     finally:
         adapter.close()
 
-    assert envelope["ok"] is True
-    assert envelope["row_format"] == "columns"
-    assert isinstance(envelope["rows"], list)
-    assert envelope["rows"]
-    assert isinstance(envelope["rows"][0], list)
-    if "query" in envelope:
-        assert "row_format" not in envelope["query"]
-    assert not any(error.get("code") == "INVALID_QUERY" for error in envelope.get("errors", []))
+    assert envelope["ok"] is False
+    (error,) = envelope["errors"]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "select"
+    (hint,) = error["recovery_hints"]
+    assert '{"query":' in hint["message"]
 
 
-def test_http_query_payload_hoists_verbosity_and_sql_profile():
-    """The HTTP shim must mirror the MCP hoisting so /validate, /compile,
-    /explain, /query all honour the outer-envelope keys.
-    """
-    from semantic_rails.http_core import query_payload
+def test_http_call_options_carry_verbosity_and_sql_profile():
+    """A REST body sends its rendering options beside the call, under ``options``."""
+    from semantic_rails.http_core import call_arguments
 
-    body = {
-        "query": {"select": []},
-        "verbosity": "minimal",
-        "sql_profile": "off",
-    }
-    out = query_payload(body)
-    assert out["verbosity"] == "minimal"
-    assert out["sql_profile"] == "off"
+    body = {"query": {"select": []}, "options": {"verbosity": "minimal", "sql_profile": "off"}}
+    call, options = call_arguments(body)
+    assert call == {"select": []}
+    assert options == {"verbosity": "minimal", "sql_profile": "off"}
 
 
-def test_http_query_payload_in_query_values_win_over_outer():
-    """A caller can override verbosity inside the Query IR itself; the
-    outer envelope is only a default for callers that don't.
-    """
-    from semantic_rails.http_core import query_payload
+def test_http_options_beside_the_call_are_refused_at_their_path():
+    """Verbosity is never a key of the call, nor a sibling of ``query``."""
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.http_core import call_arguments
 
-    body = {
-        "query": {"select": [], "verbosity": "full"},
-        "verbosity": "minimal",
-    }
-    out = query_payload(body)
-    assert out["verbosity"] == "full"
+    with pytest.raises(SemanticLayerError) as exc:
+        call_arguments({"query": {"select": []}, "verbosity": "minimal"})
+    assert exc.value.details["path"] == "verbosity"
 
 
 # ---------------------------------------------------------------------------

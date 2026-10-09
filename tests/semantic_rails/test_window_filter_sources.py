@@ -134,10 +134,7 @@ def test_authorization_precedes_source_refusals(
             )
             error = allowed["errors"][0]
             assert error["code"] == "CUMULATIVE_TIME_FILTER_UNSUPPORTED"
-            assert error["details"] == {
-                "filter_source": "measure",
-                "expression": {"kind": "metric", "metric": METRIC},
-            }
+            assert error["details"] == {"filter_source": "measure", "expression": METRIC}
             assert "2023-12-01" not in json.dumps(allowed)
     finally:
         runtime.close()

@@ -34,13 +34,12 @@ from tests.semantic_rails.hidden_absent import (
     OBJECT_FIELDS,
     access_policy,
     decoded_strings,
-    http_call,
-    mcp_call,
     object_rows,
     outcome,
     visibility_policy,
     with_policies,
 )
+from tests.semantic_rails.visible_view_sweep import http_as, mcp_as
 
 # A measure, and a relationship on the route from orders to stores.
 TARGETS = ("measure.jaffle.revenue_usd", "relationship.orders_store")
@@ -159,10 +158,10 @@ def _calls(config: PackageConfig, hidden: frozenset[str]) -> dict[str, Callable[
     calls: dict[str, Callable[[Runtime], Any]] = {}
 
     def mcp(tool: str, **arguments: Any) -> Callable[[Runtime], Any]:
-        return lambda runtime: mcp_call(runtime, tool, {**arguments, "policy_context": CALLER})
+        return lambda runtime: mcp_as(runtime, tool, arguments, CALLER)
 
     def http(route: str, **body: Any) -> Callable[[Runtime], Any]:
-        return lambda runtime: http_call(runtime, route, {**body, "policy_context": CALLER})
+        return lambda runtime: http_as(runtime, route, body, CALLER)
 
     def get(route: str, **params: Any) -> Callable[[Runtime], Any]:
         def call(runtime: Runtime) -> Any:

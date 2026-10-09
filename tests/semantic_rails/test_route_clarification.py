@@ -393,6 +393,9 @@ def test_the_diamond_asks_in_business_words(tmp_path):
                     "relationship_path": BRANCH_ROUTE,
                     "label": "the District of the Account's Branch",
                 },
+                "query": _routed(
+                    BALANCE_BY_DISTRICT, {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}
+                ),
             },
             {
                 "id": "owner_district",
@@ -404,6 +407,7 @@ def test_the_diamond_asks_in_business_words(tmp_path):
                     "relationship_path": OWNER_ROUTE,
                     "label": "the District of the Account's Owner",
                 },
+                "query": _routed(BALANCE_BY_DISTRICT, DIAMOND_ROW),
             },
         ],
     }
@@ -430,7 +434,9 @@ def test_every_option_answers_with_its_route_per_query_or_in_the_package(tmp_pat
         assert (option["meaning"], option["relationship_path"]) == (meaning, route)
         assert option["decision"]["label"] == meaning
         golds.add(tuple(_gold(gold)))
-        per_query = runtime.query(_routed(query, option["decision"]))
+        # The option is the question's own call with its route, ready to send.
+        assert option["query"] == _routed(query, option["decision"])
+        per_query = runtime.query(option["query"])
         assert _rows(per_query, columns) == _gold(gold)
         (chosen,) = _chosen_by_query(per_query)
         assert chosen["row"] == {key: option["decision"][key] for key in chosen["row"]}
@@ -1345,7 +1351,7 @@ def test_the_query_mcp_keeps_the_clarification_and_discloses_the_query_row(tmp_p
         assert error["code"] == "AMBIGUOUS_PATH"
         assert error["details"]["clarification"] == expected
         # The refusal, not the tool description, says where the chosen decision goes.
-        assert "routes" in error["details"]["hint"]
+        assert "option's query" in error["details"]["hint"]
         decision = expected["options"][1]["decision"]
         answered = adapter.call_tool("execute", {"query": _routed(BALANCE_BY_DISTRICT, decision)})
         assert not answered.get("errors"), answered

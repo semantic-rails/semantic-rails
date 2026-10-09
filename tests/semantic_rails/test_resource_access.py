@@ -476,10 +476,10 @@ def test_authenticated_asgi_grants_roundtrip_and_revoke(
                 return result["result"]["structuredContent"] if transport == "mcp" else result
 
             spoof = context(AOV, (SECRET_DIMENSION,)).to_policy_context()
-            plan = await call(
-                "plan",
-                {"intent": CUSTOMERS, "policy_context": spoof, "query": {"policy_context": spoof}},
-            )
+            # A request that says who is asking is refused; the bearer token decides.
+            claimed = await call("plan", {"intent": CUSTOMERS, "policy_context": spoof})
+            assert claimed["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED"
+            plan = await call("plan", {"intent": CUSTOMERS})
             assert plan["best"]["validation_ok"]
             portable = plan["best"]["query_ir"]
             assert "policy_context" not in portable
@@ -487,20 +487,18 @@ def test_authenticated_asgi_grants_roundtrip_and_revoke(
             assert plan["request_context"]["audience"] == "finance"
             assert (await call("query", {"query": portable}))["rows"] == [{"value": 7}]
             assert len(adapter.statements) == 1
-            denied = await call(
-                "query",
-                {"query": {**portable, "policy_context": spoof}, "policy_context": spoof},
-                "aov",
-            )
-            assert not denied["ok"]
-            assert len(adapter.statements) == 1
-            catalogs = await asyncio.gather(
-                call("catalog", {"policy_context": spoof}), call("catalog", {}, "aov")
-            )
+            for arguments in (
+                {"query": portable},
+                {"query": {**portable, "policy_context": spoof}},
+            ):
+                denied = await call("query", arguments, "aov")
+                assert not denied["ok"]
+                assert len(adapter.statements) == 1
+            catalogs = await asyncio.gather(call("catalog", {}), call("catalog", {}, "aov"))
             assert AOV not in json.dumps(catalogs[0])
             assert CUSTOMERS not in json.dumps(catalogs[1])
             if transport == "rest":  # MCP has no capabilities tool.
-                capabilities = await call("capabilities", {"policy_context": spoof})
+                capabilities = await call("capabilities", {})
                 assert [row["name"] for row in capabilities["expression_shapes"]] == ["metric"]
                 assert "default_db" not in json.dumps(capabilities)
 
