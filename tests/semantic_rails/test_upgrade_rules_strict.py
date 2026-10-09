@@ -196,6 +196,14 @@ def _defaults_measure(**keys):
     return edit
 
 
+def _both(*edits):
+    def edit(doc):
+        for each in edits:
+            each(doc)
+
+    return edit
+
+
 def _unpublished(publish):
     """A package of the default profile whose revenue measure alone publishes a metric."""
 
@@ -401,6 +409,26 @@ REWRITES = {
         _defaults_measure(time="ordered_at"),
         _defaults_measure(times=["ordered_at"]),
     ),
+    "measure-time-under-defaults-times": (
+        "measure-times",
+        _both(_defaults_measure(times=["ordered_at"]), _measure_clock(time="first_ordered_at")),
+        _defaults_measure(times=["ordered_at"]),
+    ),
+    "measure-time-under-defaults-time": (
+        "measure-times",
+        _both(_defaults_measure(time="ordered_at"), _measure_clock(time="first_ordered_at")),
+        _both(_defaults_measure(times=["ordered_at"]), _measure_clock(times=["first_ordered_at"])),
+    ),
+    "measure-time-empty-under-defaults-time": (
+        "measure-times",
+        _both(_defaults_measure(time="ordered_at"), _measure_clock(time=None)),
+        None,
+    ),
+    "measure-times-empty-under-defaults-time": (
+        "measure-times",
+        _both(_defaults_measure(time="ordered_at"), _measure_clock(times=[])),
+        None,
+    ),
     "join-cardinality-never-read": (
         "model-joins",
         _model("orders", joins={"customer": {"to": "customer", "cardinality": "many_to_one"}}),
@@ -412,6 +440,11 @@ REWRITES = {
         _strict(_current),
     ),
     "publish-authors-metric": ("measure-auto-publish", _unpublished(GROSS), _authored),
+    "publish-reads-measure-time": (
+        "measure-auto-publish",
+        _both(_unpublished(GROSS), _measure_clock(time="ordered_at")),
+        _both(_authored, _measure_clock(time="ordered_at")),
+    ),
     "publish-topics": (
         "measure-auto-publish",
         _unpublished({**GROSS, "topics": ["sales"]}),
@@ -436,11 +469,29 @@ def test_strict_rule_golden_rewrite(tmp_path, rule, legacy, current):
     files = PackageFiles(source)
     result = plan(files, rules, {})
     if current is None:
-        (stop,) = result.pending
-        assert not stop.edits and not stop.options and not result.files
+        assert result.pending and not result.files
+        assert all(not stop.edits and not stop.options for stop in result.pending)
         return
     assert not result.pending and result.findings
     expected = write(tmp_path / "current", current)
     assert safe_load(result.files[source.name]) == safe_load(expected.read_bytes())
     upgraded = PackageFiles(source, contents={**files.contents, **result.files})
     assert not plan(upgraded, rules, {}).findings
+
+
+def test_measure_time_under_defaults_times_keeps_the_clock(tmp_path):
+    """The loader read defaults.measure.times over the measure's time:; the upgrade keeps it."""
+    source = write_single_file_package(tmp_path / "project")
+    doc = safe_load(source.read_bytes())
+    _current(doc)
+    _defaults_measure(times=["ordered_at"])(doc)
+    _measure_clock(time="first_ordered_at")(doc)
+    source.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    rules = [row for row in STRICT_RULES if row.id == "measure-times"]
+    source.write_bytes(plan(PackageFiles(source), rules, {}).files[source.name])
+    (measure,) = (
+        row
+        for row in load_package_snapshot(source).config.measures
+        if row.id == "measure.shop.revenue_usd"
+    )
+    assert measure.compatible_temporal_roles == ["temporal_role.shop_order_ordered_at"]

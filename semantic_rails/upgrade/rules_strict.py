@@ -370,26 +370,64 @@ def _object_as(files: PackageFiles) -> Iterator[Finding]:
         )
 
 
+_DEFAULT_TIME = object()  # the model's default time
+
+
+def _clock(measure: dict[str, Any], legacy: bool) -> Any:
+    """The clock the loader reads from a measure merged over ``defaults.measure``."""
+    raw = measure.get("times") or (legacy and measure.get("time")) or _DEFAULT_TIME
+    return raw if raw is _DEFAULT_TIME else _ensure_list(raw)
+
+
 def _measure_times(files: PackageFiles) -> Iterator[Finding]:
+    """Rewrite ``time:`` so that, for every measure, the clock the old loader read from the
+    merged legacy rows (``times or time or default``) equals the clock the current loader reads
+    from the merged rewritten rows (``times or default``); where it would not, stop."""
     defaults = [
         (file, (*path, "measure"), row["measure"])
         for file, path, row in files.defaults()
         if isinstance(row, dict) and isinstance(row.get("measure"), dict)
     ]
+    rows = [row for _, _, row in files.defaults() if isinstance(row, dict)]
+    base = _mapping({k: v for row in rows for k, v in row.items()}.get("measure"))
+    found: list[tuple[str, YamlPath, tuple[Edit, ...]]] = []
+    rewritten: dict[YamlPath, dict[str, Any]] = {}
     for file, path, row in (*files.measures(), *defaults):
         if "time" not in row:
             continue
         key, times, clock = (*path, "time"), (*path, "times"), row["time"]
         roles = _ensure_list(clock)  # the clock the loader reads, as times: names it
-        if row.get("times") or not clock:  # the loader reads times:, or the default time
+        inherited = (
+            path[-2:] != ("defaults", "measure") and "times" not in row and base.get("times")
+        )
+        rewritten[path] = {k: v for k, v in row.items() if k != "time"}
+        # The loader reads times:, defaults.measure.times, or the default time.
+        if row.get("times") or not clock or inherited:
             edits: tuple[Edit, ...] = (Edit(file, "delete", key),)
         elif "times" in row:
             edits = (Edit(file, "delete", key), Edit(file, "replace", times, value=roles))
+            rewritten[path]["times"] = roles
         else:
             edits = (Edit(file, "rename", key, key="times"),)
             if clock != roles:
                 edits += (Edit(file, "replace", times, value=roles),)
-        message = "Write the measure's clock as times: [<role>]."
+            rewritten[path]["times"] = roles
+        found.append((file, path, edits))
+    new_base = next((rewritten.get(p, base) for _, p, row in defaults if row is base), base)
+    # Each measure whose clock the rewrite would move.
+    moved = {
+        path
+        for _, path, row in files.measures()
+        if _clock({**base, **row}, legacy=True)
+        != _clock({**new_base, **rewritten.get(path, row)}, legacy=False)
+    }
+    for file, path, edits in found:
+        key = (*path, "time")
+        if moved and (path in moved or path[-2:] == ("defaults", "measure")):
+            message = "defaults.measure supplies the clock; rewrite by hand."
+            edits = ()
+        else:
+            message = "Write the measure's clock as times: [<role>]."
         yield Finding("measure-times", file, files.line(file, key), key, message, edits)
 
 
