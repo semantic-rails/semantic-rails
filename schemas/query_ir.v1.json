@@ -277,7 +277,7 @@
       "additionalProperties": false,
       "required": ["kind", "measure"],
       "properties": {
-        "kind": { "type": "string", "enum": ["measure", "measure_ref"] },
+        "kind": { "type": "string", "enum": ["measure"] },
         "measure": { "type": "string" },
         "aggregation": { "type": "string" },
         "temporal_role": { "type": "string" },
@@ -398,7 +398,7 @@
       "additionalProperties": false,
       "required": ["kind", "op", "left", "right"],
       "properties": {
-        "kind": { "type": "string", "enum": ["arithmetic", "binary"] },
+        "kind": { "type": "string", "enum": ["arithmetic"] },
         "op": { "type": "string", "enum": ["add", "subtract", "multiply", "divide", "+", "-", "*", "/", "plus", "minus", "times"] },
         "left": { "$ref": "#/$defs/SelectExpression" },
         "right": { "$ref": "#/$defs/SelectExpression" }
@@ -576,7 +576,6 @@
           "type": "string",
           "enum": ["first_converted_after_base", "closest_converted_after_base"]
         },
-        "matching": { "type": "string" },
         "constant_properties": { "type": "array", "items": { "type": "string" } },
         "dimension_bindings": {
           "type": "object",

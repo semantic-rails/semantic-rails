@@ -47,7 +47,7 @@ def _write_relation_package(package_dir: Path, package: dict) -> None:
             for key, model in package["models"].items()
         },
         **{
-            f"relations/{key}.yml": {"relation": {"id": key, **relation}}
+            f"relations/{key}.yml": {"relations": {key: relation}}
             for key, relation in package["relations"].items()
         },
     }
@@ -123,12 +123,20 @@ def _write_relation_demo(tmp_path: Path) -> Path:
         },
         "relations": {
             "date_spine": {
-                "date_spine": {"start": "2024-01-01", "end": "2024-01-03", "column": "date_day"}
+                "steps": [
+                    {
+                        "date_spine": {
+                            "start": "2024-01-01",
+                            "end": "2024-01-03",
+                            "column": "date_day",
+                        }
+                    }
+                ]
             },
             "account_tag_daily": {
-                "source": "account_state",
                 "columns": ["account_id", "valid_from", "valid_to", "tags", "settings"],
                 "steps": [
+                    {"source": "account_state"},
                     {
                         "json_extract": {
                             "column": "settings",
@@ -171,7 +179,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                         "union_all": {
                             "branches": [
                                 {
-                                    "source": "sms_sends",
+                                    "relation": "sms_sends",
                                     "columns": {
                                         "account_id": "account_id",
                                         "sent_at": "sent_at",
@@ -180,7 +188,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                                     },
                                 },
                                 {
-                                    "source": "email_sends",
+                                    "relation": "email_sends",
                                     "columns": {
                                         "account_id": "account_id",
                                         "sent_at": "sent_at",
@@ -194,9 +202,9 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                 ]
             },
             "eligible_account_states": {
-                "source": "account_state",
                 "columns": ["account_id", "valid_from", "valid_to", "tags"],
                 "steps": [
+                    {"source": "account_state"},
                     {
                         "anti_join": {
                             "relation": "excluded_accounts",
@@ -263,7 +271,7 @@ def _write_relation_demo(tmp_path: Path) -> Path:
                             "match_rank": {
                                 "function": "row_number",
                                 "partition_by": ["signup_id"],
-                                "order_by": [{"column": "sent_at", "direction": "ASC"}],
+                                "order_by": [{"expr": "sent_at", "direction": "ASC"}],
                             }
                         }
                     },
@@ -582,8 +590,16 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
             }
         },
         "relations": {
-            "a": {"output_name": "rel_cycle_a", "source": "rel_cycle_b", "columns": ["id"]},
-            "b": {"output_name": "rel_cycle_b", "source": "rel_cycle_a", "columns": ["id"]},
+            "a": {
+                "output_name": "rel_cycle_a",
+                "steps": [{"source": "rel_cycle_b"}],
+                "columns": ["id"],
+            },
+            "b": {
+                "output_name": "rel_cycle_b",
+                "steps": [{"source": "rel_cycle_a"}],
+                "columns": ["id"],
+            },
         },
         "models": {
             "cycle_a": {
@@ -656,9 +672,9 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
         "graph": {"entities": {"aligned": {"key": ["account_id"], "model": "aligned"}}},
         "relations": {
             "aligned": {
-                "source": "left_events",
                 "columns": ["account_id", "value"],
                 "steps": [
+                    {"source": "left_events"},
                     {
                         "join": {
                             "type": "full outer",
@@ -697,7 +713,7 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
                                 },
                             },
                         }
-                    }
+                    },
                 ],
             }
         },
@@ -733,7 +749,7 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
     assert "FULL OUTER JOIN" in rendered
 
     bad = yaml.safe_load(yaml.safe_dump(package))
-    bad["relations"]["aligned"]["steps"][0]["join"].pop("pre_aggregate")
+    bad["relations"]["aligned"]["steps"][1]["join"].pop("pre_aggregate")
     _write_relation_package(package_dir, bad)
     bad_config = load_package_config(str(package_dir))
     bad_relation = next(row for row in bad_config.relations if row.id == "relation.preagg.aligned")

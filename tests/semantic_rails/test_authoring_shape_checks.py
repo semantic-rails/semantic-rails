@@ -68,9 +68,10 @@ def test_parent_rollup_measure_keys_are_unknown(
         )
         models_dir = starter_package.parent / "models"
         models_dir.mkdir()
-        (models_dir / "models.yml").write_text(
-            yaml.safe_dump({"models": raw.pop("models")}, sort_keys=False), encoding="utf-8"
-        )
+        for model_key, model in raw.pop("models").items():
+            (models_dir / f"{model_key}.yml").write_text(
+                yaml.safe_dump({"model": model}, sort_keys=False), encoding="utf-8"
+            )
     starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     path = starter_package.parent if layout == "directory" else starter_package
     with pytest.raises(SemanticLayerError) as exc:
@@ -177,9 +178,10 @@ def test_removed_relationship_rollup_forms_fail_loading(
         )
         models_dir = starter_package.parent / "models"
         models_dir.mkdir()
-        (models_dir / "models.yml").write_text(
-            yaml.safe_dump({"models": raw.pop("models")}, sort_keys=False), encoding="utf-8"
-        )
+        for model_key, model in raw.pop("models").items():
+            (models_dir / f"{model_key}.yml").write_text(
+                yaml.safe_dump({"model": model}, sort_keys=False), encoding="utf-8"
+            )
     starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     path = starter_package.parent if layout == "directory" else starter_package
     with pytest.raises(SemanticLayerError) as exc:

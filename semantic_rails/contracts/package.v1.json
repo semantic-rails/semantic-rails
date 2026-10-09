@@ -26,6 +26,15 @@
           "additionalProperties": {
             "$ref": "#/$defs/GraphEntity"
           }
+        },
+        "path_policy": {
+          "type": "object"
+        },
+        "path_preferences": {
+          "type": [
+            "object",
+            "array"
+          ]
         }
       }
     },
@@ -96,15 +105,6 @@
       }
     },
     "semantic_caveats": {
-      "type": [
-        "object",
-        "array"
-      ]
-    },
-    "path_policy": {
-      "type": "object"
-    },
-    "path_preferences": {
       "type": [
         "object",
         "array"

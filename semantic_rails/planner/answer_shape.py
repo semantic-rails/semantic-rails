@@ -333,7 +333,7 @@ def _questions_answered(
         raw = item.get("expression")
         expression = raw if isinstance(raw, dict) else {}
         kind = expression.get("kind", "measure" if "measure" in expression else "metric")
-        if kind in ("measure", "measure_ref"):
+        if kind == "measure":
             row = measures.get(str(expression.get("measure")))
             declared = row is not None and expression.get("aggregation") in (
                 None,

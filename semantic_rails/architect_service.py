@@ -1653,8 +1653,7 @@ class ArchitectProject:
         dry_run: bool = False,
     ) -> ArchitectMutation:
         """Record which route a question between two entities means, as the package default:
-        the pair's row in the ``path_preferences`` list the loader reads (a top-level one in
-        ``package.yml`` wins over ``graph.path_preferences``). It replaces every row for exactly
+        the pair's row in the ``graph.path_preferences`` list. It replaces every row for exactly
         the pair, however its entities are spelled, and never a row for the reverse pair. An
         ``AMBIGUOUS_PATH`` option's ``decision`` is such a row.
 

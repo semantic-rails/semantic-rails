@@ -1197,20 +1197,16 @@ def test_record_route_decision_replaces_every_spelling_of_the_pair(tmp_path):
 
 
 def test_record_route_decision_writes_the_list_the_loader_reads(tmp_path):
-    """A top-level path_preferences list in package.yml wins over graph.path_preferences: the
-    recorded row goes there, and takes effect."""
-    pkg = _write_package(tmp_path)
-    package = yaml.safe_load((pkg / "package.yml").read_text())
-    (pkg / "package.yml").write_text(
-        yaml.safe_dump({**package, "path_preferences": [BRANCH_BY_KEY]})
-    )
-    graph_before = (pkg / "graph.yml").read_bytes()
+    """The recorded row replaces the pair's row in graph.path_preferences, and takes effect."""
+    pkg = _write_package(tmp_path, decisions=[BRANCH_BY_KEY])
+    package_before = (pkg / "package.yml").read_bytes()
     report = (
         ArchitectProject(pkg, workspace_root=tmp_path).record_route_decision(**DIAMOND_ROW).report
     )
-    assert (report["changed_files"], report["replaced"]) == (["package.yml"], BRANCH_BY_KEY)
-    assert yaml.safe_load((pkg / "package.yml").read_text())["path_preferences"] == [DIAMOND_ROW]
-    assert (pkg / "graph.yml").read_bytes() == graph_before
+    assert (report["changed_files"], report["replaced"]) == (["graph.yml"], BRANCH_BY_KEY)
+    graph = yaml.safe_load((pkg / "graph.yml").read_text())["graph"]
+    assert graph["path_preferences"] == [DIAMOND_ROW]
+    assert (pkg / "package.yml").read_bytes() == package_before
     out = Runtime.from_path(str(pkg)).query(BALANCE_BY_DISTRICT)
     assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_OWNER)
 

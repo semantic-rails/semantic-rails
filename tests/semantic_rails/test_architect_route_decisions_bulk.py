@@ -87,16 +87,9 @@ def _mcp_call(root, package, name, **arguments):
     return asyncio.run(call())
 
 
-@pytest.mark.parametrize("top_level", [False, True], ids=["graph-rows", "package-rows"])
-def test_one_relationship_call_keeps_thirteen_routes_and_reference_answers(tmp_path, top_level):
+def test_one_relationship_call_keeps_thirteen_routes_and_reference_answers(tmp_path):
     base = _thirteen_routes(tmp_path / "base")
     pkg = _thirteen_routes(tmp_path / "head")
-    if top_level:
-        package = yaml.safe_load((pkg / "package.yml").read_text())
-        graph = yaml.safe_load((pkg / "graph.yml").read_text())
-        package["path_preferences"] = graph["graph"].pop("path_preferences")
-        (pkg / "package.yml").write_text(yaml.safe_dump(package))
-        (pkg / "graph.yml").write_text(yaml.safe_dump(graph))
     project = ArchitectProject(pkg, workspace_root=tmp_path)
     revision, files = project.revision(), _files_and_receipts(project)
     config = load_package_config(str(pkg))

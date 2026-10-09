@@ -448,14 +448,6 @@ def _validate_split_package(
         relation_refs.add(relation_id)
         if relation_id.startswith("relation."):
             relation_refs.add(relation_id)
-        if (
-            not relation.get("source")
-            and not relation.get("date_spine")
-            and not relation.get("steps")
-        ):
-            add_error(errors, f"{path}: relation {key!r} must declare source/date_spine or steps")
-        if relation.get("source") and relation.get("date_spine"):
-            add_error(errors, f"{path}: relation {key!r} cannot declare both source and date_spine")
     for model_file in model_files:
         model_entries, raw = _load_model_file(model_file, errors)
         if isinstance(raw, dict):

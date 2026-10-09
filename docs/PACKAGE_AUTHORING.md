@@ -1891,6 +1891,12 @@ form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
 | A measure without `kind:` | `kind: aggregate`, `entity_count` or `lookup` | |
 | A metric with an absent, null or blank `value_type:` | Declare it; `number` is valid when intentional | |
 | `relations:` in a directory package's `package.yml` | `relations.yml` or `relations/` | |
+| A file under `models/` holding a `models:` map or a bare model; a file under `relations/`, `metrics/` or `segments/` holding a `relation:`, `metric:` or `segment:` wrapper or a bare spec | One model per file under `model:`; a `relations:`, `metrics:` or `segments:` map in the other three | |
+| Expression `kind: binary` or `kind: measure_ref`; conversion `matching:`; `in`/`not_in` `left:` (in metrics, segments, measure `expr:`, relation steps and queries; relation steps refuse when the relation compiles) | `kind: arithmetic`, `kind: measure`, `matching_mode:`, `expr:` | `expression-arithmetic` |
+| `relations:` as a list; relation-level `source:` or `date_spine:`; `cte:`; `output_columns:`; a step written as `{kind: ..., config: ...}` or as a bare string; an `unnest` step | A `relations:` map; each relation's `steps:` as one-key steps (`{source: <relation>}` first, `{date_spine: {...}}`); `output_name:`; `columns:`; `explode` | |
+| A second spelling of a key a relation step reads: `table:`, `name:` or `value:` for `relation:` (`source`, joins, `union_all` branches, which also refuse `source:`); `value:` for `columns:` (`select`), `predicates:` (`where`) or `branches:` (`union_all`); `where:` in a `where` step; `group_by:` and `measures:` (`group_by`, `pre_aggregate` sides); an aggregate's `agg:` or `expression:`; `require_preaggregated:`; `date_lag` `value:`; `window` `columns:`; a window's `kind:` or `expression:`; `order_by` `column:`; `alias:`; `date_spine` `date_column:`; `state_as_of` `date_spine:`; `base_relation:`, `attributed_relation:`; an `attribution_join` key's `left:` or `right:`; `lookback` `max:`; a `union_all` branch's `select:` | The key the step reads, which the error names: `relation:`, `columns:`, `predicates:`, `branches:`, `dimensions:`, `aggregates:`, `function:`, `expr:`, `require_pre_aggregate:`, `max:`, `windows:`, `as:`, `column:`, `spine:`, `base:`, `attributed:`, `value:`. The short forms `{source: <relation>}`, `{where: [...]}` and `{union_all: [...]}` stay | |
+| A graph relationship `cardinality:` written `N:1`, `1:N`, `1:1`, `M:N` or any other spelling | `many_to_one`, `one_to_many`, `one_to_one` or `many_to_many` | |
+| Top-level `path_policy:` or `path_preferences:` | `graph.path_policy:` and `graph.path_preferences:` | |
 | Sibling `snapshot_policy:` | Nested `accumulation: { kind: stock, snapshot: end_of_period }` | `authoring-aliases` |
 | An `accumulation:` kind outside `{flow, stock, event, population}`, on a measure or under `defaults.measure` | One of those kinds | |
 | A dimension or measure named in an entity's `disallowed_names:` | The canonical column, or an `expr:` rename | |
@@ -2339,9 +2345,8 @@ destination role, a decision for the destination path uses the airport lookup:
 a destination key with no airport row groups under `NULL` and does not match
 a filter on the airport key. Review the chosen route against reference SQL.
 
-`record_route_decision` writes where the loader reads route rows (a top-level
-`path_preferences` block in `package.yml`, else `graph.yml`, else `package.yml`'s
-`graph` block), rewriting that file as Architect YAML and dropping comments.
+`record_route_decision` writes where the loader reads route rows (`graph.yml`, else
+`package.yml`'s `graph` block), rewriting that file as Architect YAML and dropping comments.
 The `decisions` form accepts a nonempty list of rows with `source_entity`,
 `target_entity`, `relationship_path`, and optional `label`, instead of single-pair
 arguments. All pair replacements are validated together: one invalid, duplicate,
@@ -2717,7 +2722,7 @@ Architect and `Runtime.from_path` refuse a package `validate-config` refuses, wi
 `INVALID_CONFIG` that lists every error in `details.errors`. These blocks have a closed key
 set: the document top level; `package:` and `package.seed`; `defaults:` and its `dimension`,
 `time`, `measure` and `relationship` entries; `graph:`, its `entities`, its `relationships`
-entries and their `rollup_safe`; both `path_policy` blocks; `semantic_caveats` rows and their
+entries and their `rollup_safe`; `graph.path_policy`; `semantic_caveats` rows and their
 `time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
 `dimensions`, `times`, `measures` (and each measure's `accumulation:`, which takes `kind` and
 `snapshot`, as does `defaults.measure.accumulation`), `joins` and `variants`, with each
@@ -2731,14 +2736,19 @@ loader turns into a key dimension (including the key of a graph entity named aft
 which binds it by default). A name that resolves to none of them is refused, with the names it
 could mean: the loader would ignore it, and a measure it meant to bind would read the column
 named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
-`as:` value. `relations` entries are not closed yet. A key that starts
-with `_` is an annotation.
+`as:` value. Each `relations` entry and each of its steps is closed too: a step is one key
+naming its kind, and its mapping takes the keys that kind reads (a `select` or `window` step
+may instead hold its columns directly), each in one spelling. So does each mapping nested in a
+step: a `group_by` aggregate, a join's `on` rows, `date_lag` and `pre_aggregate` sides, a
+window's specs and `order_by` rows, an `attribution_join` key and `lookback`, and a `union_all`
+branch. A key that starts with `_` is an annotation, beside a step's kind too.
 
 In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,
 `relations.yml`, `metrics.yml` and `segments.yml` through `defaults:`, `graph:`,
-`relations:`, `metrics:` and `segments:`; a file under `models/`, `relations/`, `metrics/` or
-`segments/` through its plural or singular wrapper (`models:` or `model:`) when it has one.
-Any other root key is refused, as is a block file whose contents are not under its wrapper.
+`relations:`, `metrics:` and `segments:`; a file under `models/` through `model:` (one model
+per file); and a file under `relations/`, `metrics/` or `segments/` through its `relations:`,
+`metrics:` or `segments:` map. Any other root key is refused, as is a file whose contents are
+not under its wrapper.
 `policies.yml` and `caveats.yml` may still hold a bare list. A root file or directory the
 loader doesn't read, a block declared in two files, and an object defined twice are refused
 too (see [Directory layout](#directory-layout)).
@@ -2919,6 +2929,7 @@ named definition by hand before upgrading.
 | `policy-flat` | 0.3.2 | Nested policy `config:`, `visibility`, `rule`, and `description` (except nested row filters) | Flat kind-specific fields, `action` and `rationale`; nested scope or identity fields, disagreements, and release-label changes stop without choices |
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
+| `expression-arithmetic` | 0.3.2 | Expression `kind: binary` and `kind: measure_ref`, conversion `matching:` and `in`/`not_in` `left:`, in metrics, segments, measure `expr:`, relation steps and example, test and segment membership queries | `kind: arithmetic`, `kind: measure`, `matching_mode:` and `expr:`, which parse to the same nodes; when both keys appear, the retired one (which was ignored) is deleted |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
 | `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 | `package-schema-strict` | 0.3.2 | `package.schema_strict` | Deleted (a drop: only that field of the fingerprint changes) |

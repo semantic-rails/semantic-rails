@@ -292,7 +292,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                     "description": "Sends divided by available capacity.",
                     "temporal_role": "temporal_role.demo_event_time",
                     "expression": {
-                        "kind": "binary",
+                        "kind": "arithmetic",
                         "op": "divide",
                         "left": {"kind": "metric", "metric": "metric.engagement.sends"},
                         "right": {"kind": "metric", "metric": "metric.engagement.capacity"},
@@ -306,7 +306,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                     "description": "Sends divided by account count.",
                     "temporal_role": "temporal_role.demo_event_time",
                     "expression": {
-                        "kind": "binary",
+                        "kind": "arithmetic",
                         "op": "divide",
                         "left": {"kind": "metric", "metric": "metric.engagement.sends"},
                         "right": {"kind": "metric", "metric": "metric.engagement.accounts"},

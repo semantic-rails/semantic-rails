@@ -144,6 +144,13 @@ internally:
 - typed SQL AST lowering and rendered warehouse SQL
 - package-local examples, tests, artifacts, and impact reports
 
+A package's `relations:` block loads in one form only: a map keyed by relation,
+each with `steps:`, a list of one-key steps naming their kind (`{source: <relation>}`,
+`{select: {columns: ...}}`, `{explode: ...}`), and optional `output_name:` and
+`columns:`. A list of relations, `{kind, config}` or bare-string steps, `unnest`,
+`cte:`, `output_columns:`, relation-level `source:` or `date_spine:`, and any key a
+relation or step doesn't read, or a second spelling of one it does, are refused at load.
+
 Do not imply that arbitrary raw SQL, multi-step CTE chains, user-authored
 materializations, or warehouse transformation orchestration are shipped
 runtime capabilities.

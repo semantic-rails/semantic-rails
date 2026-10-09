@@ -115,8 +115,7 @@ package with one model, its count and amount metrics, an example, a package test
    outcome compared with the relationship alone. The relationship's own new answers are allowed.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
-   pair's row in the `path_preferences` list the loader reads (a top-level list in `package.yml`
-   wins over `graph.path_preferences`), replacing every row for exactly the pair however its
+   pair's row in the `graph.path_preferences` list, replacing every row for exactly the pair however its
    entities are spelled; a row for the reverse pair is never touched. Pass the `decision` of the
    option a person chose from an `AMBIGUOUS_PATH` refusal's `details.clarification`. The row is
    checked by the loader's rules (an unknown entity or relationship, a broken chain, a disallowed
@@ -374,9 +373,8 @@ Which route between two entities a question means is a business definition (see
   no files or receipts are written. This lets forward and reverse decisions be changed together.
   The result's `route_decisions` lists each row, its `replaced` value, and its `summary`.
   Revision checks, idempotent retries, and write-free previews apply to the whole batch.
-- `record_route_decision` uses the loader location: top-level
-  `package.yml` `path_preferences`, else the file holding `graph`. That file is rewritten as
-  Architect YAML, dropping comments.
+- `record_route_decision` uses the loader location: the file holding `graph`. That file is
+  rewritten as Architect YAML, dropping comments.
 - A removed route or one beyond the new hop ceiling may leave a pair refused; answering it by
   another route without its own row refuses the mutation with `ROUTE_DECISION_NOT_RECORDED`.
 - `record_route_decision` deliberately changes the default.

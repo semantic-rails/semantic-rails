@@ -20,7 +20,6 @@ _ARITHMETIC_SYMBOLS = {"add": "+", "subtract": "-", "multiply": "*", "divide": "
 _MEASURE_KINDS = {
     "",
     "measure",
-    "measure_ref",
     "aggregate",
     "semi_additive",
     "scoped_aggregate",
@@ -160,7 +159,7 @@ def _describe_expression(
             )
     elif kind == "ratio":
         text = f"{inner('numerator')} / {inner('denominator')}"
-    elif kind in {"arithmetic", "binary"}:
+    elif kind == "arithmetic":
         used.add("op")
         op = str(expression.get("op", "") or "")
         text = f"({inner('left')} {_ARITHMETIC_SYMBOLS.get(op, op)} {inner('right')})"
@@ -183,10 +182,9 @@ def _describe_expression(
         if isinstance(expression.get("window"), dict):
             used.add("window")
             text += f" within {_describe_span(expression['window'])}"
-        mode_key = "matching_mode" if expression.get("matching_mode") else "matching"
-        mode = str(expression.get(mode_key, "") or "")
+        mode = str(expression.get("matching_mode", "") or "")
         if mode:
-            used.add(mode_key)
+            used.add("matching_mode")
             text += f", matching {_MATCHING_MODES.get(mode, mode.replace('_', ' '))}"
     elif kind == "literal":
         used.add("value")
@@ -200,7 +198,7 @@ def _is_compound(expression: dict[str, Any]) -> bool:
     """Whether the rendered expression needs parentheses as an operand."""
 
     kind = str(expression.get("kind", "") or "")
-    if kind in {"arithmetic", "binary", "literal"}:
+    if kind in {"arithmetic", "literal"}:
         return False  # arithmetic brings its own parentheses
     if expression.get("metric") and kind in {"", "metric"}:
         return False

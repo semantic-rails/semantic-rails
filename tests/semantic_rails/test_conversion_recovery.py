@@ -97,7 +97,7 @@ def _run(adapter: SemanticLayerMCPAdapter, expression: dict[str, Any], **extra: 
     [
         ({}, "require 'matching_mode'"),
         ({"matching_mode": "first"}, "unsupported conversion matching_mode 'first'"),
-        ({"matching": {"mode": "same_customer"}}, "unsupported conversion matching_mode {"),
+        ({"matching_mode": {"mode": "same_customer"}}, "unsupported conversion matching_mode {"),
     ],
 )
 def test_matching_mode_error_is_recoverable_in_one_step(adapter, overrides, problem):

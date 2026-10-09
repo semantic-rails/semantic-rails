@@ -225,10 +225,10 @@ def _predicate(raw: Any, *, default_alias: str = "src", warehouse: str = "duckdb
 
 
 def _source_from_config(config: dict[str, Any]) -> str:
-    value = config.get("relation", config.get("table", config.get("name", config.get("value", ""))))
+    value = config.get("relation", config.get("value", ""))
     text = str(value or "").strip()
     if not text:
-        raise SemanticLayerError("INVALID_CONFIG", "source relation step requires relation/table")
+        raise SemanticLayerError("INVALID_CONFIG", "source relation step requires relation")
     return text
 
 
@@ -252,7 +252,7 @@ def _date_rows(start: str, end: str, *, max_days: int = 3660) -> list[date]:
 
 
 def _date_spine_query(config: dict[str, Any]) -> tuple[SqlSetQuery | SqlSelect, list[str]]:
-    column = str(config.get("column", config.get("date_column", "date_day")) or "date_day")
+    column = str(config.get("column", "date_day") or "date_day")
     start = str(config.get("start", "") or "")
     end = str(config.get("end", "") or "")
     if not start or not end:
@@ -296,7 +296,7 @@ def _lower_where(
             "INVALID_CONFIG",
             "where relation step requires known columns from a prior select/source columns declaration",
         )
-    raw_predicates = config.get("predicates", config.get("where", config.get("value", [])))
+    raw_predicates = config.get("predicates", config.get("value", []))
     predicates = [_predicate(item, warehouse=warehouse) for item in _ensure_list(raw_predicates)]
     query = SqlSelect(
         select=_column_fields(state.columns),
@@ -320,7 +320,7 @@ def _lower_json_extract(
             "INVALID_CONFIG", "json_extract relation step requires known columns"
         )
     source_column = str(config.get("column", "") or "")
-    alias = str(config.get("as", config.get("alias", source_column)) or "")
+    alias = str(config.get("as", source_column) or "")
     if not source_column or not alias:
         raise SemanticLayerError("INVALID_CONFIG", "json_extract requires column and as")
     path = [str(item) for item in _ensure_list(config.get("path"))]
@@ -357,7 +357,7 @@ def _lower_explode(
     if not state.columns:
         raise SemanticLayerError("INVALID_CONFIG", "explode relation step requires known columns")
     source_column = str(config.get("column", "") or "")
-    alias = str(config.get("as", config.get("alias", "value")) or "value")
+    alias = str(config.get("as", "value") or "value")
     delimiter = str(config.get("delimiter", "") or "")
     if not source_column:
         raise SemanticLayerError("INVALID_CONFIG", "explode requires column")
@@ -395,10 +395,10 @@ def _aggregate_expr(spec: Any, *, warehouse: str) -> SqlExpr:
     if isinstance(spec, str):
         return SqlCall(spec, [SqlLiteral(1)])
     config = _ensure_mapping(spec, path="group_by aggregate")
-    function = str(config.get("function", config.get("agg", "")) or "").upper()
+    function = str(config.get("function", "") or "").upper()
     if not function:
         raise SemanticLayerError("INVALID_CONFIG", "group_by aggregate requires function")
-    expr_raw = config.get("expr", config.get("expression", "*"))
+    expr_raw = config.get("expr", "*")
     if expr_raw == "*":
         return SqlCall(function, [SqlLiteral(1)], distinct=bool(config.get("distinct", False)))
     return SqlCall(
@@ -411,12 +411,8 @@ def _aggregate_expr(spec: Any, *, warehouse: str) -> SqlExpr:
 def _lower_group_by(
     config: dict[str, Any], state: _RelationState, *, output_name: str, warehouse: str
 ) -> _RelationState:
-    dimensions = _ensure_mapping(
-        config.get("dimensions", config.get("group_by", {})), path="relation group_by dimensions"
-    )
-    aggregates = _ensure_mapping(
-        config.get("aggregates", config.get("measures", {})), path="relation group_by aggregates"
-    )
+    dimensions = _ensure_mapping(config.get("dimensions", {}), path="relation group_by dimensions")
+    aggregates = _ensure_mapping(config.get("aggregates", {}), path="relation group_by aggregates")
     fields = [
         SqlField(_expr(expr_raw, warehouse=warehouse), str(alias))
         for alias, expr_raw in dimensions.items()
@@ -455,7 +451,7 @@ def _join_condition(
     lag = config.get("date_lag")
     if isinstance(lag, dict):
         unit = str(lag.get("unit", "day") or "day")
-        max_value = int(lag.get("max", lag.get("value", 0)) or 0)
+        max_value = int(lag.get("max", 0) or 0)
         if max_value:
             lag_expr = dialect_for_warehouse(str(lag.get("warehouse", warehouse))).date_diff(
                 unit, left, right
@@ -526,9 +522,9 @@ def _lower_preaggregate_side(
 def _lower_join(
     config: dict[str, Any], state: _RelationState, *, output_name: str, warehouse: str
 ) -> _RelationState:
-    relation = str(config.get("relation", config.get("table", "")) or "").strip()
+    relation = str(config.get("relation", "") or "").strip()
     if not relation:
-        raise SemanticLayerError("INVALID_CONFIG", "join relation step requires relation/table")
+        raise SemanticLayerError("INVALID_CONFIG", "join relation step requires relation")
     on_items = _ensure_list(config.get("on", []))
     if not on_items:
         raise SemanticLayerError("INVALID_CONFIG", "join relation step requires on")
@@ -561,7 +557,7 @@ def _lower_join(
         join_ctes.append(right_cte)
         right_source = right_cte.name
 
-    if bool(config.get("require_pre_aggregate", config.get("require_preaggregated", False))):
+    if bool(config.get("require_pre_aggregate", False)):
         has_boundary = (
             state.preaggregated
             or bool(pre_aggregate.get("left"))
@@ -614,11 +610,9 @@ def _lower_semi_join(
     warehouse: str,
     negated: bool,
 ) -> _RelationState:
-    relation = str(config.get("relation", config.get("table", "")) or "").strip()
+    relation = str(config.get("relation", "") or "").strip()
     if not relation:
-        raise SemanticLayerError(
-            "INVALID_CONFIG", "semi_join relation step requires relation/table"
-        )
+        raise SemanticLayerError("INVALID_CONFIG", "semi_join relation step requires relation")
     on_items = _ensure_list(config.get("on", []))
     if not on_items:
         raise SemanticLayerError("INVALID_CONFIG", "semi_join relation step requires on")
@@ -658,23 +652,19 @@ def _lower_semi_join(
 def _lower_window(
     config: dict[str, Any], state: _RelationState, *, output_name: str, warehouse: str
 ) -> _RelationState:
-    windows = _ensure_mapping(
-        config.get("windows", config.get("columns", config)), path="relation window columns"
-    )
+    windows = _ensure_mapping(config.get("windows", config), path="relation window columns")
     fields = _column_fields(state.columns)
     for alias, spec_raw in windows.items():
         spec = _ensure_mapping(spec_raw, path=f"relation window {alias}")
-        function = str(spec.get("function", spec.get("kind", "")) or "").upper()
+        function = str(spec.get("function", "") or "").upper()
         if not function:
             raise SemanticLayerError("INVALID_CONFIG", "window step requires function")
         args = (
-            []
-            if function == "ROW_NUMBER"
-            else [_expr(spec.get("expr", spec.get("expression", "1")), warehouse=warehouse)]
+            [] if function == "ROW_NUMBER" else [_expr(spec.get("expr", "1"), warehouse=warehouse)]
         )
         order_by = [
             SqlOrderTerm(
-                _expr(item.get("expr", item.get("column", item)), warehouse=warehouse),
+                _expr(item.get("expr", item), warehouse=warehouse),
                 str(item.get("direction", "ASC")) if isinstance(item, dict) else "ASC",
             )
             for item in _ensure_list(spec.get("order_by", []))
@@ -704,7 +694,7 @@ def _lower_window(
 def _lower_state_as_of(
     config: dict[str, Any], state: _RelationState, *, output_name: str, warehouse: str
 ) -> _RelationState:
-    spine = str(config.get("spine", config.get("date_spine", "")) or "").strip()
+    spine = str(config.get("spine", "") or "").strip()
     date_column = str(config.get("date_column", "date_day") or "date_day")
     valid_from = str(config.get("valid_from", "") or "")
     valid_to = str(config.get("valid_to", "") or "")
@@ -765,8 +755,8 @@ def _lower_state_as_of(
 def _lower_attribution_join(
     config: dict[str, Any], *, output_name: str, warehouse: str
 ) -> _RelationState:
-    base = str(config.get("base", config.get("base_relation", "")) or "").strip()
-    attributed = str(config.get("attributed", config.get("attributed_relation", "")) or "").strip()
+    base = str(config.get("base", "") or "").strip()
+    attributed = str(config.get("attributed", "") or "").strip()
     base_time = str(config.get("base_time", "") or "").strip()
     attributed_time = str(config.get("attributed_time", "") or "").strip()
     if not base or not attributed or not base_time or not attributed_time:
@@ -777,8 +767,8 @@ def _lower_attribution_join(
     conditions: list[SqlExpr] = []
     for key in _ensure_list(config.get("keys", [])):
         if isinstance(key, dict):
-            left = str(key.get("base", key.get("left", "")) or "").strip()
-            right = str(key.get("attributed", key.get("right", left)) or "").strip()
+            left = str(key.get("base", "") or "").strip()
+            right = str(key.get("attributed", left) or "").strip()
             transform = str(key.get("transform", "") or "").lower()
         else:
             left = right = str(key)
@@ -803,7 +793,7 @@ def _lower_attribution_join(
     lookback = dict(config.get("lookback", {}) or {})
     if lookback:
         unit = str(lookback.get("unit", "day") or "day")
-        value = int(lookback.get("value", lookback.get("max", 0)) or 0)
+        value = int(lookback.get("value", 0) or 0)
         if value > 0:
             conditions.append(
                 SqlBinary(
@@ -870,15 +860,11 @@ def _lower_union_all(config: dict[str, Any], *, output_name: str, warehouse: str
     queries: list[SqlSelect] = []
     expected_columns: list[str] = []
     for index, branch in enumerate(branches):
-        source = str(
-            branch.get("relation", branch.get("table", branch.get("source", ""))) or ""
-        ).strip()
-        columns = _ensure_mapping(
-            branch.get("columns", branch.get("select", {})), path="union_all branch columns"
-        )
+        source = str(branch.get("relation", "") or "").strip()
+        columns = _ensure_mapping(branch.get("columns", {}), path="union_all branch columns")
         if not source or not columns:
             raise SemanticLayerError(
-                "INVALID_CONFIG", "union_all branches require source/relation and columns"
+                "INVALID_CONFIG", "union_all branches require relation and columns"
             )
         branch_columns = [str(alias) for alias in columns]
         if index == 0:

@@ -435,9 +435,8 @@ def test_the_settlement_read_retains_derived_relation_dependencies(tmp_path: Pat
     relations = {
         "relations": {
             "all_sales": {
-                "source": "sales",
                 "columns": ["sale_id", "store_id", "region", "product", "qty", "sold_at"],
-                "steps": [],
+                "steps": [{"source": "sales"}],
             }
         }
     }

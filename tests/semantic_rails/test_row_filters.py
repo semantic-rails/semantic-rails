@@ -157,7 +157,7 @@ def _package(root, policies):
         "rf.revenue_change": {"as": "metric.rf.revenue_change", "kind": "derived",
                               "temporal_role": "temporal_role.rf_order_ordered_at",
                               "value_type": "number",
-                              "expression": {"kind": "binary", "op": "-", "left": REVENUE,
+                              "expression": {"kind": "arithmetic", "op": "-", "left": REVENUE,
                                              "right": prior}},
     }})  # fmt: skip
     in_s1 = [{"field": "dimension.rf_order_store_id", "op": "=", "value": "s1"}]

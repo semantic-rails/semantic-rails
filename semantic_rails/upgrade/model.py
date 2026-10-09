@@ -195,6 +195,9 @@ class PackageFiles:
     def models(self) -> Iterator[Row]:
         return self._objects("models")
 
+    def relations(self) -> Iterator[Row]:
+        return self._objects("relations")
+
     def metrics(self) -> Iterator[Row]:
         return self._objects("metrics")
 

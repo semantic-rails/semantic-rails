@@ -28,6 +28,7 @@ from .config_parts.route_rows import (
     entity_references,
     require_rows_agree,
 )
+from .config_parts.shape_checks import RELATION_STEP_KEYS
 from .dialects import (
     connection_option_errors,
     snowflake_adbc_connect_errors,
@@ -614,10 +615,6 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     f"loader, so this would silently change behavior; {fix}"
                 )
 
-    def drops_beside_wrapper(filename: str, doc: dict[str, Any], *wrappers: str) -> None:
-        if wrapper := next((name for name in wrappers if name in doc), None):
-            drops(filename, doc, (wrapper,), f"the loader reads only {wrapper!r} from this file")
-
     raw = load(package_path)
     if raw.get("relations") not in (None, {}, []):
         errors.append(
@@ -661,7 +658,7 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
             doc = load(full)
             list_keys = {"semantic_policies", "semantic_caveats"}
             if key in doc:
-                drops_beside_wrapper(full, doc, key)
+                drops(full, doc, (key,), f"the loader reads only {key!r} from this file")
             elif key not in list_keys:
                 drops(full, doc, (), f"write this file's contents under a top-level {key!r} key")
             value = doc.get(key, doc if key in list_keys else {})
@@ -691,104 +688,36 @@ def _merge_package_dir(path: str, *, captured: CapturedSource | None = None) -> 
                     files.append(os.path.join(current_root, filename))
         return files
 
-    models_dir = os.path.join(path, "models")
-    if captured is not None or os.path.isdir(models_dir):
-        models = dict(merged.get("models", {}) or {})
-        for file_path in _yaml_files(models_dir):
+    # Each object folder has one file shape: one model per file under `model:`, and a
+    # `relations:`, `metrics:` or `segments:` map in every file of the other three.
+    for block in _OBJECT_DIRS:
+        folder = os.path.join(path, block)
+        if captured is None and not os.path.isdir(folder):
+            continue
+        wrapper = "model" if block == "models" else block
+        objects = dict(merged.get(block, {}) or {})
+        for file_path in _yaml_files(folder):
             doc = load(file_path)
-            drops_beside_wrapper(file_path, doc, "models", "model")
-            if "models" in doc:
-                model_docs = dict(doc.get("models", {}) or {})
-            else:
-                model_docs = {
-                    str(
-                        dict(doc.get("model", doc) or {}).get("id")
-                        or os.path.splitext(os.path.basename(file_path))[0]
-                    ): dict(doc.get("model", doc) or {})
-                }
-            for model_key, model_raw in model_docs.items():
-                model = dict(model_raw or {})
-                if "models" in doc and str(model.get("id", model_key)).strip() != str(model_key):
-                    errors.append(
-                        f"{file_path}: model '{model_key}' authors id {model['id']!r}; the "
-                        "model's key is its id, so delete id:"
-                    )
-                model_id = str(
-                    model.get("id") or model_key or os.path.splitext(os.path.basename(file_path))[0]
+            if wrapper not in doc:
+                shape = "one model under `model:`" if block == "models" else f"a `{block}:` map"
+                errors.append(
+                    f"{file_path} must hold {shape}, the one file shape in {block}/; rewrite its "
+                    f"contents under `{wrapper}:`"
                 )
-                model["id"] = model_id
-                define("models", model_id, file_path)
-                models[model_id] = model
-        merged["models"] = models
-
-    relations_dir = os.path.join(path, "relations")
-    if captured is not None or os.path.isdir(relations_dir):
-        relations = dict(merged.get("relations", {}) or {})
-        for file_path in _yaml_files(relations_dir):
-            doc = load(file_path)
-            drops_beside_wrapper(file_path, doc, "relations", "relation")
-            if "relations" in doc:
-                relation_docs = dict(doc.get("relations", {}) or {})
-            else:
-                relation_docs = {
-                    str(
-                        dict(doc.get("relation", doc) or {}).get("id")
-                        or os.path.splitext(os.path.basename(file_path))[0]
-                    ): dict(doc.get("relation", doc) or {})
-                }
-            for relation_key, relation_raw in relation_docs.items():
-                relation = dict(relation_raw or {})
-                relation_id = str(
-                    relation.get("id")
-                    or relation_key
-                    or os.path.splitext(os.path.basename(file_path))[0]
-                )
-                relation["id"] = relation_id
-                define("relations", relation_id, file_path)
-                relations[relation_id] = relation
-        merged["relations"] = relations
-
-    metrics_dir = os.path.join(path, "metrics")
-    if captured is not None or os.path.isdir(metrics_dir):
-        metrics = dict(merged.get("metrics", {}) or {})
-        for file_path in _yaml_files(metrics_dir):
-            doc = load(file_path)
-            drops_beside_wrapper(file_path, doc, "metrics", "metric")
-            if "metrics" in doc:
-                metric_docs = dict(doc.get("metrics", {}) or {})
-            else:
-                metric_docs = {
-                    str(
-                        dict(doc.get("metric", doc) or {}).get("name")
-                        or dict(doc.get("metric", doc) or {}).get("id")
-                        or os.path.splitext(os.path.basename(file_path))[0]
-                    ): dict(doc.get("metric", doc) or {})
-                }
-            for metric_key, metric_raw in metric_docs.items():
-                define("metrics", str(metric_key), file_path)
-                metrics[str(metric_key)] = dict(metric_raw or {})
-        merged["metrics"] = metrics
-
-    segments_dir = os.path.join(path, "segments")
-    if captured is not None or os.path.isdir(segments_dir):
-        segments = dict(merged.get("segments", {}) or {})
-        for file_path in _yaml_files(segments_dir):
-            doc = load(file_path)
-            drops_beside_wrapper(file_path, doc, "segments", "segment")
-            if "segments" in doc:
-                segment_docs = dict(doc.get("segments", {}) or {})
-            else:
-                segment_docs = {
-                    str(
-                        dict(doc.get("segment", doc) or {}).get("name")
-                        or dict(doc.get("segment", doc) or {}).get("id")
-                        or os.path.splitext(os.path.basename(file_path))[0]
-                    ): dict(doc.get("segment", doc) or {})
-                }
-            for segment_key, segment_raw in segment_docs.items():
-                define("segments", str(segment_key), file_path)
-                segments[str(segment_key)] = dict(segment_raw or {})
-        merged["segments"] = segments
+                continue
+            drops(file_path, doc, (wrapper,), f"the loader reads only {wrapper!r} from this file")
+            stem = os.path.splitext(os.path.basename(file_path))[0]
+            entries = (
+                {stem: dict(doc["model"] or {})}
+                if block == "models"
+                else {str(key): dict(spec or {}) for key, spec in dict(doc[block] or {}).items()}
+            )
+            for key, spec in entries.items():
+                if block in {"models", "relations"}:
+                    key = spec["id"] = str(spec.get("id") or key)
+                define(block, key, file_path)
+                objects[key] = spec
+        merged[block] = objects
 
     links = captured.directory_links if captured is not None else ()
     errors.extend(_unread_root_errors(path, contents, links))
@@ -988,7 +917,7 @@ def _translate_direct_fields_to_expression(
             return {"kind": "metric", "metric": metric_id or text}
 
         spec["expression"] = {
-            "kind": "binary",
+            "kind": "arithmetic",
             "op": "divide",
             "left": _ratio_operand(numerator, field="numerator"),
             "right": _ratio_operand(denominator, field="denominator"),
@@ -1017,9 +946,7 @@ def _translate_direct_fields_to_expression(
     return spec
 
 
-_MEASURE_REF_KINDS = frozenset(
-    {"aggregate", "semi_additive", "scoped_aggregate", "measure", "measure_ref"}
-)
+_MEASURE_REF_KINDS = frozenset({"aggregate", "semi_additive", "scoped_aggregate", "measure"})
 
 
 def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric, resolve_dimension=None) -> Any:
@@ -1363,26 +1290,6 @@ def _parse_package_meta(
     )
 
 
-_RELATION_STEP_KEYS = {
-    "source",
-    "select",
-    "where",
-    "group_by",
-    "join",
-    "semi_join",
-    "anti_join",
-    "exclude",
-    "union_all",
-    "explode",
-    "unnest",
-    "json_extract",
-    "date_spine",
-    "state_as_of",
-    "window",
-    "attribution_join",
-}
-
-
 def _relation_sql_name(relation_id: str) -> str:
     label = relation_id
     if label.startswith("relation."):
@@ -1403,74 +1310,49 @@ def _relation_id_for_key(key: str, spec: dict[str, Any], *, namespace: str) -> s
 
 
 def _normalize_relation_step(raw: Any) -> RelationPipelineStep:
-    if isinstance(raw, str):
-        return RelationPipelineStep(kind="source", config={"relation": raw})
-    if not isinstance(raw, dict):
-        raise SemanticLayerError("INVALID_CONFIG", "Relation pipeline steps must be mappings")
-    step = dict(raw or {})
-    kind = str(step.get("kind", "") or "").strip()
-    config = dict(step.get("config", {}) or {}) if isinstance(step.get("config"), dict) else {}
-    if kind:
-        config.update({key: value for key, value in step.items() if key not in {"kind", "config"}})
-        return RelationPipelineStep(kind=kind, config=config)
-    matched = [key for key in step if key in _RELATION_STEP_KEYS]
-    if len(matched) != 1:
+    # Keys starting with `_` are annotations, beside the one key naming the step's kind.
+    step = (
+        {key: value for key, value in raw.items() if not str(key).startswith("_")}
+        if isinstance(raw, dict)
+        else raw
+    )
+    if not isinstance(step, dict) or len(step) != 1 or next(iter(step)) not in RELATION_STEP_KEYS:
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"Relation pipeline step must declare exactly one step kind, got {matched}",
+            f"Relation pipeline step must be one key naming its kind, got {raw!r}",
         )
-    kind = matched[0]
-    value = step[kind]
-    config = dict(value) if isinstance(value, dict) else {"value": value}
-    config.update({key: value for key, value in step.items() if key != kind})
-    return RelationPipelineStep(kind="explode" if kind == "unnest" else kind, config=config)
+    ((kind, value),) = step.items()
+    return RelationPipelineStep(
+        kind=kind, config=dict(value) if isinstance(value, dict) else {"value": value}
+    )
 
 
 def _parse_relations(
     raw: dict[str, Any], *, namespace: str, path: str
 ) -> tuple[list[RelationConfig], dict[str, str]]:
     rows = raw.get("relations", {}) or {}
-    if isinstance(rows, list):
-        items = [
-            (str(dict(row or {}).get("id", index)), dict(row or {}))
-            for index, row in enumerate(rows)
-        ]
-    elif isinstance(rows, dict):
-        items = [(str(key), dict(value or {})) for key, value in rows.items()]
-    else:
-        raise SemanticLayerError("INVALID_CONFIG", f"{path}: relations must be a mapping or list")
+    if not isinstance(rows, dict):
+        raise SemanticLayerError("INVALID_CONFIG", f"{path}: relations must be a mapping")
 
     relations: list[RelationConfig] = []
     aliases: dict[str, str] = {}
-    for key, spec in items:
+    for key, value in rows.items():
+        key, spec = str(key), dict(value or {})
         relation_id = _relation_id_for_key(key, spec, namespace=namespace)
-        steps: list[RelationPipelineStep] = []
-        if spec.get("source"):
-            steps.append(
-                RelationPipelineStep(kind="source", config={"relation": str(spec.get("source"))})
-            )
-        for step_raw in list(spec.get("steps", []) or []):
-            steps.append(_normalize_relation_step(step_raw))
-        if spec.get("date_spine"):
-            steps.append(
-                RelationPipelineStep(
-                    kind="date_spine", config=dict(spec.get("date_spine", {}) or {})
-                )
-            )
+        steps = [_normalize_relation_step(step) for step in list(spec.get("steps", []) or [])]
         if not steps:
             raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: relation '{key}' must declare source/date_spine or steps",
+                "INVALID_CONFIG", f"{path}: relation '{key}' must declare steps"
             )
-        output_name = str(
-            spec.get("output_name", spec.get("cte", "")) or ""
-        ).strip() or _relation_sql_name(relation_id)
+        output_name = str(spec.get("output_name", "") or "").strip() or _relation_sql_name(
+            relation_id
+        )
         relations.append(
             RelationConfig(
                 id=relation_id,
                 output_name=output_name,
                 steps=steps,
-                columns=_ensure_list(spec.get("columns", spec.get("output_columns"))),
+                columns=_ensure_list(spec.get("columns")),
                 name=str(spec.get("name", key)),
                 label=str(spec.get("label", _titleize(key))),
                 description=str(spec.get("description", "")),

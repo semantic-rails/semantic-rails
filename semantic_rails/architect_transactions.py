@@ -347,15 +347,9 @@ def route_rows_update(
     entities: Mapping[str, str] | None = None,
 ) -> tuple[ProjectFileUpdate, dict[str, Any] | None]:
     """Write rows where the loader reads them, optionally replacing exactly one pair."""
-    package = dict(yaml_safe_load(files["package.yml"]) or {})
-    if "path_preferences" in package:
-        relative, document, block = "package.yml", package, package
-    else:
-        relative = "graph.yml" if "graph.yml" in files else "package.yml"
-        document = (
-            package if relative == "package.yml" else dict(yaml_safe_load(files[relative]) or {})
-        )
-        block = document["graph"] = dict(document.get("graph") or {})
+    relative = "graph.yml" if "graph.yml" in files else "package.yml"
+    document = dict(yaml_safe_load(files[relative]) or {})
+    block = document["graph"] = dict(document.get("graph") or {})
     existing = list(block.get("path_preferences") or [])
     references = entities or {}
     matches = [

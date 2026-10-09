@@ -520,15 +520,21 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                         f"graph relationship '{rel_name}' cannot attach entity '{endpoint}' "
                         "to a graph model",
                     )
-            cardinality = str(spec.get("cardinality", "")).strip().lower()
-            # Translate friendly cardinality terms.
-            cardinality_map = {
-                "one_to_one": "1:1",
+            # Authors name one of four cardinalities; the parser's notation is internal.
+            cardinalities = {
                 "many_to_one": "N:1",
                 "one_to_many": "1:N",
+                "one_to_one": "1:1",
                 "many_to_many": "M:N",
             }
-            cardinality = cardinality_map.get(cardinality, cardinality)
+            authored = str(spec.get("cardinality", "") or "")
+            if authored and authored not in cardinalities:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"graph relationship '{rel_name}' cardinality {authored!r} must be one of "
+                    f"{', '.join(cardinalities)}",
+                )
+            cardinality = cardinalities.get(authored, "")
             rollup_safe = spec.get("rollup_safe", {})
             if not isinstance(rollup_safe, dict):
                 raise SemanticLayerError(
@@ -604,14 +610,11 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             model["joins"] = joins
             models[source_model] = model
 
-    # `graph.path_policy:` and `graph.path_preferences:` are authored next
-    # to the relationships they govern, but the canonical parser reads them
-    # at the document top level. Lift them out of the graph block; an
-    # explicit top-level value (single-file authoring) wins.
-    if "path_policy" in graph:
-        out.setdefault("path_policy", graph.pop("path_policy"))
-    if "path_preferences" in graph:
-        out.setdefault("path_preferences", graph.pop("path_preferences"))
+    # `graph.path_policy:` and `graph.path_preferences:` are authored next to the
+    # relationships they govern; the canonical parser reads them at the top level.
+    for key in ("path_policy", "path_preferences"):
+        if key in graph:
+            out[key] = graph.pop(key)
 
     out["graph"] = graph
     out["models"] = models

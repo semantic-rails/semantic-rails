@@ -488,11 +488,17 @@ def _expression_children(node: Mapping[str, Any]) -> Iterable[tuple[str, Any]]:
 
 
 def _unsupported_expression_kind(kind: Any, path: str) -> SemanticLayerError:
+    # A retired kind names the kind that parses to the same node.
+    current = {"binary": "arithmetic", "measure_ref": "measure"}.get(str(kind).strip())
     return SemanticLayerError(
         "INVALID_EXPRESSION_AST",
         f"Unsupported expression kind {kind!r} at {path}. "
-        "Send a select expression {measure: '<measure_id>'} or {metric: '<metric_id>'}; "
-        "put dimension ids in group_by.",
+        + (
+            f"Write kind {current!r} (`semantic-rails project upgrade` rewrites it)."
+            if current
+            else "Send a select expression {measure: '<measure_id>'} or "
+            "{metric: '<metric_id>'}; put dimension ids in group_by."
+        ),
         details={"expression_kind": kind, "expression_position": path, "path": path},
     )
 
@@ -955,18 +961,16 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
     "semi_additive": _COMMON_KEYS
     | {"measure", "aggregation", "temporal_role", "parameters", "filter", "window"},
     "measure": _COMMON_KEYS | {"measure", "aggregation", "temporal_role", "parameters"},
-    "measure_ref": _COMMON_KEYS | {"measure", "aggregation", "temporal_role", "parameters"},
     "metric": _COMMON_KEYS | {"metric"},
     "column": _COMMON_KEYS | {"column", "entity", "table"},
     "literal": _COMMON_KEYS | {"value"},
     "arithmetic": _COMMON_KEYS | {"op", "left", "right"},
-    "binary": _COMMON_KEYS | {"op", "left", "right"},
     "comparison": _COMMON_KEYS | {"op", "left", "right"},
     "boolean": _COMMON_KEYS | {"op", "args"},
     "call": _COMMON_KEYS | {"name", "args", "distinct"},
     "date_add": _COMMON_KEYS | {"unit", "value", "date"},
-    "in": _COMMON_KEYS | {"expr", "left", "values", "negated"},
-    "not_in": _COMMON_KEYS | {"expr", "left", "values", "negated"},
+    "in": _COMMON_KEYS | {"expr", "values", "negated"},
+    "not_in": _COMMON_KEYS | {"expr", "values", "negated"},
     # ``between`` / ``not_between`` are parse-time sugar that desugar to
     # ``BooleanExpr`` folds of two ``ComparisonExpr`` nodes. They appear
     # in :func:`parse_semantic_expression` and never reach the AST/IR.
@@ -1009,7 +1013,6 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
         "entity",
         "window",
         "matching_mode",
-        "matching",
         "constant_properties",
         "dimension_bindings",
     },
@@ -1062,7 +1065,7 @@ def _conversion_matching_mode_error(expr: Mapping[str, Any], received: Any) -> S
             "received_value": received,
             "allowed_values": dict(CONVERSION_MATCHING_MODES),
             "expression": {
-                **{key: value for key, value in expr.items() if key != "matching"},
+                **expr,
                 "matching_mode": next(iter(CONVERSION_MATCHING_MODES)),
             },
         },
@@ -1314,7 +1317,7 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         "measure" in expr
         and kind
         not in {"scoped_aggregate", "prior_period", "rolling", "cumulative", "period_to_date"}
-    ) or kind in {"measure", "measure_ref"}:
+    ) or kind == "measure":
         measure_id = str(expr.get("measure", "")).strip()
         if not measure_id:
             raise SemanticLayerError(
@@ -1390,7 +1393,7 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         )
     if kind == "literal":
         return LiteralExpr(value=expr.get("value"))
-    if kind in {"arithmetic", "binary"}:
+    if kind == "arithmetic":
         return ArithmeticExpr(
             op=_normalize_arithmetic_op(expr.get("op", "")),
             left=parse_semantic_expression(expr.get("left"), context=context),
@@ -1495,7 +1498,7 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
             for value in raw_values
         ]
         return InExpr(
-            expr=parse_semantic_expression(expr.get("expr", expr.get("left")), context=context),
+            expr=parse_semantic_expression(expr.get("expr"), context=context),
             values=values,
             negated=bool(expr.get("negated", False)) or kind == "not_in",
         )
@@ -2134,7 +2137,7 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
                     "supported_units": sorted(_CONVERSION_WINDOW_UNITS),
                 },
             )
-        raw_mode = expr.get("matching_mode", expr.get("matching", ""))
+        raw_mode = expr.get("matching_mode", "")
         matching_mode = raw_mode.strip() if isinstance(raw_mode, str) else ""
         if matching_mode not in CONVERSION_MATCHING_MODES:
             raise _conversion_matching_mode_error(expr, raw_mode)

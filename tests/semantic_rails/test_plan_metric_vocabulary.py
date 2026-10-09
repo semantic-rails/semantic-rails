@@ -71,7 +71,7 @@ def _package(
         "value_type": "count",
         "temporal_role": "temporal_role.shop_event_occurred_at",
         "expression": {
-            "kind": "binary",
+            "kind": "arithmetic",
             "op": "subtract",
             "left": {"kind": "metric", "metric": "metric.shop.new_accounts"},
             "right": {"kind": "metric", "metric": "metric.shop.closures"},

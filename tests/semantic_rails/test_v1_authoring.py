@@ -110,7 +110,7 @@ def _write_synthetic_package(
             },
         }
     for model_id, model in models.items():
-        _write_yaml(package_dir / "models" / f"{model_id}.yml", {"models": {model_id: model}})
+        _write_yaml(package_dir / "models" / f"{model_id}.yml", {"model": model})
 
     if metrics:
         _write_yaml(package_dir / "metrics.yml", {"metrics": metrics})
@@ -596,11 +596,7 @@ def test_unattachable_graph_relationship_is_refused(tmp_path: Path, relationship
     # An unbound model must not make an unknown graph entity attachable.
     _write_yaml(
         pkg / "models" / "orphan.yml",
-        {
-            "models": {
-                "orphan": {"entity": "orphan", "relation": "orphan", "entities": {"orphan": {}}}
-            }
-        },
+        {"model": {"entity": "orphan", "relation": "orphan", "entities": {"orphan": {}}}},
     )
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
@@ -1052,7 +1048,7 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
 # Section 7: Legacy authoring forms are refused at load
 # ---------------------------------------------------------------------------
 
-_MODEL = ("models", "widgets")
+_MODEL = ("model",)
 _MEASURE = (*_MODEL, "measures", "widget_count")
 _DELETE = object()
 
@@ -1706,7 +1702,7 @@ def test_metric_derived_ast_resolves_top_level_metric_ref(tmp_path: Path) -> Non
                 "description": "Derived metric referencing another metric.",
                 "kind": "derived",
                 "expression": {
-                    "kind": "binary",
+                    "kind": "arithmetic",
                     "op": "multiply",
                     "left": {"kind": "metric", "metric": "premium_metric"},
                     "right": {"kind": "metric", "metric": "premium_metric"},
