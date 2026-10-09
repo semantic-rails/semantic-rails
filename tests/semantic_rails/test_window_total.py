@@ -247,7 +247,7 @@ def test_an_entity_filter_over_the_entity_s_own_rows_has_one_total(
         f"WHERE {population} GROUP BY 1 HAVING COUNT(DISTINCT order_id) IN {tuple(counts)})",
     )
     assert result["rows"] == gold
-    assert result["time_shape"] == "window_total"
+    assert "WINDOW_TOTAL" in [row["code"] for row in result["assumptions"]]
 
 
 def test_a_cross_clock_predicate_in_an_aggregate_filter_is_refused(runtime: Runtime) -> None:
@@ -457,12 +457,12 @@ def test_execute_reports_the_total_and_its_assumption(mcp: SemanticLayerMCPAdapt
     assert response["row_count"] == 2 and response["truncated"] is False
     # The default response is minimal, and an assumption changes what the numbers mean.
     assert "one total" in response["assumptions"][0]["message"]
-    assert response["time_shape"] == "window_total"
+    assert response["assumptions"][0]["code"] == "WINDOW_TOTAL"
     assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
     yearly = mcp.call_tool(
         "execute", {"query": {**query, "time": {"temporal_role": ORDER_TIME, "grain": "year"}}}
     )
-    assert "assumptions" not in yearly and "time_shape" not in yearly
+    assert "assumptions" not in yearly
 
 
 def test_a_grant_scoped_execute_reports_the_total_and_its_flag(
@@ -486,7 +486,7 @@ def test_a_grant_scoped_execute_reports_the_total_and_its_flag(
         "metric.sales.aov_usd",
     ]
     assert "one total" in response["assumptions"][0]["message"]
-    assert response["time_shape"] == "window_total"
+    assert response["assumptions"][0]["code"] == "WINDOW_TOTAL"
     assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
     # The advice for a result that is too big must not blame the raw timestamp either.
     monkeypatch.setenv(LIMIT_ENV, "50")

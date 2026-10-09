@@ -21,7 +21,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from .answer import TIME_SHAPE_WINDOW_TOTAL
 from .audit import emit_audit_event
 from .catalog_service import resolve_catalog
 from .diagnostics import (
@@ -1177,7 +1176,7 @@ def _uses_own_clock(expression: Any) -> bool:
 def _collapsed_window(result: Mapping[str, Any]) -> bool:
     """Whether the runtime aggregated a grainless time window as one total."""
 
-    return result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL
+    return any(row.get("code") == "WINDOW_TOTAL" for row in result.get("assumptions") or [])
 
 
 def _narrowing_advice(query: Mapping[str, Any], result: Mapping[str, Any]) -> str:

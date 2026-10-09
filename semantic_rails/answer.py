@@ -2,8 +2,7 @@
 
 ``answer_fields`` reads from the compiled call (and, for a query, its rows and loaded
 coverage) what every answer states: ``window``, ``clock``, ``observation_scope`` (always, since
-it decides 0 or NULL), ``time_shape``, ``routes`` (only when a route was chosen) and the
-assumptions the call's time and entity filters imply. ``finish`` completes a response: a
+it decides 0 or NULL), ``routes`` (only when a route was chosen) and the assumptions the call's time and entity filters imply. ``finish`` completes a response: a
 warning whose code the registry lists as an assumption is stated under ``assumptions``, the
 echoed query is the call, and empty fields go. Verbosity trims only afterwards
 (``runtime_parts.responses.apply_response_verbosity``) and never removes a warning, an
@@ -31,8 +30,6 @@ WINDOW_TOTAL_MESSAGE = (
     "The time window had no grain, so it was aggregated as one total over the window with no "
     "time column. Set time.grain to get one row per period."
 )
-# The ``time_shape`` a response carries when the window was aggregated as one total.
-TIME_SHAPE_WINDOW_TOTAL = "window_total"
 
 _OVER_MEANING = {
     "all_time": "over all of its rows, ignoring the query window",
@@ -90,7 +87,6 @@ def answer_fields(
     assumptions: list[dict[str, Any]] = []
     if time.get("window_total"):
         assumptions.append({"code": "WINDOW_TOTAL", "message": WINDOW_TOTAL_MESSAGE})
-        out["time_shape"] = TIME_SHAPE_WINDOW_TOTAL
     assumptions.extend(_entity_filter_over(plan.query))
     if time.get("grain") or time.get("start") is not None or time.get("end") is not None:
         window = engine_window(time, now=now, timezone=zone)

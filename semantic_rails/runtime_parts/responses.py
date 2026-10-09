@@ -34,7 +34,6 @@ _ANSWER_KEYS: tuple[str, ...] = (
     "window",
     "clock",
     "observation_scope",
-    "time_shape",
     "routes",
     "assumptions",
     "withheld",

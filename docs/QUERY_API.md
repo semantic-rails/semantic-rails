@@ -457,7 +457,7 @@ contract, including the object-only `range.last` relative window
 
 A window (`start` and/or `end`) with no `time.grain` is one total over the window per `group_by`
 group, with no time column, including a window inside one day. The response says so in
-`assumptions` and sets `time_shape: "window_total"`. Setting `time.grain` returns one row per
+`assumptions` (`WINDOW_TOTAL`). Setting `time.grain` returns one row per
 period instead. Queries that need a time axis, such as a rolling or prior-period expression, a
 metric predicate (including one in an aggregate's `filter` or a metric recipe), and a `time` block
 with no window are not collapsed.
@@ -1196,8 +1196,7 @@ verbosity:
 - `routes` only when a route was chosen among two or more (see
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule));
 - `assumptions` only when the answer took something as meant, each `{code, message, …}`:
-  `WINDOW_TOTAL` (a window with no grain read as one total, with `time_shape:
-  "window_total"`), `PARTIAL_PERIOD` ("Q3 2017 so far (46 of 92 days)") and
+  `WINDOW_TOTAL` (a window with no grain read as one total), `PARTIAL_PERIOD` ("Q3 2017 so far (46 of 92 days)") and
   `ENTITY_FILTER_OVER` (how each entity's aggregate was taken);
 - `warnings` and `errors` only when there are some.
 

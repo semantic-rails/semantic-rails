@@ -577,7 +577,6 @@ def _run_in_view(
                     "sql_profile",
                     # Fixed engine strings that name no objects.
                     "assumptions",
-                    "time_shape",
                     "window",
                     "observation_scope",
                     "withheld",
