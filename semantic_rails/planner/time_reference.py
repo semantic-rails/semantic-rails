@@ -51,6 +51,9 @@ def with_time_reference(operation: Callable[_P, _R]) -> Callable[_P, _R]:
             else kwargs.get("policy_context")
         )
         context = context if isinstance(context, dict) else None
+        if kwargs.get("now") not in (None, ""):
+            # The request's ``now`` argument is the clock every time phrase reads.
+            context = {**(context or {}), "now": kwargs["now"]}
         token = _context.set(time_policy_context(context))
         runtime_token = _runtime.set(runtime)
         zone_token = _default_zone.set(zone)

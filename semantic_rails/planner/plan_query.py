@@ -172,7 +172,8 @@ def _select_key(config: Any, item: Any) -> str:
     expression = item
     if isinstance(item, dict):
         expression = item.get("expression", {k: v for k, v in item.items() if k != "as"})
-    if isinstance(expression, dict) and expression.get("kind", "measure") == "measure":
+    if isinstance(expression, dict) and expression.get("kind", "") in {"", "measure", "metric"}:
+        # A reference reads the same with or without its kind.
         expression = {key: value for key, value in expression.items() if key != "kind"}
     if isinstance(expression, dict) and set(expression) <= {"measure", "aggregation"}:
         measure = next(
