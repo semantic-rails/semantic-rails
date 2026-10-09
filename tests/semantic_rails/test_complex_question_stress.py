@@ -443,16 +443,15 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         )
 
         assert snapshot["best"]["pattern"] == "qualified_metric_rollup"
-        # Its qualifiers are measured on other clocks than the snapshot's, so the engine refuses
-        # the draft and the plan does not offer it as ready; the drafted shape is unchanged.
-        assert_plan_held(snapshot, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        # Over each period, every qualifier is read on its own clock in the snapshot's month, so
+        # the draft validates; the plan still holds it because a balance summed over a month is
+        # not the snapshot the question asks for.
+        assert_plan_held(snapshot, "PLAN_INTENT_COVERAGE_GAP")
         assert "ready_for" not in snapshot["next"]
         snapshot_query = snapshot["best"]["query_ir"]
         snapshot_expr = snapshot_query["select"][0]["expression"]
-        assert snapshot["best"]["validation_ok"] is False
-        assert [error["code"] for error in runtime.validate(snapshot_query)["errors"]] == [
-            "INVALID_TEMPORAL_BINDING"
-        ]
+        assert snapshot["best"]["validation_ok"] is True
+        assert runtime.validate(snapshot_query)["ok"] is True
         assert snapshot_expr["measure"] == "measure.jaffle.active_menu_count_eop"
         assert snapshot_expr["aggregation"] == "sum"
         # Predicate inputs may be measures or metrics depending on which

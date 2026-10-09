@@ -2255,6 +2255,47 @@ def _refuse_overridden_predicate_input(
     )
 
 
+def _predicate_input_clocks(
+    predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
+) -> set[str]:
+    """The clocks a predicate's input reads; a metric whose measures all pin one clock reads it."""
+    roles = _expr_compatible_temporal_roles(predicate.input, config, query)
+    if len(roles) < 2 or (query.time is not None and query.time.temporal_role in roles):
+        return roles
+    # Only the input's own pins count: the query's overrides never reach its source.
+    unpinned = replace(query, temporal_role_overrides={})
+    leaves = [
+        _expr_compatible_temporal_roles(expr, config, unpinned)
+        for expr in _window_measure_exprs(predicate.input, config)
+    ]
+    pinned = set.intersection(*leaves) & roles if leaves else set()
+    return pinned if len(pinned) == 1 else roles
+
+
+def _predicate_input_clock_error(
+    predicate: MetricPredicateExpr, query: NormalizedQuery, clocks: set[str], why: str
+) -> SemanticLayerError:
+    assert query.time is not None
+    return SemanticLayerError(
+        "INVALID_TEMPORAL_BINDING",
+        f"The entity filter on {_predicate_metric_label(predicate)!r} {why}",
+        details={
+            "requested": query.time.temporal_role,
+            "compatible": sorted(clocks),
+            "predicate": expr_to_dict(predicate),
+            "recovery_hints": [
+                {
+                    "code": "CHOOSE_PREDICATE_CLOCK",
+                    "message": (
+                        "Set time.temporal_role to one of `compatible`, filter by a package "
+                        "metric that pins one clock, or use over: all_time."
+                    ),
+                }
+            ],
+        },
+    )
+
+
 def _predicate_time_spec(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> dict[str, Any] | None:
@@ -2268,55 +2309,37 @@ def _predicate_time_spec(
                 "metric_predicate time_grain requires contextual scope with query.time",
             )
         if predicate.time_alignment in {"query_window", "rolling_window_in_period"}:
-            if query.time is None:
+            if query.time is None or query.time.start is None or query.time.end is None:
                 raise SemanticLayerError(
                     "PREDICATE_GRAIN_UNSAFE",
-                    "entity_only metric_predicate query-window alignment requires query.time",
+                    "an entity filter over the window needs a bounded time window",
+                    details={
+                        "recovery_hints": [
+                            {
+                                "code": "BOUND_THE_WINDOW",
+                                "message": (
+                                    "Add a window to time (last, this, or start and end), "
+                                    "or use over: all_time."
+                                ),
+                            }
+                        ]
+                    },
                 )
-            if query.time.start is None or query.time.end is None:
-                raise SemanticLayerError(
-                    "PREDICATE_GRAIN_UNSAFE",
-                    "entity_only metric_predicate query-window alignment requires bounded query.time start and end",
-                )
-            compatible_roles = _expr_compatible_temporal_roles(predicate.input, config, query)
+            # The window applies on the input's own clock: the entity's rows inside it.
+            compatible_roles = _predicate_input_clocks(predicate, query, config)
             predicate_temporal_role = query.time.temporal_role
             if query.time.temporal_role not in compatible_roles:
-                if len(compatible_roles) > 1:
-                    clocks = sorted(compatible_roles)
-                    raise SemanticLayerError(
-                        "INVALID_TEMPORAL_BINDING",
-                        "entity_only metric_predicate query-window alignment needs one "
-                        f"input clock; choose from {', '.join(clocks)}",
-                        details={
-                            "requested": query.time.temporal_role,
-                            "compatible": clocks,
-                            "predicate": expr_to_dict(predicate),
-                            "recovery_hints": [
-                                {
-                                    "code": "CHOOSE_PREDICATE_CLOCK",
-                                    "message": (
-                                        (
-                                            "Set query.time.temporal_role to one of the listed clocks. "
-                                            if isinstance(predicate.input, MetricRecipeRefExpr)
-                                            else "Set the predicate input's temporal_role to a candidate "
-                                            "clock, or set temporal_role_overrides for its measures. "
-                                        )
-                                        + "Omit time_alignment to apply the predicate over all time."
-                                    ),
-                                }
-                            ],
-                        },
+                if len(compatible_roles) != 1:
+                    raise _predicate_input_clock_error(
+                        predicate,
+                        query,
+                        compatible_roles,
+                        "reads several clocks (see `compatible`), so the window cannot "
+                        "choose which of the entity's rows fall inside it"
+                        if compatible_roles
+                        else "reads no clock, so none of the entity's rows fall inside the window",
                     )
-                predicate_temporal_role = next(iter(sorted(compatible_roles)), "")
-                if not predicate_temporal_role:
-                    raise SemanticLayerError(
-                        "PREDICATE_GRAIN_UNSAFE",
-                        "Metric predicate input does not expose a compatible temporal role",
-                        details={
-                            "compatible": sorted(compatible_roles),
-                            "predicate": expr_to_dict(predicate),
-                        },
-                    )
+                predicate_temporal_role = next(iter(compatible_roles))
             _validate_predicate_metric_clocks(predicate, query, config, predicate_temporal_role)
             return {
                 "temporal_role": predicate_temporal_role,
@@ -2331,9 +2354,23 @@ def _predicate_time_spec(
                 else {},
             }
         return None
+    per_period = predicate.scope_mode == "entity_period"
+    if per_period and (query.time is None or not query.time.grain):
+        raise SemanticLayerError(
+            "PREDICATE_GRAIN_UNSAFE",
+            "an entity filter per period needs time.grain",
+            details={
+                "recovery_hints": [
+                    {
+                        "code": "ADD_TIME_GRAIN",
+                        "message": 'Add "grain" to time, or use over: window or all_time.',
+                    }
+                ]
+            },
+        )
     if query.time is None:
         return None
-    compatible_roles = _expr_compatible_temporal_roles(predicate.input, config, query)
+    compatible_roles = _predicate_input_clocks(predicate, query, config)
     predicate_temporal_role = query.time.temporal_role
     if query.time.temporal_role not in compatible_roles:
         if not compatible_roles:
@@ -2345,10 +2382,21 @@ def _predicate_time_spec(
                     "predicate": expr_to_dict(predicate),
                 },
             )
-        # Matching another clock's calendar buckets to the query's is only sound when the
-        # predicate asks for it and names exactly one clock; it is never a silent default.
-        if predicate.time_alignment != "same_query_period" or len(compatible_roles) != 1:
+        # A contextual predicate matches another clock's calendar buckets only when it asks
+        # for it and names exactly one clock; it is never a silent default. A per-period entity
+        # filter reads its input on the input's own clock, bucketed by the output period.
+        if not per_period and (
+            predicate.time_alignment != "same_query_period" or len(compatible_roles) != 1
+        ):
             raise _cross_clock_predicate_error(predicate, query, compatible_roles)
+        if len(compatible_roles) != 1:
+            raise _predicate_input_clock_error(
+                predicate,
+                query,
+                compatible_roles,
+                "reads several clocks (see `compatible`), none of them the query's, so its "
+                "periods are ambiguous",
+            )
         predicate_temporal_role = next(iter(compatible_roles))
     _validate_predicate_metric_clocks(predicate, query, config, predicate_temporal_role)
     outer_grain = str(query.time.grain or "").lower()

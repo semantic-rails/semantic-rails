@@ -122,7 +122,7 @@ from .policies import (
     row_filters_for_context,
     withheld_rank_order,
 )
-from .query_call import read_call
+from .query_call import call_where, read_call
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_select_for_profile
@@ -1078,11 +1078,35 @@ def _compiled_warnings(
     return warnings
 
 
+_OVER_MEANING = {
+    "all_time": "over all of its rows, ignoring the query window",
+    "window": "over its rows inside the query window",
+    "period": "per output period",
+}
+
+
+def _entity_filter_assumptions(query: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each entity filter's ``over``: how each entity's aggregate was taken."""
+    return [
+        {
+            "code": "ENTITY_FILTER_OVER",
+            "entity": row["entity"],
+            "over": row["over"],
+            "message": f"Each {row['entity']}'s aggregate was taken {_OVER_MEANING[row['over']]}.",
+        }
+        for row in call_where([], query.get("metric_filters"))
+    ]
+
+
 def _window_total_fields(compiled) -> dict[str, Any]:
     """``assumptions`` for every response, plus ``time_shape`` when the window was collapsed."""
+    assumptions = _entity_filter_assumptions(compiled["logical_plan"].query)
     if not compiled["logical_plan"].time.get("window_total"):
-        return {"assumptions": []}
-    return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
+        return {"assumptions": assumptions}
+    return {
+        "assumptions": [WINDOW_TOTAL_ASSUMPTION, *assumptions],
+        "time_shape": TIME_SHAPE_WINDOW_TOTAL,
+    }
 
 
 def _withheld_columns(policy_effects: list[dict[str, Any]]) -> set[str]:

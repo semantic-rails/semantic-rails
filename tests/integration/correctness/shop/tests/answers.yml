@@ -3198,6 +3198,74 @@ tests:
       - {period: '2024-01-01', revenue: 20}
       - {period: '2024-03-01', revenue: 8}
       - {period: '2024-07-01', revenue: 9}
+  shop/entity-filter-all-time-ignores-the-store-split:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Customers 101, 102 and 103 each ordered at least twice over all time; each count is taken per customer, never per customer and store, so 102's and 103's single orders at each store still qualify.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [child-scope]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_order_store_id]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 2}]
+          over: all_time
+    reference_sql: |
+      SELECT o.store_id, SUM(o.amount) FROM orders o
+      WHERE o.customer_id IN (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(*) >= 2)
+      GROUP BY 1
+    expected_rows:
+      - {dimension.shop_order_store_id: a, revenue: 41}
+      - {dimension.shop_order_store_id: b, revenue: 8}
+      - {dimension.shop_order_store_id: null, revenue: 6}
+  shop/entity-filter-window-counts-rows-inside-the-window:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Inside the first half of 2024 only customer 103 ordered twice (orders 4 at store a and 9 at store b); 101 and 102 ordered twice only over all time, and the count is per customer, never per customer and store.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [child-scope, time-window]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_order_store_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: year, start: '2024-01-01', end: '2024-07-01'}
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 2}]
+          over: window
+    reference_sql: |
+      SELECT o.store_id, date_trunc('year', o.ordered_at), SUM(o.amount) FROM orders o
+      WHERE o.ordered_at >= TIMESTAMP '2024-01-01' AND o.ordered_at < TIMESTAMP '2024-07-01'
+        AND o.customer_id IN (SELECT customer_id FROM orders
+          WHERE ordered_at >= TIMESTAMP '2024-01-01' AND ordered_at < TIMESTAMP '2024-07-01'
+          GROUP BY customer_id HAVING COUNT(*) >= 2)
+      GROUP BY 1, 2
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 20}
+      - {dimension.shop_order_store_id: b, period: '2024-01-01', revenue: 3}
+  shop/entity-filter-period-counts-each-customer-per-year:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Customer 101 ordered twice in 2023 and customer 103 twice in 2024 (at stores a and b); the count is per customer per year, never per customer, store and year.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [child-scope, time-window]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_order_store_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: year}
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 2}]
+          over: period
+    reference_sql: |
+      SELECT o.store_id, date_trunc('year', o.ordered_at), SUM(o.amount) FROM orders o
+      WHERE EXISTS (SELECT 1 FROM orders x WHERE x.customer_id = o.customer_id
+        AND date_trunc('year', x.ordered_at) = date_trunc('year', o.ordered_at) HAVING COUNT(*) >= 2)
+      GROUP BY 1, 2
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2023-01-01', revenue: 17}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 20}
+      - {dimension.shop_order_store_id: b, period: '2024-01-01', revenue: 3}
   shop/lookup_by_channel:
     kind: query_matches_snapshot
     expect: answer
