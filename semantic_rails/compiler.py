@@ -195,7 +195,7 @@ from .ir import (
 )
 from .naming import semantic_token as _semantic_token
 from .naming import slug as _slug
-from .query_call import call_where
+from .query_call import call_where, engine_where
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
 from .renderer import render_select_for_profile
@@ -1700,6 +1700,20 @@ def _validate_where_value_type(dim, item) -> None:
     # ``missing`` takes a boolean, not a value of the dimension; ``contains`` takes text.
     if item.op in {"missing", "contains"}:
         return
+    if str(getattr(dim, "data_type", "") or "").lower() == "boolean" and item.op in (
+        operators.RANGE_WORDS
+    ):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"where filter on boolean dimension {dim.id!r} compares with is or not",
+            details={
+                "dimension": dim.id,
+                "op": item.op,
+                "recovery_hints": [
+                    {"code": "USE_FILTER_WORD", "message": "Write is true or is false."}
+                ],
+            },
+        )
     values = item.value if isinstance(item.value, list) else [item.value]
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:
@@ -5015,7 +5029,16 @@ def bind_query(
             raise
         ambiguity = exc
     for option in ambiguity.details["clarification"]["options"]:
-        resent = {**payload, "where": option["where"]}
+        # An option is the call's where; entity filters re-enter as the engine's predicates.
+        where, entity_filters = engine_where(
+            option["where"], grain=str((payload.get("time") or {}).get("grain") or "")
+        )
+        result_filters = [
+            item
+            for item in payload.get("metric_filters") or []
+            if (item.get("expression") or {}).get("kind") != "metric_predicate"
+        ]
+        resent = {**payload, "where": where, "metric_filters": [*entity_filters, *result_filters]}
         try:
             binding = bind(resent)
             if check_policies is not None:

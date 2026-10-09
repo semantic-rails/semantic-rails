@@ -11,7 +11,7 @@ from .test_correctness import Case, _answer, _assert_rows, _backend
 @pytest.mark.parametrize("surface", ["package", "aggregate_if"])
 @pytest.mark.parametrize("null_endpoint", [False, True])
 def test_average_days_to_close(request, backend_name, surface, null_endpoint):
-    expression = {"measure": "measure.shop.average_days_to_close"}
+    expression = "measure.shop.average_days_to_close"
     if surface == "aggregate_if":
         expression = {
             "kind": "aggregate_if",
@@ -30,7 +30,9 @@ def test_average_days_to_close(request, backend_name, surface, null_endpoint):
     query = {"select": [{"expression": expression, "as": "days"}]}
     if null_endpoint:
         # Order 8 is the only NULL store and has no close time.
-        query["where"] = [{"field": "dimension.shop_order_store_id", "op": "=", "value": None}]
+        query["where"] = [
+            {"field": "dimension.shop_order_store_id", "op": "missing", "value": True}
+        ]
     backend = _backend(request, backend_name)
     expected = [(None,)] if null_endpoint else [(8 / 3,)]
     reference = "SELECT AVG(CAST(closed_at AS DATE) - CAST(ordered_at AS DATE)) FROM orders"

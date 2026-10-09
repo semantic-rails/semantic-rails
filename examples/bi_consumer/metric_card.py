@@ -27,8 +27,7 @@ def render_metric_card(
     metric = matches[0]
     result = execute(
         {
-            "version": 1,
-            "select": [{"expression": {"kind": "metric", "metric": metric_id}, "as": "value"}],
+            "select": [{"expression": metric_id, "as": "value"}],
         }
     )
     return {"identity": identity, "label": metric["label"], "result": result}

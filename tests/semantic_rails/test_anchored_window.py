@@ -154,11 +154,13 @@ def test_scoped_aggregate_without_anchor_window_still_works(runtime_factory):
                                     "kind": "metric_predicate",
                                     "entity": "entity.jaffle_customer",
                                     "input": {
+                                        "kind": "measure",
                                         "measure": "measure.jaffle.lifetime_spend_usd",
                                         "aggregation": "sum",
                                     },
-                                    "op": ">=",
+                                    "op": "gte",
                                     "value": {"kind": "percentile", "p": 0.9},
+                                    "over": "all_time",
                                 }
                             ],
                         },

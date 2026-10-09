@@ -3,15 +3,17 @@
 import shutil
 from copy import deepcopy
 from dataclasses import replace
+from functools import partial
 
 import pytest
 
 from semantic_rails import compiler, expressions, resource_access
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import PathPreferenceConfig, SemanticPolicyConfig
+from semantic_rails.schema import MetricConfig, PathPreferenceConfig, SemanticPolicyConfig
 
 MEASURE = "measure.jaffle.revenue_usd"
 METRIC = "metric.sales.aov_usd"
@@ -23,6 +25,34 @@ RELATIONSHIP = "relationship.orders_customer"
 @pytest.fixture(scope="module")
 def config():
     return replace(load_package_config("configs/semantic_rails/jaffle_shop"), semantic_policies=[])
+
+
+def _engine(query):
+    """The engine's own form of a call: what the compiler's internals read."""
+    return read_call(query)[0]
+
+
+def _engine_expression(expression):
+    """An inline expression of a call, in the engine's own form."""
+    return _engine({"select": [{"expression": expression}]})["select"][0]["expression"]
+
+
+def _recipe(metric_id, expression, **fields):
+    """A package metric; ``expression`` is in the package's own form."""
+    parsed = expressions.parse_semantic_expression(expression, context="query")
+    return MetricConfig(id=metric_id, kind="derived", expression=parsed, **fields)
+
+
+def _operations(engine, *, internal=False, **call):
+    """validate, compile and query a call, or with ``internal`` the engine's own form.
+
+    The engine form carries shapes a call cannot spell, such as a predicate aligned to
+    each query period over the query's own grouping.
+    """
+    names = ("validate", "compile", "query")
+    if internal:
+        return [getattr(engine, f"{name}_internal") for name in names]
+    return [partial(getattr(engine, name), **call) for name in names]
 
 
 def relationship_config(config, reverse):
@@ -61,21 +91,17 @@ def test_bound_relationship_shortcuts_deny_before_output(
         metric_allowlist=(METRIC,) if restricted else None,
         dimension_allowlist=(DIMENSION,) if restricted else None,
     )
-    query = {
-        "select": [{"expression": {"metric": METRIC} if restricted else {"measure": MEASURE}}],
-        "group_by": [DIMENSION],
-        "policy_context": context.to_policy_context(),
-    }
+    query = {"select": [METRIC if restricted else MEASURE], "group_by": [DIMENSION]}
     # The same optimized query is valid when the selected relationship is permitted.
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     if restricted:
-        resource_access.ResourceAccess(config, context).enforce_query(query)
+        resource_access.ResourceAccess(config, context).enforce_query(_engine(query))
 
     def no_output(*args, **kwargs):
         pytest.fail("rendering or adapter access before relationship authorization")
 
     monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
-    assert RELATIONSHIP in compiler.bind_query(config, None, query).object_ids
+    assert RELATIONSHIP in compiler.bind_query(config, None, _engine(query)).object_ids
     policy = SemanticPolicyConfig(
         id="policy.test.shortcut",
         kind="object_access",
@@ -88,8 +114,9 @@ def test_bound_relationship_shortcuts_deny_before_output(
     monkeypatch.setattr(engine, "_get_adapter", no_output)
     code = "RESOURCE_ACCESS_DENIED" if restricted else "POLICY_DENIED"
     try:
-        assert engine.validate(query)["errors"][0]["code"] == code
-        for operation in (engine.compile, engine.query):
+        validate, *operations = _operations(engine, context=context)
+        assert validate(query)["errors"][0]["code"] == code
+        for operation in operations:
             with pytest.raises(SemanticLayerError) as exc:
                 operation(query)
             assert exc.value.code == code
@@ -127,7 +154,7 @@ def test_rejected_relationship_candidates_are_not_bound(config, reverse):
         ],
     )
     query = {"select": [MEASURE], "group_by": [DIMENSION]}
-    bound = compiler.bind_query(config, None, query)
+    bound = compiler.bind_query(config, None, _engine(query))
     assert RELATIONSHIP in bound.object_ids
     assert candidate.id not in bound.object_ids
     engine = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
@@ -148,22 +175,26 @@ def test_metric_constraint_filter_values_are_data(config, kind, reference, as_li
     )
     # The filter reads orders and customers; only its data value names a store.
     allowed = [] if reference.startswith("metric.") else [ENTITY, "entity.jaffle_customer"]
-    row = {
-        "field": "dimension.jaffle_customer_type",
-        "op": "in" if as_list else "=",
-        "value": [reference] if as_list else reference,
-    }
-    expression = {"kind": kind, "measure": "measure.jaffle.order_count"}
-    if kind == "scoped_aggregate":
-        expression["where"] = [row]
-    else:
-        expression["filter"] = {"all": [row]}
-    query = {
-        "select": [MEASURE],
-        "metric_filters": [{"expression": expression, "op": ">", "value": 0}],
-    }
-    assert compiler.compile_query(config, None, query)["sql"]
-    assert reference not in compiler.bind_query(config, None, query).object_ids
+
+    def filtered_on(value):
+        row = {
+            "field": "dimension.jaffle_customer_type",
+            "op": "is",
+            "value": [value] if as_list else value,
+        }
+        expression = {"kind": kind, "measure": "measure.jaffle.order_count"}
+        if kind == "scoped_aggregate":
+            expression["where"] = [row]
+        else:
+            expression["filter"] = {"all": [row]}
+        return {
+            "select": [MEASURE, {"expression": expression, "as": "orders"}],
+            "having": [{"field": "orders", "op": "gt", "value": 0}],
+        }
+
+    query = filtered_on(reference)
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
+    assert reference not in compiler.bind_query(config, None, _engine(query)).object_ids
     config = replace(
         config,
         semantic_policies=[
@@ -177,15 +208,7 @@ def test_metric_constraint_filter_values_are_data(config, kind, reference, as_li
     )
     engine = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     try:
-        ordinary = deepcopy(query)
-        ordinary_expression = ordinary["metric_filters"][0]["expression"]
-        ordinary_row = (
-            ordinary_expression["where"][0]
-            if kind == "scoped_aggregate"
-            else ordinary_expression["filter"]["all"][0]
-        )
-        ordinary_row["value"] = ["new"] if as_list else "new"
-        assert engine.compile(ordinary)["rendered_sql"]
+        assert engine.compile(filtered_on("new"))["rendered_sql"]
         assert engine.validate(query)["ok"]
         assert engine.compile(query)["rendered_sql"]
     finally:
@@ -194,28 +217,16 @@ def test_metric_constraint_filter_values_are_data(config, kind, reference, as_li
 
 @pytest.mark.parametrize("kind", ["metrics", "entities"])
 def test_metric_constraint_still_denies_real_references(config, monkeypatch, kind):
-    expression = (
-        {"metric": METRIC}
-        if kind == "metrics"
-        else {
-            "kind": "metric_predicate",
-            "entity": ENTITY,
-            "input": {"measure": "measure.jaffle.order_count"},
-            "op": ">",
-            "value": 0,
-        }
-    )
+    condition = {"field": "measure.jaffle.order_count", "op": "gt", "value": 0}
     query = {
         "select": [MEASURE],
-        "metric_filters": [
-            {
-                "expression": expression,
-                "op": ">" if kind == "metrics" else "=",
-                "value": 0 if kind == "metrics" else True,
-            }
-        ],
+        **(
+            {"having": [{**condition, "field": METRIC}]}
+            if kind == "metrics"
+            else {"where": [{"entity": ENTITY, "having": [condition], "over": "all_time"}]}
+        ),
     }
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     config = replace(
         config,
         semantic_policies=[
@@ -274,11 +285,12 @@ def _orders_at_store(field):
     return {
         "kind": "scoped_aggregate",
         "measure": "measure.jaffle.order_count",
-        "where": [{"field": field, "op": "=", "value": "Brooklyn"}],
+        "where": [{"field": field, "op": "is", "value": "Brooklyn"}],
     }
 
 
-# Each metric filter spells one entity it reads: (expression, that entity, others read).
+# Each result or entity filter spells one entity it reads: (filter, that entity, others read).
+# A filter is a measure or metric id, an inline expression or an entity filter (_customer_query).
 FILTER_SPELLINGS = {
     "table_column": (
         _count_where_not_zero({"kind": "column", "table": "jaffle_order", "column": "order_id"}),
@@ -308,21 +320,19 @@ FILTER_SPELLINGS = {
             "kind": "aggregate",
             "measure": "measure.jaffle.order_count",
             "filter": {
-                "all": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}]
+                "all": [{"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}]
             },
         },
         STORE,
         [ENTITY],
     ),
-    "measure": ({"measure": "measure.jaffle.order_count"}, ENTITY, []),
-    "metric": ({"metric": METRIC}, ENTITY, []),
+    "measure": ("measure.jaffle.order_count", ENTITY, []),
+    "metric": (METRIC, ENTITY, []),
     "predicate_input": (
         {
-            "kind": "metric_predicate",
             "entity": CUSTOMER,
-            "input": {"measure": "measure.jaffle.order_count"},
-            "op": ">",
-            "value": 1,
+            "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 1}],
+            "over": "all_time",
         },
         ENTITY,
         [],
@@ -340,32 +350,31 @@ CUSTOMER_FILTERS = {
     "dimension": {
         "kind": "scoped_aggregate",
         "measure": "measure.jaffle.lifetime_order_count",
-        "where": [{"field": "dimension.jaffle_customer_type", "op": "=", "value": "returning"}],
+        "where": [{"field": "dimension.jaffle_customer_type", "op": "is", "value": "returning"}],
     },
-    "measure": {"measure": "measure.jaffle.lifetime_order_count"},
+    "measure": "measure.jaffle.lifetime_order_count",
     "predicate": {
-        "kind": "metric_predicate",
         "entity": CUSTOMER,
-        "input": {"measure": "measure.jaffle.lifetime_spend_usd"},
-        "op": ">",
-        "value": 100,
+        "having": [{"field": "measure.jaffle.lifetime_spend_usd", "op": "gt", "value": 100}],
+        "over": "all_time",
     },
 }
 
 
-def _customer_query(expression):
-    predicate = expression.get("kind") == "metric_predicate"
-    return {
+def _customer_query(cut):
+    """Customers by type, kept by ``cut``: an entity filter, or ``having`` on an id or expression."""
+    query = {
         "select": [{"expression": CUSTOMER_COUNT, "as": "customers"}],
         "group_by": ["dimension.jaffle_customer_type"],
-        "metric_filters": [
-            {
-                "expression": deepcopy(expression),
-                "op": "=" if predicate else ">",
-                "value": True if predicate else 0,
-            }
-        ],
     }
+    if isinstance(cut, dict) and "kind" not in cut:
+        return {**query, "where": [deepcopy(cut)]}
+    field = cut
+    if isinstance(cut, dict):
+        # An expression filters results through its select alias.
+        query["select"].append({"expression": deepcopy(cut), "as": "cut"})
+        field = "cut"
+    return {**query, "having": [{"field": field, "op": "gt", "value": 0}]}
 
 
 def _constrained(config, constraint, governed=CUSTOMER_COUNT):
@@ -382,16 +391,17 @@ def _constrained(config, constraint, governed=CUSTOMER_COUNT):
     )
 
 
-def _assert_denied_before_output(engine, monkeypatch, query):
+def _assert_denied_before_output(engine, monkeypatch, query, **call):
     def no_output(*args, **kwargs):
         pytest.fail("constrained metric filter reached output")
 
     monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
     monkeypatch.setattr(engine, "_compile", no_output)
     monkeypatch.setattr(engine, "_get_adapter", no_output)
-    result = engine.validate(query)
+    validate, *operations = _operations(engine, **call)
+    result = validate(query)
     assert result["errors"][0]["code"] == "POLICY_DENIED"
-    for operation in (engine.compile, engine.query):
+    for operation in operations:
         with pytest.raises(SemanticLayerError) as exc:
             operation(query)
         assert exc.value.code == "POLICY_DENIED"
@@ -403,7 +413,7 @@ def _assert_denied_before_output(engine, monkeypatch, query):
 def test_metric_filter_spellings_count_as_their_entities(config, monkeypatch, spelling, constraint):
     expression, spelled, others = FILTER_SPELLINGS[spelling]
     query = _customer_query(expression)
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     allowed = sorted([CUSTOMER, *others])
     engine = _constrained(
         config,
@@ -452,17 +462,11 @@ def test_metric_filter_entities_exclude_the_constrained_cut(config, timed):
     query = {
         "select": [{"expression": MEASURE, "as": "revenue"}],
         "group_by": ["dimension.jaffle_store_name"],
-        "metric_filters": [
-            {
-                "expression": {**CUSTOMER_FILTERS["predicate"], "scope_mode": "entity_only"},
-                "op": "=",
-                "value": True,
-            }
-        ],
+        "where": [CUSTOMER_FILTERS["predicate"]],
     }
     if timed:
         query["time"] = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
-    bound = compiler.bind_query(config, None, query).object_ids
+    bound = compiler.bind_query(config, None, _engine(query)).object_ids
     assert {ENTITY, STORE} <= bound
     engine = _constrained(config, {"allowed_metric_filter_entities": [CUSTOMER]}, MEASURE)
     try:
@@ -484,10 +488,13 @@ def test_metric_filter_entities_exclude_the_constrained_cut(config, timed):
 )
 def test_literal_metric_filters_resolve_without_object_reads(config, monkeypatch, constraint):
     query = {
-        "select": [{"expression": MEASURE, "as": "revenue"}],
-        "metric_filters": [{"expression": {"kind": "literal", "value": 1}, "op": "=", "value": 1}],
+        "select": [
+            {"expression": MEASURE, "as": "revenue"},
+            {"expression": {"kind": "literal", "value": 1}, "as": "one"},
+        ],
+        "having": [{"field": "one", "op": "is", "value": 1}],
     }
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     engine = _constrained(config, constraint, MEASURE)
     try:
         if "allow_metric_filters" in constraint:
@@ -539,14 +546,14 @@ def test_metric_filter_entities_follow_package_entity_ids(tmp_path, monkeypatch,
 @pytest.mark.parametrize("allowed", [False, True])
 @pytest.mark.parametrize("placement", ["aggregate", "nested", "scoped"])
 def test_embedded_cuts_use_bound_entities(config, monkeypatch, allowed, placement):
-    where = {"field": "dimension.jaffle_customer_type", "op": "=", "value": "returning"}
+    where = {"field": "dimension.jaffle_customer_type", "op": "is", "value": "returning"}
     expression = {"kind": "aggregate", "measure": MEASURE, "filter": {"all": [where]}}
     if placement == "scoped":
         expression = {"kind": "scoped_aggregate", "measure": MEASURE, "where": [where]}
     elif placement == "nested":
-        expression = {"kind": "ratio", "numerator": expression, "denominator": {"measure": MEASURE}}
+        expression = {"kind": "ratio", "numerator": expression, "denominator": MEASURE}
     query = {"select": [{"expression": expression, "as": "value"}]}
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     engine = _constrained(
         config, {"allowed_metric_filter_entities": [CUSTOMER] if allowed else []}, MEASURE
     )
@@ -561,8 +568,7 @@ def test_embedded_cuts_use_bound_entities(config, monkeypatch, allowed, placemen
 
 
 @pytest.mark.parametrize("allowed", [False, True])
-@pytest.mark.parametrize("spelling", ["override", "explicit"])
-def test_effective_ordering_role_constrained_without_time(config, monkeypatch, allowed, spelling):
+def test_effective_ordering_role_constrained_without_time(config, monkeypatch, allowed):
     measure_id = "measure.jaffle.delivered_revenue_usd"
     delivered = "temporal_role.jaffle_lifecycle_delivered_at"
     prepared = "temporal_role.jaffle_lifecycle_prepared_at"
@@ -579,13 +585,14 @@ def test_effective_ordering_role_constrained_without_time(config, monkeypatch, a
             for m in config.measures
         ],
     )
-    expression = {"measure": measure_id, "aggregation": "last_value"}
+    expression = {
+        "kind": "measure",
+        "measure": measure_id,
+        "aggregation": "last_value",
+        "temporal_role": prepared,
+    }
     query = {"select": [{"expression": expression, "as": "value"}]}
-    if spelling == "override":
-        query["temporal_role_overrides"] = {measure_id: prepared}
-    else:
-        expression["temporal_role"] = prepared
-    assert "prepared_at" in compiler.compile_query(config, None, query)["sql"]
+    assert "prepared_at" in compiler.compile_query(config, None, _engine(query))["sql"]
     engine = _constrained(
         config,
         {"allowed_temporal_roles": [delivered, prepared] if allowed else [delivered]},
@@ -601,62 +608,13 @@ def test_effective_ordering_role_constrained_without_time(config, monkeypatch, a
         engine.close()
 
 
-@pytest.mark.parametrize("allowed", [False, True])
-def test_contextual_predicate_records_actual_clock_entity(config, monkeypatch, allowed):
-    store_role = "temporal_role.jaffle_store_opened_at"
-    customer_role = "temporal_role.jaffle_customer_first_order_at"
-    config = replace(
-        config,
-        measures=[
-            replace(
-                m,
-                compatible_temporal_roles=[store_role, customer_role],
-                default_temporal_role=store_role,
-            )
-            if m.id == "measure.jaffle.order_count"
-            else m
-            for m in config.measures
-        ],
-    )
-    query = {
-        "select": [{"expression": MEASURE, "as": "revenue"}],
-        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-        "metric_filters": [
-            {
-                "expression": {
-                    "kind": "metric_predicate",
-                    "entity": ENTITY,
-                    "input": {
-                        "measure": "measure.jaffle.order_count",
-                        "temporal_role": customer_role,
-                    },
-                    "op": ">",
-                    "value": 1,
-                    "time_alignment": "same_query_period",
-                },
-                "op": "=",
-                "value": True,
-            }
-        ],
-    }
-    assert "jaffle_customer" in compiler.compile_query(config, None, query)["sql"]
-    engine = _constrained(
-        config,
-        {"allowed_metric_filter_entities": [ENTITY, STORE, *([CUSTOMER] if allowed else [])]},
-        MEASURE,
-    )
-    try:
-        if allowed:
-            assert engine.validate(query)["ok"]
-        else:
-            violations = _assert_denied_before_output(engine, monkeypatch, query)
-            assert CUSTOMER in violations[0]["disallowed"]
-    finally:
-        engine.close()
+def _per_period_order_count_filter(config, *, pinned):
+    """Revenue by month, kept where an order's order count per month is over one.
 
-
-@pytest.mark.parametrize("pinned", [False, True])
-def test_contextual_predicate_alignment_needs_exactly_one_clock(config, pinned):
+    The order count reads two compatible clocks; ``pinned`` names one. A predicate aligned
+    to each query period over the query's own grouping has no call spelling, so this is
+    the engine's own form.
+    """
     store_role = "temporal_role.jaffle_store_opened_at"
     customer_role = "temporal_role.jaffle_customer_first_order_at"
     config = replace(
@@ -676,7 +634,7 @@ def test_contextual_predicate_alignment_needs_exactly_one_clock(config, pinned):
     if pinned:
         predicate_input["temporal_role"] = customer_role
     query = {
-        "select": [{"expression": MEASURE, "as": "revenue"}],
+        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
         "metric_filters": [
             {
@@ -693,6 +651,31 @@ def test_contextual_predicate_alignment_needs_exactly_one_clock(config, pinned):
             }
         ],
     }
+    return config, query
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_contextual_predicate_records_actual_clock_entity(config, monkeypatch, allowed):
+    config, query = _per_period_order_count_filter(config, pinned=True)
+    assert "jaffle_customer" in compiler.compile_query(config, None, query)["sql"]
+    engine = _constrained(
+        config,
+        {"allowed_metric_filter_entities": [ENTITY, STORE, *([CUSTOMER] if allowed else [])]},
+        MEASURE,
+    )
+    try:
+        if allowed:
+            assert engine.validate_internal(query)["ok"]
+        else:
+            violations = _assert_denied_before_output(engine, monkeypatch, query, internal=True)
+            assert CUSTOMER in violations[0]["disallowed"]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_contextual_predicate_alignment_needs_exactly_one_clock(config, pinned):
+    config, query = _per_period_order_count_filter(config, pinned=pinned)
     if pinned:
         assert compiler.compile_query(config, None, query)["sql"]
         return
@@ -708,29 +691,16 @@ def test_contextual_predicate_alignment_needs_exactly_one_clock(config, pinned):
 def test_cut_metric_allowlists_count_direct_and_nested_recipes(
     config, monkeypatch, allowed, nested
 ):
-    from semantic_rails.schema import MetricConfig
-
-    outer = "custom_outer_recipe"
-    config = replace(
-        config,
-        metric_recipes=[
-            *config.metric_recipes,
-            MetricConfig(
-                id=outer,
-                kind="derived",
-                expression=expressions.parse_semantic_expression(
-                    {
-                        "kind": "ratio",
-                        "numerator": {"metric": METRIC},
-                        "denominator": {"measure": "measure.jaffle.order_count"},
-                    },
-                    context="query",
-                ),
-            ),
-        ],
-    )
-    query = _customer_query({"metric": outer if nested else METRIC})
-    assert METRIC not in compiler.bind_query(config, None, {"select": query["select"]}).object_ids
+    outer = "metric.test.outer_recipe"
+    ratio = {
+        "kind": "ratio",
+        "numerator": {"metric": METRIC},
+        "denominator": {"measure": "measure.jaffle.order_count"},
+    }
+    config = replace(config, metric_recipes=[*config.metric_recipes, _recipe(outer, ratio)])
+    query = _customer_query(outer if nested else METRIC)
+    selected = _engine({"select": query["select"]})
+    assert METRIC not in compiler.bind_query(config, None, selected).object_ids
     permitted = ([outer] if nested else []) + ([METRIC] if allowed else [])
     engine = _constrained(config, {"allowed_metric_filter_metrics": permitted})
     try:
@@ -755,9 +725,7 @@ def test_cut_metric_allowlists_count_direct_and_nested_recipes(
     ],
 )
 def test_embedded_cuts_obey_allow_false(config, monkeypatch, allowed, recipe, kind):
-    from semantic_rails.schema import MetricConfig
-
-    clause = {"field": "dimension.jaffle_customer_type", "op": "=", "value": "returning"}
+    clause = {"field": "dimension.jaffle_customer_type", "op": "is", "value": "returning"}
     expr = {"kind": "aggregate", "measure": MEASURE, "filter": {"all": [clause]}}
     if kind == "scoped":
         expr = {"kind": "scoped_aggregate", "measure": MEASURE, "where": [clause]}
@@ -770,32 +738,24 @@ def test_embedded_cuts_obey_allow_false(config, monkeypatch, allowed, recipe, ki
             "predicates": [
                 {
                     "entity": CUSTOMER,
-                    "input": {"measure": "measure.jaffle.lifetime_spend_usd"},
-                    "op": ">",
+                    "input": "measure.jaffle.lifetime_spend_usd",
+                    "op": "gt",
                     "value": 100,
+                    "over": "all_time",
                 }
             ],
         }
     if recipe:
-        config = replace(
-            config,
-            metric_recipes=[
-                *config.metric_recipes,
-                MetricConfig(
-                    id="cut_recipe",
-                    kind="derived",
-                    expression=expressions.parse_semantic_expression(expr, context="query"),
-                ),
-            ],
-        )
-        expr = {"metric": "cut_recipe"}
+        cut_recipe = _recipe("metric.test.cut_recipe", _engine_expression(expr))
+        config = replace(config, metric_recipes=[*config.metric_recipes, cut_recipe])
+        expr = cut_recipe.id
     query = {
         "select": [
             {"expression": MEASURE, "as": "revenue"},
             {"expression": expr, "as": "cut"},
         ]
     }
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     # A conditional aggregate computes a synthetic measure, so a package-wide
     # policy governs its cut; the others cut the governed measure itself.
     governed = None if kind == "conditional" else MEASURE
@@ -816,8 +776,6 @@ def test_embedded_cuts_obey_allow_false(config, monkeypatch, allowed, recipe, ki
 def test_effective_temporal_roles_follow_governed_leaves(
     config, monkeypatch, allowed, placement, shape
 ):
-    from semantic_rails.schema import MetricConfig
-
     measure_id = "measure.jaffle.delivered_revenue_usd"
     delivered = "temporal_role.jaffle_lifecycle_delivered_at"
     prepared = "temporal_role.jaffle_lifecycle_prepared_at"
@@ -842,29 +800,23 @@ def test_effective_temporal_roles_follow_governed_leaves(
     }
     governed = measure_id
     if placement in {"recipe", "recipe_policy"}:
-        config = replace(
-            config,
-            metric_recipes=[
-                *config.metric_recipes,
-                MetricConfig(
-                    id="pinned_recipe",
-                    kind="derived",
-                    expression=expressions.parse_semantic_expression(expr, context="query"),
-                ),
-            ],
-        )
-        expr = {"metric": "pinned_recipe"}
+        pinned = _recipe("metric.test.pinned_recipe", expr)
+        config = replace(config, metric_recipes=[*config.metric_recipes, pinned])
+        expr = pinned.id
         if placement == "recipe_policy":
-            governed = "pinned_recipe"
+            governed = pinned.id
     elif placement == "nested":
         expr = {"kind": "call", "name": "COALESCE", "args": [expr, {"kind": "literal", "value": 0}]}
     query = {"select": [{"expression": expr, "as": "value"}]}
     if placement == "cut":
         query = {
-            "select": [{"expression": CUSTOMER_COUNT, "as": "customers"}],
-            "metric_filters": [{"expression": expr, "op": ">", "value": 1}],
+            "select": [
+                {"expression": CUSTOMER_COUNT, "as": "customers"},
+                {"expression": expr, "as": "value"},
+            ],
+            "having": [{"field": "value", "op": "gt", "value": 1}],
         }
-    assert "prepared_at" in compiler.compile_query(config, None, query)["sql"]
+    assert "prepared_at" in compiler.compile_query(config, None, _engine(query))["sql"]
     engine = _constrained(
         config,
         {"allowed_temporal_roles": [delivered, prepared] if allowed else [delivered]},
@@ -903,7 +855,7 @@ def test_foreign_query_clock_uses_leaf_effective_role(config, monkeypatch, allow
         ],
         "time": {"temporal_role": query_role, "grain": "month"},
     }
-    assert "prepared_at" in compiler.compile_query(config, None, query)["sql"]
+    assert "prepared_at" in compiler.compile_query(config, None, _engine(query))["sql"]
     engine = _constrained(
         config,
         {"allowed_temporal_roles": [query_role, *([prepared] if allowed else [])]},
@@ -921,18 +873,15 @@ def test_foreign_query_clock_uses_leaf_effective_role(config, monkeypatch, allow
 
 def test_aligned_window_filter_binds_in_real_context(config):
     query = {
-        "select": [{"expression": CUSTOMER_COUNT, "as": "customers"}],
-        "time": {"temporal_role": "temporal_role.jaffle_customer_first_order_at", "grain": "month"},
-        "metric_filters": [
+        "select": [
+            {"expression": CUSTOMER_COUNT, "as": "customers"},
             {
-                "expression": {
-                    "kind": "cumulative",
-                    "input": {"measure": "measure.jaffle.order_count"},
-                },
-                "op": ">",
-                "value": 0,
-            }
+                "expression": {"kind": "cumulative", "input": "measure.jaffle.order_count"},
+                "as": "orders_to_date",
+            },
         ],
+        "time": {"temporal_role": "temporal_role.jaffle_customer_first_order_at", "grain": "month"},
+        "having": [{"field": "orders_to_date", "op": "gt", "value": 0}],
     }
     engine = _constrained(
         config, {"allowed_metric_filter_entities": [row.id for row in config.entities]}
@@ -950,7 +899,7 @@ def test_cut_entities_exclude_attachment_path(config):
     query = _customer_query(
         _count_where_not_zero({"kind": "column", "entity": item, "column": "item_id"})
     )
-    bound = compiler.bind_query(config, None, query)
+    bound = compiler.bind_query(config, None, _engine(query))
     assert ENTITY in bound.object_ids
     assert ENTITY not in set().union(*bound.cuts)
     engine = _constrained(config, {"allowed_metric_filter_entities": [CUSTOMER, item]})
@@ -958,6 +907,10 @@ def test_cut_entities_exclude_attachment_path(config):
         assert engine.validate(query)["ok"]
     finally:
         engine.close()
+
+
+# The caller the shipped sales policy constrains.
+SALES = {"roles": ["sales"]}
 
 
 def test_shipped_sales_policy_applies_to_select_cuts(monkeypatch):
@@ -981,22 +934,29 @@ def test_shipped_sales_policy_applies_to_select_cuts(monkeypatch):
                 "as": "revenue",
             }
         ],
-        "policy_context": {"roles": ["sales"]},
     }
     engine = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     try:
         # The same shape is permitted for an unscoped caller.
-        assert engine.validate({**query, "policy_context": {"roles": ["finance"]}})["ok"]
-        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        assert engine.validate(query, context={"roles": ["finance"]})["ok"]
+        violations = _assert_denied_before_output(engine, monkeypatch, query, context=SALES)
         assert any(row["kind"] == "metric_filters_not_allowed" for row in violations)
     finally:
         engine.close()
 
 
+def _customer_distribution(measure, *, filtered=True):
+    """The average over customers of ``measure``, optionally over customers with any."""
+    over = {"kind": "entity_value", "entity": CUSTOMER, "input": measure}
+    if filtered:
+        over["where"] = [{"kind": "value_filter", "op": "gt", "value": 0}]
+    return {"kind": "distribution", "function": "avg", "over": over}
+
+
 STORE_CUT = {
     "kind": "aggregate",
     "measure": "measure.jaffle.order_count",
-    "filter": {"all": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}]},
+    "filter": {"all": [{"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}]},
 }
 SIBLING_SHAPES = {
     # Cuts of leaves that do not compute the governed measure.
@@ -1004,26 +964,17 @@ SIBLING_SHAPES = {
     "conditional": _count_where_not_zero(
         {"kind": "column", "table": "jaffle_customer", "column": "customer_id"}
     ),
-    "recipe": {"metric": "store_share_recipe"},
+    "recipe": "metric.test.store_share",
     # The governed measure is read inside the sibling's cut.
     "predicate_input": {
         "kind": "scoped_aggregate",
         "measure": "measure.jaffle.order_count",
         "predicates": [
-            {"entity": CUSTOMER, "input": {"measure": MEASURE}, "op": ">", "value": 100}
+            {"entity": CUSTOMER, "input": MEASURE, "op": "gt", "value": 100, "over": "all_time"}
         ],
     },
     # Lowered without a single owning leaf.
-    "distribution": {
-        "kind": "distribution",
-        "function": "avg",
-        "over": {
-            "kind": "entity_value",
-            "entity": CUSTOMER,
-            "input": {"measure": "measure.jaffle.order_count"},
-            "where": [{"kind": "value_filter", "op": ">", "value": 0}],
-        },
-    },
+    "distribution": _customer_distribution("measure.jaffle.order_count"),
 }
 
 
@@ -1031,47 +982,38 @@ SIBLING_SHAPES = {
 def test_shipped_sales_policy_scopes_cuts_to_governed_objects(monkeypatch, shape):
     """A cut counts for the leaves it filters; query-wide and unattributed cuts count for all."""
     from semantic_rails.compiler_parts import sql_lowering
-    from semantic_rails.schema import MetricConfig
 
     config = load_package_config("configs/semantic_rails/jaffle_shop")
-    recipe = {
+    share = {
         "kind": "ratio",
         "numerator": STORE_CUT,
         "denominator": {"measure": "measure.jaffle.order_count"},
     }
-    config = replace(
-        config,
-        metric_recipes=[
-            *config.metric_recipes,
-            MetricConfig(
-                id="store_share_recipe",
-                kind="derived",
-                expression=expressions.parse_semantic_expression(recipe, context="query"),
-            ),
-        ],
-    )
-    governed = {"expression": {"measure": MEASURE}, "as": "revenue"}
-    query = {"select": [governed], "policy_context": {"roles": ["sales"]}}
+    share_recipe = _recipe(SIBLING_SHAPES["recipe"], share)
+    config = replace(config, metric_recipes=[*config.metric_recipes, share_recipe])
+    governed = {"expression": MEASURE, "as": "revenue"}
+    query = {"select": [governed]}
     if shape == "metric_filter":
-        query["metric_filters"] = [{"expression": STORE_CUT, "op": ">", "value": 0}]
+        query["select"].append({"expression": STORE_CUT, "as": "orders"})
+        query["having"] = [{"field": "orders", "op": "gt", "value": 0}]
     elif shape == "shared_scan":
         # Both filtered leaves read one scan; the filter is lowered for the first.
         store_filter = STORE_CUT["filter"]
         governed["expression"] = {"kind": "aggregate", "measure": MEASURE, "filter": store_filter}
         query["select"] = [{"expression": STORE_CUT, "as": "orders"}, governed]
-        bound = compiler.bind_query(config, None, query)
+        bound = compiler.bind_query(config, None, _engine(query))
         assert len(sql_lowering._measure_plan_groups(bound.plan, bound.config)) == 1
     else:
         query["select"].append({"expression": SIBLING_SHAPES[shape], "as": "sibling"})
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     engine = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     try:
         if shape in {"aggregate", "conditional", "recipe"}:
-            result = engine.validate(query)
+            result = engine.validate(query, context=SALES)
             assert result["ok"], result["errors"]
-            assert engine.compile(query)["rendered_sql"]
+            assert engine.compile(query, context=SALES)["rendered_sql"]
         else:
-            violations = _assert_denied_before_output(engine, monkeypatch, query)
+            violations = _assert_denied_before_output(engine, monkeypatch, query, context=SALES)
             assert any(row["kind"] == "metric_filters_not_allowed" for row in violations)
     finally:
         engine.close()
@@ -1094,7 +1036,7 @@ def test_shared_scan_conditional_cut_counts_for_its_own_leaf(config, monkeypatch
             {"expression": FILTER_SPELLINGS["table_column"][0], "as": "orders"},
         ]
     }
-    bound = compiler.bind_query(config, None, query)
+    bound = compiler.bind_query(config, None, _engine(query))
     assert len(sql_lowering._measure_plan_groups(bound.plan, bound.config)) == 1
     engine = _constrained(config, {"allow_metric_filters": False}, governed)
     try:
@@ -1108,21 +1050,22 @@ def test_shared_scan_conditional_cut_counts_for_its_own_leaf(config, monkeypatch
 
 
 def test_object_cuts_fall_back_to_the_whole_query(config):
-    sibling = {"select": [{"expression": {"measure": MEASURE}, "as": "revenue"}]}
+    sibling = {"select": [{"expression": MEASURE, "as": "revenue"}]}
     sibling["select"].append({"expression": STORE_CUT, "as": "orders"})
-    bound = compiler.bind_query(config, None, sibling)
+    bound = compiler.bind_query(config, None, _engine(sibling))
     assert bound.cuts and bound.object_cuts(MEASURE) == ()
     for object_id in ("measure.jaffle.order_count", STORE, ENTITY, CUSTOMER_COUNT):
         assert bound.object_cuts(object_id) == bound.cuts
     read_in_cut = {"select": [sibling["select"][0]]}
     read_in_cut["select"].append({"expression": SIBLING_SHAPES["predicate_input"], "as": "orders"})
-    bound = compiler.bind_query(config, None, read_in_cut)
+    bound = compiler.bind_query(config, None, _engine(read_in_cut))
     assert bound.object_cuts(MEASURE) == bound.cuts
 
 
 @pytest.mark.parametrize("allowed", [False, True])
 @pytest.mark.parametrize("constraint", ["allowed_metric_filter_entities", "allow_metric_filters"])
 def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, constraint):
+    # Predicates aligned to each query period have no call spelling: the engine's own form.
     measure_id = "measure.jaffle.inventory_on_hand_eop"
     aggregate = {"kind": "scoped_aggregate", "measure": measure_id, "aggregation": "sum"}
     numerator = {
@@ -1158,9 +1101,9 @@ def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, co
     engine = _constrained(config, policy, measure_id)
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
+            assert engine.validate_internal(query)["ok"]
         else:
-            violations = _assert_denied_before_output(engine, monkeypatch, query)
+            violations = _assert_denied_before_output(engine, monkeypatch, query, internal=True)
             assert violations[0]["kind"] in {
                 "metric_filters_not_allowed",
                 "disallowed_metric_filter_entity",
@@ -1173,15 +1116,15 @@ def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, co
 def test_conversion_cut_records_operand_entities(config, monkeypatch, allowed):
     expression = {
         "kind": "conversion",
-        "base": {"measure": "measure.jaffle.session_starts"},
-        "converted": {"measure": "measure.jaffle.order_count"},
+        "base": "measure.jaffle.session_starts",
+        "converted": "measure.jaffle.order_count",
         "entity": CUSTOMER,
         "window": {"unit": "day", "value": 28},
         "matching_mode": "first_converted_after_base",
     }
     query = _customer_query(expression)
     query.pop("group_by")
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     entities = [row.id for row in config.entities if allowed or row.id != ENTITY]
     engine = _constrained(config, {"allowed_metric_filter_entities": entities})
     try:
@@ -1195,7 +1138,7 @@ def test_conversion_cut_records_operand_entities(config, monkeypatch, allowed):
 
 
 def test_timeless_count_does_not_consume_default_role(config):
-    query = _customer_query({"measure": "measure.jaffle.item_count"})
+    query = _customer_query("measure.jaffle.item_count")
     query.pop("group_by")
     engine = _constrained(config, {"allowed_metric_filter_entities": ["entity.jaffle_item"]})
     try:
@@ -1218,7 +1161,7 @@ def test_missing_compiled_leaf_binding_is_refused(config, monkeypatch):
     from semantic_rails.compiler_parts import post_aggregation
 
     monkeypatch.setattr(post_aggregation, "record_leaf_reference", lose_leaf)
-    query = _customer_query({"measure": "measure.jaffle.order_count"})
+    query = _customer_query("measure.jaffle.order_count")
     engine = _constrained(
         config, {"allowed_metric_filter_entities": [row.id for row in config.entities]}
     )
@@ -1232,8 +1175,6 @@ def test_missing_compiled_leaf_binding_is_refused(config, monkeypatch):
 @pytest.mark.parametrize("allowed", [False, True])
 @pytest.mark.parametrize("shape", ["conversion", "anchored"])
 def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, allowed, shape):
-    from semantic_rails.schema import MetricConfig
-
     measure_id = (
         "measure.jaffle.session_starts"
         if shape == "conversion"
@@ -1264,10 +1205,9 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
                 "time_alignment": "same_query_period",
             }
         ]
-    recipe = MetricConfig(
-        id="operand_recipe",
-        kind="derived",
-        expression=expressions.parse_semantic_expression(expression, context="query"),
+    recipe = _recipe(
+        "metric.test.operand_recipe",
+        expression,
         compatible_temporal_roles=[role.id, other_role.id],
     )
     config = replace(
@@ -1283,8 +1223,8 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
     if shape == "conversion":
         expr = {
             "kind": "conversion",
-            "base": {"metric": recipe.id},
-            "converted": {"measure": "measure.jaffle.order_count"},
+            "base": recipe.id,
+            "converted": "measure.jaffle.order_count",
             "entity": CUSTOMER,
             "window": {"unit": "day", "value": 28},
             "matching_mode": "first_converted_after_base",
@@ -1292,17 +1232,17 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
         query = {"select": [{"expression": expr, "as": "value"}]}
     else:
         denominator = {key: value for key, value in expression.items() if key != "predicates"}
-        expr = {"kind": "ratio", "numerator": {"metric": recipe.id}, "denominator": denominator}
+        expr = {"kind": "ratio", "numerator": recipe.id, "denominator": denominator}
         query = {
             "select": [{"expression": expr, "as": "value"}],
             "time": {"temporal_role": role.id, "grain": "month"},
         }
         with pytest.raises(SemanticLayerError) as raised:
-            compiler.compile_query(config, None, query)
+            compiler.compile_query(config, None, _engine(query))
         assert raised.value.code == "INVALID_TEMPORAL_BINDING"
         assert raised.value.details["compatible"] == [other_role.id]
         query["time"]["temporal_role"] = other_role.id
-    compiled = compiler.compile_query(config, None, query)
+    compiled = compiler.compile_query(config, None, _engine(query))
     assert "other_clock" in compiled["sql"]
     if shape == "anchored":
         assert any(
@@ -1336,8 +1276,8 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
 def test_optimized_projection_remains_a_parent_predicate_cut(
     config, monkeypatch, allowed, constraint, optimized
 ):
+    """A predicate on an expression, aligned to each query period: the engine's own form."""
     from semantic_rails.compiler_parts import sql_lowering
-    from semantic_rails.schema import MetricConfig
 
     inventory = "entity.jaffle_store_inventory_snapshot"
     aggregate = {
@@ -1357,11 +1297,7 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
             }
         ],
     }
-    recipe = MetricConfig(
-        id="metric.test.inventory",
-        kind="derived",
-        expression=expressions.parse_semantic_expression(numerator, context="query"),
-    )
+    recipe = _recipe("metric.test.inventory", numerator)
     config = replace(config, metric_recipes=[*config.metric_recipes, recipe])
     expression = {
         "kind": "ratio",
@@ -1369,7 +1305,7 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
         "denominator": aggregate,
     }
     query = {
-        "select": [{"expression": MEASURE, "as": "revenue"}],
+        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
         "metric_filters": [
             {
@@ -1406,10 +1342,10 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
     engine = _constrained(config, policy, MEASURE)
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
+            assert engine.validate_internal(query)["ok"]
+            assert engine.compile_internal(query)["rendered_sql"]
         else:
-            violations = _assert_denied_before_output(engine, monkeypatch, query)
+            violations = _assert_denied_before_output(engine, monkeypatch, query, internal=True)
             assert violations[0]["disallowed"] == [
                 inventory if constraint == "entities" else recipe.id
             ]
@@ -1420,26 +1356,11 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
 @pytest.mark.parametrize("allowed", [False, True])
 @pytest.mark.parametrize("outer_group", [False, True])
 def test_distribution_cut_binds_its_own_entity_grain(config, monkeypatch, allowed, outer_group):
-    query = {
-        "select": [
-            {
-                "as": "distribution",
-                "expression": {
-                    "kind": "distribution",
-                    "function": "avg",
-                    "over": {
-                        "kind": "entity_value",
-                        "entity": CUSTOMER,
-                        "input": "measure.jaffle.order_count",
-                        "where": [{"kind": "value_filter", "op": "gt", "value": 0}],
-                    },
-                },
-            }
-        ]
-    }
+    distribution = _customer_distribution("measure.jaffle.order_count")
+    query = {"select": [{"expression": distribution, "as": "distribution"}]}
     if outer_group:
         query["group_by"] = ["dimension.jaffle_store_name"]
-    assert compiler.compile_query(config, None, query)["sql"]
+    assert compiler.compile_query(config, None, _engine(query))["sql"]
     engine = _constrained(
         config,
         {"allowed_metric_filter_entities": [ENTITY, *([CUSTOMER] if allowed else [])]},
@@ -1458,24 +1379,9 @@ def test_distribution_cut_binds_its_own_entity_grain(config, monkeypatch, allowe
 
 def test_distribution_cut_excludes_attachment_entities(config):
     item = "entity.jaffle_item"
-    query = {
-        "select": [
-            {
-                "as": "distribution",
-                "expression": {
-                    "kind": "distribution",
-                    "function": "avg",
-                    "over": {
-                        "kind": "entity_value",
-                        "entity": CUSTOMER,
-                        "input": "measure.jaffle.item_count",
-                        "where": [{"kind": "value_filter", "op": "gt", "value": 0}],
-                    },
-                },
-            }
-        ]
-    }
-    bound = compiler.bind_query(config, None, query)
+    distribution = _customer_distribution("measure.jaffle.item_count")
+    query = {"select": [{"expression": distribution, "as": "distribution"}]}
+    bound = compiler.bind_query(config, None, _engine(query))
     cut_ids = set().union(*bound.cuts)
     assert {CUSTOMER, "dimension.jaffle_customer_id", item} <= cut_ids
     assert ENTITY in bound.object_ids and ENTITY not in cut_ids
@@ -1489,23 +1395,9 @@ def test_distribution_cut_excludes_attachment_entities(config):
 
 
 def test_unfiltered_distribution_has_no_cut(config):
-    query = {
-        "select": [
-            {
-                "as": "distribution",
-                "expression": {
-                    "kind": "distribution",
-                    "function": "avg",
-                    "over": {
-                        "kind": "entity_value",
-                        "entity": CUSTOMER,
-                        "input": "measure.jaffle.order_count",
-                    },
-                },
-            }
-        ]
-    }
-    assert not compiler.bind_query(config, None, query).cuts
+    distribution = _customer_distribution("measure.jaffle.order_count", filtered=False)
+    query = {"select": [{"expression": distribution, "as": "distribution"}]}
+    assert not compiler.bind_query(config, None, _engine(query)).cuts
     engine = _constrained(config, {"allow_metric_filters": False}, "measure.jaffle.order_count")
     try:
         assert engine.validate(query)["ok"]
@@ -1516,16 +1408,11 @@ def test_unfiltered_distribution_has_no_cut(config):
 @pytest.mark.parametrize("allowed", [False, True])
 @pytest.mark.parametrize("own_filter", [False, True])
 def test_distribution_projection_inherits_parent_cut(config, monkeypatch, allowed, own_filter):
-    over = {
-        "kind": "entity_value",
-        "entity": CUSTOMER,
-        "input": {"measure": "measure.jaffle.order_count"},
-    }
-    if own_filter:
-        over["where"] = [{"kind": "value_filter", "op": ">", "value": 0}]
-    expression = {"kind": "distribution", "function": "avg", "over": over}
+    """A predicate on an expression, aligned to each query period: the engine's own form."""
+    distribution = _customer_distribution("measure.jaffle.order_count", filtered=own_filter)
+    expression = _engine_expression(distribution)
     query = {
-        "select": [{"expression": MEASURE, "as": "revenue"}],
+        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
         "metric_filters": [
             {
                 "expression": {
@@ -1549,10 +1436,10 @@ def test_distribution_projection_inherits_parent_cut(config, monkeypatch, allowe
     )
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
+            assert engine.validate_internal(query)["ok"]
+            assert engine.compile_internal(query)["rendered_sql"]
         else:
-            violations = _assert_denied_before_output(engine, monkeypatch, query)
+            violations = _assert_denied_before_output(engine, monkeypatch, query, internal=True)
             assert violations[0]["disallowed"] == [CUSTOMER]
     finally:
         engine.close()
@@ -1580,8 +1467,6 @@ def recipe_predicate_config(config):
 
 
 def _recipe_with_predicate(config, role, *, nested=False, aggregate=False):
-    from semantic_rails.schema import MetricConfig
-
     predicate = {
         "kind": "metric_predicate",
         "entity": CUSTOMER,
@@ -1600,20 +1485,10 @@ def _recipe_with_predicate(config, role, *, nested=False, aggregate=False):
         if aggregate
         else {"kind": "scoped_aggregate", "measure": MEASURE, "predicates": [predicate]}
     )
-    recipe = MetricConfig(
-        id="metric.test.scoped_recipe",
-        kind="derived",
-        expression=expressions.parse_semantic_expression(expression, context="query"),
-    )
+    recipe = _recipe("metric.test.scoped_recipe", expression)
     recipes = [*config.metric_recipes, recipe]
     if nested:
-        recipe = MetricConfig(
-            id="metric.test.outer_recipe",
-            kind="derived",
-            expression=expressions.parse_semantic_expression(
-                {"metric": recipe.id}, context="query"
-            ),
-        )
+        recipe = _recipe("metric.test.outer_recipe", {"metric": recipe.id})
         recipes.append(recipe)
     return replace(config, metric_recipes=recipes), recipe.id, predicate
 
@@ -1631,7 +1506,7 @@ def test_recipe_roles_include_owned_predicates(
         recipe_predicate_config, role, nested=nested, aggregate=aggregate
     )
     query = {"select": [{"expression": recipe, "as": "value"}]}
-    sql = compiler.compile_query(config, None, query)["sql"]
+    sql = compiler.compile_query(config, None, _engine(query))["sql"]
     assert (
         f"arg_max(jaffle_order_lifecycle.order_total_cents / 100.0, jaffle_order_lifecycle.{role.rsplit('_', 2)[-2]}_at)"
         in sql
@@ -1653,7 +1528,7 @@ def test_recipe_roles_include_owned_predicates(
         else:
             assert engine.validate(query)["ok"]
             assert engine.compile(query)["rendered_sql"]
-        bound = compiler.bind_query(config, None, query)
+        bound = compiler.bind_query(config, None, _engine(query))
         assert role in bound.temporal_roles[recipe]
         assert role in bound.temporal_roles["metric.test.scoped_recipe"]
     finally:
@@ -1663,6 +1538,7 @@ def test_recipe_roles_include_owned_predicates(
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("placement", ["sibling", "outer_predicate", "outer_time"])
 def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested, placement):
+    """Predicates aligned to each query period, outside the recipe: the engine's own form."""
     delivered = "temporal_role.jaffle_lifecycle_delivered_at"
     prepared = "temporal_role.jaffle_lifecycle_prepared_at"
     config, recipe, predicate = _recipe_with_predicate(
@@ -1670,7 +1546,7 @@ def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested
     )
     predicate = deepcopy(predicate)
     predicate["input"]["temporal_role"] = prepared
-    query = {"select": [{"expression": recipe, "as": "value"}]}
+    query = {"select": [{"expression": {"metric": recipe}, "as": "value"}]}
     if placement == "sibling":
         query["select"].append(
             {
@@ -1698,7 +1574,7 @@ def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested
         expected_roles.add("temporal_role.jaffle_order_time")
     sql = compiler.compile_query(config, None, query)["sql"]
     if placement == "outer_time":
-        assert "temporal_role.jaffle_inventory_day" in sql
+        assert " AS period" in sql
     else:
         assert "jaffle_order_lifecycle.prepared_at" in sql
     # The query axis has its own constraint check; it must not become a recipe dependency.
@@ -1707,8 +1583,8 @@ def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested
     )
     engine = _constrained(config, {"allowed_temporal_roles": sorted(allowed_roles)}, recipe)
     try:
-        assert engine.validate(query)["ok"]
-        assert engine.compile(query)["rendered_sql"]
+        assert engine.validate_internal(query)["ok"]
+        assert engine.compile_internal(query)["rendered_sql"]
         bound = compiler.bind_query(config, None, query)
         assert set(bound.temporal_roles[recipe]) == expected_roles
     finally:
@@ -1722,7 +1598,6 @@ def test_optimized_recipe_roles_keep_predicate_ownership(
     recipe_predicate_config, monkeypatch, optimized, governed_operand, allowed
 ):
     from semantic_rails.compiler_parts import sql_lowering
-    from semantic_rails.schema import MetricConfig
 
     delivered = "temporal_role.jaffle_lifecycle_delivered_at"
     prepared = "temporal_role.jaffle_lifecycle_prepared_at"
@@ -1737,13 +1612,7 @@ def test_optimized_recipe_roles_keep_predicate_ownership(
         "aggregation": "sum",
     }
     recipes = [
-        MetricConfig(
-            id=f"metric.test.{operand}",
-            kind="derived",
-            expression=expressions.parse_semantic_expression(
-                {**aggregate, "predicates": predicates}, context="query"
-            ),
-        )
+        _recipe(f"metric.test.{operand}", {**aggregate, "predicates": predicates})
         for operand, predicates in [("numerator", [predicate, extra]), ("denominator", [predicate])]
     ]
     config = replace(config, metric_recipes=[*config.metric_recipes, *recipes])
@@ -1771,7 +1640,8 @@ def test_optimized_recipe_roles_keep_predicate_ownership(
 
     monkeypatch.setattr(sql_lowering, "_anchored_entity_set_select", track_optimization)
     assert (
-        "jaffle_order_lifecycle.prepared_at" in compiler.compile_query(config, None, query)["sql"]
+        "jaffle_order_lifecycle.prepared_at"
+        in compiler.compile_query(config, None, _engine(query))["sql"]
     )
     assert bool(accepted) == optimized
     engine = _constrained(
@@ -1786,7 +1656,7 @@ def test_optimized_recipe_roles_keep_predicate_ownership(
         else:
             assert engine.validate(query)["ok"]
             assert engine.compile(query)["rendered_sql"]
-        bound = compiler.bind_query(config, None, query)
+        bound = compiler.bind_query(config, None, _engine(query))
         assert prepared in bound.temporal_roles[recipes[0].id]
         assert prepared not in bound.temporal_roles[recipes[1].id]
         assert delivered in bound.temporal_roles[recipes[1].id]
@@ -1798,29 +1668,22 @@ def test_optimized_recipe_roles_keep_predicate_ownership(
 def test_recipe_roles_follow_recursive_owned_predicates(
     recipe_predicate_config, monkeypatch, allowed
 ):
-    from semantic_rails.schema import MetricConfig
-
     delivered = "temporal_role.jaffle_lifecycle_delivered_at"
     prepared = "temporal_role.jaffle_lifecycle_prepared_at"
     config, inner, _ = _recipe_with_predicate(recipe_predicate_config, prepared)
-    outer = MetricConfig(
-        id="metric.test.recursive_recipe",
-        kind="derived",
-        expression=expressions.parse_semantic_expression(
-            {
-                "kind": "scoped_aggregate",
-                "measure": MEASURE,
-                "predicates": [
-                    {"entity": CUSTOMER, "input": {"metric": inner}, "op": ">", "value": 0}
-                ],
-            },
-            context="query",
-        ),
+    outer = _recipe(
+        "metric.test.recursive_recipe",
+        {
+            "kind": "scoped_aggregate",
+            "measure": MEASURE,
+            "predicates": [{"entity": CUSTOMER, "input": {"metric": inner}, "op": ">", "value": 0}],
+        },
     )
     config = replace(config, metric_recipes=[*config.metric_recipes, outer])
     query = {"select": [{"expression": outer.id, "as": "value"}]}
     assert (
-        "jaffle_order_lifecycle.prepared_at" in compiler.compile_query(config, None, query)["sql"]
+        "jaffle_order_lifecycle.prepared_at"
+        in compiler.compile_query(config, None, _engine(query))["sql"]
     )
     engine = _constrained(
         config, {"allowed_temporal_roles": [delivered, *([prepared] if allowed else [])]}, outer.id
@@ -1832,7 +1695,7 @@ def test_recipe_roles_follow_recursive_owned_predicates(
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["temporal_role"] == prepared
-        bound = compiler.bind_query(config, None, query)
+        bound = compiler.bind_query(config, None, _engine(query))
         assert prepared in bound.temporal_roles[inner]
         assert prepared in bound.temporal_roles[outer.id]
     finally:
@@ -1884,7 +1747,7 @@ def test_conditional_aggregate_preserves_nested_case_results(config, position, r
 @pytest.mark.parametrize("allowed", [False, True])
 def test_conditional_aggregate_else_condition_is_a_cut(config, monkeypatch, allowed):
     query = _aggregate_if_nested_case("condition", reference_in_else=True)
-    query["select"].append({"expression": {"measure": MEASURE}, "as": "revenue"})
+    query["select"].append({"expression": MEASURE, "as": "revenue"})
     engine = _constrained(
         config, {"allowed_metric_filter_entities": [ENTITY] if allowed else []}, None
     )
@@ -1892,7 +1755,8 @@ def test_conditional_aggregate_else_condition_is_a_cut(config, monkeypatch, allo
         if allowed:
             assert engine.validate(query)["ok"]
             assert engine.compile(query)["rendered_sql"]
-            assert any(ENTITY in cut for cut in compiler.bind_query(config, None, query).cuts)
+            bound = compiler.bind_query(config, None, _engine(query))
+            assert any(ENTITY in cut for cut in bound.cuts)
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["disallowed"] == [ENTITY]
@@ -1909,12 +1773,12 @@ def test_conditional_aggregate_nested_value_is_not_a_cut(config, reference_in_el
         "left": {"kind": "column", "entity": ENTITY, "column": "order_id"},
         "right": {"kind": "literal", "value": 0},
     }
-    query["select"].append({"expression": {"measure": MEASURE}, "as": "revenue"})
+    query["select"].append({"expression": MEASURE, "as": "revenue"})
     engine = _constrained(config, {"allowed_metric_filter_entities": []}, None)
     try:
         assert engine.validate(query)["ok"]
         assert engine.compile(query)["rendered_sql"]
-        bound = compiler.bind_query(config, None, query)
+        bound = compiler.bind_query(config, None, _engine(query))
         assert ENTITY in bound.object_ids
         assert all(ENTITY not in cut for cut in bound.cuts)
     finally:
