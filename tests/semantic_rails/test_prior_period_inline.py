@@ -5,10 +5,13 @@ select silently strip its ``kind`` and ``offset`` fields, producing a
 literal duplicate of the current-period column. Two interleaved
 deliverables are exercised here:
 
-(A) the user-facing shorthand
+(A) the call's one spelling
+``{kind: 'prior_period', input: <id>, offset: {unit: 'year', value: 1}}``
+compiles to a LAG window over the query time grain and executes against
+the jaffle DuckDB fixture; the engine's own shorthand
 ``{kind: 'prior_period', measure: <id>, offset: -1, grain: 'year'}``
-parses, compiles to a LAG window over the query time grain, and
-executes against the jaffle DuckDB fixture.
+parses to the same expression, and a call that sends it is refused with
+the one spelling.
 
 (B) the durable ``EXPRESSION_NORMALIZED_AWAY`` warning fires whenever
 an input expression's recognised ``kind`` does not survive
@@ -37,7 +40,7 @@ from semantic_rails.runtime import (
 from tests.semantic_rails.conftest import copy_package_config, opened
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
+SCHEMA_PATH = REPO_ROOT / "schemas" / "query.v2.json"
 
 
 @pytest.fixture(scope="module")
@@ -216,7 +219,7 @@ def test_shorthand_parses_like_the_long_form(measure: str, aggregation: str | No
         ),
     ],
 )
-def test_shorthand_prior_month_matches_reference_sql(
+def test_prior_month_matches_reference_sql(
     authored: tuple[Runtime, pathlib.Path],
     measure: str,
     role: str,
@@ -224,17 +227,16 @@ def test_shorthand_prior_month_matches_reference_sql(
     reference: str,
 ) -> None:
     runtime, database = authored
-    named = {} if aggregation is None else {"aggregation": aggregation}
+    named = {"kind": "measure", "measure": measure, "aggregation": aggregation}
+    input_ = measure if aggregation is None else named
     result = runtime.query(
         {
             "select": [
                 {
                     "expression": {
                         "kind": "prior_period",
-                        "measure": measure,
-                        "offset": -1,
-                        "grain": "month",
-                        **named,
+                        "input": input_,
+                        "offset": {"unit": "month", "value": 1},
                     },
                     "as": "prior",
                 }
@@ -248,7 +250,7 @@ def test_shorthand_prior_month_matches_reference_sql(
     rows = result["rows"]
     checked = 0
     for row in rows:
-        year, month = _month(row[f"{role}__month"])
+        year, month = _month(row["period"])
         previous = (year, month - 1) if month > 1 else (year - 1, 12)
         want = expected.get(previous)
         assert row["prior"] == (None if want is None else pytest.approx(want, rel=1e-9)), row
@@ -442,7 +444,7 @@ def _require_jsonschema():
     return jsonschema
 
 
-def test_schema_accepts_prior_period_shorthand_in_select() -> None:
+def test_schema_accepts_prior_period_in_select() -> None:
     jsonschema = _require_jsonschema()
     schema = json.loads(SCHEMA_PATH.read_text())
     validator = jsonschema.Draft202012Validator(schema)
@@ -476,21 +478,36 @@ def test_schema_accepts_prior_period_canonical_ir_in_select() -> None:
     assert errors == [], [e.message for e in errors]
 
 
-def test_schema_rejects_prior_period_shorthand_missing_grain() -> None:
+_SHORTHAND = {
+    "select": [
+        {
+            "expression": {
+                "kind": "prior_period",
+                "measure": "measure.jaffle.revenue_usd",
+                "offset": -1,
+                "grain": "year",
+            },
+            "as": "revenue_prior_year",
+        }
+    ],
+    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "year"},
+}
+
+
+def test_schema_rejects_the_prior_period_shorthand() -> None:
     jsonschema = _require_jsonschema()
     schema = json.loads(SCHEMA_PATH.read_text())
     validator = jsonschema.Draft202012Validator(schema)
-    payload = {
-        "select": [
-            {
-                "expression": {
-                    "kind": "prior_period",
-                    "measure": "measure.jaffle.revenue_usd",
-                    "offset": -1,
-                },
-                "as": "revenue_prior_year",
-            }
-        ],
-    }
-    errors = list(validator.iter_errors(payload))
-    assert errors, "schema must reject prior_period shorthand without 'grain'"
+    errors = list(validator.iter_errors(_SHORTHAND))
+    assert errors, "schema must reject the prior_period shorthand"
+
+
+def test_a_call_with_the_prior_period_shorthand_is_refused_with_the_one_spelling(
+    runtime: Runtime,
+) -> None:
+    (error,) = runtime.validate(_SHORTHAND)["errors"]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "select[0].expression"
+    (hint,) = error["details"]["recovery_hints"]
+    assert '"input": "measure.jaffle.revenue_usd"' in hint["message"]
+    assert '"offset": {"unit": "year", "value": 1}' in hint["message"]
