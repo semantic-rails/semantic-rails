@@ -28,24 +28,31 @@ def timestamp_package(tmp_path: Path) -> Path:
     return package
 
 
-@pytest.mark.parametrize("grouping", ["dimension", "time"])
-def test_query_returns_raw_timestamptz(timestamp_package: Path, grouping: str) -> None:
+def test_query_returns_raw_timestamptz(timestamp_package: Path) -> None:
     runtime = Runtime.from_path(str(timestamp_package))
-    field = (
-        "dimension.shop_order_ordered_at"
-        if grouping == "dimension"
-        else "temporal_role.shop_order_ordered_at"
-    )
-    clause = (
-        {"group_by": [field]} if grouping == "dimension" else {"time": {"temporal_role": field}}
-    )
+    field = "dimension.shop_order_ordered_at"
     try:
-        result = runtime.query({**ORDER_COUNT_QUERY, **clause})
+        result = runtime.query({**ORDER_COUNT_QUERY, "group_by": [field]})
         assert sorted(result["rows"], key=lambda row: row[field]) == [
             {field: "2024-01-01T12:00:00+00:00", "orders": 2},
             {field: "2024-01-02T12:00:00+00:00", "orders": 1},
         ]
         assert result["column_types"][field] == {"type": "timestamp", "timezone": "aware"}
+    finally:
+        runtime.close()
+
+
+def test_time_axis_buckets_timestamptz_by_day(timestamp_package: Path) -> None:
+    """The time axis has a grain; a day's period is its ISO date."""
+    runtime = Runtime.from_path(str(timestamp_package))
+    time = {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "day"}
+    try:
+        result = runtime.query({**ORDER_COUNT_QUERY, "time": time})
+        assert sorted(result["rows"], key=lambda row: row["period"]) == [
+            {"period": "2024-01-01", "orders": 2},
+            {"period": "2024-01-02", "orders": 1},
+        ]
+        assert result["column_types"]["period"] == {"type": "date"}
     finally:
         runtime.close()
 

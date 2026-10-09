@@ -1,5 +1,4 @@
 {
-  "version": 1,
   "select": [
     {
       "expression": {
@@ -10,12 +9,8 @@
           "value": 14
         },
         "matching_mode": "first_converted_after_base",
-        "base": {
-          "measure": "measure.jaffle.session_starts"
-        },
-        "converted": {
-          "measure": "measure.jaffle.order_count"
-        }
+        "base": "measure.jaffle.session_starts",
+        "converted": "measure.jaffle.order_count"
       },
       "as": "session_to_order_conversion_rate_14d"
     }
@@ -26,8 +21,8 @@
   },
   "order_by": [
     {
-      "field": "temporal_role.jaffle_session_started_at__month",
-      "direction": "ASC"
+      "field": "period",
+      "direction": "asc"
     }
   ]
 }
