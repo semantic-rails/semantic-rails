@@ -366,7 +366,7 @@ def test_ask_limits_sql_to_one_extra_row_and_fences_at_the_limit(
     query = {"select": ["measure.orders"], **planned}
     monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: runtime)
     monkeypatch.setattr(
-        reports, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
+        reports, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query": query}}
     )
     monkeypatch.setattr(interpretation, "resolve_catalog", lambda *_a, **_k: {})
 
@@ -410,7 +410,7 @@ def test_ask_separates_a_planned_limit_from_the_cli_cap(
     query = {"select": ["measure.orders"], "limit": 5}
     monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: _LimitingRuntime())
     monkeypatch.setattr(
-        reports, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query_ir": query}}
+        reports, "plan_payload", lambda *_a, **_k: {"ok": True, "best": {"query": query}}
     )
     monkeypatch.setattr(interpretation, "resolve_catalog", lambda *_a, **_k: {})
 
@@ -433,7 +433,7 @@ def test_ask_keeps_engine_warnings_and_says_how_to_fetch_every_row(
     plan = {
         "ok": True,
         "best": {
-            "query_ir": {"select": ["measure.orders"]},
+            "query": {"select": ["measure.orders"]},
             "resolved": [{"id": "measure.orders", "label": "Orders"}],
         },
         "warnings": [unmatched],
@@ -472,7 +472,7 @@ def test_ask_prints_the_readings_the_plan_took_of_the_window(
     plan = {
         "ok": True,
         "best": {
-            "query_ir": {"select": ["measure.orders"]},
+            "query": {"select": ["measure.orders"]},
             "resolved": [{"id": "measure.orders", "label": "Orders"}],
         },
         "assumptions": [reading],
@@ -511,7 +511,7 @@ def test_ask_prints_a_warning_repeated_for_each_measure_once(
                 ],
             }
 
-    plan = {"ok": True, "best": {"query_ir": {"select": ["metric.m.aov"]}}}
+    plan = {"ok": True, "best": {"query": {"select": ["metric.m.aov"]}}}
     monkeypatch.setattr(reports, "_runtime_from_ref", lambda _ref: _RatioRuntime())
     monkeypatch.setattr(reports, "plan_payload", lambda *_a, **_k: plan)
     monkeypatch.setattr(interpretation, "resolve_catalog", lambda *_a, **_k: {})

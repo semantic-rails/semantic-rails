@@ -149,7 +149,7 @@ try:
     assert planned.get("status") == "ok", planned
     best = planned.get("best") or {}
     assert best.get("validation_ok") is True, planned
-    query = dict(best.get("query_ir") or {})
+    query = dict(best.get("query") or {})
     assert query.get("group_by") == ["dimension.jaffle_store_name"], query
     assert "time" not in query, query
     query["limit"] = 3

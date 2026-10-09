@@ -703,11 +703,10 @@ def test_a_conditional_aggregate_of_rows_of_unknown_grain(receipts_by_order: Pat
     "lookup",
     [
         {"group_by": [COUPON]},
-        {"select": [_measure("order_count"), {"expression": {"dimension": COUPON}}]},
         {"where": [{"field": COUPON, "op": "=", "value": 1}]},
         {"where": [{"field": COUPON, "op": "IS NULL", "value": None}]},
     ],
-    ids=["grouped_lookup", "selected_lookup", "lookup_filter", "null_lookup_filter"],
+    ids=["grouped_lookup", "lookup_filter", "null_lookup_filter"],
 )
 @pytest.mark.parametrize("bound_filter", [False, True], ids=["where", "measure_filter"])
 @pytest.mark.parametrize("clause", [BEVERAGE, WEB], ids=["descent", "lookup_then_child"])

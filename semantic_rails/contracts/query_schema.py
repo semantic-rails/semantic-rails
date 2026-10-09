@@ -22,6 +22,17 @@ def _kind_property(kind: str, key: str) -> dict[str, Any]:
         return expression
     if key == "value" and kind in {"aggregate_if", "nullif", "date_add"}:
         return expression
+    if key == "where" and kind == "entity_value":
+        # Conditions on each entity's value itself; dimension filters go in the call's where.
+        return {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"kind": {"const": "value_filter"}, "op": {}, "value": {}},
+                "additionalProperties": False,
+                "allOf": [{"$ref": "#/$defs/OpValue"}],
+            },
+        }
     if key in {"where", "predicates"} or (
         key == "filter" and kind in {"aggregate", "semi_additive"}
     ):
@@ -73,15 +84,9 @@ def query_call_schema_document() -> dict[str, Any]:
     )
     scalar = {"type": ["string", "number", "boolean"]}
     values = {"anyOf": [scalar, {"type": "array", "items": scalar, "minItems": 1}]}
-    condition = {
-        "type": "object",
-        "properties": {
-            "field": {"type": "string", "minLength": 1},
-            "op": {"enum": ops},
-            "value": values,
-        },
-        "required": list(CONDITION_KEYS),
-        "additionalProperties": False,
+    # The op and value rules every condition follows, a per-entity value filter's too.
+    op_value = {
+        "properties": {"op": {"enum": ops}, "value": values},
         "allOf": [
             {
                 "if": {"properties": {"op": {"const": "missing"}}},
@@ -92,6 +97,13 @@ def query_call_schema_document() -> dict[str, Any]:
                 "then": {"properties": {"value": {"type": "string"}}},
             },
         ],
+    }
+    condition = {
+        "type": "object",
+        "properties": {"field": {"type": "string", "minLength": 1}, "op": {}, "value": {}},
+        "required": list(CONDITION_KEYS),
+        "additionalProperties": False,
+        "allOf": [{"$ref": "#/$defs/OpValue"}],
     }
     window = {
         "type": "object",
@@ -139,6 +151,7 @@ def query_call_schema_document() -> dict[str, Any]:
                 },
             ]
         },
+        "OpValue": op_value,
         "Condition": condition,
         "EntityFilter": {
             "type": "object",

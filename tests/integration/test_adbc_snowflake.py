@@ -20,7 +20,7 @@ from semantic_rails.result_values import result_rows
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 from tests.semantic_rails.result_helpers import typed_rows
-from tests.semantic_rails.test_row_filters import BY_STORE, OWN_ORDERS, A, B, _package, _q
+from tests.semantic_rails.test_row_filters import BY_STORE, OWN_ORDERS, A, B, _as, _package
 
 from .targets.snowflake import TARGET
 
@@ -129,7 +129,7 @@ def test_snowflake_adbc_row_filter_isolation(adbc, tmp_path):
         adbc.query(
             f"INSERT INTO order_fact VALUES (1, '{A}', 's1', '2026-01-10', 10), (2, '{A}', 's2', '2026-02-10', 20), (3, '{B}', 's3', '2026-01-20', 300), (4, '{B}', 's1', '2026-02-20', 400)"
         )
-        results = [runtime.query(_q(BY_STORE, customer_id=tenant)) for tenant in (A, B, A, B)]
+        results = [_as(runtime.query, BY_STORE, customer_id=tenant) for tenant in (A, B, A, B)]
         for tenant, result in zip((A, B, A, B), results, strict=True):
             # Snowflake folds unquoted aliases to upper case, as in conformance.
             rows = [
@@ -149,9 +149,9 @@ def test_snowflake_adbc_row_filter_isolation(adbc, tmp_path):
             assert A not in wire and B not in wire
             assert "?" in result["rendered_sql"]
         assert len({result["rendered_sql"] for result in results}) == 1
-        assert runtime.query(_q(BY_STORE, customer_id="' OR true --"))["rows"] == []
+        assert _as(runtime.query, BY_STORE, customer_id="' OR true --")["rows"] == []
         with pytest.raises(SemanticLayerError) as caught:
-            runtime.query(_q(BY_STORE))
+            _as(runtime.query, BY_STORE)
         assert caught.value.code == "POLICY_DENIED"
     finally:
         runtime.close()

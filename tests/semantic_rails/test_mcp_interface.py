@@ -265,7 +265,7 @@ def test_mcp_adapter_metadata_tools_match_public_v1_payloads(runtime_factory):
         assert valid_values["values"][0]["value"] == "beverage"
         assert valid_values["source"] == "value_domain"
         assert planned["status"] == "ok"
-        assert planned["best"]["query_ir"]
+        assert planned["best"]["query"]
     finally:
         adapter.close()
 

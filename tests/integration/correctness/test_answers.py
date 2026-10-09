@@ -114,10 +114,10 @@ def test_correctness_builders_have_frozen_answers(case):
         "tests/integration/correctness/shop/models/orders.yml#model.measures.revenue",
         "tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id",
         "tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at",
-        "docs/QUERY_IR_SCHEMA.md#wherefilter",
-        "docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0",
-        "docs/QUERY_IR_SCHEMA.md#timeblock",
-        "docs/QUERY_IR_SCHEMA.md#child-groups",
+        "docs/QUERY_CALL.md#where",
+        "docs/QUERY_CALL.md#empty-groups-null-or-0",
+        "docs/QUERY_CALL.md#time",
+        "docs/QUERY_CALL.md#entity-filters",
     ],
 )
 def test_hygiene_accepts_definition_or_decision(duckdb_backend, citation):
@@ -134,7 +134,7 @@ def test_hygiene_accepts_definition_or_decision(duckdb_backend, citation):
     [
         ({"unknown": True}, {}, "unknown keys"),
         ({"tags": ["unknown"]}, {}, "unknown tags"),
-        ({"cites": ["docs/QUERY_IR_SCHEMA.md#missing"]}, {}, "unresolved citation"),
+        ({"cites": ["docs/QUERY_CALL.md#missing"]}, {}, "unresolved citation"),
         ({}, {"data_sha256": "stale"}, "stale fixture fingerprint"),
         ({"expect": "refuse"}, {}, "expect/kind mismatch"),
         ({"reference_sql": ""}, {}, "missing reference_sql"),
@@ -220,24 +220,28 @@ def test_planner_answer(request, backend, case_id, spec):
 
 def assert_planner_outcome(runtime, spec, plan):
     if spec["expect"] != "answer":
-        assert plan["status"] in {"low_confidence", "unrealizable", "out_of_scope"}, plan
+        held = {"low_confidence", "unrealizable", "out_of_scope"}
+        # A question plan asks is a clarification of its own, never an answer.
+        held |= {"needs_clarification"} if spec["expect"] == "clarify" else set()
+        assert plan["status"] in held, plan
         assert "execute" not in plan["next"].get("ready_for", []), plan
         why = plan["why"]
         assert why["message"].strip(), plan
         error = (why.get("errors") or [why])[0]
         assert error["code"] == spec["code"], plan
         if plan["best"]:
-            query = plan["best"]["query_ir"]
+            query = plan["best"]["query"]
             report = runtime.validate(query, **call_arguments(spec))
             assert not report["ok"], report
             assert report["errors"][0]["code"] == spec["code"], report
         if spec["expect"] == "clarify":
-            assert error["why_invalid"].strip(), error
-            assert_clarification(runtime, spec, plan["best"]["query_ir"])
+            question = error.get("why_invalid") or why["details"]["clarification"]["question"]
+            assert question.strip(), error
+            assert_clarification(runtime, spec, plan["best"]["query"])
         return
     assert plan["status"] == "ok", plan
     assert "execute" in plan["next"].get("ready_for", []), plan
-    actual = runtime.query(plan["best"]["query_ir"], **call_arguments(spec))
+    actual = runtime.query(plan["best"]["query"], **call_arguments(spec))
     expected = encode(runtime, spec)
     ordered = bool(spec["query"].get("order_by"))
     assert comparable(actual, positional=True, ordered=ordered) == comparable(
@@ -279,7 +283,7 @@ def test_planner_expectations_reject_incomplete_outcomes(
     elif defect == "execute":
         plan["next"]["ready_for"] = ["execute"]
     elif defect == "wrong_code":
-        plan["why"]["errors"][0]["code"] = "INVALID_QUERY"
+        (plan["why"].get("errors") or [plan["why"]])[0]["code"] = "INVALID_QUERY"
     else:
         validate = runtime.validate
 

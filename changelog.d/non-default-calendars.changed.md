@@ -1,6 +1,6 @@
 - Fiscal and other non-default calendars are refused in this release, with or without
-  `time.fill`, on every query shape: a non-default `time.calendar_id`, or a `grain` on a
-  time whose model is bound to a non-default calendar, returns `REWRITE_NOT_SUPPORTED`
+  `time.fill`, on every query shape: a `grain` on a time whose model is bound to a
+  non-default calendar returns `REWRITE_NOT_SUPPORTED`
   with `details.reason: calendar_not_supported_yet` before any SQL runs. Some of these
   queries used to return Gregorian buckets under fiscal labels. Authored fiscal
   calendars return in a later release.

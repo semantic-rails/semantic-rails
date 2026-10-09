@@ -19,6 +19,7 @@ from typing import Any
 
 from ..expressions import AggregateExpr
 from ._base import _balance_body, _object_by_id, _said_name
+from .call import Call, QueryBuilder, Time
 from .coverage import (
     _COMPARISON_PHRASE_RE,
     _COMPARISON_WORDS,
@@ -30,14 +31,14 @@ from .coverage import (
     _time_block,
 )
 from .grouping_checks import _declared_name_spans
-from .time_checks import _multi_series_stocks, _stock_as_of_gaps, _window_days
+from .time_checks import _multi_series_stocks, _one_day_read, _stock_as_of_gaps, _window_days
 from .time_reference import time_timezone
 from .time_windows import _RANGE_END_UNITS, _time_window
 from .unasked_groupings import _names_grain
 
 _DAY = timedelta(days=1)
-_LAST_DAY = {"range": {"last": {"unit": "day", "value": 1}}}
-_PLAIN_SELECT = frozenset({"measure", "metric", "aggregation"})
+_LAST_DAY = {"last": {"unit": "day", "value": 1}}
+_PLAIN_SELECT = frozenset({"kind", "measure", "aggregation"})
 _UNRESOLVED_TIME_WORDS = _TIME_FRAMING_WORDS | {
     "since",
     "history",
@@ -66,7 +67,7 @@ class _Read:
 
     balance: _Balance
     day: date
-    time: dict[str, Any]
+    time: Time
     spans: tuple[tuple[int, int], ...]
     # "latest" (no time words, or "now"), "as_of" ("end of", "as of") or "window" (a stated
     # period or day).
@@ -82,7 +83,7 @@ class _Ask:
     kind: str
 
 
-def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
+def _balance(config: Any, query: Call) -> _Balance | None:
     """The balance every select of the draft reads directly, or None.
 
     A closed list: each select is a stock measure, or a metric whose whole expression is one
@@ -99,22 +100,18 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
     snapshots: set[str] = set()
     stocks: list[str] = []
     labels: list[str] = []
-    select = list(query.get("select") or [])
+    select = list(query.select)
     for item in select:
-        expression = item.get("expression") if isinstance(item, dict) else None
-        if not isinstance(expression, dict) or set(expression) - _PLAIN_SELECT:
+        expression = item.expression
+        if not item.ref or (isinstance(expression, dict) and set(expression) - _PLAIN_SELECT):
             return None
-        recipe = recipes.get(str(expression.get("metric") or ""))
+        recipe = recipes.get(item.ref)
         body = _balance_body(recipe) if recipe is not None else None
         if recipe is not None and body is None:
             return None
-        measure = measures.get(
-            body.measure
-            if isinstance(body, AggregateExpr)
-            else str(expression.get("measure") or "")
-        )
+        measure = measures.get(body.measure if isinstance(body, AggregateExpr) else item.ref)
         aggregation = body.aggregation if isinstance(body, AggregateExpr) else ""
-        aggregation = aggregation or str(expression.get("aggregation") or "")
+        aggregation = aggregation or item.aggregation
         if (
             measure is None
             or getattr(measure, "measure_class", "") != "semi_additive"
@@ -144,7 +141,7 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
     return _Balance(clocks.pop(), snapshots.pop(), tuple(dict.fromkeys(stocks)), label)
 
 
-def _wrapped_balance(config: Any, query: dict[str, Any]) -> _Balance | None:
+def _wrapped_balance(config: Any, query: Call) -> _Balance | None:
     """The balances a draft reads that ``_balance`` doesn't shape, on the draft's clock, or None.
 
     A stock read at any depth through a wrapper (``COALESCE``, arithmetic, a scoped aggregate, a
@@ -161,7 +158,7 @@ def _wrapped_balance(config: Any, query: dict[str, Any]) -> _Balance | None:
     subjects = _projected_subject_ids(query)
     metric = _object_by_id(config.metric_recipes, subjects[0]) if len(subjects) == 1 else None
     label = str(getattr(metric, "label", "") or "") or "the balance"
-    return _Balance(str(_time_block(query).get("temporal_role") or ""), "", tuple(stocks), label)
+    return _Balance(_time_block(query).temporal_role, "", tuple(stocks), label)
 
 
 def _compares(config: Any, question: str) -> bool:
@@ -184,7 +181,7 @@ def _names_one_period(bounds: dict[str, Any], phrase: str) -> bool:
     one period. "Last 3 months" names three, whatever its days.
     """
 
-    last = dict(dict(bounds.get("range") or {}).get("last") or {})
+    last = dict(bounds.get("last") or {})
     if last:
         return last.get("value") == 1 and last.get("unit") in {"week", "month", "quarter", "year"}
     if any(pattern.search(phrase) for pattern in _RANGE_END_UNITS):
@@ -206,7 +203,7 @@ def _names_one_period(bounds: dict[str, Any], phrase: str) -> bool:
     )
 
 
-def _expected_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read | _Ask | None:
+def _expected_read(runtime: Any, question: str, query: Call) -> _Read | _Ask | None:
     """The one day the question asks the draft's balance to be read on, or what it asks instead.
 
     None when the draft is not a balance read (``_balance``), carries a prior-period select, or
@@ -220,7 +217,7 @@ def _expected_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read 
         return None
     if _compares(config, question):
         return _Ask(balance, "compare")
-    grain = str(_time_block(query).get("grain") or "")
+    grain = _time_block(query).grain
     if grain and _names_grain(config, question, query, grain):
         # Daily values already read one day per row; any coarser bucket is a series.
         return None if grain == "day" else _Ask(balance, "series")
@@ -238,7 +235,7 @@ def _expected_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read 
     ):
         if cue is None and _unread_time_words(question, window.spans):
             return None
-        time = {"temporal_role": balance.clock, "grain": "day", **_LAST_DAY}
+        time = Time(temporal_role=balance.clock, grain="day", last=("day", 1))
         said = f"'{phrase}' is read as" if phrase else "the question names no day, so it is read on"
         reading = f"{balance.label} is a balance: {said} {last_complete}, the last complete day."
         return _Read(balance, last_complete, time, window.spans, "latest", reading)
@@ -254,14 +251,18 @@ def _expected_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read 
     if source == "window" and end - start != _DAY and not _names_one_period(bounds, phrase):
         return None
     day = start if opening else end - _DAY
-    if day >= today:
+    if day > today or (day == today and bounds.get("this") != "day"):
         return None
-    time = {
-        "temporal_role": balance.clock,
-        "grain": "day",
-        "start": day.isoformat(),
-        "end": (day + _DAY).isoformat(),
-    }
+    if day == today:
+        # Today is read like any day, and the complete-day check holds it until it ends.
+        time = Time(temporal_role=balance.clock, grain="day", this="day")
+        return _Read(balance, day, time, window.spans, source, "")
+    time = Time(
+        temporal_role=balance.clock,
+        grain="day",
+        start=day.isoformat(),
+        end=(day + _DAY).isoformat(),
+    )
     reading = (
         ""  # the question names the day itself
         if end - start == _DAY
@@ -288,14 +289,14 @@ def _days(bounds: dict[str, Any], clock: str) -> tuple[date, date] | None:
     return None if days is None or days[0] is None or days[1] is None else (days[0], days[1])
 
 
-def _reads(read: _Read, query: dict[str, Any]) -> bool:
+def _reads(read: _Read, query: Call) -> bool:
     """Whether the draft reads its balance on exactly ``read.day`` at day grain."""
 
     time = _time_block(query)
     return (
-        time.get("temporal_role") == read.balance.clock
-        and time.get("grain") == "day"
-        and _days(time, read.balance.clock) == (read.day, read.day + _DAY)
+        time.temporal_role == read.balance.clock
+        and time.grain == "day"
+        and _days(time.window, read.balance.clock) == (read.day, read.day + _DAY)
     )
 
 
@@ -307,11 +308,11 @@ def _day_dimension(config: Any, clock: str) -> str | None:
     return str(row.id) if row is not None and row.data_type == "date" else None
 
 
-def _ask_why(ask: _Ask, query: dict[str, Any]) -> dict[str, Any]:
+def _ask_why(ask: _Ask, query: Call) -> dict[str, Any]:
     """Why plan asks instead of drafting more than one read of a balance."""
 
     label = ask.balance.label
-    grain = str(_time_block(query).get("grain") or "") or None
+    grain = _time_block(query).grain or None
     latest = _days(_LAST_DAY, ask.balance.clock)
     example = f"'{label} on {latest[0] if latest else '<YYYY-MM-DD>'}'"
     compare = ask.kind == "compare"
@@ -348,11 +349,11 @@ def _ask_why(ask: _Ask, query: dict[str, Any]) -> dict[str, Any]:
 def shape_snapshot(
     runtime: Any,
     question: str,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None,
+    query: Call,
+    partial_query: Call | None,
     *,
     required: tuple[str, ...] = (),
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
+) -> tuple[Call, dict[str, Any] | None]:
     """The draft reading its balance on the day the question asks for, or why plan asks.
 
     Returns the draft unchanged when it is not a balance read, when the question names no single
@@ -367,7 +368,7 @@ def shape_snapshot(
 
     config = runtime._config
     balance = _balance(config, query)
-    if balance is None or (partial_query or {}).get("time"):
+    if balance is None or (partial_query is not None and partial_query.time is not None):
         return query, None
     expected = _expected_read(runtime, question, query)
     window = _time_window(question)
@@ -385,7 +386,7 @@ def shape_snapshot(
     per_day = day_dimension is not None and day_dimension in required
     if isinstance(expected, _Ask):
         role = _object_by_id(config.temporal_roles, balance.clock)
-        grain = str(_time_block(query).get("grain") or "")
+        grain = _time_block(query).grain
         unsupported = grain not in list(getattr(role, "supported_grains", None) or [grain])
         if expected.kind == "compare" or per_day or unsupported:
             return query, _ask_why(expected, query)
@@ -395,19 +396,18 @@ def shape_snapshot(
         isinstance(expected, _Read)
         and not _reads(expected, query)
         # Daily values over a stated window each read one day already.
-        and not (expected.source == "window" and _time_block(query).get("grain") == "day")
+        and not (expected.source == "window" and _time_block(query).grain == "day")
     ):
-        shaped = {**query, "time": expected.time}
+        shaped = QueryBuilder(config, query).time(expected.time).build()
     if required:
         added = set(required) - {day_dimension}
-        if not per_day or added or _time_block(shaped).get("grain") != "day":
+        if not per_day or added or _time_block(shaped).grain != "day" or day_dimension is None:
             return query, None
-        group_by = list(dict.fromkeys([*(shaped.get("group_by") or []), day_dimension]))
-        shaped = {**shaped, "group_by": group_by}
+        shaped = QueryBuilder(config, shaped).group(day_dimension).build()
     return shaped, None
 
 
-def snapshot_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read | None:
+def snapshot_read(runtime: Any, question: str, query: Call) -> _Read | None:
     """The read the draft realizes: the day the question names for its balance, or None."""
 
     read = _expected_read(runtime, question, query)
@@ -415,7 +415,7 @@ def snapshot_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read |
 
 
 def snapshot_day_gaps(
-    runtime: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None
+    runtime: Any, question: str, query: Call, partial_query: Call | None
 ) -> list[CoverageGap]:
     """Hold unproven complete days, unnamed generated balances, and an unasked earlier day.
 
@@ -426,8 +426,8 @@ def snapshot_day_gaps(
     time = _time_block(query)
     balance = _balance(runtime._config, query)
     read_balance = balance or _wrapped_balance(runtime._config, query)
-    if read_balance is not None and time.get("grain") == "day":
-        days, latest = _days(time, read_balance.clock), _days(_LAST_DAY, read_balance.clock)
+    if read_balance is not None and _one_day_read(time):
+        days, latest = _days(time.window, read_balance.clock), _days(_LAST_DAY, read_balance.clock)
         if not (days is not None and latest is not None and days[0] < days[1] <= latest[1]):
             message = (
                 f"{max(days[0], latest[1])} isn't complete yet, so this draft can't read "
@@ -453,10 +453,10 @@ def snapshot_day_gaps(
                     },
                 )
             ]
-    if balance is not None and not (partial_query or {}).get("select"):
+    if balance is not None and not (partial_query is not None and partial_query.select):
         recipes = {row.id: row for row in runtime._config.metric_recipes}
-        for item in query.get("select") or []:
-            metric = recipes.get(str(item.get("expression", {}).get("metric") or ""))
+        for item in query.select:
+            metric = recipes.get(item.ref)
             if metric is not None and not _said_name(metric, question):
                 return [
                     CoverageGap(
@@ -470,13 +470,13 @@ def snapshot_day_gaps(
                         },
                     )
                 ]
-    if (partial_query or {}).get("time"):
+    if partial_query is not None and partial_query.time is not None:
         return []
     read = _expected_read(runtime, question, query)
     if not isinstance(read, _Read) or read.spans or _reads(read, query):
         return []
-    days = _days(time, read.balance.clock)
-    if time.get("grain") != "day" or days is None or days[1] - days[0] != _DAY:
+    days = _days(time.window, read.balance.clock)
+    if time.grain != "day" or days is None or days[1] - days[0] != _DAY:
         return []
     return [
         CoverageGap(

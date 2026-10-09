@@ -465,7 +465,7 @@
         "readOnlyHint": true,
         "title": "Plan"
       },
-      "description": "Draft one best query call from a natural-language intent; call it before 'execute' instead of writing a call from scratch. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are no warnings.",
+      "description": "Draft one best query call from a natural-language intent; call it before 'execute' instead of writing a call from scratch. Returns 'status' ('ok' | 'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query', and 'why' or 'warnings' naming any part of the question the draft doesn't honor. detail='query' (default) is compact; 'best' adds intent_ir, trace and next steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. Gotcha: pass 'best.query' to 'execute' only when status is 'ok' and there are no warnings.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -587,36 +587,7 @@
             "additionalProperties": false,
             "allOf": [
               {
-                "if": {
-                  "properties": {
-                    "op": {
-                      "const": "missing"
-                    }
-                  }
-                },
-                "then": {
-                  "properties": {
-                    "value": {
-                      "type": "boolean"
-                    }
-                  }
-                }
-              },
-              {
-                "if": {
-                  "properties": {
-                    "op": {
-                      "const": "contains"
-                    }
-                  }
-                },
-                "then": {
-                  "properties": {
-                    "value": {
-                      "type": "string"
-                    }
-                  }
-                }
+                "$ref": "#/$defs/OpValue"
               }
             ],
             "properties": {
@@ -624,56 +595,8 @@
                 "minLength": 1,
                 "type": "string"
               },
-              "op": {
-                "enum": [
-                  "!=",
-                  "<",
-                  "<=",
-                  "<>",
-                  "=",
-                  "==",
-                  ">",
-                  ">=",
-                  "EQ",
-                  "IN",
-                  "NEQ",
-                  "NOT IN",
-                  "contains",
-                  "eq",
-                  "gt",
-                  "gte",
-                  "in",
-                  "is",
-                  "lt",
-                  "lte",
-                  "missing",
-                  "neq",
-                  "not",
-                  "not in"
-                ]
-              },
-              "value": {
-                "anyOf": [
-                  {
-                    "type": [
-                      "string",
-                      "number",
-                      "boolean"
-                    ]
-                  },
-                  {
-                    "items": {
-                      "type": [
-                        "string",
-                        "number",
-                        "boolean"
-                      ]
-                    },
-                    "minItems": 1,
-                    "type": "array"
-                  }
-                ]
-              }
+              "op": {},
+              "value": {}
             },
             "required": [
               "field",
@@ -1080,6 +1003,19 @@
                       },
                       "where": {
                         "items": {
+                          "additionalProperties": false,
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/OpValue"
+                            }
+                          ],
+                          "properties": {
+                            "kind": {
+                              "const": "value_filter"
+                            },
+                            "op": {},
+                            "value": {}
+                          },
                           "type": "object"
                         },
                         "type": "array"
@@ -1401,6 +1337,94 @@
                 "type": "object"
               }
             ]
+          },
+          "OpValue": {
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "op": {
+                      "const": "missing"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "op": {
+                      "const": "contains"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ],
+            "properties": {
+              "op": {
+                "enum": [
+                  "!=",
+                  "<",
+                  "<=",
+                  "<>",
+                  "=",
+                  "==",
+                  ">",
+                  ">=",
+                  "EQ",
+                  "IN",
+                  "NEQ",
+                  "NOT IN",
+                  "contains",
+                  "eq",
+                  "gt",
+                  "gte",
+                  "in",
+                  "is",
+                  "lt",
+                  "lte",
+                  "missing",
+                  "neq",
+                  "not",
+                  "not in"
+                ]
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ]
+                  },
+                  {
+                    "items": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ]
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              }
+            }
           },
           "Ref": {
             "pattern": "^(measure|metric)\\.[^\\s]+$",

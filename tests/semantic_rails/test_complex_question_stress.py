@@ -455,22 +455,23 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         # not the snapshot the question asks for.
         assert_plan_held(snapshot, "PLAN_INTENT_COVERAGE_GAP")
         assert "ready_for" not in snapshot["next"]
-        snapshot_query = snapshot["best"]["query_ir"]
+        snapshot_query = snapshot["best"]["query"]
         snapshot_expr = snapshot_query["select"][0]["expression"]
         assert snapshot["best"]["validation_ok"] is True
         assert runtime.validate(snapshot_query)["ok"] is True
         assert snapshot_expr["measure"] == "measure.jaffle.active_menu_count_eop"
         assert snapshot_expr["aggregation"] == "sum"
-        # Predicate inputs may be measures or metrics depending on which
-        # scored higher in discovery — we assert the cohort fields match,
-        # not the exact input ref.
-        assert len(snapshot_expr["predicates"]) == 2
-        for predicate in snapshot_expr["predicates"]:
-            assert predicate["entity"] == "entity.jaffle_store"
-            assert predicate["op"] == "gt"
-            assert predicate["value"] == 1
-            assert predicate["over"] == "period"
-            assert {"input", "measure", "metric"} & set(predicate)
+        # The stores qualify through one entity filter. Its conditions may read measures or
+        # metrics depending on which scored higher in discovery — we assert the cohort fields
+        # match, not the exact refs. The question doesn't say over which rows, so the draft
+        # reads every row of each store.
+        [stores] = snapshot_query["where"]
+        assert stores["entity"] == "entity.jaffle_store"
+        assert stores["over"] == "all_time"
+        assert len(stores["having"]) == 2
+        for condition in stores["having"]:
+            assert condition["op"] == "gt"
+            assert condition["value"] == 1
         assert not snapshot_query.get("group_by")
         assert snapshot_query["time"] == {
             "temporal_role": "temporal_role.jaffle_inventory_day",
@@ -486,16 +487,27 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         assert blocked["why_blocked"]["details"]["unasked_groupings"] == ["Store name"]
         adoption_query = blocked["candidate_ir"]
         assert blocked["validation"]["ok"] is True
-        assert (
-            adoption_query["select"][0]["expression"]
-            == "metric.adoption.signup_to_send_conversion_rate_28d"
-        )
+        assert adoption_query["select"] == ["metric.adoption.signup_to_send_conversion_rate_28d"]
         assert adoption_query["group_by"] == ["dimension.jaffle_store_name"]
         assert adoption_query["time"] == {
             "temporal_role": "temporal_role.jaffle_session_started_at",
             "grain": "month",
         }
-        assert adoption_query["where"] == [STORES_CONVERTING_OVER_90]
+        # The question names an order rate, not which one: the draft reads the first by label,
+        # over every row of each store.
+        assert adoption_query["where"] == [
+            {
+                "entity": "entity.jaffle_store",
+                "having": [
+                    {
+                        "field": "metric.sales.session_to_order_conversion_rate_7d",
+                        "op": "gt",
+                        "value": 0.9,
+                    }
+                ],
+                "over": "all_time",
+            }
+        ]
     finally:
         runtime.close()
 

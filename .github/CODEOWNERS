@@ -5,7 +5,7 @@
 /scripts/check_contract_compatibility.py @wtremml18
 /tests/semantic_rails/test_public_contracts.py @wtremml18
 /docs/CONTRACTS.md @wtremml18
-/docs/QUERY_IR_SCHEMA.md @wtremml18
+/docs/QUERY_CALL.md @wtremml18
 
 # Public embedding and MCP boundaries
 /semantic_rails/embedding.py @wtremml18

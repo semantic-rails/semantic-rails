@@ -761,11 +761,143 @@ def test_embedded_cuts_obey_allow_false(config, monkeypatch, allowed, recipe, ki
     governed = None if kind == "conditional" else MEASURE
     engine = _constrained(config, {"allow_metric_filters": allowed}, governed)
     try:
-        if allowed:
+        # A package metric's own filter is its author's definition, never the caller's cut.
+        if allowed or recipe:
             assert engine.validate(query)["ok"]
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["kind"] == "metric_filters_not_allowed"
+    finally:
+        engine.close()
+
+
+REPEAT = "metric.sales.repeat_customer_orders"  # order_count of customers with 2+ orders
+STORE_NAME = "dimension.jaffle_store_name"
+ORDERS = "measure.jaffle.order_count"
+BIG_SPENDERS = "metric.test.orders_of_big_spenders"  # its filter reads a package metric
+REPEAT_FILTER = {
+    "kind": "metric_predicate",
+    "entity": CUSTOMER,
+    "input": "measure.jaffle.lifetime_order_count",
+    "op": "gt",
+    "value": 1,
+    "over": "all_time",
+}
+CALLER_CUTS = {
+    "having": {"having": [{"field": "orders", "op": "gt", "value": 0}]},
+    "entity_filter": {
+        "where": [
+            {
+                "entity": CUSTOMER,
+                "having": [
+                    {"field": "measure.jaffle.lifetime_order_count", "op": "gt", "value": 1}
+                ],
+                "over": "all_time",
+            }
+        ]
+    },
+    # The author's own filter, written by the caller: the caller's cut all the same.
+    "inline_copy": {
+        "select": [
+            {
+                "expression": {
+                    "kind": "aggregate",
+                    "measure": ORDERS,
+                    "filter": {"all": [{"expression": REPEAT_FILTER}]},
+                },
+                "as": "copied",
+            }
+        ]
+    },
+}
+FILTER_CONSTRAINTS = {
+    "allow_false": ({"allow_metric_filters": False}, "metric_filters_not_allowed"),
+    "no_entities": ({"allowed_metric_filter_entities": []}, "disallowed_metric_filter_entity"),
+    "no_metrics": ({"allowed_metric_filter_metrics": []}, "disallowed_metric_filter_metric"),
+}
+
+
+@pytest.fixture(scope="module")
+def filtered_config(config):
+    big_spenders = {
+        "kind": "aggregate",
+        "measure": ORDERS,
+        "filter": {
+            "all": [
+                {
+                    "expression": {
+                        "kind": "metric_predicate",
+                        "entity": CUSTOMER,
+                        "input": {"metric": METRIC},
+                        "op": ">",
+                        "value": 10,
+                        "scope_mode": "entity_only",
+                    }
+                }
+            ]
+        },
+    }
+    return replace(
+        config, metric_recipes=[*config.metric_recipes, _recipe(BIG_SPENDERS, big_spenders)]
+    )
+
+
+def _filtered_metric_call(metric, cut=None):
+    query = {"select": [{"expression": metric, "as": "orders"}], "group_by": [STORE_NAME]}
+    for key, value in deepcopy(CALLER_CUTS.get(cut, {})).items():
+        query[key] = [*query.get(key, []), *value]
+    return query
+
+
+@pytest.mark.parametrize("governs_metric", [False, True], ids=["measure", "metric"])
+@pytest.mark.parametrize("constraint", sorted(FILTER_CONSTRAINTS))
+@pytest.mark.parametrize("metric", [REPEAT, BIG_SPENDERS])
+def test_a_package_metrics_own_filter_is_not_a_caller_cut(
+    filtered_config, metric, constraint, governs_metric
+):
+    rule = FILTER_CONSTRAINTS[constraint][0]
+    engine = _constrained(filtered_config, rule, metric if governs_metric else ORDERS)
+    try:
+        query = _filtered_metric_call(metric)
+        assert engine.validate(query)["ok"]
+        assert engine.query(query)["rows"]
+    finally:
+        engine.close()
+
+
+# The inline copy is a leaf of its own: it cuts the governed measure, not the package metric.
+@pytest.mark.parametrize(
+    "governed,cut",
+    [
+        (governed, cut)
+        for governed in (ORDERS, REPEAT)
+        for cut in sorted(CALLER_CUTS)
+        if (governed, cut) != (REPEAT, "inline_copy")
+    ],
+)
+@pytest.mark.parametrize("constraint", ["allow_false", "no_entities"])
+def test_a_caller_cut_on_a_filtered_package_metric_stays_governed(
+    filtered_config, monkeypatch, governed, constraint, cut
+):
+    rule, kind = FILTER_CONSTRAINTS[constraint]
+    engine = _constrained(filtered_config, rule, governed)
+    try:
+        violations = _assert_denied_before_output(
+            engine, monkeypatch, _filtered_metric_call(REPEAT, cut)
+        )
+        assert kind in {row["kind"] for row in violations}
+    finally:
+        engine.close()
+
+
+def test_a_caller_filter_reading_a_metric_stays_governed(filtered_config, monkeypatch):
+    """A having on the package metric whose filter reads a metric: the caller's cut reads it."""
+    rule, kind = FILTER_CONSTRAINTS["no_metrics"]
+    engine = _constrained(filtered_config, rule, ORDERS)
+    try:
+        query = _filtered_metric_call(BIG_SPENDERS, "having")
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        assert violations[0] == {"kind": kind, "disallowed": [METRIC, BIG_SPENDERS], "allowed": []}
     finally:
         engine.close()
 

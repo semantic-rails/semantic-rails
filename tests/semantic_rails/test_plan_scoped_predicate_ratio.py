@@ -127,4 +127,4 @@ def test_a_share_drafted_across_clocks_is_not_offered_as_ready(runtime):
     best = payload["best"]
     assert best["pattern"] == "scoped_predicate_ratio"
     assert best["validation_ok"] is False
-    assert "predicates" in json.dumps(best["query_ir"])
+    assert "predicates" in json.dumps(best["query"])

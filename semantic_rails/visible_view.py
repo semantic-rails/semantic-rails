@@ -119,7 +119,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         identity="name aliases",
     ),
     DimensionConfig: _classes(
-        "id entity column data_type filterable groupable value_domain",
+        "id entity column data_type filterable groupable value_domain unknown_values",
         text="label description semantic_kind sample_values_strategy",
         texts="topics",
         identity="name aliases",

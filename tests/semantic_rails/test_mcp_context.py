@@ -134,9 +134,9 @@ def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
     for metric, maximum in {
         "query.v2.instructions_tokens": 459,
         # execute embeds the query call's schema (query.v2.json) once.
-        "query.v2.tools_list.model_visible_tokens": 4426,
-        "query.v2.tools_list.wire_tokens": 5327,
-        "query.v2.tools_list.largest_tool_tokens": 3127,
+        "query.v2.tools_list.model_visible_tokens": 4485,
+        "query.v2.tools_list.wire_tokens": 5386,
+        "query.v2.tools_list.largest_tool_tokens": 3186,
     }.items():
         assert metrics[metric] <= maximum, (metric, metrics[metric], maximum)
     checks = mcp_context.check_budgets(metrics, mcp_context.load_budgets(), prefix="query.")
@@ -220,7 +220,7 @@ def test_store_questions_group_by_the_keyed_store(jaffle_package: Path, question
     with mcp_context.QueryMCPClient(jaffle_package) as client:
         payload = client.tool_payload("plan", {"intent": question, "detail": "query"})
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query_ir"]["group_by"] == [
+    assert payload["best"]["query"]["group_by"] == [
         "dimension.jaffle_store_id",
         "dimension.jaffle_store_name",
     ]
@@ -276,7 +276,7 @@ def _plan(query: dict[str, Any] | None, *, status: str = "ok", warnings: int = 0
         "ok": True,
         "status": status,
         "warnings": [{"code": "SOME_WARNING"}] * warnings,
-        "best": {"query_ir": query} if query is not None else None,
+        "best": {"query": query} if query is not None else None,
     }
 
 

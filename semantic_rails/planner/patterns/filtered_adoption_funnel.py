@@ -1,7 +1,7 @@
 """Pattern: ``filtered_adoption_funnel``.
 
-Detects adoption-funnel intents (signup → send conversion) and
-optionally attaches a contextual order-rate filter.
+Detects adoption-funnel intents (signup → send conversion) and optionally qualifies the
+entities by an order-rate threshold.
 """
 
 from __future__ import annotations
@@ -9,9 +9,11 @@ from __future__ import annotations
 from typing import Any
 
 from .._base import RuntimeCompositionDraft, _dimension, _metric, _object_by_id, _resolved
+from ..call import QueryBuilder
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import _add_order, _qualifying_entity, _threshold_from_text
 from ._protocol import IntentPattern
+from .qualified_metric_rollup import _over, _period_options, _qualified
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
@@ -20,28 +22,21 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     )
     if not wants_adoption:
         return None
-    metric = _object_by_id(
-        runtime._config.metric_recipes, "metric.adoption.signup_to_send_conversion_rate_28d"
-    )
-    if metric is None:
-        metric = _metric(runtime._config, ["signup", "send", "adoption", "funnel"])
+    config = runtime._config
+    metric = _metric(config, ["signup", "send", "adoption", "funnel"])
     if metric is None:
         return None
-
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": "signup_to_send_28d", "expression": {"metric": metric.id}}],
-    }
-    if getattr(metric, "temporal_role", ""):
-        query["time"] = _time_spec(metric.temporal_role, text)
-
-    group_by = _maybe_group_by(runtime._config, text)
-    entity = _qualifying_entity(runtime._config, terms, text=text)
-    if not group_by and entity is not None and entity.id == "entity.jaffle_store":
-        dim = _dimension(runtime._config, ["store", "name"])
+    group_by = _maybe_group_by(config, text)
+    entity = _qualifying_entity(config, terms, text=text)
+    if not group_by and entity is not None and "store" in str(entity.id):
+        dim = _dimension(config, ["store", "name"])
         group_by = [dim.id] if dim is not None else []
-    if group_by:
-        query["group_by"] = group_by
+
+    def builder_for() -> QueryBuilder:
+        builder = QueryBuilder(config).select(metric.id)
+        if getattr(metric, "temporal_role", ""):
+            builder.time(_time_spec(metric.temporal_role, text))
+        return _add_order(builder.groups(group_by))
 
     threshold = _threshold_from_text(text)
     predicate_metric = None
@@ -51,44 +46,46 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         and "order" in terms
         and ("rate" in terms or "pct" in terms)
     ):
-        predicate_metric = _object_by_id(
-            runtime._config.metric_recipes,
-            "metric.sales.session_to_order_conversion_rate_7d_same_store",
+        predicate_metric = _metric(config, ["session", "order", "conversion", "rate"])
+    query = builder_for().build()
+    why: dict[str, Any] = {}
+    if predicate_metric is not None and threshold is not None and entity is not None:
+        op, value = threshold
+        over = _over(text, query)
+        query = _qualified(
+            config, builder_for, over or "all_time", entity, [predicate_metric], op, value
         )
-        if predicate_metric is None:
-            predicate_metric = _metric(runtime._config, ["session", "order", "conversion", "rate"])
-        if predicate_metric is not None:
-            op, value = threshold
-            query["metric_filters"] = [
-                {
-                    "expression": {
-                        "kind": "metric_predicate",
-                        "entity": entity.id,
-                        "scope_mode": "contextual",
-                        "input": {"metric": predicate_metric.id},
-                        "op": op,
-                        "value": value,
-                    },
-                    "op": "=",
-                    "value": True,
-                }
-            ]
-
-    _add_order(query)
+        if not over:
+            why = {
+                "code": "ENTITY_FILTER_PERIOD_UNSTATED",
+                "message": (
+                    f"The question qualifies each {entity.label or entity.id} by its order "
+                    "rate but doesn't say over which rows it is taken."
+                ),
+                "details": {
+                    "clarification": {"question": "Over which rows is the rate taken?"},
+                    "options": _period_options(
+                        config, builder_for, entity, [predicate_metric], op, value
+                    ),
+                },
+                "recovery_hints": [
+                    {"kind": "choose_over", "message": "Send the call of the reading you mean."}
+                ],
+            }
     resolved = [_resolved(metric)]
     if predicate_metric is not None:
         resolved.append(_resolved(predicate_metric))
     if entity is not None:
         resolved.append(_resolved(entity))
     for dim_id in group_by:
-        dim = _object_by_id(runtime._config.dimensions, dim_id)
+        dim = _object_by_id(config.dimensions, dim_id)
         if dim is not None:
             resolved.append(_resolved(dim))
 
     return RuntimeCompositionDraft(
         query=query,
         resolved=resolved,
-        rationale=["composed adoption funnel metric with optional contextual order-rate filter"],
+        rationale=["composed adoption funnel metric with an optional order-rate qualification"],
         interpreted_intent={
             "pattern": "filtered_adoption_funnel",
             "source": "plan",
@@ -99,6 +96,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             else "",
             "threshold": threshold,
         },
+        ask=why,
     )
 
 

@@ -1,4 +1,4 @@
-- Planning uses the caller's `policy_context.now` for current date, calendar and relative
+- Planning uses the request's `now` for current date, calendar and relative
   windows, drafting and checking them in one planning zone (the package default, else UTC).
   A question whose window reads different days in the selected temporal role's zone is held
   with `TIME_WINDOW_UNRESOLVED` and returns no query. A returned relative range carries the

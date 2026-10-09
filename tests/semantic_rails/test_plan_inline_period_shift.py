@@ -12,29 +12,25 @@ pattern should still fire.
 from __future__ import annotations
 
 from semantic_rails.planner import plan_payload
-from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def test_active_menu_yoy_fires_inline_period_shift(runtime_factory) -> None:
-    """``active menu YoY by month`` must route to ``inline_period_shift``
-    and produce a 2-column current/prior IR — not fall through to the
-    legacy single-candidate path (status='ok', pattern='').
-    """
+    """``active menu YoY by month`` must route to ``inline_period_shift`` (not fall through to
+    the single-candidate path): a year-over-year comparison asks whether to read the years
+    compared as one series, drafted as that series."""
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent="active menu YoY by month")
     finally:
         runtime.close()
-    assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
-    assert "stock_as_of_unrealized" in {gap["kind"] for gap in payload["why"]["details"]["gaps"]}
+    assert payload["status"] == "needs_clarification", payload.get("why")
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
+    assert "execute" not in payload["next"].get("ready_for", [])
     best = payload["best"]
     assert best["pattern"] == "inline_period_shift"
     interpreted = best["interpreted_intent"]
     assert interpreted["pattern"] == "inline_period_shift"
     assert interpreted["measure"] == "measure.jaffle.active_menu_count_eop"
     assert interpreted["shift_grain"] == "year"
-    # The realized IR should carry both the current-period select and
-    # the prior_period shorthand.
-    select = best["query_ir"]["select"]
-    assert len(select) == 2
-    assert any(col.get("expression", {}).get("kind") == "prior_period" for col in select)
+    assert best["query"]["time"]["last"] == {"unit": "year", "value": 2}
+    assert best["query"]["time"]["grain"] == "month"

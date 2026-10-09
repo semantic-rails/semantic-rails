@@ -7,10 +7,11 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from .. import operators
 from ._base import _object_by_id, _singular
-from .grouping_checks import _entity_grouping_dimensions, _query_clocks, _reads_grouping, _time_of
+from .call import Call, Time
+from .grouping_checks import _entity_grouping_dimensions, _query_clocks, _reads_grouping
 from .groupings import _listed_grouping_terms, _named_run
-from .plan_query import _where_filters
 from .ranking_checks import _dimension_nouns, _ranking_request
 from .time_phrases import _TIME_UNITS, _names_time_axis
 from .time_windows import _time_window
@@ -30,30 +31,28 @@ def _grain_bucket(day: date, grain: str) -> Any:
     return day
 
 
-def _grain_splits(time: dict[str, Any]) -> bool:
+def _grain_splits(time: Time) -> bool:
     """Whether the time block's grain can put the rows in two or more buckets.
 
     It can't when the block's window fits in one bucket: a calendar window inside one period of
     the grain ("in Q1 2017" at quarter or year), or the last single period of the grain ("last
     month" at month), or of a day. Any other grain, an open or relative window of more periods,
-    or a non-Gregorian calendar may split them.
+    may split them; so may this period so far at a finer grain.
     """
 
-    grain = str(time.get("grain") or "")
+    grain = time.grain
     if not grain:
         return False
-    if grain not in _TIME_UNITS or str(time.get("calendar_id") or "default") != "default":
+    if grain not in _TIME_UNITS:
         return True
-    window = time.get("range")
-    if isinstance(window, dict):
-        last = window.get("last")
-        return not (
-            isinstance(last, dict) and last.get("value") == 1 and last.get("unit") in {grain, "day"}
-        )
+    if time.last is not None:
+        return not (time.last[1] == 1 and time.last[0] in {grain, "day"})
+    if time.this:
+        return time.this not in {grain, "day"}
     try:
-        start = datetime.fromisoformat(str(time["start"]))
-        end = datetime.fromisoformat(str(time["end"]))
-    except (KeyError, ValueError):
+        start = datetime.fromisoformat(time.start)
+        end = datetime.fromisoformat(time.end)
+    except ValueError:
         return True
     final = max((end - timedelta(microseconds=1)).date(), start.date())
     return _grain_bucket(start.date(), grain) != _grain_bucket(final, grain)
@@ -87,7 +86,7 @@ def _asks_grain(question: str, grains: Iterable[str]) -> bool:
     return bool(forms & set(re.findall(r"[^\W\d_]+", lowered)) or _SERIES_RE.search(lowered))
 
 
-def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) -> bool:
+def _names_grain(config: Any, question: str, query: Call, grain: str) -> bool:
     """Whether the question asks for the grain's buckets (``_asks_grain``) or, for days, lists
     a grouping that names the query's clock ("by order date")."""
 
@@ -132,14 +131,14 @@ def _asked_grouping_terms(config: Any, question: str) -> list[str]:
 def _unasked_grouping_why(
     runtime: Any,
     question: str,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None = None,
+    query: Call,
+    partial_query: Call | None = None,
 ) -> dict[str, Any] | None:
     """Every grouping the draft adds traces to the question, or the plan is not ready.
 
     A group_by dimension traces when a grouping the question asks for reads it
     (``_asked_grouping_terms``, read as ``_dropped_grouping_why`` reads a listed one), when the
-    caller's ``partial_query`` group_by has it, when the draft's own ``=`` or ``IN`` filter
+    caller's ``partial_query`` group_by has it, when the draft's own ``is`` filter
     keeps only values of it the question names, or when it is the clock's own date dimension
     beside a day grain on that clock: it adds no row (a metric constraint may require it on a
     balance, ``snapshot.shape_snapshot``). The time block's grain traces when the
@@ -154,29 +153,24 @@ def _unasked_grouping_why(
     """
 
     config = runtime._config
-    caller = partial_query or {}
-    time = _time_of(query)
-    grain = str(time.get("grain") or "")
+    caller = partial_query or Call()
+    time = query.time or Time()
+    grain = time.grain
     splits = _grain_splits(time)
     grain_traced = not splits or (
-        _time_of(caller).get("grain") == grain or _names_grain(config, question, query, grain)
+        (caller.time or Time()).grain == grain or _names_grain(config, question, query, grain)
     )
     terms = _asked_grouping_terms(config, question)
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
     # A dimension the draft filters to the values the question names splits the rows into
     # those values only; the filter-value check holds a filter that keeps any other.
-    pinned = {
-        str(row["field"])
-        for row in _where_filters(query)
-        if (row.get("op") == "=" and not isinstance(row.get("value"), (list, tuple, dict)))
-        or (str(row.get("op")).lower() == "in" and isinstance(row.get("value"), list))
-    }
-    chosen = set(caller.get("group_by") or [])
-    clock = _object_by_id(config.temporal_roles, str(time.get("temporal_role") or ""))
+    pinned = {row.field for row in query.conditions if operators.keeps_values(row.op)}
+    chosen = set(caller.group_by)
+    clock = _object_by_id(config.temporal_roles, time.temporal_role)
     clock_day = str(getattr(clock, "dimension", "") or "") if grain == "day" else ""
     grouped = [
         row
-        for item in dict.fromkeys(query.get("group_by") or [])
+        for item in dict.fromkeys(query.group_by)
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
     unasked = [
@@ -207,22 +201,19 @@ def _unasked_grouping_why(
                 {
                     "kind": "remove_unasked_grouping",
                     "message": (
-                        "Remove them from best.query_ir (a dimension from group_by; the grain "
+                        "Remove them from best.query (a dimension from group_by; the grain "
                         "from time, or the whole time block and its order_by entry when it "
-                        "holds no start, end, last or this), then validate; or ask again naming "
-                        'the grouping you want ("by month", "monthly").'
+                        "holds no window), then validate; or ask again naming the grouping "
+                        'you want ("by month", "monthly").'
                     ),
                 }
             ],
         }
-    order_by = [row for row in query.get("order_by") or [] if isinstance(row, dict)]
-    aliases = {row.get("as") for row in query.get("select") or [] if isinstance(row, dict)}
-    aliases.discard(None)
     if not (
         grouped
-        and query.get("limit") is not None
-        and order_by
-        and order_by[0].get("field") in aliases
+        and query.limit is not None
+        and query.order_by
+        and query.order_by[0].field in query.aliases
     ):
         return None
     return _ranking_why(runtime, question, query, partial_query, grouped, splits)
@@ -231,8 +222,8 @@ def _unasked_grouping_why(
 def _ranking_why(
     runtime: Any,
     question: str,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None,
+    query: Call,
+    partial_query: Call | None,
     grouped: list[Any],
     splits: bool,
 ) -> dict[str, Any] | None:
@@ -261,17 +252,13 @@ def _ranking_why(
     keys = [row.id for row in grouped]
     # A question that ranks nothing leaves the ranking to a caller that states it: its limit,
     # over its own group_by.
-    caller = partial_query or {}
-    callers = (
-        not noun
-        and caller.get("limit") is not None
-        and set(keys) <= set(caller.get("group_by") or [])
-    )
+    caller = partial_query or Call()
+    callers = not noun and caller.limit is not None and set(keys) <= set(caller.group_by)
     if not splits and (ranks_entity or callers):
         return None
     entity = noun or " and ".join(str(row.label or row.id) for row in grouped)
-    limit = int(query["limit"])
-    grain = str(_time_of(query).get("grain") or "") if splits else ""
+    limit = int(query.limit or 0)
+    grain = (query.time or Time()).grain if splits else ""
     rows = ", ".join([str(row.label or row.id) for row in grouped] + ([grain] if grain else []))
     # Held here, a ranking of the entity the question ranks is split by its grain.
     readings = (

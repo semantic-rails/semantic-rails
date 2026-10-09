@@ -419,7 +419,7 @@ def test_labels_fall_back_to_the_plan_when_the_catalog_fails(
     plan = {
         "ok": True,
         "best": {
-            "query_ir": {"select": ["measure.orders"]},
+            "query": {"select": ["measure.orders"]},
             "resolved": [{"id": "measure.orders", "label": "Orders"}],
         },
     }
@@ -453,7 +453,7 @@ def test_ask_report_restates_ordering_before_the_default_execution_cap(
         return {
             "ok": True,
             "best": {
-                "query_ir": {
+                "query": {
                     "select": ["measure.revenue"],
                     "order_by": [{"field": "revenue", "direction": direction}],
                 }
@@ -500,9 +500,10 @@ def test_ask_prints_what_the_query_computes(tmp_path: Path) -> None:
         assert proc.returncode == 0, proc.stderr
         return proc.stdout
 
-    # "store" names the Store entity: its key, with its name beside it.
+    # "store" names the Store entity: its key, with its name beside it. The plan selects the
+    # measure by its id, at its own statistic.
     expected = (
-        "Revenue (sum) by Store Id, Store name, per month of Order time, "
+        "Revenue by Store Id, Store name, per month of Order time, "
         "ordered by period ascending, Store Id ascending, Store name ascending"
     )
     assert f"\nInterpreted as: {expected}\n" in run()
