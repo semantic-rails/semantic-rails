@@ -2680,6 +2680,12 @@ def _distinct_parent_group_conditions(
     ]
 
 
+def _group_path(query: Any, group: ChildGroup) -> str:
+    """Where a child group sits in the call: ``where[i].entity``."""
+    where = list(getattr(query, "where", None) or [])
+    return f"where[{where.index(group)}].entity" if group in where else "where"
+
+
 def child_group_route(
     config: PackageConfig, query: Any, measure: Any, group: ChildGroup
 ) -> tuple[PathSelection, list[PathSelection | None]]:
@@ -2712,7 +2718,7 @@ def child_group_route(
         return SemanticLayerError(
             "INVALID_QUERY",
             message,
-            details={"path": "where[].child", "child": group.child, **details},
+            details={"path": _group_path(query, group), "child": group.child, **details},
         )
 
     if group.child == start:

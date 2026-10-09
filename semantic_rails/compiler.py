@@ -3032,11 +3032,10 @@ def _checked_where_dimension(
                 details={
                     "dimension": item.field,
                     "measure": item.field,
-                    "path": "where[].field",
+                    "path": "where.field",
                     "why_invalid": (
-                        "where filters compare row-level dimensions to literal values. "
-                        "Measures require metric_filters, a governed segment, or an "
-                        "authored dimension value that represents the cohort."
+                        "where filters compare row-level dimensions to literal values; filter "
+                        "entities by a measure with an entity filter, or results with having."
                     ),
                     "recovery_hints": [
                         {
