@@ -1209,7 +1209,7 @@ The response `warnings` array can carry these non-error signals:
   row is left out and one with several can count under several targets. The
   message gives the meaning and the fixes; `details.route`, `details.meaning`,
   `details.through` and `details.fixes` (`declare_key`, `declare_link_table`,
-  `record_route`, `child_group`). See
+  `record_route`, and `entity_filter` when the query has conditions on the target). See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
 - `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
   `routes` entry the call applied. `details.row` is the route, as a
