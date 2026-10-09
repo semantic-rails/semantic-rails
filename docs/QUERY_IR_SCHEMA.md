@@ -975,14 +975,15 @@ shape — are supported in two interchangeable forms:
 }
 ```
 
-- `measure` — measure id; wrapped as an aggregate (default `sum`)
+- `measure` — measure id; read as `input: {measure: <id>, aggregation?}`
 - `offset` — signed integer. `-1` = the immediately prior period at
   `grain`. The sign communicates direction; the magnitude is the
   number of `grain` steps.
 - `grain` — one of `day`, `week`, `month`, `quarter`, `year`. The
   shorthand normalises to `offset.value = abs(offset)`,
   `offset.unit = grain` internally.
-- `aggregation` (optional) — defaults to `sum`.
+- `aggregation` (optional) — defaults to the measure's default
+  aggregation.
 
 ### Canonical IR form (what config recipes emit)
 
