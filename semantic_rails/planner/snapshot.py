@@ -25,6 +25,7 @@ from .coverage import (
     _TIME_FRAMING_WORDS,
     CoverageGap,
     _coverage_why,
+    _projected_subject_ids,
     _query_contains_prior_period,
     _time_block,
 )
@@ -141,6 +142,26 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
         return None
     label = labels[0] if len(labels) == 1 and labels[0] else "the balance"
     return _Balance(clocks.pop(), snapshots.pop(), tuple(dict.fromkeys(stocks)), label)
+
+
+def _wrapped_balance(config: Any, query: dict[str, Any]) -> _Balance | None:
+    """The balances a draft reads that ``_balance`` doesn't shape, on the draft's clock, or None.
+
+    A stock read at any depth through a wrapper (``COALESCE``, arithmetic, a scoped aggregate, a
+    flow beside it) is still a balance: never shaped to a read day, but read only on complete
+    days, as a shaped one is.
+    """
+
+    try:
+        stocks = _multi_series_stocks(config, query)
+    except Exception:  # noqa: BLE001 — _stock_as_of_gaps holds an unreadable stock
+        return None
+    if not stocks:
+        return None
+    subjects = _projected_subject_ids(query)
+    metric = _object_by_id(config.metric_recipes, subjects[0]) if len(subjects) == 1 else None
+    label = str(getattr(metric, "label", "") or "") or "the balance"
+    return _Balance(str(_time_block(query).get("temporal_role") or ""), "", tuple(stocks), label)
 
 
 def _compares(config: Any, question: str) -> bool:
@@ -396,26 +417,31 @@ def snapshot_read(runtime: Any, question: str, query: dict[str, Any]) -> _Read |
 def snapshot_day_gaps(
     runtime: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None
 ) -> list[CoverageGap]:
-    """Hold unproven complete days, unnamed generated balances, and an unasked earlier day."""
+    """Hold unproven complete days, unnamed generated balances, and an unasked earlier day.
+
+    The complete-day hold covers every balance the draft reads at day grain, shaped by
+    ``_balance`` or read through a wrapper (``_wrapped_balance``).
+    """
 
     time = _time_block(query)
     balance = _balance(runtime._config, query)
-    if balance is not None and time.get("grain") == "day":
-        days, latest = _days(time, balance.clock), _days(_LAST_DAY, balance.clock)
+    read_balance = balance or _wrapped_balance(runtime._config, query)
+    if read_balance is not None and time.get("grain") == "day":
+        days, latest = _days(time, read_balance.clock), _days(_LAST_DAY, read_balance.clock)
         if not (days is not None and latest is not None and days[0] < days[1] <= latest[1]):
             message = (
                 f"{max(days[0], latest[1])} isn't complete yet, so this draft can't read "
-                f"{balance.label}."
+                f"{read_balance.label}."
                 if days is not None and latest is not None and days[1] > latest[1]
                 else f"This draft's window isn't proven to end on a complete day, so it can't "
-                f"read {balance.label}."
+                f"read {read_balance.label}."
             )
             return [
                 CoverageGap(
                     kind="stock_as_of_unrealized",
-                    clause=balance.label,
+                    clause=read_balance.label,
                     message=message,
-                    expected={"grain": "day", "stocks": list(balance.stocks)},
+                    expected={"grain": "day", "stocks": list(read_balance.stocks)},
                     actual={"grain": "day"},
                     recovery_hint={
                         "kind": "ask_for_one_day",
