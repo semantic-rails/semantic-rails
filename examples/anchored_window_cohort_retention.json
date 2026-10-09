@@ -20,7 +20,6 @@
     "INVALID_EXPRESSION_AST at parse time."
   ],
   "_status": "ir_contract_only",
-  "version": 1,
   "select": [
     {
       "expression": {
