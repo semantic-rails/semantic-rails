@@ -435,7 +435,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             key in EXPRESSION_KEYS
             or (key == "over" and kind == "distribution")
             or key == "value"
-            and kind in {"aggregate_if", "nullif"}
+            and kind in {"aggregate_if", "nullif", "date_add"}
         ):
             node[key] = _operand(value, child, context)
         elif key in EXPRESSION_LISTS and isinstance(value, list):
@@ -1142,11 +1142,18 @@ def _call_expression(expression: Any) -> Any:
             or key in EXPRESSION_LISTS
             or key in {"else", "whens"}
             or (key == "over" and kind == "distribution")
-            or (key == "value" and kind in {"aggregate_if", "nullif"})
+            or (key == "value" and kind in {"aggregate_if", "nullif", "date_add"})
         ):
             node[key] = _call_expression(value)
         else:
             node[key] = value
+    if kind == "scoped_aggregate" and node.get("predicates"):
+        node["predicates"] = [
+            _call_expression({"kind": "metric_predicate", **predicate})
+            if isinstance(predicate, Mapping) and "kind" not in predicate
+            else _call_expression(predicate)
+            for predicate in node["predicates"]
+        ]
     if kind == "metric_predicate":
         scope = node.pop("scope_mode", "")
         alignment = node.pop("time_alignment", "")

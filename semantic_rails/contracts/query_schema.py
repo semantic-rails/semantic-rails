@@ -14,8 +14,19 @@ def _kind_property(kind: str, key: str) -> dict[str, Any]:
     expression = {"$ref": "#/$defs/Expression"}
     if key in EXPRESSION_KEYS or key == "else" or (key == "over" and kind == "distribution"):
         return expression
-    if key == "value" and kind in {"aggregate_if", "nullif"}:
+    if key == "value" and kind in {"aggregate_if", "nullif", "date_add"}:
         return expression
+    if key in {"where", "predicates"} or (
+        key == "filter" and kind in {"aggregate", "semi_additive"}
+    ):
+        # Inline conditions: the call's condition grammar (and a predicate object for
+        # predicates); the parser checks each one at its path.
+        condition_list = {"type": "array", "items": {"type": "object"}}
+        return (
+            {"type": "object", "properties": {"all": condition_list}, "additionalProperties": False}
+            if key == "filter"
+            else condition_list
+        )
     if key in EXPRESSION_LISTS:
         return {"type": "array", "items": expression}
     if key == "whens":

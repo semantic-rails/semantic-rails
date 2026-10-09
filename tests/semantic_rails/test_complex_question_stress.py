@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date
 
 import pytest
 
@@ -14,12 +14,23 @@ from tests.semantic_rails.result_helpers import assert_plan_held
 
 def _wire_oracle(rows):
     return [
-        {
-            key: value.isoformat() if isinstance(value, datetime) else value
-            for key, value in row.items()
-        }
+        {key: value.isoformat() if isinstance(value, date) else value for key, value in row.items()}
         for row in rows
     ]
+
+
+# Stores whose same-store session-to-order rate is over 90% in the month.
+STORES_CONVERTING_OVER_90 = {
+    "entity": "entity.jaffle_store",
+    "having": [
+        {
+            "field": "metric.sales.session_to_order_conversion_rate_7d_same_store",
+            "op": "gt",
+            "value": 0.9,
+        }
+    ],
+    "over": "period",
+}
 
 
 def _snapshot_parent_metric_query() -> dict:
@@ -65,9 +76,9 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
     runtime = runtime_factory("jaffle_shop")
     # Opts into the maximal envelope so `performance_plan` is present;
     # the default ('compact') drops it.
-    query = {**_snapshot_parent_metric_query(), "verbosity": "full"}
+    query = _snapshot_parent_metric_query()
     try:
-        report = runtime.validate(query)
+        report = runtime.validate(query, verbosity="full")
         assert report["ok"] is True
         rendered = report["explain"]["rendered_sql"]
 
@@ -85,7 +96,7 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
         }
         assert "unbounded_raw_primitive_scan" in performance["large_scan_risk"]["reasons"]
 
-        actual = runtime.query(query)["rows"]
+        actual = runtime.query(query, verbosity="full")["rows"]
         oracle = runtime._get_adapter().query(
             """
             WITH order_qualified AS (
@@ -132,7 +143,7 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
             )
             SELECT
               snapshot_base.store_name AS "dimension.jaffle_store_name",
-              snapshot_base.month_start AS "temporal_role.jaffle_inventory_day__month",
+              CAST(snapshot_base.month_start AS DATE) AS period,
               SUM(snapshot_base.active_menu_count) AS active_menu_count_from_high_activity_stores
             FROM snapshot_base
             INNER JOIN snapshot_complete
@@ -221,7 +232,7 @@ def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(run
             )
             SELECT
               snapshot_base.store_name AS "dimension.jaffle_store_name",
-              snapshot_base.month_start AS "temporal_role.jaffle_inventory_day__month",
+              CAST(snapshot_base.month_start AS DATE) AS period,
               SUM(snapshot_base.active_menu_count) AS active_menu_count_from_session_stores
             FROM snapshot_base
             INNER JOIN snapshot_complete
@@ -259,11 +270,10 @@ def test_disallowed_child_entity_predicate_for_parent_snapshot_fails_closed(pack
 
 def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(runtime_factory):
     unfiltered = {
-        "version": 1,
         "select": [
             {
                 "as": "signup_to_send_28d",
-                "expression": {"metric": "metric.adoption.signup_to_send_conversion_rate_28d"},
+                "expression": "metric.adoption.signup_to_send_conversion_rate_28d",
             }
         ],
         "group_by": ["dimension.jaffle_store_name"],
@@ -271,25 +281,10 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
     }
     filtered = {
         **unfiltered,
-        "metric_filters": [
-            {
-                "expression": {
-                    "kind": "metric_predicate",
-                    "entity": "entity.jaffle_store",
-                    "scope_mode": "contextual",
-                    "input": {
-                        "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-                    },
-                    "op": ">",
-                    "value": 0.9,
-                },
-                "op": "=",
-                "value": True,
-            }
-        ],
+        "where": [STORES_CONVERTING_OVER_90],
         "order_by": [
-            {"field": "time", "direction": "ASC"},
-            {"field": "dimension.jaffle_store_name", "direction": "ASC"},
+            {"field": "period", "direction": "asc"},
+            {"field": "dimension.jaffle_store_name", "direction": "asc"},
         ],
     }
 
@@ -299,7 +294,7 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
 
         # Opts into the maximal envelope so `performance_plan` is present;
         # the default ('compact') drops it.
-        report = runtime.validate({**filtered, "verbosity": "full"})
+        report = runtime.validate(filtered, verbosity="full")
         assert report["ok"] is True
         rendered = report["explain"]["rendered_sql"]
         # CTE name reflects the conversion metric ID; check by substring
@@ -412,7 +407,7 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
             )
             SELECT
               store_name AS "dimension.jaffle_store_name",
-              month_start AS "temporal_role.jaffle_session_started_at__month",
+              CAST(month_start AS DATE) AS period,
               CASE WHEN COUNT(DISTINCT session_id) = 0 THEN NULL
                 ELSE COUNT(DISTINCT CASE WHEN order_id IS NOT NULL THEN session_id ELSE NULL END)
                   / NULLIF(COUNT(DISTINCT session_id), 0)
@@ -466,9 +461,10 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         assert len(snapshot_expr["predicates"]) == 2
         for predicate in snapshot_expr["predicates"]:
             assert predicate["entity"] == "entity.jaffle_store"
-            assert predicate["op"] == ">"
+            assert predicate["op"] == "gt"
             assert predicate["value"] == 1
-            assert "measure" in predicate or "metric" in predicate
+            assert predicate["over"] == "period"
+            assert {"input", "measure", "metric"} & set(predicate)
         assert not snapshot_query.get("group_by")
         assert snapshot_query["time"] == {
             "temporal_role": "temporal_role.jaffle_inventory_day",
@@ -483,28 +479,17 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         assert blocked["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING"
         assert blocked["why_blocked"]["details"]["unasked_groupings"] == ["Store name"]
         adoption_query = blocked["candidate_ir"]
-        adoption_filter = adoption_query["metric_filters"][0]
         assert blocked["validation"]["ok"] is True
-        assert adoption_query["select"][0]["expression"] == {
-            "metric": "metric.adoption.signup_to_send_conversion_rate_28d"
-        }
+        assert (
+            adoption_query["select"][0]["expression"]
+            == "metric.adoption.signup_to_send_conversion_rate_28d"
+        )
         assert adoption_query["group_by"] == ["dimension.jaffle_store_name"]
         assert adoption_query["time"] == {
             "temporal_role": "temporal_role.jaffle_session_started_at",
             "grain": "month",
         }
-        assert adoption_filter == {
-            "expression": {
-                "kind": "metric_predicate",
-                "entity": "entity.jaffle_store",
-                "scope_mode": "contextual",
-                "input": {"metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"},
-                "op": ">",
-                "value": 0.9,
-            },
-            "op": "=",
-            "value": True,
-        }
+        assert adoption_query["where"] == [STORES_CONVERTING_OVER_90]
     finally:
         runtime.close()
 
@@ -543,11 +528,15 @@ def test_conversion_metric_refuses_a_threshold_that_zero_satisfies(runtime_facto
 
 
 def test_metric_predicate_filter_envelope_rejects_non_true_outer_filter(runtime_factory):
+    # A call says an entity filter as {entity, having, over}; the compiler's own form wraps it in
+    # an envelope that must keep the entities that pass, never the ones that fail.
     runtime = runtime_factory("jaffle_shop")
     try:
-        report = runtime.validate(
+        report = runtime.validate_internal(
             {
-                "select": [{"as": "orders", "expression": "measure.jaffle.order_count"}],
+                "select": [
+                    {"as": "orders", "expression": {"measure": "measure.jaffle.order_count"}}
+                ],
                 "metric_filters": [
                     {
                         "expression": {
