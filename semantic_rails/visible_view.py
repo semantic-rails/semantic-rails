@@ -107,8 +107,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     ConnectionSpec: _classes("kind name options"),
     PlannerConfig: _classes("disabled_patterns"),
     PackageMeta: _classes(
-        "package_id warehouse default_db seed connection environments schema_strict planner "
-        "observation_scope",
+        "package_id warehouse default_db seed connection environments planner observation_scope",
         text="description",
         identity="name",
     ),

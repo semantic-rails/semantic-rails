@@ -30,7 +30,6 @@ def _write_yaml(path: Path, payload: dict) -> None:
 
 def _write_package(package_dir: Path, *, package_overrides: dict) -> Path:
     package = {
-        "schema_strict": True,
         "id": "containment_demo",
         "name": "containment_demo",
         "description": "Path containment fixture",

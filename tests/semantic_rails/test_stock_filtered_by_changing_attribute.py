@@ -68,7 +68,7 @@ def _package(root: Path) -> Path:
     (package / "package.yml").write_text(
         "schema_version: 1\n"
         "package: {id: fees, namespace: fees, name: fees, warehouse: duckdb,\n"
-        "  default_db: data/fees.duckdb, seed: {kind: external}, schema_strict: true,\n"
+        "  default_db: data/fees.duckdb, seed: {kind: external},\n"
         "  environments: [development]}\n"
     )
     (package / "graph.yml").write_text(

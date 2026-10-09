@@ -79,6 +79,7 @@ model:
     plan: {kind: categorical, domain: [basic, pro]}
   measures:
     mrr_all:
+      kind: aggregate
       expr: mrr
       accumulation: {kind: stock, snapshot: end_of_period}
       publish: false
@@ -88,6 +89,7 @@ metrics:
   mrr:
     label: MRR
     kind: semi_additive
+    value_type: number
     temporal_role: temporal_role.subscriptions_account_day_day
     expression:
       kind: semi_additive

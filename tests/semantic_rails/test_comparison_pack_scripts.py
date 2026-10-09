@@ -586,7 +586,7 @@ def test_semantic_rails_derived_relations_count_as_hand_written(tmp_path, monkey
         "raw_table": ({"id": "orders", "relation": "jaffle_order"}, "", {}),
         "relation_ref": (view | {"relation_ref": "rollup"}, "", {}),
         "variants": (view | {"variants": {"daily": {}}}, "", {}),
-        "relations": (view, "relations:\n  derived: {}\n", {}),
+        "relations": (view, "", {"relations.yml": "relations:\n  derived: {}\n"}),
         "relations_dir": (view, "", {"relations/derived.yml": "relation:\n  id: derived\n"}),
         "inline_model": (None, "models:\n  orders:\n    relation: jaffle_order\n", {}),
     }
@@ -1249,19 +1249,57 @@ def test_frozen_count_discloses_the_engine_and_release_capture() -> None:
     frozen = rubric.load_frozen_models()["semantic_rails"]
     assert release["model_sha256"] == frozen["sha256"]
     assert release["queries_sha256"] == rubric.model_digest(["semantic_rails/queries"])
-    answered = sum(q["status"] == "executed" for q in release["questions"])
+    # The latest release refuses to load this package version: it answered nothing, so the
+    # note names the refusal and claims no count.
+    error = release["load_error"]
+    assert release["questions"] == []
     note = generator.semantic_rails_frozen_version_note()
     assert f"unreleased engine commit {summary['semantic_rails_commit']}" in note
-    assert f"{release['engine_release']}, answers {answered} of {len(release['questions'])}" in note
+    detail = error["message"].split("; ", 1)[0].split(": ", 1)[1]
+    assert (
+        f"{release['engine_release']}, refuses to load this package version "
+        f"({error['code']}: {detail}), so it has no frozen-model count" in note
+    )
+    assert not re.search(r"answers \d+ of", note)
     for name in ("capability_matrix.json", "comparison_data.json"):
         contract = json.loads((SCRIPTS.parent / name).read_text("utf-8"))
         assert note in contract.get("claims", contract.get("headline_findings"))[0]
     readme = (SCRIPTS.parents[1] / "README.md").read_text("utf-8")
     assert note in " ".join(readme.split())
+    assert not re.search(rf"{release['engine_release']},? answers \d+ of", readme)
     table = readme.split("## Frozen-Model Questions:", 1)[1]
     row = next(line for line in table.splitlines() if line.startswith("| Semantic Rails |"))
     assert summary["semantic_rails_commit"] in row and "unreleased" in row
-    assert f"{release['engine_release']}: {answered} of {len(release['questions'])}" in row
+    assert f"{release['engine_release']}: refuses to load this package version" in row
+    assert not re.search(rf"{release['engine_release']}: \d+ of", row)
+
+
+def test_release_capture_with_answers_keeps_its_count(monkeypatch) -> None:
+    load = generator.load_json
+    executed = {"status": "executed", "row_count": 12, "answer_key_matches": True}
+    refused = {
+        "q19_trailing_3_month_revenue_by_month",
+        "q20_revenue_and_prior_month_revenue_by_month",
+    }
+
+    def answering_release(path):
+        payload = load(path)
+        if path.name == "latest_release_frozen_model.json":
+            payload.pop("load_error", None)
+            payload["questions"] = [
+                {"question_id": qid, "status": "unsupported"}
+                if qid in refused
+                else {"question_id": qid, **executed}
+                for qid in sorted(
+                    q["id"] for q in generator.load_questions() if q["scope_level"] == "variant"
+                )
+            ]
+        return payload
+
+    monkeypatch.setattr(generator, "load_json", answering_release)
+    note = generator.semantic_rails_frozen_version_note()
+    assert "v0.3.1, answers 6 of 8 on the same frozen model (it refuses q19 and q20)." in note
+    assert "refuses to load" not in note
 
 
 def test_release_count_requires_the_same_dataset(monkeypatch) -> None:

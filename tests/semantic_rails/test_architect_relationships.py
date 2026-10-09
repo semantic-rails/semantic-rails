@@ -221,29 +221,6 @@ def test_checks_run_after_the_revision_check_and_retries_replay(project):
     assert retry["status"] == "replayed"
 
 
-@pytest.mark.parametrize(
-    "legacy",
-    [
-        {"joins": {"customer": {"via": "customer_id"}}},
-        {"keys": {"primary": ["event_id"], "foreign": {"customer": ["customer_id"]}}},
-    ],
-)
-def test_a_legacy_block_that_would_override_the_columns_is_refused(project, legacy):
-    root = project.project_path
-    for relative in ("metrics/core.yml", "examples/core.yml", "tests/core.yml"):
-        (root / relative).unlink()  # starter metrics clash with auto-published ones
-    package = _file(project, "package.yml")
-    package["package"]["schema_strict"] = False  # strict packages reject both blocks
-    (root / "package.yml").write_text(yaml.safe_dump(package, sort_keys=False))
-    events = _file(project, "models/core/events.yml")
-    events["model"].update(legacy)
-    (root / "models/core/events.yml").write_text(yaml.safe_dump(events, sort_keys=False))
-    assert parse_config_report(PackageReference(source_path=str(root)))[0]["ok"] is True
-
-    with pytest.raises(SemanticLayerError, match="legacy"):
-        _relate(project, ["buyer_id"])
-
-
 def test_a_parse_failure_rolls_the_files_back(project, monkeypatch):
     before = {path: path.read_bytes() for path in project.project_path.rglob("*.yml")}
     failed = ({"ok": False, "errors": [{"code": "INVALID_CONFIG", "message": "x"}]}, None)

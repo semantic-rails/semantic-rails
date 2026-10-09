@@ -801,13 +801,15 @@ def test_a_package_that_weights_a_relationship_is_refused_at_load(tmp_path, form
         relationship = "graph relationship 'accounts_owner'"
     else:
         pkg = _write_package(tmp_path)
-        path = pkg / "models" / "invoices.yml"
+        path = pkg / "graph.yml"
         spec = yaml.safe_load(path.read_text())
-        spec["model"]["joins"] = {
-            "region": {"to": "region", "via": ["issued_region_id"], "path_preference": 10}
+        spec["graph"]["relationships"]["invoices_region"] = {
+            "entities": ["invoice", "region"],
+            "via": ["issued_region_id"],
+            "path_preference": 10,
         }
         path.write_text(yaml.safe_dump(spec))
-        relationship = "model 'invoices' join 'region'"
+        relationship = "graph relationship 'invoices_region'"
     with pytest.raises(SemanticLayerError) as exc_info:
         load_package_config(str(pkg))
     assert exc_info.value.code == "INVALID_CONFIG"

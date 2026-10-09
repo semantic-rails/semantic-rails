@@ -74,7 +74,7 @@ def _package(root: Path) -> Path:
         "entities": {"account_day": {}, "account": {}},
         "times": {"day": {"column": "day", "kind": "date", "class": "as_of_time",
                           "default": True}},
-        "measures": {"mrr_all": {"expr": "mrr", "publish": False,
+        "measures": {"mrr_all": {"kind": "aggregate", "expr": "mrr", "publish": False,
                                  "accumulation": {"kind": "stock", "snapshot": "end_of_period"}}},
     }})  # fmt: skip
     put("metrics/billing.yml", {"metrics": {

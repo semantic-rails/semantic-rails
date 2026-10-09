@@ -84,7 +84,6 @@ def _upkeep(path: Path, noun: str, measure: str, *, revisions: bool = False) -> 
                 "warehouse": "duckdb",
                 "default_db": "data/upkeep.duckdb",
                 "seed": {"kind": "csv_dir_duckdb", "source": "data/csv"},
-                "schema_strict": True,
             },
         },
         "graph.yml": {

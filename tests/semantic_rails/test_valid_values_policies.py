@@ -34,11 +34,10 @@ def package(tmp_path):
                     "default_db": "values.duckdb",
                     "seed": {"kind": "external"},
                 },
-                "graph": {"entities": {"event": {"key": "event_id"}}},
+                "graph": {"entities": {"event": {"key": "event_id", "model": "events"}}},
                 "models": {
                     "events": {
                         "relation": "events",
-                        "grain": ["event_id"],
                         "entities": {"event": {}},
                         "dimensions": {
                             "category": {"kind": "categorical"},

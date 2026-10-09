@@ -75,9 +75,9 @@ From a source checkout, prefix the same commands with `uv run`.
    after reviewing its exact file changes.
 
 `create_project` uses `architect_service.create_project` with a `ProjectSpec`, and the CLI's
-`init`, `project new` and `setup --interactive` write the same scaffold files. It writes a strict
-package (`schema_strict: true`) with one model, its count and amount metrics, an example, a
-package test and a `.gitignore` for build outputs.
+`init`, `project new` and `setup --interactive` write the same scaffold files. It writes a
+package with one model, its count and amount metrics, an example, a package test and a
+`.gitignore` for build outputs.
 
 - DuckDB with `data: starter` (the default) adds a two-row CSV seed, so the package runs at once.
   Starter names are made safe (`Raw Events` becomes `raw_events`).

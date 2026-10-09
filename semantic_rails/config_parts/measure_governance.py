@@ -3,12 +3,11 @@
 A metric governs a measure when it aggregates it through a filter: an aggregate with a
 ``filter``, or a scoped aggregate with ``where`` or ``predicates`` ("Active stores", the retail
 stores of an all-kinds store count). A metric publishes a measure when its whole expression
-is that measure's aggregate with no filter, as a measure's own ``publish`` and a
-``kind: aggregate`` metric make.
+is that measure's aggregate with no filter, as a ``kind: aggregate`` metric is.
 
-A measure authored with ``publish: false`` that a metric governs and no metric publishes is a
-building block: ``discover`` doesn't offer it and ``plan`` answers with the metrics that
-govern it. It stays queryable by id.
+A measure authored with ``publish: false`` that no metric publishes isn't offered by
+``discover``; one a metric governs is a building block, and ``plan`` answers with the metrics
+that govern it. It stays queryable by id.
 """
 
 from __future__ import annotations
@@ -137,20 +136,14 @@ def population_governors(
 
 
 def with_published_flags(config: PackageConfig) -> PackageConfig:
-    """``config`` with each ``MeasureConfig.publish`` as the package's YAML loads it.
-
-    A measure some metric publishes is published. Without ``schema_strict`` every other
-    measure was authored ``publish: false``, since the loader publishes the rest itself; a
-    package written back, with each metric spelled out, then reads the same.
-    """
+    """``config`` with each ``MeasureConfig.publish`` as the package's YAML loads it: a
+    measure some metric publishes is published."""
 
     published = {published_measure(metric) for metric in config.metric_recipes}
-    strict = config.package.schema_strict
     return replace(
         config,
         measures=[
-            replace(row, publish=row.id in published or (strict and row.publish))
-            for row in config.measures
+            replace(row, publish=row.publish or row.id in published) for row in config.measures
         ],
     )
 
@@ -168,10 +161,6 @@ def building_block_measures(config: PackageConfig) -> frozenset[str]:
 
 
 def unoffered_measures(config: PackageConfig) -> frozenset[str]:
-    """Building blocks, plus every unpublished measure in a strict package."""
+    """Every unpublished measure; building blocks are among them."""
 
-    return building_block_measures(config) | frozenset(
-        measure.id
-        for measure in config.measures
-        if config.package.schema_strict and not measure.publish
-    )
+    return frozenset(measure.id for measure in config.measures if not measure.publish)

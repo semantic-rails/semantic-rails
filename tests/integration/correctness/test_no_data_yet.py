@@ -77,6 +77,19 @@ def sparse_runtime(request, backend_name, tmp_path):
                 },
             }
         },
+        "metrics.yml": {
+            "metrics": {
+                "new_workspaces": {
+                    "kind": "aggregate",
+                    "measure": "new_workspaces",
+                    "aggregation": "count_distinct",
+                    "label": "New Workspaces",
+                    "description": "New Workspaces",
+                    "value_type": "number",
+                    "temporal_role": ROLE,
+                }
+            }
+        },
         "policies.yml": {
             "semantic_policies": [
                 {

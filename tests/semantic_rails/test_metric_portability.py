@@ -67,6 +67,7 @@ def portable(tmp_path):
                     "kind": "aggregate",
                     "measure": "customer_count",
                     "label": "Distinct customers",
+                    "value_type": "number",
                 }
             }
         },
