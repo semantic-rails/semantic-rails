@@ -53,6 +53,11 @@ INSERT INTO signups VALUES
   (105, TIMESTAMP '2024-05-06 09:00:00', NULL),
   (106, TIMESTAMP '2024-06-25 03:30:00', 'web'),
   (107, TIMESTAMP '2024-06-10 08:00:00', 'store');
+-- Customers 101 and 103 share a name, and each has the most revenue.
+ALTER TABLE signups ADD COLUMN name VARCHAR(8);
+UPDATE signups SET name = CASE customer_id
+  WHEN 101 THEN 'Ann' WHEN 102 THEN 'Bea' WHEN 103 THEN 'Ann' WHEN 104 THEN 'Cy'
+  WHEN 105 THEN 'Di' WHEN 106 THEN 'Ed' ELSE 'Flo' END;
 
 -- Customer 101 has no version at its first or last order, and order 3 is exactly
 -- the boundary between its versions. Customer 104's order is at its validity end.

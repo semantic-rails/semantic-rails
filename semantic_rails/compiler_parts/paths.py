@@ -229,6 +229,30 @@ def _direct_dimension_source_expr(
     return expr, dim.id
 
 
+def keyed_entity(config: PackageConfig, dimension_id: str) -> Any:
+    """The entity whose one-column key ``dimension_id`` is (never a calendar), else None."""
+    dimension = _dimension_index(config).get(dimension_id)
+    if dimension is None:
+        return None
+    entity = _entity_index(config).get(dimension.entity)
+    if entity is None or entity.kind == "time" or len(entity.key) != 1:
+        return None
+    return entity if dimension.column == entity.key[0] else None
+
+
+def display_key(config: PackageConfig, dimension_id: str) -> str:
+    """The key dimension of the entity ``dimension_id`` names rows of (its ``display``), else
+    ``""``: grouping by a name groups by the key too, so same-named entities stay apart."""
+    entity = next((row for row in config.entities if row.display == dimension_id), None)
+    if entity is None or entity.kind == "time" or len(entity.key) != 1:
+        return ""
+    keys = [
+        row for row in config.dimensions if row.entity == entity.id and row.column == entity.key[0]
+    ]
+    keys.sort(key=lambda row: row.semantic_kind != "id")
+    return keys[0].id if keys else ""
+
+
 def _entity_key_dimension_ids(entity_id: str, config: PackageConfig) -> list[str]:
     entity = _entity_index(config).get(entity_id)
     if entity is None:

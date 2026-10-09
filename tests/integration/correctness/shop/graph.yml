@@ -1,7 +1,7 @@
 graph:
   entities:
     order: {label: Order, key: [order_id], model: orders}
-    customer: {label: Customer, key: [customer_id], model: signups}
+    customer: {label: Customer, key: [customer_id], model: signups, display: name}
     customer_history: {label: Customer history, key: [customer_id, valid_from],
       model: customer_history, allowed_as_root: false}
     refund: {label: Refund, key: [refund_id], model: refunds}

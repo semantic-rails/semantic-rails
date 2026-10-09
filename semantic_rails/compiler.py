@@ -99,6 +99,7 @@ from .compiler_parts.paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
+    display_key,
     inner_lookups,
 )
 from .compiler_parts.post_aggregation import (
@@ -5008,6 +5009,18 @@ def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> f
     return frozenset(references)
 
 
+def _keyed_by_entity(config: PackageConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    """A dimension that names an entity's rows (its ``display``) groups by the entity's key
+    too, just before the name, so same-named entities never merge."""
+    group_by = list(payload.get("group_by") or [])
+    keyed = list(group_by)
+    for dimension in group_by:
+        key = display_key(config, str(dimension))
+        if key and key not in keyed:
+            keyed.insert(keyed.index(dimension), key)
+    return payload if keyed == group_by else {**payload, "group_by": keyed}
+
+
 def bind_query(
     config: PackageConfig,
     registry: Registry | None,
@@ -5043,6 +5056,7 @@ def bind_query(
         finally:
             _source_filter_refusals.reset(token)
 
+    payload = _keyed_by_entity(config, payload)
     try:
         return bind(payload)
     except SemanticLayerError as exc:

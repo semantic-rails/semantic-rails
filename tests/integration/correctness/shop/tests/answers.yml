@@ -1,6 +1,6 @@
 fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
-  data_sha256: 9c846589d4cc8d72b7e3f7bd19ea9d9a21ef246a87d6de79fe4727ea578223e5
+  data_sha256: 6326af948b83796bef51d7828ca1e74b9978f3b55893a92e7e8533f84ac8599f
 tests:
   shop/sibling-input-clock-filter-keeps-independent-history:
     kind: query_matches_snapshot
@@ -269,6 +269,25 @@ tests:
         COUNT(order_id) / CAST(SUM(COUNT(order_id)) OVER () AS DOUBLE PRECISION) AS order_share
       FROM orders
       GROUP BY store_id
+  shop/top-customers-by-name-rank-by-key-so-namesakes-stay-apart:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The customer name is the customer's display, so the ranking groups by the customer key too; customers 101 and 103 are both Ann and stay two rows instead of one Ann with 46.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.dimensions.name, docs/QUERY_IR_SCHEMA.md#orderby]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_customer_name]
+      order_by: [{field: revenue, direction: desc}]
+      limit: 2
+    expected_rows:
+      - {dimension.shop_customer_id: 101, dimension.shop_customer_name: Ann, revenue: 23}
+      - {dimension.shop_customer_id: 103, dimension.shop_customer_name: Ann, revenue: 23}
+    reference_sql: |
+      SELECT o.customer_id, s.name, SUM(o.amount) AS revenue
+      FROM orders o LEFT JOIN signups s ON o.customer_id = s.customer_id
+      GROUP BY o.customer_id, s.name
+      ORDER BY revenue DESC NULLS LAST, o.customer_id ASC NULLS LAST, s.name ASC NULLS LAST
+      LIMIT 2
   shop/top-orders-by-revenue-rank-a-null-revenue-last:
     kind: query_matches_snapshot
     expect: answer

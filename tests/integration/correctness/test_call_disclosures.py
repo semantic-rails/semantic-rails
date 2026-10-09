@@ -195,3 +195,50 @@ def test_a_share_needs_an_additive_input_over_its_own_columns(
     assert error["code"] == code
     if path:
         assert error["details"]["path"] == path
+
+
+CUSTOMER_NAME = "dimension.shop_customer_name"
+CUSTOMER_ID = "dimension.shop_customer_id"
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_a_name_groups_by_its_entity_key_and_says_so(request, backend):
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    spec = ENTRIES["shop/top-customers-by-name-rank-by-key-so-namesakes-stay-apart"]
+    result = runtime.query(spec["query"])
+    assert [row[CUSTOMER_NAME] for row in result["rows"]] == ["Ann", "Ann"]
+    assert result["assumptions"] == [
+        {"code": "GROUPED_BY_KEY", "dimension": CUSTOMER_NAME, "key": CUSTOMER_ID}
+    ]
+    # By name alone the namesakes would merge into one row.
+    merged = source.reference(
+        "SELECT s.name, SUM(o.amount) FROM orders o JOIN signups s ON o.customer_id = s.customer_id "
+        "WHERE s.name = 'Ann' GROUP BY s.name"
+    )
+    assert [(name, int(total)) for name, total in merged] == [("Ann", 46)]
+
+
+def test_a_call_that_groups_by_the_key_and_the_name_states_nothing(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {"select": ["measure.shop.revenue"], "group_by": [CUSTOMER_ID, CUSTOMER_NAME]}
+    assert runtime.query(call)["assumptions"] == []
+
+
+def test_an_entity_with_no_name_is_shown_by_its_key_and_says_so(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    result = runtime.query(
+        {"select": ["measure.shop.revenue"], "group_by": ["dimension.shop_order_id"]}
+    )
+    assert result["assumptions"] == [
+        {
+            "code": "SHOWN_BY_KEY",
+            "entity": "entity.shop_order",
+            "dimension": "dimension.shop_order_id",
+        }
+    ]
+    # A dimension that is not an entity's key says nothing.
+    assert (
+        runtime.query({"select": ["measure.shop.revenue"], "group_by": [STORE]})["assumptions"]
+        == []
+    )

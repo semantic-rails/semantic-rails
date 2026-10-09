@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from ..compiler_parts.bind import aggregation_overrides, select_measure_reads
+from ..compiler_parts.paths import display_key, keyed_entity
 from ..config_parts.measure_governance import governing_metrics
 from ..db_parts.base import QueryRows
 from ..errors import SemanticLayerError
@@ -154,12 +155,36 @@ def share_of_total(
     return out
 
 
+def grouped_by_key(
+    config: PackageConfig, compiled: dict[str, Any], payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """``GROUPED_BY_KEY`` for each entity key the engine grouped by beside the name the call
+    asked for, so same-named entities stay apart; ``SHOWN_BY_KEY`` for each grouped entity key
+    whose entity declares no name (``display``), so its rows show only the key."""
+    asked = list(payload.get("group_by") or [])
+    grouped = list(compiled["logical_plan"].group_by)
+    out: list[dict[str, Any]] = [
+        {"code": "GROUPED_BY_KEY", "dimension": dimension, "key": key}
+        for dimension in asked
+        if (key := display_key(config, dimension)) and key in grouped and key not in asked
+    ]
+    for dimension in grouped:
+        entity = keyed_entity(config, dimension)
+        if entity is not None and not entity.display:
+            out.append({"code": "SHOWN_BY_KEY", "entity": entity.id, "dimension": dimension})
+    return out
+
+
 def call_assumptions(
-    config: PackageConfig, compiled: dict[str, Any], hidden: dict[str, list[Any]] | None = None
+    config: PackageConfig,
+    compiled: dict[str, Any],
+    payload: dict[str, Any],
+    hidden: dict[str, list[Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Every assumption a call's answer states."""
     return [
         *aggregation_override(config, compiled, hidden),
         *governed_metric_exists(config, compiled),
         *share_of_total(compiled, hidden),
+        *grouped_by_key(config, compiled, payload),
     ]
