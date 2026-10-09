@@ -109,7 +109,7 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
             recovery_hint={
                 "kind": "provide_time_window",
                 "message": (
-                    "Add the window to Query IR time (start inclusive, end exclusive) with a grain "
+                    "Add the window to the call's time (start inclusive, end exclusive) with a grain "
                     "that yields the buckets the question asks for, then validate."
                 ),
             },
@@ -334,10 +334,7 @@ def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list
             "ask for the fiscal buckets alone: plan can't draft a fiscal to-date or rolling value"
         )
     elif not bucketed and calendar is not None:
-        steps.append(
-            f"set query.time.calendar_id to {calendar.calendar_id!r} and time.fill to true"
-            + ("" if time.get("grain") else " with a temporal_role and grain")
-        )
+        steps.append("ask in calendar-year terms: fiscal calendars are not supported yet")
     if not scoped:
         steps.append(
             "give any fiscal period as exact query.time.start and end dates (or ask only for "
@@ -365,8 +362,7 @@ def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list
                     if calendar
                     else "plan found no single calendar named fiscal in this package"
                     + (f" (its calendars: {', '.join(calendars)})" if calendars else "")
-                    + ": set query.time.calendar_id to the one you mean with time.fill true, "
-                    "author a fiscal calendar, or ask in calendar-year terms."
+                    + ": ask in calendar-year terms."
                 ),
             },
         )
@@ -544,7 +540,7 @@ def _caller_window_gaps(
             recovery_hint={
                 "kind": "provide_time_window",
                 "message": (
-                    "Pass the window the question states in Query IR time (start inclusive, end "
+                    "Pass the window the question states in the call's time (start inclusive, end "
                     "exclusive), or ask about the window you passed."
                 ),
             },

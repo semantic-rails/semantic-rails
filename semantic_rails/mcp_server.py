@@ -28,6 +28,7 @@ JSONRPC_VERSION = "2.0"
 MCP_PROTOCOL_VERSION = "2025-11-25"
 MCP_SUPPORTED_PROTOCOL_VERSIONS = (
     MCP_PROTOCOL_VERSION,
+    "2025-06-18",
     "2025-03-26",
     "2024-11-05",
 )
@@ -193,8 +194,7 @@ def handle_jsonrpc_message(
     except SemanticLayerError as exc:
         # Enrich the JSON-RPC error envelope with the same recovery hints
         # the structured-tool-result path produces. Without this, an
-        # `INVALID_MCP_ARGUMENTS` raised inside `_policy_context_payload`
-        # (or any other pre-dispatch validation) escapes as a
+        # `INVALID_MCP_ARGUMENTS` raised by any pre-dispatch validation escapes as a
         # `SemanticLayerError`, is caught here, and ships back with empty
         # `recovery_hints` — even though `diagnostics.py` already knows the
         # right hint for the offending field. The top-level

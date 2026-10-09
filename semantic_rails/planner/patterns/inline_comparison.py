@@ -256,7 +256,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         resolved=resolved,
         rationale=[
             "composed inline comparison: emitted both sides as columns "
-            "of a single Query IR for side-by-side review",
+            "of a single query call for side-by-side review",
         ],
         interpreted_intent={
             "pattern": "inline_comparison",

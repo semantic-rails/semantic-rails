@@ -94,7 +94,7 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     return {
         "code": "PLAN_INTENT_COVERAGE_GAP",
         "message": (
-            "The draft validates as Query IR, but one or more high-confidence clauses from the "
+            "The draft validates as a query call, but one or more high-confidence clauses from the "
             "question are not faithfully represented. It is not ready to execute as written."
         ),
         "details": {

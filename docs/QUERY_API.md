@@ -117,9 +117,10 @@ resources expose the same capability list.
 
 ## Request Context And API Key Shim
 
-The runtime accepts trusted request context from headers and merges it into `policy_context` for
-metadata, validate, compile, and query calls. Header context wins over body-provided
-context when both are present:
+The runtime resolves who is asking from the request's credentials, through the policy context
+resolver, for metadata, validate, compile, and query calls. The default resolver reads these
+headers; a request body or query string that says who is asking (`policy_context`, or `environment`
+and `audience` query parameters) is refused with `IDENTITY_CLAIM_REFUSED`, never stripped:
 
 - `X-Request-ID` or `X-Correlation-ID`
 - `X-Semantic-Actor`
@@ -138,9 +139,8 @@ hosted enterprise auth.
 `policy_context.roles` are **trusted upstream context**. The policy engine matches policies
 against these fields (for example, a policy with `audiences: [finance]` only fires when the
 resolved context carries `audience=finance`). The default runtime reads them from request
-headers (and falls back to the body's `policy_context` block). `policy_context.attributes` is
-reserved for attributes an embedding host attaches ([EMBEDDING.md](EMBEDDING.md)); a value a
-caller sends is ignored.
+headers only. Trusted attributes are reserved for an embedding host
+([EMBEDDING.md](EMBEDDING.md)); a caller cannot send them.
 
 For local development, single-tenant on-prem, and any deployment behind a trusted edge,
 the header-based default is correct. **For multi-tenant hosted deployments it is unsafe** —
@@ -158,7 +158,7 @@ from semantic_rails.request_context import (
 
 
 class IdentityDerivedResolver:
-    def resolve(self, headers, *, payload=None, request_id=""):
+    def resolve(self, headers, *, request_id=""):
         identity = verify_jwt(headers.get("Authorization", ""))
         return RequestContext(
             request_id=request_id,
@@ -211,7 +211,8 @@ listed engine diagnostics (`NO_DATA_YET`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`,
 `FILTER_VALUE_UNVERIFIED`, `FILTERED_SERIES_BUCKETS_DROPPED`, and
 `FILTERED_SERIES_BUCKETS_UNVERIFIED`) whose named objects are all granted. Bucket diagnostics
 re-enter authorization and reveal no bucket keys when the source read is denied. Requests
-cannot replace the resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
+cannot replace the resolved grants: a `policy_context` claim, top-level or nested, is refused over
+HTTP and hosted MCP with `IDENTITY_CLAIM_REFUSED`.
 
 `NO_DATA_YET` fires for guarded `NULL` series buckets beyond their visible coverage,
 empty totals with coverage proven before the window, or no visible coverage.
@@ -461,7 +462,11 @@ period instead. Queries that need a time axis, such as a rolling or prior-period
 metric predicate (including one in an aggregate's `filter` or a metric recipe), and a `time` block
 with no window are not collapsed.
 
-`policy_context` is optional and scopes visibility, access, and metric-constraint policies for metadata, validation, and query routes.
+Identity never travels in the body: the resolved request context scopes visibility, access, and
+metric-constraint policies for metadata, validation, and query routes. `validate`, `compile` and
+`query` take `{"query": <call>, "options": {"now": ..., "verbosity": ..., "sql_profile": ...}}`
+(or the call itself as the body); `options.now` pins relative windows, and `plan` takes
+`options.now` beside `intent` and its seed `query`.
 
 ### Request `limits` block (optional)
 
@@ -955,7 +960,6 @@ Optional `POST /catalog` inputs:
 - `kind`
 - `search`
 - `entity`
-- `policy_context`
 
 When `verbosity=full`, measure and metric rows can include a top-level `operational` block and the same fields inside `payload.operational` for packages that declare operational metadata.
 
@@ -970,7 +974,6 @@ Request fields:
 - `offset`
 - `include_counts`
 - `allow_live_query`
-- `policy_context`
 
 Response keys:
 

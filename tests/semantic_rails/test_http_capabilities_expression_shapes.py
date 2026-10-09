@@ -57,7 +57,7 @@ def test_http_capabilities_returns_documented_expression_shapes(runtime_factory)
                 f"dict per docs/QUERY_API.md; got keys {sorted(shape)}"
             )
             assert shape["name"] and shape["description"], shape
-            assert isinstance(shape["example"], dict) and shape["example"], shape
+            assert isinstance(shape["example"], (dict, str)) and shape["example"], shape
         names = {str(shape["name"]) for shape in shapes}
         assert names == _documented_shape_names(), (
             "expression_shapes names drifted from the docs/QUERY_API.md "

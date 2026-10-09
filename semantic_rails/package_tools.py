@@ -309,7 +309,9 @@ def run_examples_report(
     parse_report: dict[str, Any] | None = None,
     config: Any | None = None,
     runtime: Runtime | None = None,
+    now: Any = None,
 ) -> dict[str, Any]:
+    """Run the package's examples. An entry's ``now`` (or its file's) wins over ``now``."""
     report = parse_report
     if report is None or config is None:
         report, config = parse_config_report(ref)
@@ -330,11 +332,12 @@ def run_examples_report(
             Path(package_root_for_source(ref.source_path)) / "examples",
             plural_key="examples",
             singular_key="example",
+            defaults=("now",),
         )
         results: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for example_id, spec in examples:
-            result = _run_example(runtime, example_id, spec)
+            result = _run_example(runtime, example_id, spec, now)
             results.append(result)
             if not result["ok"]:
                 failures.append(
@@ -369,7 +372,9 @@ def run_package_tests_report(
     parse_report: dict[str, Any] | None = None,
     config: Any | None = None,
     runtime: Runtime | None = None,
+    now: Any = None,
 ) -> dict[str, Any]:
+    """Run the package's tests. An entry's ``now`` (or its file's) wins over ``now``."""
     report = parse_report
     if report is None or config is None:
         report, config = parse_config_report(ref)
@@ -390,11 +395,12 @@ def run_package_tests_report(
             Path(package_root_for_source(ref.source_path)) / "tests",
             plural_key="tests",
             singular_key="test",
+            defaults=("now",),
         )
         results: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for test_id, spec in tests:
-            result = _run_test(runtime, test_id, spec)
+            result = _run_test(runtime, test_id, spec, now)
             results.append(result)
             if not result["ok"]:
                 failures.append(
@@ -736,6 +742,7 @@ def check_package_report(
     compare_path: str = "",
     base_ref: str = "",
     artifact_path: str = "",
+    now: Any = None,
 ) -> dict[str, Any]:
     parse_report, snapshot = parse_snapshot_report(ref)
     config = snapshot.config if snapshot else None
@@ -766,10 +773,10 @@ def check_package_report(
             ref, parse_report=parse_report, config=config, runtime=runtime
         )
         example_report = run_examples_report(
-            ref, parse_report=parse_report, config=config, runtime=runtime
+            ref, parse_report=parse_report, config=config, runtime=runtime, now=now
         )
         test_report = run_package_tests_report(
-            ref, parse_report=parse_report, config=config, runtime=runtime
+            ref, parse_report=parse_report, config=config, runtime=runtime, now=now
         )
     finally:
         runtime.close()
@@ -994,7 +1001,12 @@ def impact_report(
 
 
 def promote_package_report(
-    ref: PackageReference, *, environment: str, compare_path: str = "", base_ref: str = ""
+    ref: PackageReference,
+    *,
+    environment: str,
+    compare_path: str = "",
+    base_ref: str = "",
+    now: Any = None,
 ) -> dict[str, Any]:
     config = load_package_config(ref.source_path)
     allowed_environments = list(config.package.environments or [])
@@ -1006,8 +1018,8 @@ def promote_package_report(
         )
     parse_report, _ = parse_config_report(ref)
     validate_report = validate_config_report(ref)
-    example_report = run_examples_report(ref)
-    test_report = run_package_tests_report(ref)
+    example_report = run_examples_report(ref, now=now)
+    test_report = run_package_tests_report(ref, now=now)
     impact = (
         impact_report(ref, compare_path=compare_path, base_ref=base_ref)
         if (compare_path or base_ref)
