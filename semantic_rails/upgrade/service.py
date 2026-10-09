@@ -261,7 +261,9 @@ def upgrade_project(
     if prefix is None:
         others = [rule for rule in mechanical if rule not in candidates]
         for count in range(1, len(others) + 1):
-            staged = _stage(transaction, files, plan(files, [*candidates, *others[:count]], {}).files)
+            staged = _stage(
+                transaction, files, plan(files, [*candidates, *others[:count]], {}).files
+            )
             if staged.error is None:
                 blocker = others[count - 1]
                 break

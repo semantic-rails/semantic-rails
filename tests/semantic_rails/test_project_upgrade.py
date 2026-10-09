@@ -1097,6 +1097,50 @@ def test_single_file_upgrade_refuses_symlinked_companions(tmp_path, companion, d
     assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
 
 
+def test_upgrade_keeps_a_linked_data_directory(tmp_path):
+    project = _package(tmp_path)
+    data = tmp_path / "shared" / "data"
+    (data / "raw").mkdir(parents=True)
+    (data / "raw" / "events.csv").write_text("event_id\n1\n")
+    (project / "data").symlink_to(data, target_is_directory=True)
+
+    preview = service.upgrade_project(project, workspace_root=tmp_path)
+    assert preview["proof"]["tier"] == "certified"
+    report = service.upgrade_project(
+        project, workspace_root=tmp_path, dry_run=False, expected_revision=preview["revision"]
+    )
+
+    assert report["status"] == "upgraded"
+    assert (project / "data").is_symlink()
+    assert _contents(project) == UPGRADED
+    assert (project / "data" / "raw" / "events.csv").read_text() == "event_id\n1\n"
+    load_package_snapshot(project)
+
+
+@pytest.mark.parametrize("target", ["yaml", "missing"])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_upgrade_refuses_a_linked_directory_that_may_hold_package_input(tmp_path, target, dry_run):
+    project = _package(tmp_path)
+    data = tmp_path / "shared" / "data"
+    if target == "yaml":
+        data.mkdir(parents=True)
+        (data / "notes.yml").write_text("note: kept\n")
+    (project / "data").symlink_to(data, target_is_directory=True)
+    before = _contents(project)
+
+    with pytest.raises(service.SemanticLayerError) as exc:
+        service.upgrade_project(project, workspace_root=tmp_path, dry_run=dry_run)
+
+    assert exc.value.code == "INVALID_CONFIG"
+    assert str(exc.value) == (
+        "Architect revisions refuse symlinked project directories"
+        if target == "yaml"
+        else "Architect revisions refuse symlinked project files"
+    )
+    assert _contents(project) == before
+    assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
+
+
 def _default_version(files):
     for file, path, query in files.queries():
         if query.get("version") == 1:
