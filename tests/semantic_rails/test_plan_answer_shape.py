@@ -426,7 +426,12 @@ STAY_OK = [
 
 @pytest.mark.parametrize("question", STAY_OK)
 def test_an_answer_of_the_asked_shape_stays_ready(jaffle: Runtime, question: str) -> None:
-    partial = {"group_by": [STORE_NAME]} if question == "Revenue for each store last month" else {}
+    partial = {
+        "Revenue for each store last month": {"group_by": [STORE_NAME]},
+        # A comparison is ready only over months that have ended
+        # (test_plan_period_completeness.py).
+        "Monthly revenue vs prior year": {"time": {"end": "2018-01-01"}},
+    }.get(question, {})
     payload = plan_payload(jaffle, intent=question, partial_query=partial)
 
     assert payload["status"] == "ok", payload.get("why")

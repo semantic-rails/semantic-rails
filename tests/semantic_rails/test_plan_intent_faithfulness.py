@@ -132,6 +132,10 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
     finally:
         runtime.close()
 
+    if intent == "revenue vs prior year by store":
+        # Its window runs to now, so the month in progress would sit beside a complete one.
+        assert_plan_held(payload, "PERIOD_COMPARISON_INCOMPLETE")
+        return
     assert payload["best"]["pattern"] == pattern
     if unasked:
         # The faithfulness gate keeps the shape; a grouping the question never asks for holds it.

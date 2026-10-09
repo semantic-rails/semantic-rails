@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -475,10 +475,17 @@ class _Case:
     # What it answers now, and the unasked groupings it names.
     after: str = OK
     unasked: tuple[str, ...] = ()
+    partial: dict[str, Any] | None = None
 
 
 def _moved(intent: str, *unasked: str) -> _Case:
     return _Case(intent, OK, UNASKED, unasked)
+
+
+def _ended(case: _Case) -> _Case:
+    """A period comparison over months that have ended, the only one plan calls ready
+    (test_plan_period_completeness.py)."""
+    return replace(case, partial={"time": {"end": "2018-01-01"}})
 
 
 def _ranking(intent: str) -> _Case:
@@ -502,9 +509,9 @@ _CASES = [
     _Case("top 5 stores by revenue in 2017", OK),
     _Case("new customer orders over time", OK),
     _Case("revenue trend over time", OK),
-    _Case("revenue vs last month", OK),
-    _Case("monthly revenue with YoY", OK),
-    _Case("month over month revenue growth by month", OK),
+    _ended(_Case("revenue vs last month", OK)),
+    _ended(_Case("monthly revenue with YoY", OK)),
+    _ended(_Case("month over month revenue growth by month", OK)),
     _Case("revenue by store in each month", OK),
     # The comparison names no prior period to compare with.
     _Case("revenue vs order count by store last quarter", OK, GAP),
@@ -541,11 +548,11 @@ _CASES = [
     _moved("food revenue share vs drink revenue share by store", "month"),
     _moved("What share of revenue comes from food vs drink?", "month"),
     _moved("orders by customer type, new vs repeat", "month"),
-    _moved("revenue vs prior year by store", "month"),
-    _moved("revenue with YoY", "month"),
-    _moved("revenue year over year", "month"),
-    _moved("revenue vs last year", "month"),
-    _moved("revenue compared to last year", "month"),
+    _ended(_moved("revenue vs prior year by store", "month")),
+    _ended(_moved("revenue with YoY", "month")),
+    _ended(_moved("revenue year over year", "month")),
+    _ended(_moved("revenue vs last year", "month")),
+    _ended(_moved("revenue compared to last year", "month")),
     _Case("top 3 stores by revenue with at least 4 distinct customers", GAP, UNASKED, ("month",)),
     _Case(
         "top 3 stores by order count with at least 4 distinct customers", GAP, UNASKED, ("month",)
@@ -603,14 +610,14 @@ def test_the_check_only_holds_a_plan_that_was_ready(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, case: _Case
 ) -> None:
     jaffle._package_examples = []  # These cases test generic grouping checks.
-    after = plan_payload(jaffle, intent=case.intent)
+    after = plan_payload(jaffle, intent=case.intent, partial_query=case.partial)
     with monkeypatch.context() as without_checks:
         # The two checks are the only readers of the listed groupings, with the answer-shape
         # check after them, which only holds a plan (test_plan_answer_shape.py).
         without_checks.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
         without_checks.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
         without_checks.setattr(plan_module, "_answer_shape_why", lambda *args: None)
-        before = plan_payload(jaffle, intent=case.intent)
+        before = plan_payload(jaffle, intent=case.intent, partial_query=case.partial)
 
     # Without them, plan answers as it did before; with them, the draft is the same.
     assert _outcome(before) == case.before

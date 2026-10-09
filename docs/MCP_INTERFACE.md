@@ -128,7 +128,9 @@ tool/schema drift cannot be merged silently.
   `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
   `why.details.example_ids`. Invalid examples fall through with
   `why.details.invalid_examples`; an example that reads a hidden object is
-  invalid for that caller, as in a package without the object.
+  invalid for that caller, as in a package without the object. An example
+  that compares periods is held with `PERIOD_COMPARISON_INCOMPLETE` like any
+  other draft until each period it returns has ended.
   Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
@@ -756,6 +758,22 @@ one bucket when one calendar grain holds the window; an explicit grain ("monthly
 draft can't take the window's start, because the metric looks back over earlier periods or the
 question compares with an earlier period, `plan` keeps the end and returns
 `why.code="TIME_WINDOW_START_DROPPED"` with the start to filter by.
+A draft that compares periods (a `prior_period` expression anywhere in Query IR, or a metric
+built on one) is ready only when every period it returns has ended at the request's `now`
+(`policy_context.now`, else the clock): `query.time.end` must fall on a boundary of the
+`time.grain` buckets, in the temporal role's zone, no later than `now`. Otherwise, as for
+"revenue month over month" or "revenue this month vs last month" mid-month, `plan` returns
+`low_confidence` with `why.code="PERIOD_COMPARISON_INCOMPLETE"`: `why.details.incomplete_period`
+names the period still in progress (or cut short by `time.end`), `why.details.complete_end` the
+end of the last complete one, and the hint offers comparing the complete periods ("Compare
+complete months through June 2024: set query.time.end to 2024-07-01 (end-exclusive), then plan
+again"), keeping the rows from a dropped start (`why.details.requested_start`). Plan again
+with that window rather than only validating it: validation doesn't run plan's holds. That code
+takes the place of
+`TIME_WINDOW_START_DROPPED`, whose rows would still hold the incomplete period. A comparison
+bucketed on another calendar, or bounded by a `where` filter on a date, is held the same way,
+since plan can't read where its periods end. A window that has ended ("revenue month over
+month in 2023") keeps its answer.
 Questions longer than 2,000 characters are not partially parsed for time: unless the caller
 provides a complete window in `query.time` (both `start` and `end`, or a relative `range`),
 they return `TIME_WINDOW_UNRESOLVED` with a request to shorten the question or supply those

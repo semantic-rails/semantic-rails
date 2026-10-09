@@ -8,12 +8,14 @@ from copy import deepcopy
 from typing import Any
 
 from ..expressions import collect_object_references
+from ..period_completeness import incomplete_period_why
 from ..visible_view import pinned_view
 from ._base import RuntimeCompositionDraft
 from .intent_holds import _with_query_clock
 from .intent_ir import IntentIR, ResolvedTerm, compose_hints
 from .plan_query import _merge_partial_query, _trim_why_errors, _validate_query
 from .plan_trace import _slim_best
+from .time_reference import time_policy_context
 
 
 def _strings(node: Any) -> Iterator[str]:
@@ -141,7 +143,15 @@ def example_plan(
     row = planned_row(runtime, draft, "package_example", caller, [], question)
     validation = row["validation"]
     clocked = _with_query_clock(runtime._config, row["draft"].query, partial)
-    ready = bool(validation["ok"]) and clocked is not None
+    # An authored period comparison is held like a planned one until each period has ended.
+    period_why = (
+        incomplete_period_why(
+            runtime._config, row["draft"].query, policy_context=time_policy_context()
+        )
+        if validation["ok"] and clocked is not None
+        else None
+    )
+    ready = bool(validation["ok"]) and clocked is not None and period_why is None
     best = _slim_best(
         row["draft"],
         pattern="package_example",
@@ -166,7 +176,8 @@ def example_plan(
         payload["why"] = (
             _trim_why_errors(validation.get("errors", []))
             if not validation["ok"]
-            else {
+            else period_why
+            or {
                 "code": "TIME_WINDOW_UNRESOLVED",
                 "message": "The example's window cannot resolve with the caller's clock.",
             }

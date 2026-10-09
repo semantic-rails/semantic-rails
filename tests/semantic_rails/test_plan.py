@@ -118,6 +118,9 @@ def test_plan_prefers_governed_subject_over_generic_order_count(
     if intent == "high value customer orders by store":
         # Its predicate reads a balance whose own time scope plan can't prove.
         assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
+    elif expected_id == "metric.sales.month_over_month_revenue_growth":
+        # The metric divides by the prior month, and its window runs to the month in progress.
+        assert_plan_held(payload, "PERIOD_COMPARISON_INCOMPLETE")
     else:
         assert payload["status"] == "ok"
     best = payload["best"]
@@ -648,9 +651,15 @@ def test_plan_preserves_period_shift_intent_instead_of_validating_generic_fallba
     finally:
         runtime.close()
     # The comparison needs last month's rows, so the draft can't start at this
-    # month; plan says which rows answer the question.
+    # month; this month is still in progress, so plan offers the complete months.
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
+    assert payload["why"]["code"] == "PERIOD_COMPARISON_INCOMPLETE"
+    details = payload["why"]["details"]
+    assert (
+        details["requested_start"]
+        == details["complete_end"]
+        == details["incomplete_period"]["start"]
+    )
     assert payload["best"]["pattern"] == "inline_period_shift"
     assert payload["best"]["validation_ok"] is True
     query = payload["best"]["query_ir"]

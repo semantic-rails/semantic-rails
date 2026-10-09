@@ -29,6 +29,7 @@ from typing import Any
 from ..ast import every_filter
 from ..errors import SemanticLayerError
 from ..naming import semantic_token as _semantic_token
+from ..period_completeness import incomplete_period_why
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import _governed_target, _resolved
@@ -71,7 +72,7 @@ from .plan_trace import (
 )
 from .question_parts import MAX_PARTS, QUOTED, QuestionSplit, split_question
 from .snapshot import shape_snapshot, snapshot_read
-from .time_reference import with_time_reference
+from .time_reference import time_policy_context, with_time_reference
 from .time_windows import _with_fiscal_calendar
 from .unasked_groupings import _unasked_grouping_why
 from .unmatched_words import (
@@ -410,14 +411,25 @@ def _question_payload(
     # detected but could not resolve (and nothing else bounded the
     # query), the draft answers a *different* question than the user
     # asked. Downgrade instead of marking it ready to execute.
+    dropped_start = (
+        best.get("start_dropped")
+        or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
+        if best_ok
+        else ""
+    )
     time_why = (
         atemporal_why
         or _unresolved_time_why(intent_str, partial_query, read.spans if read else ())
         or _unclocked_window_why(runtime._config, intent_str, best_draft.query, partial_query)
-        or _start_dropped_why(
-            best.get("start_dropped")
-            or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
+        # A period comparison is ready only when each period it returns has ended; keeping
+        # the rows from a dropped start would still return the one in progress.
+        or incomplete_period_why(
+            runtime._config,
+            best_draft.query,
+            start=dropped_start,
+            policy_context=time_policy_context(),
         )
+        or _start_dropped_why(dropped_start)
         if best_ok
         else None
     )
@@ -531,10 +543,13 @@ def _question_payload(
                 reason["actual"] = f"why.details.fallback_slots.{slot}"
             payload["why"] = {**fallback_drift_why, "details": details}
     elif faithfulness_why is not None:
-        # One why, but an unresolved or shortened window stays visible. A hold that returns
-        # no query leaves no rows to filter from a shortened window.
+        # One why, but an unresolved, shortened or incomplete window stays visible. A hold that
+        # returns no query leaves no rows to filter and no window to end at a complete period.
         unrunnable = faithfulness_why["code"] == "TIME_WINDOW_UNRESOLVED"
-        dropped = (time_why or {}).get("code") == "TIME_WINDOW_START_DROPPED"
+        dropped = (time_why or {}).get("code") in {
+            "TIME_WINDOW_START_DROPPED",
+            "PERIOD_COMPARISON_INCOMPLETE",
+        }
         payload["why"] = _with_time_gap(
             faithfulness_why, None if unrunnable and dropped else time_why
         )

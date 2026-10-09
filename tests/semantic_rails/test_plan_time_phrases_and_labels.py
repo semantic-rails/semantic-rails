@@ -1482,7 +1482,11 @@ def test_a_single_word_the_planner_reads_elsewhere_is_only_a_warning(
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_payload(runtime, intent=intent, detail="query")
+        # A comparison is ready only over months that have ended
+        # (test_plan_period_completeness.py).
+        payload = plan_payload(
+            runtime, intent=intent, partial_query={"time": {"end": "2018-01-01"}}, detail="query"
+        )
         assert payload["status"] == "ok", payload.get("why")
         assert "why" not in payload
         assert _measures(payload)[0] == "measure.jaffle.revenue_usd"

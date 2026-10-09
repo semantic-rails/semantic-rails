@@ -219,7 +219,8 @@ Statuses are:
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
   which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and
-  plan again),
+  plan again), a period comparison would put a period still in progress beside a complete one
+  (`PERIOD_COMPARISON_INCOMPLETE`: compare the complete periods its hint names),
   or a validating fallback would drift from the requested target, grouping, qualification,
   filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
   `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
