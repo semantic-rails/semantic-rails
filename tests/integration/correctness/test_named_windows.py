@@ -96,6 +96,35 @@ def test_a_balance_right_now_is_its_last_closing_day(shop: Runtime) -> None:
     assert result["clock"] == SEAT_CLOCK
 
 
+def _no_data_yet(result: dict) -> list[dict]:
+    return [w["details"]["measures"] for w in result["warnings"] if w["code"] == "NO_DATA_YET"]
+
+
+def test_a_balance_after_its_last_snapshot_says_no_data_yet(shop: Runtime) -> None:
+    """Seats are snapshotted through January 15 (rows frozen in the ledger): the months after
+    read NULL, said as a flow measure says it."""
+    call = {"select": [SEATS], "time": {"start": "2024-01-01", "end": "2024-04-01", "grain": "month"}}  # fmt: skip
+    result = shop.query(call, now="2024-03-10T12:00:00Z")
+    assert result["window"]["data_through"] == "2024-01-15"
+    (warning,) = [w for w in result["warnings"] if w["code"] == "NO_DATA_YET"]
+    assert warning["details"]["outputs"] == ["seats"]
+    assert warning["details"]["measures"] == [
+        {"id": SEATS, "edge": "2024-01-01", "edge_source": "last_bucket"}
+    ]
+    # A window total after the data reads NULL; one that reaches the edge reads its closing day.
+    after = {"select": [SEATS], "time": {"last": {"unit": "week", "value": 1}}}
+    result = shop.query(after, now="2024-03-10T12:00:00Z")
+    assert result["rows"] == [{"seats": None}]
+    assert _no_data_yet(result) == [
+        [{"id": SEATS, "edge": "2024-02-26", "edge_source": "before_window"}]
+    ]
+    straddle = {"select": [SEATS], "time": {"start": "2024-01-10", "end": "2024-02-10"}}
+    result = shop.query(straddle, now="2024-03-10T12:00:00Z")
+    assert result["rows"] == [{"seats": 220}]
+    assert result["window"]["data_through"] == "2024-01-15"
+    assert _no_data_yet(result) == []
+
+
 @pytest.fixture
 def per_day_balances(packages) -> Runtime:
     """The shop with a policy: seats are only read per snapshot day."""
