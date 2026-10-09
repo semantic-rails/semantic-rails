@@ -7,7 +7,6 @@ package:
   description: Snowflake TPCH SF1 showcase package powered by the semantic_views_trial Snow CLI connection.
   warehouse: snowflake
   environments: [development, staging, production]
-  schema_strict: true
   connection:
     kind: snowflake_cli
     name: semantic_views_trial

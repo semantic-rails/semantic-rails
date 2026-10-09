@@ -40,7 +40,6 @@ def _package(
     *,
     key: str,
     clock_class: str,
-    grain: str = "",
     measure_times: str = "",
     collected_class: str = "event_time",
     rows: str = TWO_SNAPSHOTS,
@@ -51,7 +50,7 @@ def _package(
     (package / "package.yml").write_text(
         "schema_version: 1\n"
         "package: {id: f4stock, namespace: f4stock, name: f4stock, warehouse: duckdb,\n"
-        f"  default_db: data/f4stock.duckdb, seed: {{kind: external}}, schema_strict: {not grain},\n"
+        "  default_db: data/f4stock.duckdb, seed: {kind: external},\n"
         "  environments: [development]}\n"
     )
     (package / "graph.yml").write_text(
@@ -64,8 +63,7 @@ def _package(
         "  id: repo_snapshots\n"
         "  relation: repo_snapshot\n"
         "  entities: {repo_snapshot: {}}\n"
-        + (f"  grain: {grain}\n" if grain else "")
-        + "  dimensions: {repo: {kind: categorical}}\n"
+        "  dimensions: {repo: {kind: categorical}}\n"
         "  times:\n"
         f"    snapshot_date: {{column: snapshot_date, kind: date, class: {clock_class}, "
         "default: true}\n"
@@ -76,11 +74,8 @@ def _package(
         f"    stars: {{kind: aggregate, expr: stars, {stock}, value_type: count{measure_times}}}\n"
     )
     (package / "metrics").mkdir()
-    # A non-strict package (the only kind that takes `grain:`) publishes each measure.
     (package / "metrics" / "metrics.yml").write_text(
-        "metrics: {}\n"
-        if grain
-        else "metrics:\n"
+        "metrics:\n"
         + "".join(
             f"  {name}: {{kind: semi_additive, measure: {name}, temporal_role: {ROLE}, "
             "value_type: count}\n"
@@ -244,12 +239,9 @@ def test_a_stock_read_only_by_a_metric_predicate_warns_too(
             assert warned.count("measure.f4stock.stars") == warnings
 
 
-def test_declared_grain_and_series_key_agree(tmp_path: Path) -> None:
-    # A grain of the clock alone is one series: last snapshot, not the entity's
-    # surrogate. (Only a non-strict package can author `grain:`.)
-    package = _package(
-        tmp_path, key="[repo_snapshot_key]", clock_class="as_of_time", grain="[snapshot_date]"
-    )
+def test_a_key_of_the_clock_alone_is_one_series(tmp_path: Path) -> None:
+    # Rows keyed by the clock alone are one series: the last snapshot, not one per surrogate.
+    package = _package(tmp_path, key="[snapshot_date]", clock_class="as_of_time")
     assert _weekly(Runtime.from_path(str(package)), "stars") == [1]
 
 

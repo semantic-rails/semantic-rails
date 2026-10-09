@@ -38,29 +38,27 @@ REFUSED = [
 ]
 
 
-@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize("layout", ["single-file", "directory"])
 @pytest.mark.parametrize(("path", "key", "value"), REFUSED)
-def test_unsupported_forms_refuse_at_load(tmp_path, strict, layout, path, key, value):
+def test_unsupported_forms_refuse_at_load(tmp_path, layout, path, key, value):
     source = write_single_file_package(tmp_path / "project")
     doc = safe_load(source.read_bytes())
-    doc["package"]["schema_strict"] = strict
     row = doc
     for part in path:
         row = row.setdefault(part, {})
     row[key] = value
     package = _write_defaults(source, doc, doc.get("defaults", {}), layout)
-    with pytest.raises(SemanticLayerError, match=key) as exc:
+    # A measure's publish: is true or false; any mapping is refused, whatever it holds.
+    refusal = "publish must be true or false" if path[-1] == "publish" else key
+    with pytest.raises(SemanticLayerError, match=refusal) as exc:
         load_package_config(str(package))
     assert exc.value.code == "INVALID_CONFIG"
 
 
-@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize("layout", ["single-file", "directory"])
-def test_inherited_default_refuses_with_two_unmarked_roles(tmp_path, strict, layout):
+def test_inherited_default_refuses_with_two_unmarked_roles(tmp_path, layout):
     source = write_single_file_package(tmp_path / "project")
     doc = safe_load(source.read_bytes())
-    doc["package"]["schema_strict"] = strict
     times = doc["models"]["orders"]["times"]
     times["ordered_at"].pop("default")
     times["fulfilled_at"] = {**deepcopy(times["ordered_at"]), "column": "fulfilled_at"}

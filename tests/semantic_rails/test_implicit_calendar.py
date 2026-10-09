@@ -60,7 +60,7 @@ STEP = {"day": "1 DAY", "week": "7 DAY", "month": "1 MONTH", "quarter": "3 MONTH
 PACKAGE = """
 schema_version: 1
 package: {id: cal, namespace: cal, warehouse: duckdb, default_db: data/warehouse.duckdb,
-  seed: {kind: sql_script, source: data/seed.sql}, schema_strict: true}
+  seed: {kind: sql_script, source: data/seed.sql}}
 """
 ORDERS = """
 model:

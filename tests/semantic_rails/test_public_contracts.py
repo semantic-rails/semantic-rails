@@ -46,7 +46,6 @@ def typed_contract_project(tmp_path: Path) -> Path:
         "models": {
             "events": {
                 "relation": "analytics.fct_events",
-                "grain": ["event_id"],
                 "entities": {"event": {}},
                 "times": {"occurred_at": {"kind": "timestamp"}},
                 "dimensions": {
@@ -164,7 +163,6 @@ def test_export_semantic_contract_matches_catalog_identifiers(
     raw["graph"]["entities"]["event"]["key"] = "customer_id"
     raw["models"]["events"].update(
         relation=authored_relation,
-        grain=["customer_id"],
         times={"ordered_at": {"kind": "timestamp"}},
         dimensions={"customer_id": {"kind": "categorical"}},
     )
@@ -372,14 +370,12 @@ def test_export_semantic_contract_uses_expression_columns_without_invented_names
                 "models": {
                     "customers": {
                         "relation": "analytics.customers",
-                        "grain": ["customer_id"],
                         "entities": {"customer": {}},
                         "dimensions": {},
                         "measures": {},
                     },
                     "orders": {
                         "relation": "analytics.orders",
-                        "grain": ["order_id"],
                         "entities": {
                             "order": {},
                             "customer": {"expr": {"kind": "column", "column": "customer_id"}},

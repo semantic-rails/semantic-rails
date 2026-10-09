@@ -67,7 +67,6 @@ def _write_package(
         {
             "schema_version": 1,
             "package": {
-                "schema_strict": True,
                 "id": package_dir.name,
                 "name": package_dir.name,
                 "description": f"{package_dir.name} demo package",
@@ -127,7 +126,6 @@ def _write_package(
                         "kind": "entity_count",
                         "time": "ordered_at",
                         "meta": dict(measure_meta or {}),
-                        "publish": {"id": "metric.sales.orders"},
                     },
                     **dict(extra_measures or {}),
                 },

@@ -51,7 +51,7 @@ def _write_minimal_package(
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -63,12 +63,11 @@ def _write_minimal_package(
     )
     measures = {
         "order_count": {
-            "id": "measure.demo.order_count",
+            "as": "measure.demo.order_count",
             "name": "sales.orders",
             "label": "Orders",
             "kind": "entity_count",
             "time": "ordered_at",
-            "publish": {"id": "metric.sales.orders"},
             **dict(measure_extra or {}),
         }
     }
@@ -79,8 +78,8 @@ def _write_minimal_package(
             "model": {
                 "id": "orders",
                 "entity": "order",
+                "entities": {"order": {}},
                 "relation": "order_fact",
-                "grain": ["order_id"],
                 "times": {
                     "ordered_at": {
                         "id": "temporal_role.demo_order_time",
@@ -173,7 +172,7 @@ def test_model_meta_cascades_to_measures_with_override(tmp_path: Path):
         # measure B overrides owner_team.
         extra_measures={
             "order_total": {
-                "id": "measure.demo.order_total",
+                "as": "measure.demo.order_total",
                 "name": "sales.order_total",
                 "label": "Order total",
                 "kind": "aggregate",

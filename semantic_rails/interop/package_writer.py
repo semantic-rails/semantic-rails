@@ -1,7 +1,7 @@
 """Write an in-memory ``PackageConfig`` back out as an authored package directory.
 
 The loader derives much of a package (ids, names, key dimensions, aggregation sets, joins) from
-the compact authoring form that ``schema_strict`` packages must use. This writer goes the other
+the compact authoring form every package uses. This writer goes the other
 way: each object in the keys the loader reads, leaving out what the loader derives anyway. It
 then loads the directory back, and refuses (removing it) unless every object comes back the
 same, naming the ones that don't: relation pipelines and aggregate relations aren't written
@@ -188,11 +188,11 @@ class _Writer:
     def measures(self) -> None:
         for measure in self.config.measures:
             model_key, model = self.model(measure.entity, measure.source_relation)
-            if (
-                model.get("kind") == "fact"
-                or measure.row_grain != self.entities[measure.entity].key
-            ):
-                model["grain"] = list(measure.row_grain)
+            # A fact model's rows are keyed by its time column; an entity's model by its key.
+            if model.get("kind") == "fact" and len(measure.row_grain) == 1:
+                model["time_column"] = measure.row_grain[0]
+            elif model.get("kind") == "fact" and measure.row_grain:
+                model["keys"] = {"primary": list(measure.row_grain)}
             key, alias = _keyed(measure.id, f"measure.{self.ns}.")
             skip = {"entity", "row_grain", "source_relation", "expr", "measure_class"}
             skip |= {"allowed_aggregations", "invalid_aggregations", "authoring_warnings"}
@@ -215,8 +215,6 @@ class _Writer:
             )
             if measure.suggested_aggregations == suggested:  # the loader derives it
                 spec.pop("suggested_aggregations", None)
-            if not self.config.package.schema_strict:
-                spec["publish"] = False  # every metric is written out explicitly
             model.setdefault("measures", {})[key] = spec
 
     def relationship(self, row: Any) -> tuple[str, dict[str, Any]]:
@@ -261,7 +259,7 @@ class _Writer:
         package.update(
             _authored(
                 config.package,
-                ("name", "description", "schema_strict"),
+                ("name", "description"),
                 {"package_id", "observation_scope"},
             )
         )

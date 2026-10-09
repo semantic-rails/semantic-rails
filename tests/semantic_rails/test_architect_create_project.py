@@ -77,7 +77,7 @@ def test_starter_project_runs_immediately(tmp_path: Path) -> None:
 
     assert mutation.report["ok"] is True, mutation.report
     package = _yaml(project / "package.yml")["package"]
-    assert package["schema_strict"] is True
+    assert "schema_strict" not in package
     assert package["seed"] == {"kind": "csv_dir_duckdb", "source": "data/growth_csv"}
     assert (project / "data" / "growth_csv" / "raw_events.csv").exists()
     assert "*.duckdb" in (project / ".gitignore").read_text(encoding="utf-8")

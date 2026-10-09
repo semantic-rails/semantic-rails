@@ -5,4 +5,3 @@ package:
   warehouse: duckdb
   default_db: data/warehouse.duckdb
   seed: {kind: sql_script, source: data/seed.sql}
-  schema_strict: true

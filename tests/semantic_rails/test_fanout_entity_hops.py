@@ -78,7 +78,7 @@ CREATE TABLE order_payments AS SELECT * FROM (VALUES (1, 1, 'card'), (2, 2, 'cas
 PACKAGE = """
 schema_version: 1
 package: {id: hop, namespace: hop, warehouse: duckdb, default_db: data/warehouse.duckdb,
-  seed: {kind: sql_script, source: data/seed.sql}, schema_strict: true}
+  seed: {kind: sql_script, source: data/seed.sql}}
 """
 MODELS = {
     "orders": """
@@ -101,7 +101,7 @@ model:
 model:
   id: order_items
   relation: order_items
-  entities: {item: {}, order: {}, product: {expr: sku}, receipt: {expr: order_id}}
+  entities: {item: {}, order: {}, product: {expr: sku}}
   dimensions:
     product_type: {label: Item product type, kind: categorical}
     is_hot: {label: Hot item, kind: boolean}
@@ -144,8 +144,7 @@ model:
 model:
   id: payments
   relation: payments
-  grain: [payment_id]
-  entities: {receipt: {}}
+  entities: {receipt: {}, order: {}}
   measures:
     paid: {label: Paid, kind: aggregate, expr: amount, accumulation: {kind: flow},
       value_type: currency}
@@ -176,8 +175,8 @@ ENTITIES = {
     "session": ["session_id", "sessions"],
     "coupon": ["coupon_id", "coupons"],
     "payment": ["payment_id", "order_payments"],
-    # Receipts are keyed by their order, but each payment is a row.
-    "receipt": ["order_id", "payments"],
+    # Each payment of an order is a receipt, a child of its order.
+    "receipt": [["order_id", "payment_id"], "payments"],
 }
 # Orders reach a coupon by its code, not its key.
 RELATIONSHIPS = {
@@ -242,25 +241,51 @@ OWN_REVENUE_IF = _if("sum", _compare("customer_id", "=", 10), "total")
 OWN_SHARE = _ratio(OWN_ORDERS_IF, {"measure": "measure.hop.order_count"})
 
 
-@pytest.fixture(scope="module")
-def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("hop") / "hop"
-    entities = {
-        name: {"label": name, "key": [key], "model": model}
-        for name, (key, model) in ENTITIES.items()
+def _write(root: Path, models: dict[str, str], entities: dict[str, list[Any]]) -> Path:
+    graph = {
+        "graph": {
+            "entities": {
+                name: {
+                    "label": name,
+                    "key": key if isinstance(key, list) else [key],
+                    "model": model,
+                }
+                for name, (key, model) in entities.items()
+            },
+            "relationships": RELATIONSHIPS,
+        }
     }
-    graph = {"graph": {"entities": entities, "relationships": RELATIONSHIPS}}
     files = {
         "package.yml": PACKAGE,
         "data/seed.sql": SEED,
         "graph.yml": yaml.safe_dump(graph),
-        **{f"models/{name}.yml": text for name, text in MODELS.items()},
+        **{f"models/{name}.yml": text for name, text in models.items()},
     }
     for name, text in files.items():
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(text, encoding="utf-8")
     _run(root, {"select": [_measure("order_count")]})  # seeds the warehouse
     return root
+
+
+@pytest.fixture(scope="module")
+def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write(tmp_path_factory.mktemp("hop") / "hop", MODELS, ENTITIES)
+
+
+@pytest.fixture(scope="module")
+def receipts_by_order(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Receipts keyed by their order, though each payment is a row, and no measure on them:
+    nothing in the package says a receipt holds more than one row."""
+    models = {
+        **MODELS,
+        "order_items": MODELS["order_items"].replace(
+            "product: {expr: sku}}", "product: {expr: sku}, receipt: {expr: order_id}}"
+        ),
+        "payments": "model: {id: payments, relation: payments, entities: {receipt: {}}}\n",
+    }
+    entities = {**ENTITIES, "receipt": ["order_id", "payments"]}
+    return _write(tmp_path_factory.mktemp("receipts") / "hop", models, entities)
 
 
 def _measure(name: str, aggregation: str = "", alias: str = "") -> dict[str, Any]:
@@ -647,12 +672,12 @@ def test_clickhouse_refuses_child_filter_paths_requiring_exists(
     assert "ClickHouse" in caught.value.details["why_invalid"]
 
 
-def test_a_conditional_aggregate_of_rows_of_unknown_grain(package: Path) -> None:
-    """Without the paid measure nothing says receipts hold a row per payment. EXISTS reads each
-    payment once anyway; ClickHouse's one row per receipt would merge order 1's two payments of
-    5, so it refuses all but the aggregations that merging cannot change."""
+def test_a_conditional_aggregate_of_rows_of_unknown_grain(receipts_by_order: Path) -> None:
+    """Nothing says receipts hold a row per payment. EXISTS reads each payment once anyway;
+    ClickHouse's one row per receipt would merge order 1's two payments of 5, so it refuses all
+    but the aggregations that merging cannot change."""
+    package = receipts_by_order
     config = load_package_config(str(package))
-    config = replace(config, measures=[m for m in config.measures if m.id != "measure.hop.paid"])
     receipt = "entity.hop_receipt"
     payments = _if("count_distinct", _compare("amount", ">", 0, receipt), "payment_id", receipt)
     for expression, value in ((PAID_IF, 10), (payments, 2)):
@@ -1293,7 +1318,7 @@ def _conditional(expression: dict[str, Any], **query: Any) -> dict[str, Any]:
     return {"select": [{"expression": expression, "as": "v"}], **query}
 
 
-# Receipts are keyed by their order, but each payment is a row, as for the paid measure.
+# Each payment is a receipt; the paid measure's rows are receipts.
 PAID_IF = _if(
     "sum", _compare("amount", ">", 0, "entity.hop_receipt"), "amount", "entity.hop_receipt"
 )
@@ -1345,8 +1370,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         ({"select": [_measure("order_count")], "group_by": [CHANNEL]}, "many-to-many"),
         # Grouping still requires the declared parent key, unlike filter-only EXISTS.
         ({"select": [_measure("face_value")], "group_by": [TYPE]}, "join off the declared key"),
-        # Two payments of one receipt with equal amounts would merge into one row.
-        ({"select": [_measure("paid")], "where": [BEVERAGE]}, "rows are finer than its entity"),
         # A pre-aggregated value has no one row per key to count.
         ({"select": [_measure("score", "avg")], "where": [BEVERAGE]}, "not defined over one row"),
         (
@@ -1375,11 +1398,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
             TWO_CONDITIONS,
         ),
         (_conditional(OWN_ORDERS_IF, group_by=[CHANNEL]), "many-to-many"),
-        (_conditional(PAID_IF, where=[BEVERAGE]), "rows are finer than its entity"),
-        (
-            _conditional(_ratio(PAID_IF, {"measure": "measure.hop.order_count"}), where=[BEVERAGE]),
-            "rows are finer than its entity",
-        ),
     ],
     ids=[
         "sum",
@@ -1396,15 +1414,12 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         "measure_filter_boolean_zero",
         "many_to_many",
         "off_key_join",
-        "finer_row_grain",
         "non_additive",
         "cumulative",
         "conditional_grouped_sum",
         "conditional_two_filters",
         "conditional_ratio_group_and_filter",
         "conditional_many_to_many",
-        "conditional_finer_row_grain",
-        "conditional_ratio_finer_row_grain",
     ],
 )
 def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], reason: str) -> None:
@@ -1412,6 +1427,50 @@ def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], rea
     assert error["code"] == "MIXED_GRAIN_INVALID"
     assert reason in error["why_invalid"]
     assert error["recovery_hints"]
+
+
+PAID = {"select": [_measure("paid")], "where": [BEVERAGE]}
+PAID_SHARE = _ratio(PAID_IF, {"measure": "measure.hop.order_count"})
+BEVERAGE_ORDER = (
+    "EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = {} AND i.product_type = 'beverage')"
+)
+PAID_REFERENCE = f"SELECT SUM(amount) FROM payments p WHERE {BEVERAGE_ORDER.format('p.order_id')}"
+PAID_QUESTIONS = {
+    "measure": (PAID, PAID_REFERENCE),
+    "conditional": (_conditional(PAID_IF, where=[BEVERAGE]), PAID_REFERENCE),
+    "conditional_ratio": (
+        _conditional(PAID_SHARE, where=[BEVERAGE]),
+        f"SELECT ({PAID_REFERENCE}) / (SELECT COUNT(*) FROM orders o "
+        f"WHERE {BEVERAGE_ORDER.format('o.order_id')})",
+    ),
+}
+
+
+@pytest.mark.parametrize(("query", "reference"), PAID_QUESTIONS.values(), ids=PAID_QUESTIONS)
+def test_payments_of_orders_with_a_child_value(
+    package: Path, query: dict[str, Any], reference: str
+) -> None:
+    """Each payment is a receipt, a child of its order, so each payment of an order that
+    included a beverage counts once: order 1's two payments of 5 stay two."""
+    assert _rows(package, query) == _reference(package, reference)
+
+
+@pytest.mark.parametrize(("query", "reference"), PAID_QUESTIONS.values(), ids=PAID_QUESTIONS)
+def test_rows_finer_than_their_entity_stay_refused(
+    package: Path, query: dict[str, Any], reference: str
+) -> None:
+    """A config built in memory can still hold a measure whose rows are finer than its entity's
+    key; one row per key would merge two payments of one receipt with equal amounts."""
+    config = load_package_config(str(package))
+    finer = [
+        replace(row, row_grain=["payment_id"]) if row.id == "measure.hop.paid" else row
+        for row in config.measures
+    ]
+    config = replace(config, measures=finer)
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), {"version": 1, **query})
+    assert caught.value.code == "MIXED_GRAIN_INVALID"
+    assert "rows are finer than its entity" in caught.value.details["why_invalid"]
 
 
 def _has_item(condition: str) -> str:

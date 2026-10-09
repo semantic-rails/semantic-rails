@@ -107,8 +107,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.315,
-      "compile_ms": 0.324,
+      "cache_lookup_ms": 1.178,
+      "compile_ms": 0.276,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -2937,16 +2937,16 @@
   "row_count": 2,
   "rows": [
     {
-      "aov_usd": 12.739104407255542,
+      "aov_usd": 12.739104407255514,
       "dimension.jaffle_store_name": "Philadelphia"
     },
     {
-      "aov_usd": 12.085946890286664,
+      "aov_usd": 12.085946890286632,
       "dimension.jaffle_store_name": "Brooklyn"
     }
   ],
-  "semantic_fingerprint": "sha256:aac5e6deeae332b480c8e782df0d02116bab1711e756c910af6b285efd73f4de",
-  "source_fingerprint": "92a7dc155b7dfd213985fbfb14af23e8857dab2ebcbbca2b073e4f949609d910",
+  "semantic_fingerprint": "sha256:4580d1a69a70b25078c207bc3aad9ec478730725a4e300dd72a23a23ec266478",
+  "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
   "sql_plan": {
     "ctes": [
       {

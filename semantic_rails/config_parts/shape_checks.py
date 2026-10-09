@@ -92,9 +92,19 @@ _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "tests",
     }
 )
-# A top-level key a release retired, and where its meaning is authored now.
-_TOP_LEVEL_HINTS: dict[str, str] = {
-    "aggregate_relations": "declare rollups under the model's `variants:`",
+_UPGRADE = "(`semantic-rails project upgrade` rewrites it)"
+_AS = f"the key derives the id; write `as:` only to keep a public id {_UPGRADE}"
+# A key a release retired from a block, and where its meaning is authored now: the one hint
+# the unknown-key error adds, by (block, key).
+_REPLACED_KEYS: dict[tuple[str, str], str] = {
+    ("document", "aggregate_relations"): "declare rollups under the model's `variants:`",
+    ("package", "schema_strict"): f"strict is the only profile; delete this line {_UPGRADE}",
+    ("entity", "id"): _AS,
+    ("dimension", "id"): _AS,
+    ("measure", "id"): _AS,
+    ("model", "grain"): "the entity's key keys the model's rows; key finer rows as their "
+    f"own entity, related to it {_UPGRADE}",
+    ("model", "joins"): f"write each join as a `graph.relationships` row {_UPGRADE}",
 }
 _PACKAGE_KEYS: frozenset[str] = frozenset(
     {
@@ -104,7 +114,6 @@ _PACKAGE_KEYS: frozenset[str] = frozenset(
         "description",
         "warehouse",
         "default_db",
-        "schema_strict",
         "environments",
         "seed",
         "connection",
@@ -170,7 +179,6 @@ _CAVEAT_KEYS: frozenset[str] = frozenset(
 _CAVEAT_TIME_KEYS: frozenset[str] = frozenset({"at", "from", "to"})
 _GRAPH_ENTITY_KEYS: frozenset[str] = frozenset(
     {
-        "id",
         "as",
         "name",
         "label",
@@ -197,14 +205,12 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "description",
         "kind",
         "relation",
-        "grain",
         "keys",
         "entity",
         "entities",
         "times",
         "dimensions",
         "measures",
-        "joins",
         "meta",
         "topics",
         "operational_defaults",
@@ -247,7 +253,6 @@ _DIMENSION_BINDING_KEYS: frozenset[str] = frozenset({"column", "path"})
 _MODEL_ENTITY_REF_KEYS: frozenset[str] = frozenset({"expr", "label"})
 _DIMENSION_KEYS: frozenset[str] = frozenset(
     {
-        "id",
         "as",
         "name",
         "label",
@@ -258,7 +263,6 @@ _DIMENSION_KEYS: frozenset[str] = frozenset(
         "value_domain_id",
         "synonyms",
         "description",
-        "topics",
         "sample_values_strategy",
         "filterable",
         "groupable",
@@ -287,7 +291,6 @@ _TIME_KEYS: frozenset[str] = frozenset(
 )
 _MEASURE_KEYS: frozenset[str] = frozenset(
     {
-        "id",
         "as",
         "name",
         "label",
@@ -303,7 +306,6 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
         "times",
         "time",
         "examples",
-        "topics",
         "default_temporal_role",
         "operational",
         "value_type",
@@ -312,7 +314,6 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
         "description",
         "comparison_family",
         "comparison_mode",
-        "preferred_companion_metrics",
         "meta",
         "validity_windows",
         "external_discontinuities",
@@ -345,7 +346,6 @@ _METRIC_KEYS: frozenset[str] = frozenset(
         "expression",
         "temporal_role",
         "compatible_temporal_roles",
-        "topics",
         "comparison_family",
         "comparison_mode",
         "preferred_companion_metrics",
@@ -368,7 +368,6 @@ _SEGMENT_KEYS: frozenset[str] = frozenset(
         "membership",
         "preview_dimensions",
         "synonyms",
-        "topics",
     }
 )
 # The keys the loader reads from a segment's `membership:` block.
@@ -407,20 +406,19 @@ def _unknown_key_errors(
     *,
     label: str,
     errors: list[str],
-    replaced: dict[str, str] | None = None,
+    block: str = "",
 ) -> None:
     """Flag authored keys the loader would silently ignore; keys starting with ``_`` are
-    annotations. ``replaced`` names where a retired key's meaning is authored now."""
+    annotations. A key ``_REPLACED_KEYS`` lists for ``block`` names its current form."""
     from difflib import get_close_matches
 
-    replaced = replaced or {}
     unknown = sorted(
         str(key) for key in spec if str(key) not in allowed and not str(key).startswith("_")
     )
     for key in unknown:
         hints = get_close_matches(key, sorted(allowed), n=2, cutoff=0.6)
-        if key in replaced:
-            hint = f"; {replaced[key]}"
+        if (block, key) in _REPLACED_KEYS:
+            hint = f"; {_REPLACED_KEYS[block, key]}"
         elif hints:
             hint = f"; did you mean {' or '.join(repr(h) for h in hints)}?"
         else:
@@ -543,10 +541,22 @@ def _check_model_shape(
     graph_entities: dict[str, Any] | None = None,
     namespace: str,
 ) -> None:
-    """Authoring-shape checks for one model: unknown keys, list-typed
-    fields, and grain ↔ entity-key consistency."""
+    """Authoring-shape checks for one model: unknown keys, list-typed fields, and the
+    entities: block in place of keys and a singular entity."""
     label = f"{path_label}: model '{model_id}'"
-    _unknown_key_errors(model, _MODEL_KEYS, label=label, errors=errors)
+    _unknown_key_errors(model, _MODEL_KEYS, label=label, errors=errors, block="model")
+    keys: dict[str, Any] = model["keys"] if isinstance(model.get("keys"), dict) else {}
+    for problem, current in (
+        ("entity" in model and "entities" not in model, "a singular 'entity:'"),
+        ("foreign" in keys, "'keys.foreign:'"),
+        ("entities" in model and "primary" in keys, "'keys.primary:' beside 'entities:'"),
+    ):
+        if problem:
+            add_error(
+                errors,
+                f"{label} authors {current}; list the model's entities under 'entities:' "
+                f"{_UPGRADE}",
+            )
 
     entities_block = model.get("entities")
     if isinstance(entities_block, dict):
@@ -565,7 +575,9 @@ def _check_model_shape(
         if not isinstance(dim_raw, dict):
             continue
         dim_label = f"{label} dimension '{dim_key}'"
-        _unknown_key_errors(dim_raw, _DIMENSION_KEYS, label=dim_label, errors=errors)
+        _unknown_key_errors(
+            dim_raw, _DIMENSION_KEYS, label=dim_label, errors=errors, block="dimension"
+        )
         for field in ("domain", "valid_values"):
             if field in dim_raw:
                 _expect_value_list(dim_raw.get(field), label=f"{dim_label} {field}", errors=errors)
@@ -586,41 +598,24 @@ def _check_model_shape(
         if not isinstance(measure_raw, dict):
             continue
         measure_label = f"{label} measure '{measure_key}'"
-        _unknown_key_errors(measure_raw, _MEASURE_KEYS, label=measure_label, errors=errors)
+        _unknown_key_errors(
+            measure_raw, _MEASURE_KEYS, label=measure_label, errors=errors, block="measure"
+        )
+        _check_publish(measure_raw, label=measure_label, errors=errors)
         kind_value = str(measure_raw.get("kind", "") or "").strip().lower()
-        if kind_value and kind_value not in _VALID_MEASURE_KINDS:
+        if not kind_value:
+            add_error(
+                errors,
+                f"{measure_label} has no 'kind:'; declare one of "
+                f"{', '.join(sorted(_VALID_MEASURE_KINDS))}.",
+            )
+        elif kind_value not in _VALID_MEASURE_KINDS:
             add_error(
                 errors,
                 f"{measure_label} has unknown kind {kind_value!r}. Valid kinds: "
                 f"{', '.join(sorted(_VALID_MEASURE_KINDS))}.",
             )
-        accumulation = measure_raw.get("accumulation")
-        acc_kind = ""
-        if isinstance(accumulation, dict):
-            _unknown_key_errors(
-                accumulation,
-                _ACCUMULATION_KEYS,
-                label=f"{measure_label} accumulation",
-                errors=errors,
-            )
-            acc_kind = str(accumulation.get("kind", "") or "").strip().lower()
-        elif accumulation is not None:
-            acc_kind = str(accumulation or "").strip().lower()
-        if acc_kind and acc_kind not in _VALID_ACCUMULATION_KINDS:
-            add_error(
-                errors,
-                f"{measure_label} has unknown accumulation kind {acc_kind!r}. Valid "
-                f"kinds: {', '.join(sorted(_VALID_ACCUMULATION_KINDS))}.",
-            )
-
-    for join_key, join_raw in (model.get("joins") or {}).items():
-        if isinstance(join_raw, dict):
-            _unknown_key_errors(
-                join_raw,
-                _JOIN_KEYS,
-                label=f"{label} join '{join_key}'",
-                errors=errors,
-            )
+        _check_accumulation(measure_raw.get("accumulation"), label=measure_label, errors=errors)
 
     variants = model.get("variants")
     if isinstance(variants, dict):
@@ -681,64 +676,6 @@ def _check_model_shape(
                     label=f"{variant_label} eligible_time_grains",
                     errors=errors,
                 )
-
-    # Explicit graph bindings fix identity independently of the row grain.
-    # Otherwise grain must match the resolved primary's key (or `expr:` override).
-    model_kind = str(model.get("kind", "model") or "model").strip().lower()
-    bound_primary = next(
-        (
-            str(name)
-            for name, entity in (graph_entities or {}).items()
-            if isinstance(entity, dict) and str(entity.get("model", "") or "").strip() == model_id
-        ),
-        "",
-    )
-    primary = bound_primary or str(model.get("entity", "") or "").strip()
-    if (
-        model_kind == "model"
-        and not bound_primary
-        and isinstance(entities_block, dict)
-        and graph_entities is not None
-        and model.get("grain") is not None
-    ):
-        grain_raw = model.get("grain")
-        grain_cols = [str(c) for c in (grain_raw if isinstance(grain_raw, list) else [grain_raw])]
-        candidates: dict[str, list[str]] = {}
-        entries = {primary: entities_block.get(primary)} if primary else entities_block
-        for ent_name, ent_raw in entries.items():
-            if str(ent_name) == "bridge":
-                continue
-            ent_spec = ent_raw if isinstance(ent_raw, dict) else {}
-            expr_override = ent_spec.get("expr")
-            graph_ent = graph_entities.get(str(ent_name))
-            ent_key = graph_ent.get("key") if isinstance(graph_ent, dict) else None
-            candidates[str(ent_name)] = _column_list(expr_override) or _column_list(ent_key)
-        if (
-            not primary
-            and not any(cols == grain_cols for cols in candidates.values())
-            and (model_id in entities_block or not entities_block)
-            and not (graph_entities.get(model_id) or {}).get("model")
-        ):
-            candidates = {model_id: candidates.get(model_id, [])}
-        if len(candidates) == 1:
-            name = next(iter(candidates))
-            if not candidates[name]:
-                candidates[name] = _column_list((model.get("keys") or {}).get("primary"))
-        if (
-            grain_cols
-            and candidates
-            and any(candidates.values())
-            and not any(cols == grain_cols for cols in candidates.values())
-        ):
-            rendered = ", ".join(
-                f"{name}={'/'.join(cols)}" for name, cols in sorted(candidates.items())
-            )
-            add_error(
-                errors,
-                f"{label} grain {grain_cols} does not match the "
-                f"{'primary entity key' if primary else 'key of any entity in its entities: block'} "
-                f"({rendered}); fix the grain or entity key",
-            )
 
 
 def _check_typed_field_enums(path_label: str, models: dict[str, Any], errors: list[str]) -> None:
@@ -827,29 +764,47 @@ def _check_metric_shape(
 
 
 def _check_metric(
-    metric_key: str,
-    spec: dict[str, Any],
-    strict: bool,
-    *,
-    path_label: str,
-    errors: list[str],
+    metric_key: str, spec: dict[str, Any], *, path_label: str, errors: list[str]
 ) -> None:
-    """Shape checks, then the schema_strict rule that every metric declares value_type.
+    """Shape checks, then the rule that every metric declares value_type.
 
     The loader defaults a missing or empty value_type to "number", so the loaded config
-    can't tell an authored "number" from the default; only the authored spec can. This
-    runs on the specs of every layout the loader reads, single-file included.
+    can't tell an authored "number" from the default; only the authored spec can.
     """
     _check_metric_shape(metric_key, spec, path_label=path_label, errors=errors)
-    if not strict:
-        return
     value_type = spec.get("value_type")
     if not (isinstance(value_type, str) and value_type.strip()):
         add_error(
             errors,
-            f"{path_label}: metric {metric_key!r}: missing 'value_type:'. Under schema_strict, "
-            f"declare value_type explicitly (common values: number, percent, currency, count, "
-            f"ratio).",
+            f"{path_label}: metric {metric_key!r}: missing 'value_type:'; declare it "
+            f"(common values: number, percent, currency, count, ratio).",
+        )
+
+
+def _check_accumulation(accumulation: Any, *, label: str, errors: list[str]) -> None:
+    """Unknown keys and the kind of an ``accumulation:`` value, in the mapping or scalar form."""
+    acc_kind = ""
+    if isinstance(accumulation, dict):
+        _unknown_key_errors(
+            accumulation, _ACCUMULATION_KEYS, label=f"{label} accumulation", errors=errors
+        )
+        acc_kind = str(accumulation.get("kind", "") or "").strip().lower()
+    elif accumulation is not None:
+        acc_kind = str(accumulation or "").strip().lower()
+    if acc_kind and acc_kind not in _VALID_ACCUMULATION_KINDS:
+        add_error(
+            errors,
+            f"{label} has unknown accumulation kind {acc_kind!r}. Valid "
+            f"kinds: {', '.join(sorted(_VALID_ACCUMULATION_KINDS))}.",
+        )
+
+
+def _check_publish(spec: dict[str, Any], *, label: str, errors: list[str]) -> None:
+    """``publish: false`` marks a building-block measure; a measure publishes no metric itself."""
+    if "publish" in spec and not isinstance(spec["publish"], bool):
+        add_error(
+            errors,
+            f"{label} publish must be true or false; author the metric under metrics: {_UPGRADE}",
         )
 
 
@@ -896,9 +851,7 @@ def authoring_errors(raw: dict[str, Any], *, path_label: str) -> list[str]:
 
 def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[str]) -> None:
     """Unknown keys and wrong-typed fields across every authored block."""
-    _unknown_key_errors(
-        raw, _TOP_LEVEL_KEYS, label=path_label, errors=errors, replaced=_TOP_LEVEL_HINTS
-    )
+    _unknown_key_errors(raw, _TOP_LEVEL_KEYS, label=path_label, errors=errors, block="document")
     defaults = raw.get("defaults")
     if isinstance(defaults, dict):
         label = f"{path_label}: defaults"
@@ -910,16 +863,15 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
             ("relationship", _JOIN_KEYS),
         ):
             if isinstance(defaults.get(key), dict):
-                _unknown_key_errors(defaults[key], allowed, label=f"{label}.{key}", errors=errors)
-        # Every measure without its own `accumulation:` takes this one.
+                _unknown_key_errors(
+                    defaults[key], allowed, label=f"{label}.{key}", errors=errors, block=key
+                )
+        # Every measure without its own `accumulation:` or `publish:` takes this one.
         measure = defaults.get("measure")
-        accumulation = measure.get("accumulation") if isinstance(measure, dict) else None
-        if isinstance(accumulation, dict):
-            _unknown_key_errors(
-                accumulation,
-                _ACCUMULATION_KEYS,
-                label=f"{label}.measure accumulation",
-                errors=errors,
+        if isinstance(measure, dict):
+            _check_publish(measure, label=f"{label}.measure", errors=errors)
+            _check_accumulation(
+                measure.get("accumulation"), label=f"{label}.measure", errors=errors
             )
     caveats = raw.get("semantic_caveats")
     for index, row in enumerate(caveats if isinstance(caveats, list) else ()):
@@ -934,7 +886,11 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
     package = raw.get("package")
     if isinstance(package, dict):
         _unknown_key_errors(
-            package, _PACKAGE_KEYS, label=f"{path_label}: package block", errors=errors
+            package,
+            _PACKAGE_KEYS,
+            label=f"{path_label}: package block",
+            errors=errors,
+            block="package",
         )
         _expect_value_list(
             package.get("environments"),
@@ -961,6 +917,7 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
                         _GRAPH_ENTITY_KEYS,
                         label=f"{path_label}: graph entity '{entity_key}'",
                         errors=errors,
+                        block="entity",
                     )
         relationships = graph.get("relationships")
         for name, row in relationships.items() if isinstance(relationships, dict) else ():
@@ -987,6 +944,12 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
         block = package if isinstance(package, dict) else {}
         namespace = str(block.get("namespace", block.get("id", "")) or "").strip()
         for model_id, model in models.items():
+            if isinstance(model, dict) and str(model.get("id", model_id)).strip() != str(model_id):
+                add_error(
+                    errors,
+                    f"{path_label}: model '{model_id}' authors id {model['id']!r}; the model's "
+                    "key is its id, so delete id:",
+                )
             if isinstance(model, dict):
                 _check_model_shape(
                     str(model_id),
@@ -997,30 +960,24 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
                     namespace=namespace,
                 )
 
-    try:
-        strict = bool(dict(package or {}).get("schema_strict", False))
-    except (TypeError, ValueError):
-        strict = False  # The loader reports an invalid package block.
     metrics = raw.get("metrics")
-    if strict and not isinstance(metrics, dict):
+    if not isinstance(metrics, dict):
         try:
             metrics = dict(metrics or {})
         except (TypeError, ValueError):
             add_error(errors, f"{path_label}: metrics block must be a mapping or key/value pairs")
             metrics = {}
-    if isinstance(metrics, dict):
-        for metric_key, spec in metrics.items():
-            if strict and not isinstance(spec, dict):
-                try:
-                    spec = dict(spec or {})
-                except (TypeError, ValueError):
-                    add_error(
-                        errors,
-                        f"{path_label}: metric {metric_key!r} must be a mapping or key/value pairs",
-                    )
-                    continue
-            if isinstance(spec, dict):
-                _check_metric(str(metric_key), spec, strict, path_label=path_label, errors=errors)
+    for metric_key, spec in metrics.items():
+        if not isinstance(spec, dict):
+            try:
+                spec = dict(spec or {})
+            except (TypeError, ValueError):
+                add_error(
+                    errors,
+                    f"{path_label}: metric {metric_key!r} must be a mapping or key/value pairs",
+                )
+                continue
+        _check_metric(str(metric_key), spec, path_label=path_label, errors=errors)
 
     segments = raw.get("segments")
     if isinstance(segments, dict):

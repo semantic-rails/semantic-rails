@@ -193,7 +193,6 @@ def _write_package(root: Path, *, decisions: list[dict[str, Any]] | None = None)
               seed:
                 kind: sql_script
                 source: data/seed.sql
-              schema_strict: true
             defaults:
               dimension:
                 groupable: true

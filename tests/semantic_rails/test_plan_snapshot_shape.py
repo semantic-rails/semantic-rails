@@ -98,8 +98,10 @@ def _package(root: Path, *, policies: list[dict[str, Any]], days_only: bool) -> 
         "times": {"day": {**day, **({"supported_grains": ["day"]} if days_only else {})}},
         "dimensions": {"plan": {"kind": "categorical", "domain": ["basic", "pro"]}},
         "measures": {
-            "mrr_all": {"expr": "mrr", "accumulation": stock, "publish": False},
-            "paying_all": {"expr": "paying", "accumulation": stock, "publish": False},
+            "mrr_all": {"kind": "aggregate", "expr": "mrr", "accumulation": stock,
+                        "publish": False},
+            "paying_all": {"kind": "aggregate", "expr": "paying", "accumulation": stock,
+                           "publish": False},
         },
     }})  # fmt: skip
     put("metrics/accounts.yml", {"metrics": {
@@ -110,7 +112,8 @@ def _package(root: Path, *, policies: list[dict[str, Any]], days_only: bool) -> 
                            "aggregation": "count_distinct", "filter": {"all": [CUSTOMERS]}},
         },
         "mrr": {
-            "label": "MRR (USD)", "kind": "semi_additive", "temporal_role": CLOCK,
+            "label": "MRR (USD)", "kind": "semi_additive", "value_type": "number",
+            "temporal_role": CLOCK,
             "expression": {"kind": "semi_additive", "measure": f"measure.{NS}.mrr_all",
                            "filter": {"all": [CUSTOMERS]}},
         },

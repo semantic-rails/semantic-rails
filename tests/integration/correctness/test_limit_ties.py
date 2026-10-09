@@ -64,7 +64,8 @@ def test_no_cutoff_warning_without_a_boundary_tie(duckdb_backend, changes):
     result = runtime.query(query)
     assert not any(warning["code"] == "TIES_AT_LIMIT" for warning in result["warnings"])
     if query.get("limit") is None:
-        assert "NULLS LAST" not in result["rendered_sql"]
+        # Only the requested terms: an unlimited query gets no tie-break columns.
+        assert result["rendered_sql"].count("NULLS LAST") == len(query["order_by"])
 
 
 @pytest.mark.parametrize(

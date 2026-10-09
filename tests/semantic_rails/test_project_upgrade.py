@@ -35,7 +35,6 @@ LEGACY = {
         "  warehouse: duckdb\n"
         "  default_db: data/shop.duckdb\n"
         "  seed: {kind: external}\n"
-        "  schema_strict: true\n"
         "defaults:\n"
         "  # Parent rollups, as the earlier release declared them.\n"
         "  measure:\n"

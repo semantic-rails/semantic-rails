@@ -494,14 +494,14 @@ def test_supported_overloads_compile_in_queries_and_packages(
     path.write_text(yaml.safe_dump(raw))
     config = load_package_config(str(package))
     assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
-    raw["relations"] = {
+    relations = {
         "projected": {
             "source": "numbers",
             "columns": ["id", "amount", "text_value", "placed_at"],
             "steps": [{"select": {"columns": {"id": "id", "projected_value": expression}}}],
         }
     }
-    path.write_text(yaml.safe_dump(raw))
+    (package / "relations.yml").write_text(yaml.safe_dump({"relations": relations}))
     path = package / "models/rows.yml"
     raw = yaml.safe_load(path.read_text())
     raw["model"]["relation"] = "projected"
@@ -550,9 +550,7 @@ def test_warehouse_type_error_is_redacted_on_every_call_path(package, path):
         if path == "relation":
             raw["model"]["relation"] = "projected"
             raw["model"]["measures"]["amount"]["expr"] = "amount"
-            package_path = package / "package.yml"
-            metadata = yaml.safe_load(package_path.read_text())
-            metadata["relations"] = {
+            relations = {
                 "projected": {
                     "source": "numbers",
                     "columns": ["id", "text_value", "amount"],
@@ -569,7 +567,7 @@ def test_warehouse_type_error_is_redacted_on_every_call_path(package, path):
                     ],
                 }
             }
-            package_path.write_text(yaml.safe_dump(metadata))
+            (package / "relations.yml").write_text(yaml.safe_dump({"relations": relations}))
         model_path.write_text(yaml.safe_dump(raw))
         payload = query({"measure": "measure.numbers.amount", "aggregation": "max"})
     runtime = Runtime.from_path(str(package))

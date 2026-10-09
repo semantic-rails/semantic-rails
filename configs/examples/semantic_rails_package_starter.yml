@@ -31,9 +31,6 @@ package:
   description: Minimal V1 starter package over a synthetic shop domain.
   warehouse: duckdb
   default_db: data/shop_starter.duckdb
-  # schema_strict rejects every legacy authoring form with a clear error
-  # and migration pointer. Recommended for new packages.
-  schema_strict: true
   environments: [development, staging, production]
   seed:
     kind: sql_script
@@ -58,26 +55,29 @@ graph:
       # disallowed_names rejects any model that introduces a forbidden
       # alias for this entity — explicit anti-pattern guard.
       disallowed_names: [cust_id, custid]
+      model: customers
     order:
       label: Order
       key: order_id
+      model: orders
     order_item:
       label: Order item
       key: order_item_id
+      model: order_items
     product:
       label: Product
       key: product_id
+      model: products
 
   # Most relationships are inferred from each model's `entities:` block.
   # Author an explicit entry only for non-default rules (per-direction
   # rollup safety, SCD2 temporal_validity, a second role's own columns, etc.).
 
 models:
-  # One model per warehouse table. Primary entity is auto-detected from
-  # whichever entity's canonical key matches `model.grain`.
+  # One model per warehouse table. Its primary entity is the graph entity
+  # whose `model:` names it; that entity's key keys the model's rows.
   customers:
     relation: shop_customer
-    grain: [customer_id]
     entities:
       customer: {}                          # primary
     times:
@@ -96,7 +96,6 @@ models:
 
   orders:
     relation: shop_order
-    grain: [order_id]
     entities:
       order: {}                             # primary
       customer: {}                          # FK — column = customer_id
@@ -140,7 +139,6 @@ models:
 
   order_items:
     relation: shop_order_item
-    grain: [order_item_id]
     entities:
       order_item: {}                        # primary
       order: {}                             # FK
@@ -164,7 +162,6 @@ models:
 
   products:
     relation: shop_product
-    grain: [product_id]
     entities:
       product: {}                           # primary
     dimensions:
@@ -175,7 +172,7 @@ models:
 # Metrics codify governed access patterns. Measures are queryable as
 # primitives; metrics exist when you want a stable, named contract for a
 # specific use of a measure (a ratio, a cumulative, a derived formula).
-# Auto-publish was removed in V1 — every governed metric is authored.
+# A measure never publishes a metric of its own — every governed metric is authored.
 metrics:
   # kind: aggregate — publish a measure as a stable metric.
   revenue_usd:
