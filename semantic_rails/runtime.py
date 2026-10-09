@@ -27,7 +27,7 @@ from threading import Condition, RLock, get_ident
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import __version__, visible_view
+from . import __version__, operators, visible_view
 from .acceleration.routing import (
     AGGREGATE_ROUTING_ENV,
     aggregate_routing,
@@ -1791,7 +1791,8 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
     for item in filters:
         field, raw = str(item["field"]), item.get("value")
         literals = [v for v in (raw if isinstance(raw, list) else [raw]) if isinstance(v, str)]
-        if not literals or field not in dimensions or item.get("op", "is") != "is":
+        op = operators.ALIASES.get(str(item.get("op", "is")).strip().lower(), item.get("op", "is"))
+        if not literals or field not in dimensions or op != "is":
             continue
         for literal in literals:
             if (field, literal) in checked:
