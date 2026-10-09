@@ -2920,7 +2920,7 @@ named definition by hand before upgrading.
 | `model-primary-key` | 0.3.2 | `keys:` and a singular `entity:` (and a block-less model's `grain:`) | An `entities:` block that states the same keys (`bridge: false` when the legacy keys inferred no relationship). A key with a role, keys that disagree with the block, or a model with no row key stop |
 | `model-joins` | 0.3.2 | A model `joins:` block | `graph.relationships` rows with the same ids (`traversal` becomes `allowed_directions`). A join that never read its cardinality as one, names no columns under a different key, or isn't on its entity's home model stops |
 | `object-as` | 0.3.2 | `id:` on graph entities and relationships, dimensions, times, measures, metrics and segments | Renamed to `as:`, or deleted when the key derives the same id. A metric or segment alone in its file and without `name:` takes its key from that `id:`, so it stops: author it under the file's `metrics:` or `segments:` map |
-| `measure-times` | 0.3.2 | A measure's `time:` (also under `defaults.measure`) | `times: [<role>]` naming the clock the loader read; deleted beside a non-empty `times:`, which the loader read instead |
+| `measure-times` | 0.3.2 | A measure's `time:` (also under `defaults.measure`) | `times: [<role>]` naming the clock the loader read; deleted beside a non-empty `times:` (the measure's, or `defaults.measure.times` when the measure has no `times:` key), which the loader read instead. When the rewrite would move any measure's clock (a measure's empty `time:` or `times:` under a `defaults.measure.time:`), that measure and `defaults.measure` stop: rewrite them by hand |
 
 ## Reference
 

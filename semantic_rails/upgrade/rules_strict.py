@@ -413,7 +413,7 @@ def _measure_times(files: PackageFiles) -> Iterator[Finding]:
                 edits += (Edit(file, "replace", times, value=roles),)
             rewritten[path]["times"] = roles
         found.append((file, path, edits))
-    new_base = next((rewritten.get(p, base) for _, p, row in defaults if row is base), base)
+    new_base = next((rewritten.get(p, row) for _, p, row in defaults if row is base), base)
     # Each measure whose clock the rewrite would move.
     moved = {
         path

@@ -13,5 +13,6 @@
   already on dimensions, measures, metrics and segments. See
   [Refused legacy forms](docs/PACKAGE_AUTHORING.md#refused-legacy-forms).
 - `semantic-rails project upgrade` rewrites a measure's `time:` to `times:` with the new
-  `measure-times` rule, and `object-as` now also renames `id:` to `as:` on graph
+  `measure-times` rule, keeping the clock the loader read from the measure merged over
+  `defaults.measure` (it stops where it can't), and `object-as` now also renames `id:` to `as:` on graph
   relationships, times, metrics and segments.
