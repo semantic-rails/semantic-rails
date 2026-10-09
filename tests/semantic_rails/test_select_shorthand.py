@@ -196,7 +196,7 @@ def test_runtime_refuses_a_bare_select_item_with_the_reference_to_send(
         runtime.close()
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"].startswith("select[0]")
-    (hint,) = error["details"]["recovery_hints"]
+    (hint,) = error["recovery_hints"]
     assert canonical["expression"].get("metric", MEASURE) in hint["message"]
 
 
@@ -228,24 +228,17 @@ def test_rewriting_the_canonical_form_changes_nothing():
     assert rewrite_select_shorthand(canonical) == (canonical, [])
 
 
-def test_time_grain_warning_reads_the_rewritten_group_by():
-    no_grain = {"temporal_role": "temporal_role.jaffle_order_time"}
-    shorthand = {
-        "version": 1,
-        "select": [{"expression": {"dimension": DIM}}, {"metric": METRIC}],
-        "time": no_grain,
-    }
+def test_time_grain_warning_reads_the_group_by():
+    """A grouped engine query whose clock has no grain gets the grouped warning."""
     canonical = {
-        "version": 1,
         "select": [{"expression": {"kind": "metric", "metric": METRIC}}],
         "group_by": [DIM],
-        "time": no_grain,
+        "time": {"temporal_role": "temporal_role.jaffle_order_time"},
     }
-    for query in (shorthand, canonical):
-        assert (
-            _grouped_ungrained_time_warning(query, {})["code"]
-            == "UNGRAINED_GROUPED_TIME_PROJECTION"
-        )
+    assert (
+        _grouped_ungrained_time_warning(canonical, {})["code"]
+        == "UNGRAINED_GROUPED_TIME_PROJECTION"
+    )
 
 
 def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory):
