@@ -90,7 +90,7 @@ def _gap_kinds(payload: dict[str, Any]) -> list[str]:
         ("fiscal quarterly revenue", "quarter", None),
         ("revenue by fiscal year", "year", None),
         ("revenue by fiscal month", "month", None),
-        ("revenue by store by fiscal quarter", "quarter", [STORE]),
+        ("revenue by store by fiscal quarter", "quarter", ["dimension.jaffle_store_id", STORE]),
     ],
 )
 def test_a_fiscal_series_drafts_on_the_fiscal_calendar_and_is_held(
@@ -99,9 +99,9 @@ def test_a_fiscal_series_drafts_on_the_fiscal_calendar_and_is_held(
     payload = plan_payload(jaffle, intent=question)
     query = payload["best"]["query_ir"]
 
-    if question == "revenue by store by fiscal quarter":
-        assert payload["status"] == "low_confidence"
-        group_by = ["dimension.jaffle_customer_history_preferred_store_id"]
+    if group_by:
+        # A fallback by store validates on the default calendar, which changes the time.
+        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     else:
         _assert_calendar_refused(payload)
     assert "warnings" not in payload
@@ -149,9 +149,6 @@ def test_a_fiscal_comparison_is_reported(
 def test_without_a_fiscal_calendar_plan_reports_the_gap(no_fiscal: Runtime, question: str) -> None:
     payload = plan_payload(no_fiscal, intent=question)
 
-    if question == "fiscal revenue by store":
-        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-        return
     assert payload["status"] == "low_confidence"
     assert _gap_kinds(payload) == ["fiscal_calendar_unrealized"]
     assert "calendar" in payload["why"]["recovery_hints"][0]["message"]
@@ -224,7 +221,7 @@ def test_the_fiscal_gap_says_what_the_draft_lacks(jaffle: Runtime) -> None:
     assert "exact query.time.start and end" in period["why"]["recovery_hints"][0]["message"]
 
     no_time = plan_payload(jaffle, intent="fiscal revenue by store")
-    assert_plan_held(no_time, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert "with a temporal_role and grain" in no_time["why"]["recovery_hints"][0]["message"]
 
     # A day is a day on any calendar.
     day = plan_payload(jaffle, intent="fiscal revenue on April 3, 2017")

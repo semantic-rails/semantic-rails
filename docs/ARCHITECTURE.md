@@ -107,6 +107,7 @@ Current compiled fields:
 - `key`
 - `allowed_as_root`
 - optional `calendar_id`
+- optional `display`: the id of the dimension that names one row in an answer
 
 Notes:
 

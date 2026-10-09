@@ -885,7 +885,8 @@ def test_plan_exposes_contextual_and_lifetime_metric_predicate_semantics(runtime
         assert lifetime_card["predicate_context_entities"] == []
         assert lifetime_card["predicate_filter_inheritance"] == "none"
 
-        held_candidate(contextual, "PLAN_UNMATCHED_TERMS")
+        # The store is resolved; the qualifying cohort still holds the draft.
+        held_candidate(contextual, "PLAN_INTENT_COVERAGE_GAP")
         contextual_query = contextual["blocked"][0]["candidate_ir"]
         contextual_expr = contextual_query["select"][0]["expression"]
         contextual_predicate = contextual_expr["predicates"][0]
@@ -906,7 +907,8 @@ def test_plan_exposes_contextual_and_lifetime_metric_predicate_semantics(runtime
         assert contextual_bound["scope_mode"] == "contextual"
         assert contextual_bound["entity"] == "entity.jaffle_customer"
         assert contextual_query["group_by"] == [
-            "dimension.jaffle_customer_history_preferred_store_id"
+            "dimension.jaffle_store_id",
+            "dimension.jaffle_store_name",
         ]
 
         held_candidate(daily_contextual, "PLAN_INTENT_COVERAGE_GAP")
@@ -939,9 +941,8 @@ def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime_factory)
                 limit=20,
             )
             holds = {
-                "revenue by store last month": "PLAN_FALLBACK_SEMANTIC_DRIFT",
-                "end-of-month inventory levels by store": "PLAN_FALLBACK_SEMANTIC_DRIFT",
-                "monthly revenue from customers with at least 10 orders by store": "PLAN_UNMATCHED_TERMS",
+                "end-of-month inventory levels by store": "PLAN_INTENT_COVERAGE_GAP",
+                "monthly revenue from customers with at least 10 orders by store": "PLAN_INTENT_COVERAGE_GAP",
             }
             if intent in holds:
                 held_candidate(result, holds[intent])
@@ -1069,7 +1070,7 @@ def test_plan_supports_guided_query_building(runtime_factory):
         assert planned["candidates"][0]["resolved"]
         assert "assumptions" in planned["candidates"][0]
         held_candidate(contextual, "PLAN_INTENT_COVERAGE_GAP")
-        held_candidate(revenue_qualified, "PLAN_UNMATCHED_TERMS")
+        held_candidate(revenue_qualified, "PLAN_INTENT_COVERAGE_GAP")
         held_candidate(daily_qualified, "PLAN_INTENT_COVERAGE_GAP")
         contextual_query = contextual["blocked"][0]["candidate_ir"]
         assert contextual["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
@@ -1096,7 +1097,10 @@ def test_plan_supports_guided_query_building(runtime_factory):
         assert revenue_predicate["op"] == ">="
         assert revenue_predicate["value"] == 10
         assert "measure" in revenue_predicate or "metric" in revenue_predicate
-        assert revenue_query["group_by"] == ["dimension.jaffle_customer_history_preferred_store_id"]
+        assert revenue_query["group_by"] == [
+            "dimension.jaffle_store_id",
+            "dimension.jaffle_store_name",
+        ]
         daily_expr = daily_qualified["blocked"][0]["candidate_ir"]["select"][0]["expression"]
         assert daily_expr["predicates"][0]["time_grain"] == "month"
         assert "time_alignment" not in daily_expr["predicates"][0]
@@ -1178,8 +1182,8 @@ def test_plan_avoids_irrelevant_value_filters(runtime_factory):
             verbosity="full",
         )
 
-        held_candidate(top_stores, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-        assert "where" not in top_stores["blocked"][0]["candidate_ir"]
+        assert top_stores["candidates"]
+        assert "where" not in top_stores["candidates"][0]["candidate_ir"]
         assert new_customer_trend["candidates"]
         assert "where" not in new_customer_trend["candidates"][0]["candidate_ir"]
     finally:
@@ -1193,11 +1197,12 @@ def test_plan_does_not_invent_generic_dimension_value_filters(runtime_factory):
         planned = plan_candidate_envelope(
             runtime, intent="top stores by revenue", limit=2, verbosity="full"
         )
-        held_candidate(planned, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-        candidate_query = planned["blocked"][0]["candidate_ir"]
+        assert planned["candidates"]
+        candidate_query = planned["candidates"][0]["candidate_ir"]
         assert "where" not in candidate_query or candidate_query["where"] == []
         assert candidate_query["group_by"] == [
-            "dimension.jaffle_customer_history_preferred_store_id"
+            "dimension.jaffle_store_id",
+            "dimension.jaffle_store_name",
         ]
     finally:
         runtime.close()

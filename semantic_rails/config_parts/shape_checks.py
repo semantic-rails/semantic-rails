@@ -189,6 +189,7 @@ _GRAPH_ENTITY_KEYS: frozenset[str] = frozenset(
         "kind",
         "model",
         "synonyms",
+        "display",
         "description",
         "topics",
         "allowed_as_root",

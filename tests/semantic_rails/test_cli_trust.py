@@ -244,7 +244,7 @@ ASK = ("ask", "monthly revenue by store", "--run", "--limit", "2")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX pseudo-terminal")
-@pytest.mark.parametrize(("args", "reply", "code"), [(ASK, "", 1), (ASK, "y", 1), ((), "leave", 0)])
+@pytest.mark.parametrize(("args", "reply", "code"), [(ASK, "", 1), (ASK, "y", 0), ((), "leave", 0)])
 def test_real_terminal_confirmation_gates_the_sample_package(
     nowhere: dict[str, str], args: tuple[str, ...], reply: str, code: int
 ) -> None:
@@ -286,13 +286,12 @@ def test_real_terminal_confirmation_gates_the_sample_package(
         assert "No package open." in text and "Governed questions" not in text
         return
     assert "No package selected." in text
-    if reply != "y":
+    if code:
         assert "Choose one:" in text
         assert "Rows:" not in text
     else:
         assert "Package: jaffle_shop (bundled sample package, not your data)" in text
-        assert "PLAN_UNMATCHED_TERMS" in text
-        assert "Rows:" not in text
+        assert "Rows: 2 (stopped at the 2-row limit; more rows match)" in text
 
 
 def test_ask_names_the_bundled_package_and_formats_numbers(
@@ -300,12 +299,6 @@ def test_ask_names_the_bundled_package_and_formats_numbers(
 ) -> None:
     proc = _run(nowhere, "ask", "--package", "jaffle_shop", "monthly revenue by store", "--run")
 
-    assert proc.returncode == 1, proc.stderr
-    assert "PLAN_UNMATCHED_TERMS" in proc.stdout
-    assert "Rows:" not in proc.stdout
-    proc = _run(
-        nowhere, "ask", "--package", "jaffle_shop", "monthly revenue by store name", "--run"
-    )
     assert proc.returncode == 0, proc.stderr
     assert "Package: jaffle_shop (bundled sample package, not your data)" in proc.stdout
     assert "Store name" in proc.stdout and "Order time (month)" in proc.stdout
@@ -315,28 +308,12 @@ def test_ask_names_the_bundled_package_and_formats_numbers(
 
 def test_ask_json_reports_an_exact_row_limit(nowhere: dict[str, str]) -> None:
     def ask(limit: str | None) -> dict[str, Any]:
-        args = ("ask", "--package", "jaffle_shop", "monthly revenue by store name", "--run")
+        args = ("ask", "--package", "jaffle_shop", "monthly revenue by store", "--run")
         extra = ("--limit", limit) if limit is not None else ()
         proc = _run(nowhere, *args, *extra, "--json")
         assert proc.returncode == 0, proc.stderr
         return dict(json.loads(proc.stdout))
 
-    for limit in ("2", "20", "0"):
-        refused = _run(
-            nowhere,
-            "ask",
-            "--package",
-            "jaffle_shop",
-            "monthly revenue by store",
-            "--run",
-            "--limit",
-            limit,
-            "--json",
-        )
-        assert refused.returncode == 1
-        report = json.loads(refused.stdout)
-        assert report["errors"][0]["code"] == "PLAN_UNMATCHED_TERMS"
-        assert report["ok"] is False and "result" not in report
     cut, default, full = ask("2"), ask(None), ask("0")
 
     assert cut["package"]["bundled"] is True
@@ -725,10 +702,7 @@ def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str
     assert not common._is_bundled_ref(PackageReference(source_path=str(Path.cwd())))
 
     proc = _run(nowhere, "ask", "--path", bundled, "monthly revenue by store", "--json")
-    assert proc.returncode == 1, proc.stderr
-    report = json.loads(proc.stdout)
-    assert report["errors"][0]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert report["ok"] is False
+    assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["package"]["bundled"] is True
 
 
@@ -953,14 +927,6 @@ def test_cli_with_a_planned_row_fence_uses_real_execution_and_reports_the_bindin
     if limit is not None:
         args.extend(["--limit", limit])
 
-    monkeypatch.setattr(sys, "argv", [*args, "--json"])
-    with pytest.raises(SystemExit) as exc:
-        cli_app.main()
-    assert exc.value.code == 1
-    refused = json.loads(capsys.readouterr().out)
-    assert refused["errors"][0]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert refused["ok"] is False and "result" not in refused
-    args[4] = "monthly revenue by store name"
     monkeypatch.setattr(sys, "argv", [*args, "--json"])
     cli_app.main()
     payload = json.loads(capsys.readouterr().out)

@@ -28,7 +28,7 @@ def parameters(check):
             continue
         if check == "planner" and "intent" not in spec:
             continue
-        for backend in ["duckdb"] if "intent" in spec else ["duckdb", "postgres"]:
+        for backend in ["duckdb", "postgres"]:
             reason = (
                 spec.get("known_wrong", {}).get(check) if check in {"engine", "planner"} else None
             )

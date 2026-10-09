@@ -127,9 +127,10 @@ def _load_cases() -> list[dict[str, Any]]:
             {
                 "name": "orders_by_store_without_time_bucket",
                 "intent": "orders by store",
-                "expected": "clarify",
-                "expected_status": "low_confidence",
-                "forbid_ready_for_execute": True,
+                "expected": "answer",
+                "expected_query_patch": {
+                    "group_by": ["dimension.jaffle_store_id", "dimension.jaffle_store_name"],
+                },
                 "forbidden_query_paths": ["time"],
             },
             {

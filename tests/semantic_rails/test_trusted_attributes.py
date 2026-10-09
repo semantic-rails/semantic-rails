@@ -25,7 +25,6 @@ from semantic_rails.request_context import (
     set_policy_context_resolver,
 )
 from tests.semantic_rails.conftest import copy_package_config
-from tests.semantic_rails.result_helpers import assert_plan_held
 
 CANARY = "canary-7731-a1"
 SPOOF = {"customer_id": "spoofed-customer"}
@@ -211,13 +210,7 @@ def test_host_attributes_reach_the_runtime_and_never_leave_it(host_app, transpor
         {"intent": "revenue by store", "policy_context": spoof, "query": {"policy_context": spoof}},
     )
     assert plan["ok"] is True, plan
-    assert_plan_held(plan, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-    query = {
-        **plan["best"]["query_ir"],
-        "group_by": ["dimension.jaffle_store_name"],
-        "order_by": [],
-        "policy_context": spoof,
-    }
+    query = {**plan["best"]["query_ir"], "policy_context": spoof}
     responses = [plan]
     for operation, arguments in [
         ("validate", {"query": query}),

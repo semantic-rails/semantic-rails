@@ -38,6 +38,7 @@ from .examples import example_plan
 from .faithfulness import intent_faithfulness_why, intent_subject_why, named_subject_why
 from .generators import _target_focus_text, blocked_object_not_found, fallback_drafts
 from .grouping_checks import _dropped_grouping_why
+from .groupings import _key_only_assumptions
 from .intent_holds import (
     _conversion_intent_why,
     _dropped_value_why,
@@ -557,6 +558,10 @@ def _question_payload(
         )
     assumptions = _time_assumptions(intent_str, best_draft.query) if best_ok else []
     assumptions += [read.reading] if read is not None and read.reading else []
+    if best_ok:
+        assumptions += _key_only_assumptions(
+            runtime._config, intent_str, best_draft.query, partial_query
+        )
     if assumptions:
         payload["assumptions"] = assumptions
     if unmatched:

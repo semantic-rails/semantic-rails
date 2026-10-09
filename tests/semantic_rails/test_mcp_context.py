@@ -209,14 +209,30 @@ def test_planner_accuracy_does_not_regress(
 
 
 @pytest.mark.parametrize(
+    "question",
+    [
+        "monthly revenue by store for 2017",
+        "revenue by store in Q2 2017",
+        "which store had the most orders in 2017",
+        "gross margin percentage by store",
+    ],
+)
+def test_store_questions_group_by_the_keyed_store(jaffle_package: Path, question: str) -> None:
+    # "store" names the Store entity: its key and its name, never the name alone.
+    with mcp_context.QueryMCPClient(jaffle_package) as client:
+        payload = client.tool_payload("plan", {"intent": question, "detail": "query"})
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["best"]["query_ir"]["group_by"] == [
+        "dimension.jaffle_store_id",
+        "dimension.jaffle_store_name",
+    ]
+
+
+@pytest.mark.parametrize(
     ("question", "code"),
     [
-        ("monthly revenue by store for 2017", "PLAN_UNMATCHED_TERMS"),
-        ("revenue by store in Q2 2017", "PLAN_UNMATCHED_TERMS"),
-        ("which store had the most orders in 2017", "PLAN_INTENT_COVERAGE_GAP"),
-        ("revenue before tax by store", "VALIDATION_FAILED"),
-        ("orders that included a drink, by store", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        ("gross margin percentage by store", "VALIDATION_FAILED"),
+        ("revenue before tax by store", "PLAN_INTENT_COVERAGE_GAP"),
+        ("orders that included a drink, by store", "PLAN_INTENT_COVERAGE_GAP"),
     ],
 )
 def test_unresolved_store_questions_are_not_ready(
