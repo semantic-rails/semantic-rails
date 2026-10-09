@@ -42,13 +42,39 @@ def _measure_reads(node: Any) -> Iterator[tuple[str, dict[str, Any]]]:
 def whole_aggregate(metric: MetricConfig) -> tuple[str, str, dict[str, Any]] | None:
     """The measure, aggregation and narrowing of a metric that is one measure's aggregate."""
 
-    node = expr_to_dict(metric.expression)
+    return _aggregate(expr_to_dict(metric.expression))
+
+
+def _aggregate(node: dict[str, Any]) -> tuple[str, str, dict[str, Any]] | None:
     if node.get("kind") not in _AGGREGATES or not node.get("measure"):
         return None
     if node.get("window") or node.get("anchor"):
         return None
     narrowing = {key: node[key] for key in _NARROWING if node.get(key)}
     return str(node["measure"]), str(node.get("aggregation") or ""), narrowing
+
+
+def governed_form(metric: MetricConfig) -> tuple[str, str, dict[str, Any]] | None:
+    """``whole_aggregate`` of a metric that is one narrowed aggregate, bare or zero-filled.
+
+    A closed list of two shapes: the aggregate itself, or ``COALESCE(<aggregate>, 0)``, which a
+    package uses to report an empty count as 0. Any other wrapper, filler or argument is not one.
+    """
+
+    node = expr_to_dict(metric.expression)
+    args = node.get("args") or []
+    if (
+        node.get("kind") == "call"
+        and str(node.get("name") or "").upper() == "COALESCE"
+        and not node.get("distinct")
+        and len(args) == 2
+        and args[1].get("kind") == "literal"
+        and type(args[1].get("value")) in (int, float)
+        and args[1]["value"] == 0
+    ):
+        node = args[0]
+    whole = _aggregate(node)
+    return whole if whole is not None and whole[2] else None
 
 
 def published_measure(metric: MetricConfig) -> str:

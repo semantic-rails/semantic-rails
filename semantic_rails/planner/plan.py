@@ -28,13 +28,15 @@ from typing import Any
 
 from ..ast import every_filter
 from ..errors import SemanticLayerError
+from ..naming import semantic_token as _semantic_token
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
+from ._base import _governed_target, _resolved
 from .answer_shape import _answer_shape_why
 from .consumed_spans import unconsumed_terms
 from .examples import example_plan
 from .faithfulness import intent_faithfulness_why, intent_subject_why, named_subject_why
-from .generators import blocked_object_not_found, fallback_drafts
+from .generators import _target_focus_text, blocked_object_not_found, fallback_drafts
 from .grouping_checks import _dropped_grouping_why
 from .intent_holds import (
     _conversion_intent_why,
@@ -681,6 +683,7 @@ def _planned_row(
     )
     if merged_draft.blocked_reason:
         return _blocked_row(merged_draft, pattern, dict(merged_draft.blocked_reason), blocked)
+    merged_draft = _governed_draft(runtime._config, intent, merged_draft, partial_query)
     # A balance reads the one day the question names (planner/snapshot.py).
     shaped, ask = shape_snapshot(runtime, intent, merged_draft.query, partial_query)
     if ask is not None:
@@ -731,6 +734,47 @@ def _planned_row(
         "blocked": False,
         "start_dropped": start_dropped,
     }
+
+
+def _governed_draft(
+    config: Any, question: str, draft: Any, partial_query: dict[str, Any] | None
+) -> Any:
+    """The draft selecting the metric the package declares for its one measure.
+
+    Every draft passes here before validation and readiness, so whichever path drafted the
+    measure, ``_governed_target`` swaps in the same metric. Never a caller's select, and
+    never onto another clock: a draft without a time block takes the metric all-time, and one
+    on another clock keeps the measure for readiness to hold.
+    """
+
+    query = draft.query
+    if "select" in (partial_query or {}):
+        return draft
+    metric = _governed_target(config, _target_focus_text(question) or question, query)
+    time = query.get("time")
+    clock = time.get("temporal_role") if isinstance(time, dict) else time
+    if metric is None or (time and clock != metric.temporal_role):
+        return draft
+    [item] = query["select"]
+    alias = _semantic_token(str(metric.id), fallback="value")
+    swapped = {**query, "select": [{"as": alias, "expression": {"metric": metric.id}}]}
+    if query.get("order_by"):
+        swapped["order_by"] = [
+            {**row, "field": alias}
+            if isinstance(row, dict) and row.get("field") == item.get("as")
+            else row
+            for row in query["order_by"]
+        ]
+    drafted = {item["expression"].get(key) for key in ("measure", "metric")} - {None}
+    intent = dict(draft.interpreted_intent)
+    if intent.get("target") in drafted:
+        intent.update(target=metric.id, target_kind="metric")
+    return replace(
+        draft,
+        query=swapped,
+        resolved=[_resolved(metric) if row.get("id") in drafted else row for row in draft.resolved],
+        interpreted_intent=intent,
+    )
 
 
 def _blocked_row(
