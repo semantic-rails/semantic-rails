@@ -262,6 +262,15 @@ def read_call(
     return internal, context.notes
 
 
+def engine_where(
+    where: Any, *, grain: str = "", config: PackageConfig | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """A call's ``where`` in the engine's form: ``(row filters and child groups, entity filters
+    as metric_filters)``. For a clarification option the engine re-binds."""
+    context = CallContext(config=config, now=parse_now(None))
+    return _where(where, context, {"time": {"grain": grain}} if grain else {})
+
+
 def _check_top_level(payload: Mapping[str, Any]) -> None:
     for key in payload:
         if key in FIELDS or key in IGNORED or str(key).startswith("_"):
