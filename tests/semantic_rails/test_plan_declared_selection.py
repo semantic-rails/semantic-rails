@@ -100,7 +100,7 @@ def _package(
                        "right": {"kind": "metric", "metric": "metric.subscriptions.closures"}},
     }  # fmt: skip
     metrics["mrr"] = {
-        "label": "MRR (USD)", "kind": "semi_additive",
+        "label": "MRR (USD)", "kind": "semi_additive", "value_type": "number",
         "temporal_role": "temporal_role.subscriptions_account_day_day",
         "expression": {"kind": "semi_additive", "measure": "measure.subscriptions.mrr_all"},
     }  # fmt: skip
@@ -129,6 +129,13 @@ def _package(
                 "kind": "call", "name": "COALESCE",
                 "args": [filtered, {"kind": "literal", "value": filled[calls]}]},
         }  # fmt: skip
+    if published_calls:  # each published calls measure's plain metric
+        for key, label in (("calls_all", "Calls (all segments)"), ("callers", "Callers")):
+            metrics[key] = {
+                "label": label, "description": label, "kind": "aggregate",
+                "measure": f"measure.subscriptions.{key}", "aggregation": "count_distinct",
+                "value_type": "count", "temporal_role": clock,
+            }  # fmt: skip
     files = {
         "package.yml": {
             "schema_version": 1,
@@ -177,7 +184,7 @@ def _package(
             "times": {"day": {"column": "day", "kind": "date", "class": "as_of_time",
                               "default": True}},
             "dimensions": {"plan": {"kind": "categorical", "domain": ["basic", "pro"]}},
-            "measures": {"mrr_all": {"expr": "mrr", "publish": False,
+            "measures": {"mrr_all": {"kind": "aggregate", "expr": "mrr", "publish": False,
                                      "accumulation": {"kind": "stock",
                                                       "snapshot": "end_of_period"}}},
         }},
