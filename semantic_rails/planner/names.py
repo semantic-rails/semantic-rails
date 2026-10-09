@@ -42,24 +42,29 @@ _R = TypeVar("_R")
 
 @dataclass(frozen=True)
 class NamedRow:
-    """A name the question gives one row: where the question says it, and the row it reads."""
+    """A row a name in the question finds: where the question says the name, and the row."""
 
     span: tuple[int, int]
     said: str
-    entity: str
+    entity: Any
     key_dimension: str
     key: Any
     display_dimension: str
     display: str
+
+    def shown(self) -> str:
+        return f"{self.entity.label or self.entity.id} {self.display} ({self.key})"
+
+
+# A lookup's (key, display) rows holding the name, and whether the read was whole; None failed.
+_Read = tuple[list[tuple[Any, str]], bool] | None
 
 
 @dataclass
 class _Lookups:
     """One request's lookups, by key dimension and name, and the rows each question names."""
 
-    reads: dict[tuple[str, tuple[str, ...]], tuple[list[tuple[Any, str]], bool] | None] = field(
-        default_factory=dict
-    )
+    reads: dict[tuple[str, tuple[str, ...]], _Read] = field(default_factory=dict)
     named: dict[str, tuple[NamedRow, ...]] = field(default_factory=dict)
 
 
@@ -68,15 +73,6 @@ class _Run:
     words: tuple[str, ...]
     said: str
     span: tuple[int, int]
-
-
-@dataclass(frozen=True)
-class _Match:
-    entity: Any
-    key_dimension: str
-    display_dimension: str
-    key: Any
-    display: str
 
 
 _lookups: ContextVar[_Lookups | None] = ContextVar("planner_name_lookups", default=None)
@@ -172,7 +168,7 @@ def _display_entities(config: Any, query: dict[str, Any]) -> list[tuple[Any, str
 
 def _lookup(
     runtime: Any, key_dimension: str, display_dimension: str, words: tuple[str, ...]
-) -> tuple[list[tuple[Any, str]], bool] | None:
+) -> _Read:
     """The (key, display) rows whose display holds the words, and whether the read was whole
     (it came back short of its limit); None when it failed."""
 
@@ -232,9 +228,9 @@ def name_filters(
     if state is None or not entities:
         return query, None
     named: list[NamedRow] = []
-    asks: list[tuple[_Run, list[_Match], bool]] = []
+    asks: list[tuple[list[NamedRow], bool]] = []
     for run in runs:
-        matches: list[_Match] = []
+        matches: list[NamedRow] = []
         whole = True
         for entity, key_dimension, display_dimension in entities:
             cached = (key_dimension, run.words)
@@ -245,31 +241,18 @@ def name_filters(
                 break
             whole = whole and read[1]
             matches.extend(
-                _Match(entity, key_dimension, display_dimension, key, display)
+                NamedRow(run.span, run.said, entity, key_dimension, key, display_dimension, display)
                 for key, display in read[0]
             )
         else:
             if len(matches) > 1:
-                asks.append((run, matches, whole))
+                asks.append((matches, whole))
             elif matches and whole:
-                [match] = matches
-                named.append(
-                    NamedRow(
-                        span=run.span,
-                        said=run.said,
-                        entity=str(match.entity.label or match.entity.id),
-                        key_dimension=match.key_dimension,
-                        key=match.key,
-                        display_dimension=match.display_dimension,
-                        display=match.display,
-                    )
-                )
+                named.extend(matches)
     if asks:
         return query, _ask_why(asks)
-    keys: dict[str, set[str]] = {}
-    for row in named:
-        keys.setdefault(row.key_dimension, set()).add(repr(row.key))
-    if not named or any(len(found) > 1 for found in keys.values()):
+    rows = {(row.key_dimension, repr(row.key)) for row in named}
+    if not named or len(rows) > len({row.key_dimension for row in named}):
         return query, None
     where = list(query.get("where") or [])
     for row in named:
@@ -281,19 +264,16 @@ def name_filters(
     return {**query, "where": where, "group_by": list(dict.fromkeys(group_by))}, None
 
 
-def _ask_why(asks: list[tuple[_Run, list[_Match], bool]]) -> dict[str, Any]:
+def _ask_why(asks: list[tuple[list[NamedRow], bool]]) -> dict[str, Any]:
     """Why plan asks which row a name means, listing each row it found."""
-
-    def shown(match: _Match) -> str:
-        return f"{match.entity.label or match.entity.id} {match.display} ({match.key})"
 
     gaps = [
         CoverageGap(
             kind="name_ambiguous",
-            clause=run.said,
+            clause=matches[0].said,
             message=(
-                f"'{run.said}' names {'' if whole else 'at least '}{len(matches)} rows: "
-                f"{', '.join(shown(match) for match in matches)}."
+                f"'{matches[0].said}' names {'' if whole else 'at least '}{len(matches)} rows: "
+                f"{', '.join(match.shown() for match in matches)}."
             ),
             expected={
                 "matches": [
@@ -317,11 +297,14 @@ def _ask_why(asks: list[tuple[_Run, list[_Match], bool]]) -> dict[str, Any]:
                 ),
             },
         )
-        for run, matches, whole in asks
+        for matches, whole in asks
     ]
     why = _coverage_why(gaps) or {}
-    run, matches, _whole = asks[0]
-    question = f"Which one does '{run.said}' mean: {' or '.join(map(shown, matches))}?"
+    matches = asks[0][0]
+    question = (
+        f"Which one does '{matches[0].said}' mean: "
+        f"{' or '.join(match.shown() for match in matches)}?"
+    )
     return {**why, "details": {**why.get("details", {}), "clarification": {"question": question}}}
 
 
@@ -346,7 +329,7 @@ def name_readings(question: str, query: dict[str, Any]) -> list[str]:
     """An assumption line for each row a name in the question is read as."""
 
     return [
-        f"'{row.said}' is read as {row.entity} '{row.display}'."
+        f"'{row.said}' is read as {row.entity.label or row.entity.id} '{row.display}'."
         for row in honored_names(question, query)
     ]
 

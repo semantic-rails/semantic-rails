@@ -450,6 +450,27 @@ def test_a_row_filter_hides_the_name_and_plan_never_shows_it(
         assert actual == _reference(runtime, sql) == expected
 
 
+def test_a_hidden_display_is_never_searched(
+    subscriptions: Callable[..., Runtime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = {
+        "id": "policy.subscriptions.hide_name",
+        "kind": "object_visibility",
+        "action": "hidden",
+        "object_ids": [ACCOUNT_NAME],
+        "audiences": ["outside"],
+    }
+    runtime = subscriptions(policies=[policy])
+    outside = {**RequestContext(actor="end-user", audience="outside").to_policy_context(), **NOW}
+    calls: list[dict[str, Any]] = []
+    query = runtime.query
+    monkeypatch.setattr(runtime, "query", lambda payload: calls.append(payload) or query(payload))
+    payload = _plan(runtime, "How many new accounts did Acme have last month?", outside)
+    _held_on(payload, ["acme"])
+    assert calls == []
+    assert "Acme Data Co" not in json.dumps(payload)
+
+
 def test_a_failed_lookup_is_held(
     subscriptions: Callable[..., Runtime], monkeypatch: pytest.MonkeyPatch
 ) -> None:
