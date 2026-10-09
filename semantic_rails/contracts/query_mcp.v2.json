@@ -531,6 +531,41 @@
           "package_id": {
             "type": "string"
           },
+          "parts": {
+            "description": "One plan per part of a question asking several things.",
+            "items": {
+              "additionalProperties": true,
+              "properties": {
+                "best": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "spans": {
+                  "items": {
+                    "type": "array"
+                  },
+                  "type": "array"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "text",
+                "spans"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "request_id": {
             "type": "string"
           },

@@ -589,10 +589,108 @@ def test_refused_rule_that_does_not_repair_loading_stays_unverified(tmp_path, dr
     else:
         from semantic_rails.errors import SemanticLayerError
 
-        with pytest.raises(SemanticLayerError, match="cannot be verified") as raised:
+        with pytest.raises(SemanticLayerError, match="no rule covers this") as raised:
             service.upgrade_project(project, workspace_root=tmp_path, rules=rules, dry_run=False)
         assert raised.value.code == "CONFIG_CONFLICT"
+        assert raised.value.details["rule"] is None
+        assert "unsupported" in raised.value.details["difference"]["load_error"]["message"]
     assert _contents(project) == files
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_unflagged_rule_that_repairs_loading_is_named_as_the_blocker(tmp_path, dry_run):
+    files = {
+        **LEGACY,
+        "models/events.yml": LEGACY["models/events.yml"].replace(
+            "kind: aggregate", "primitive: aggregate"
+        ),
+    }
+    project = _package(tmp_path, files)
+    rules = (*RULES, replace(PRIMITIVE_KIND, refused=False))
+    if dry_run:
+        report = service.upgrade_project(project, workspace_root=tmp_path, rules=rules)
+        assert report["proof"]["baseline"] == "none"
+        assert [action.split(":")[0] for action in report["next_actions"]] == [
+            "Upgrade rule 'primitive-kind' rewrites a form this engine refuses at load, but the "
+            "rule is not marked refused, so its rewrite cannot be certified"
+        ]
+    else:
+        from semantic_rails.errors import SemanticLayerError
+
+        with pytest.raises(SemanticLayerError, match="'primitive-kind' rewrites a form") as raised:
+            service.upgrade_project(project, workspace_root=tmp_path, rules=rules, dry_run=False)
+        assert raised.value.code == "CONFIG_CONFLICT"
+        assert "null-behavior" not in str(raised.value)
+        assert raised.value.details["rule"] == "primitive-kind"
+        assert raised.value.details["difference"]["tier"] == "unverified"
+    assert _contents(project) == files
+
+
+# A package from before canonical policy rows: a nested release config and a redact action,
+# beside retired metric and measure forms. redact always refused like deny.
+LEGACY_POLICIES = (
+    "semantic_policies:\n"
+    "- id: policy.release\n"
+    "  kind: package_release\n"
+    "  config:\n"
+    "    label: demo\n"
+    "- id: policy.no_ratio\n"
+    "  kind: object_access\n"
+    "  object_ids: [metric.shop.events_per_event]\n"
+    "  action: redact # kept for one dashboard\n"
+)
+CURRENT_POLICIES = (
+    "semantic_policies:\n"
+    "- id: policy.release\n"
+    "  kind: package_release\n"
+    "  label: demo\n"
+    "- id: policy.no_ratio\n"
+    "  kind: object_access\n"
+    "  object_ids: [metric.shop.events_per_event]\n"
+    "  action: deny # kept for one dashboard\n"
+)
+
+
+def test_legacy_policy_forms_upgrade_in_one_certified_write(tmp_path):
+    project = _package(tmp_path, {**LEGACY, "policies.yml": LEGACY_POLICIES})
+
+    preview = service.upgrade_project(project, workspace_root=tmp_path)
+    assert preview["proof"]["baseline"] == "after_certified_rules"
+    assert {row["id"]: row["tier"] for row in preview["rules"]} == {
+        "null-behavior": "certified",
+        "measure-parent-rollup": "certified",
+        "policy-flat": "certified",
+        "policy-redact-deny": "certified",
+    }
+    assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (1, 1)
+    assert preview["next_actions"] == []
+    report = service.upgrade_project(
+        project, workspace_root=tmp_path, dry_run=False, expected_revision=preview["revision"]
+    )
+
+    assert report["status"] == "upgraded"
+    assert _contents(project) == {**UPGRADED, "policies.yml": CURRENT_POLICIES}
+    runtime = Runtime.from_snapshot(load_package_snapshot(project))
+    try:
+        from semantic_rails.policies import package_release_labels
+
+        assert package_release_labels(runtime.config) == ["demo"]
+        ratio = {
+            "version": 1,
+            "select": [{"expression": {"metric": "metric.shop.events_per_event"}, "as": "ratio"}],
+        }
+        with pytest.raises(service.SemanticLayerError) as denied:
+            runtime.compile(ratio)
+        assert denied.value.code == "POLICY_DENIED"
+        assert denied.value.details["blocked_objects"] == ["metric.shop.events_per_event"]
+        assert [row["action"] for row in denied.value.details["policy_effects"]] == ["deny"]
+        amount = {
+            "version": 1,
+            "select": [{"expression": {"metric": "metric.shop.amount_per_event"}, "as": "amount"}],
+        }
+        assert runtime.compile(amount)["rendered_sql"]
+    finally:
+        runtime.close()
 
 
 def _stop(files):
@@ -899,7 +997,8 @@ def test_unparseable_package_refuses_write_with_the_same_error(tmp_path, layout)
     with pytest.raises(service.SemanticLayerError) as exc:
         service.upgrade_project(source, workspace_root=tmp_path, dry_run=False)
     assert exc.value.code == "CONFIG_CONFLICT"
-    assert exc.value.details["difference"] == {"tier": "unverified"}
+    assert exc.value.details["difference"]["tier"] == "unverified"
+    assert exc.value.details["difference"]["load_error"]["code"] == "INVALID_CONFIG"
     assert path.read_bytes() == before
     assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
 
@@ -994,6 +1093,50 @@ def test_single_file_upgrade_refuses_symlinked_companions(tmp_path, companion, d
     assert exc.value.code == "INVALID_CONFIG"
     assert str(exc.value) == "Architect revisions refuse symlinked project directories"
     assert source.read_bytes() == original
+    assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
+
+
+def test_upgrade_keeps_a_linked_data_directory(tmp_path):
+    project = _package(tmp_path)
+    data = tmp_path / "shared" / "data"
+    (data / "raw").mkdir(parents=True)
+    (data / "raw" / "events.csv").write_text("event_id\n1\n")
+    (project / "data").symlink_to(data, target_is_directory=True)
+
+    preview = service.upgrade_project(project, workspace_root=tmp_path)
+    assert preview["proof"]["tier"] == "certified"
+    report = service.upgrade_project(
+        project, workspace_root=tmp_path, dry_run=False, expected_revision=preview["revision"]
+    )
+
+    assert report["status"] == "upgraded"
+    assert (project / "data").is_symlink()
+    assert _contents(project) == UPGRADED
+    assert (project / "data" / "raw" / "events.csv").read_text() == "event_id\n1\n"
+    load_package_snapshot(project)
+
+
+@pytest.mark.parametrize("target", ["yaml", "missing"])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_upgrade_refuses_a_linked_directory_that_may_hold_package_input(tmp_path, target, dry_run):
+    project = _package(tmp_path)
+    data = tmp_path / "shared" / "data"
+    if target == "yaml":
+        data.mkdir(parents=True)
+        (data / "notes.yml").write_text("note: kept\n")
+    (project / "data").symlink_to(data, target_is_directory=True)
+    before = _contents(project)
+
+    with pytest.raises(service.SemanticLayerError) as exc:
+        service.upgrade_project(project, workspace_root=tmp_path, dry_run=dry_run)
+
+    assert exc.value.code == "INVALID_CONFIG"
+    assert str(exc.value) == (
+        "Architect revisions refuse symlinked project directories"
+        if target == "yaml"
+        else "Architect revisions refuse symlinked project files"
+    )
+    assert _contents(project) == before
     assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
 
 
