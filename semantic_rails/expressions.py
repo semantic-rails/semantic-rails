@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
+from . import operators
 from .errors import SemanticLayerError
 
 if TYPE_CHECKING:
@@ -1802,6 +1803,12 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         if not op:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE", "metric_predicate expressions require 'op'"
+            )
+        if operators.operator_word(op, path="metric_predicate.op") not in operators.COMPARISON_SQL:
+            raise SemanticLayerError(
+                "INVALID_METRIC_PREDICATE",
+                "metric_predicate.op compares an aggregate: use is, not, gt, gte, lt or lte",
+                details={"path": "metric_predicate.op", "received_value": op},
             )
         if context == "config" and not scope_mode:
             raise SemanticLayerError(

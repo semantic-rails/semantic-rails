@@ -44,6 +44,8 @@ OPERATORS: dict[str, Operator] = {
 }
 WORDS: tuple[str, ...] = tuple(OPERATORS)
 RANGE_WORDS = frozenset({"gt", "gte", "lt", "lte"})
+# A comparison of two known values (an aggregate against a computed threshold), in SQL.
+COMPARISON_SQL = {"is": "=", "not": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
 
 # SQL spellings a caller may send; each takes its word's meaning (``!=`` keeps unknowns).
 ALIASES: dict[str, str] = {

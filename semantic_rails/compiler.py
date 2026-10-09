@@ -1992,7 +1992,7 @@ def _inline_threshold_cte_and_where(
     )
     where_condition = SqlBinary(
         SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
-        str(predicate.op),
+        operators.COMPARISON_SQL[operators.word_of(predicate.op)],
         SqlIdentifier(parts=["predicate_threshold", "__threshold"]),
     )
     return [threshold_cte], [cross_join], where_condition
