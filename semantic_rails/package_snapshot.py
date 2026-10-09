@@ -46,7 +46,9 @@ def _source_files(path: str, links: list[str] | None = None) -> list[str]:
         dirs[:] = sorted(name for name in dirs if name not in _SOURCE_EXCLUDED_DIRS)
         if links is not None:
             links.extend(
-                os.path.join(root, name) for name in dirs if os.path.islink(os.path.join(root, name))
+                os.path.join(root, name)
+                for name in dirs
+                if os.path.islink(os.path.join(root, name))
             )
         files.extend(os.path.join(root, name) for name in names if name.endswith(_SOURCE_SUFFIXES))
     return sorted(files)

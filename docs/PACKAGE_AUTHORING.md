@@ -201,8 +201,14 @@ and `segments/**` into a single `PackageConfig`. At the root it reads only
 `metrics.yml`, `segments.yml`, `policies.yml` and `caveats.yml`, and those four
 directories; the package tools read `examples/` and `tests/`. Loading refuses any
 other root YAML file or root directory holding YAML (a `policies/` directory, a
-`notes.yml`, a `defaults.yaml`), because its contents would be silently ignored. A
-name that starts with `_` or `.` stays ignored.
+`notes.yml`, a `defaults.yaml`), because its contents would be silently ignored;
+write tests and examples as files under `tests/` and `examples/`, not in a root
+`tests.yml` or `examples.yml`. A name that starts with `_` or `.` stays ignored.
+
+The loader doesn't follow directory symlinks, so loading refuses one anywhere in the
+package (a `policies -> ../shared/policies` link, a symlinked `models/` or
+`models/core/`) unless its root name starts with `_` or `.`. Copy the directory or link
+its files instead: a file symlink is read like any other file.
 
 Each block and each object is read from one place. Loading refuses a block declared
 both in `package.yml` and in its own file (a `defaults:` block beside `defaults.yml`),
@@ -2658,13 +2664,15 @@ entries and their `rollup_safe`; both `path_policy` blocks; `semantic_caveats` r
 `snapshot`, as does `defaults.measure.accumulation`), `joins` and `variants`, with each
 variant's `grain`, `time`, `excludes`, `selection`, `equivalence` and every `columns:`
 binding; metrics; segments and their `membership`. A `columns:` binding takes the keys of what
-its name resolves to: a measure (by key, `as:`, `id:`, or the id the namespace gives it, such
-as `measure.shop.revenue_usd`), a dimension (by key, `as:`, `id:`, or a `dimension.` id, which
-the loader refuses when the package has no such dimension), or a key or foreign-key column the
+its name resolves to: a measure (by key or by the one id the loader gives it: `as:` when set,
+else `id:`, else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
+dimension (by key, by `as:` when set, else `id:`, or a `dimension.` id, which the loader
+refuses when the package has no such dimension), or a key or foreign-key column the
 loader turns into a key dimension (including the key of a graph entity named after the model,
 which binds it by default). A name that resolves to none of them is refused, with the names it
 could mean: the loader would ignore it, and a measure it meant to bind would read the column
-named after the measure, summed. `relations` entries are not closed yet. A key that starts
+named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
+`as:` value. `relations` entries are not closed yet. A key that starts
 with `_` is an annotation.
 
 In a directory package, each file is read through one root key: `defaults.yml`, `graph.yml`,
