@@ -16,7 +16,7 @@ check gates or that has no time bucket; matching rows with NULL amounts stay NUL
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, fields, is_dataclass, replace
@@ -240,6 +240,7 @@ def guard_empty_groups(
     observed: Mapping[str, LeafScope] | None = None,
     observed_buckets: Collection[str] = (),
     bucketed: bool = True,
+    names: Mapping[str, Sequence[str]] | None = None,
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -270,7 +271,8 @@ def guard_empty_groups(
     observed = observed or {}
     dataset = observes_dataset()
     if dataset and (unobserved := [a for a in measures if a in zero and a not in observed]):
-        raise _unobserved_error(unobserved)
+        named = (names or {}).get
+        raise _unobserved_error(list(dict.fromkeys(n for a in unobserved for n in named(a, [a]))))
     fields_ = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
@@ -520,14 +522,14 @@ def refuse_shared_names(row_counts: Iterable[str], taken: Collection[str]) -> No
         raise _unsettled_error({"row_counts_named_like": shared})
 
 
-def _unobserved_error(aliases: list[str]) -> SemanticLayerError:
+def _unobserved_error(outputs: list[str]) -> SemanticLayerError:
     return SemanticLayerError(
         "EMPTY_GROUPS_UNSETTLED",
-        f"Can't tell whether {', '.join(aliases)} has data outside this query's where filters "
-        "(a metric predicate or an authored condition the probe can't read, or a query shape "
+        f"Can't tell whether {', '.join(outputs)} has data outside this query's where filters "
+        "(an entity filter or an authored condition the probe can't read, or a query shape "
         "that settles its groups apart), so its empty groups can't read 0 or NULL. Resend "
         "with observation_scope 'query' to judge them inside the filters.",
-        details={"measures": aliases, "observation_scope": "dataset"},
+        details={"outputs": outputs, "observation_scope": "dataset"},
     )
 
 
