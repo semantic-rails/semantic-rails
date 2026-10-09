@@ -23,6 +23,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.dialects import DuckDbDialect
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.metadata_parts.capabilities import _capability_payload
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import SqlBinary, SqlLiteral
@@ -52,7 +53,8 @@ FROM range(DATE '2023-01-01', DATE '2025-01-01', INTERVAL 1 DAY) AS t(d);
 """
 
 ROLE = "temporal_role.cal_order_ordered_at"
-REVENUE: dict[str, Any] = {"measure": "measure.cal.revenue"}
+FISCAL_DAY = "temporal_role.cal_fiscal_calendar_date_day"
+REVENUE = "measure.cal.revenue"
 STORE = "dimension.cal_order_store_id"
 STEP = {"day": "1 DAY", "week": "7 DAY", "month": "1 MONTH", "quarter": "3 MONTH", "year": "1 YEAR"}
 
@@ -112,11 +114,19 @@ def _write_package(root: Path, *, calendars: tuple[str, ...] = (), zone: bool = 
     return package
 
 
-def _query(package: Path, query: dict[str, Any]) -> tuple[list[tuple[Any, ...]], str]:
-    """Rows as sorted tuples (dates for buckets, floats for amounts) and the rendered SQL."""
+def _query(
+    package: Path, query: dict[str, Any], *, internal: dict[str, Any] | None = None
+) -> tuple[list[tuple[Any, ...]], str]:
+    """Rows as sorted tuples (dates for buckets, floats for amounts) and the rendered SQL.
+
+    ``internal`` replaces parts of the call's engine form with shapes no call can spell.
+    """
     engine = Runtime.from_path(str(package))
     try:
-        result = engine.query({"version": 1, **query})
+        if internal:
+            result = engine.query_internal({**engine.engine_payload(query), **internal})
+        else:
+            result = engine.query(query)
     finally:
         engine.close()
     return _sorted(
@@ -139,7 +149,7 @@ def _normal(row: tuple[Any, ...], types: list[str] | None = None) -> tuple[Any, 
     def one(value: Any, kind: str) -> Any:
         if value is not None and kind == "decimal":
             value = Decimal(value)
-        if value is not None and kind == "timestamp":
+        if value is not None and kind in {"date", "timestamp"}:
             value = datetime.fromisoformat(value)
         if isinstance(value, datetime):
             return value.date()
@@ -321,7 +331,8 @@ def test_groups_are_filled_across_the_whole_series(packages: dict[str, Path]) ->
 
 
 def test_a_non_additive_fill_is_null_not_zero(packages: dict[str, Path]) -> None:
-    query = _ask("month", {"expression": {**REVENUE, "aggregation": "avg"}, "as": "avg"}, fill=True)
+    avg = {"kind": "measure", "measure": REVENUE, "aggregation": "avg"}
+    query = _ask("month", {"expression": avg, "as": "avg"}, fill=True)
     rows, _ = _query(packages["none"], query)
 
     assert (date(2024, 2, 1), None) in rows
@@ -342,7 +353,7 @@ def test_a_non_additive_fill_is_null_not_zero(packages: dict[str, Path]) -> None
 def test_bounded_fill_matches_an_authored_calendar(
     packages: dict[str, Path], package: str, time: dict[str, str], group_by: list[str]
 ) -> None:
-    query = {**_ask("month", NOW, fill=True, **time), "group_by": group_by}
+    query = {**_ask("month", NOW, **time), "group_by": group_by}
     rows, sql = _query(packages[package], query)
 
     assert "implicit_calendar" in sql
@@ -353,7 +364,7 @@ def test_bounded_fill_matches_an_authored_calendar(
 
 
 def test_bounded_fill_lists_every_month_the_window_touches(packages: dict[str, Path]) -> None:
-    query = _ask("month", NOW, fill=True, start="2023-10-15", end="2024-08-01")
+    query = _ask("month", NOW, start="2023-10-15", end="2024-08-01")
     rows, _ = _query(packages["none"], query)
 
     assert [row[0] for row in rows] == [
@@ -414,22 +425,16 @@ def test_a_sentinel_date_widens_the_series_instead_of_dropping_the_row(tmp_path:
     assert rows[-2:] == [(date(2023, 1, 1), 22.0, 0.0), (date(2024, 1, 1), 41.0, 22.0)]
 
 
-@pytest.mark.parametrize(
-    ("time", "code"),
-    [
-        (_time("quarter", calendar_id="fiscal"), "REWRITE_NOT_SUPPORTED"),
-        (_time("quarter", calendar_id="fiscal", fill=True), "REWRITE_NOT_SUPPORTED"),
-        (_time("year", calendar_id="Fiscal", fill=True), "REWRITE_NOT_SUPPORTED"),
-    ],
-)
-def test_a_fiscal_question_without_a_fiscal_calendar_refuses(
-    packages: dict[str, Path], time: dict[str, Any], code: str
-) -> None:
-    for select in ([NOW], [_prior("quarter")]):
-        with pytest.raises(SemanticLayerError) as refused:
-            _query(packages["none"], {"select": select, "time": time})
-        assert refused.value.code == code
-        assert refused.value.details["reason"] == "calendar_not_supported_yet"
+def test_a_call_may_not_name_a_calendar(packages: dict[str, Path]) -> None:
+    """The clock's own calendar applies; a call naming another one is refused with the fix."""
+    with pytest.raises(SemanticLayerError) as refused:
+        _query(packages["fiscal_only"], _ask("quarter", NOW, calendar_id="fiscal"))
+
+    assert refused.value.code == "INVALID_QUERY"
+    assert refused.value.details["path"] == "time.calendar_id"
+    assert refused.value.details["recovery_hints"] == [
+        {"code": "FIX_QUERY_CALL", "message": "Remove 'calendar_id'."}
+    ]
 
 
 def test_a_default_question_never_borrows_a_fiscal_calendar(packages: dict[str, Path]) -> None:
@@ -444,10 +449,7 @@ def test_a_default_question_never_borrows_a_fiscal_calendar(packages: dict[str, 
         (date(2024, 4, 1), 13.0, 28.0),
     ]
     with pytest.raises(SemanticLayerError) as refused:
-        _query(
-            packages["fiscal_only"],
-            {**query, "time": _time("quarter", calendar_id="fiscal", fill=True)},
-        )
+        _query(packages["fiscal_only"], _ask("quarter", NOW, temporal_role=FISCAL_DAY, fill=True))
     assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
@@ -460,14 +462,16 @@ DISTRIBUTION = {
     },
     "as": "p80",
 }
+# An order's revenue in each row's own context: the engine's form, which no call spells.
 LARGE_ORDER = {
     "kind": "metric_predicate",
     "entity": "entity.cal_order",
     "scope_mode": "contextual",
-    "input": REVENUE,
+    "input": {"measure": REVENUE},
     "op": ">",
     "value": 5,
 }
+LARGE_ORDERS = {"metric_filters": [{"expression": LARGE_ORDER, "op": "=", "value": True}]}
 
 
 def test_a_query_compiled_as_sub_queries_holds_the_implicit_calendar(
@@ -496,20 +500,21 @@ def _per_order(aggregate: str) -> str:
 
 LARGE_REVENUE = {"kind": "aggregate", "measure": "measure.cal.revenue"}
 LARGE_REVENUE["filter"] = {"all": [{"expression": LARGE_ORDER}]}
+MEDIAN_LARGE = _distribution("median", LARGE_REVENUE)
 
 
 # Regression: fill densified the per-order grain, so every order entered every month as a 0
-# (p80 read 3.0, 0, 0 for 9, 7, 20). A filled distribution is refused.
+# (p80 read 3.0, 0, 0 for 9, 7, 20). A filled distribution is refused; a named window fills.
 @pytest.mark.parametrize(
-    ("package", "select", "time", "metric_filters"),
+    ("package", "select", "time", "internal"),
     [
-        ("authored", [DISTRIBUTION], {}, []),
-        ("authored", [NOW, DISTRIBUTION], {"start": "2023-10-15", "end": "2024-08-01"}, []),
-        ("authored", [DISTRIBUTION], {}, [{"expression": LARGE_ORDER, "op": "=", "value": True}]),
-        ("authored", [{**_distribution("median", LARGE_REVENUE), "as": "median"}], {}, []),
-        ("none", [DISTRIBUTION], {}, []),
-        ("none", [DISTRIBUTION, NOW], {}, []),
-        ("fiscal_only", [DISTRIBUTION], {"calendar_id": "fiscal"}, []),
+        ("authored", [DISTRIBUTION], {"fill": True}, None),
+        ("authored", [NOW, DISTRIBUTION], {"start": "2023-10-15", "end": "2024-08-01"}, None),
+        ("authored", [DISTRIBUTION], {"fill": True}, LARGE_ORDERS),
+        ("authored", [], {"fill": True}, {"select": [{**MEDIAN_LARGE, "as": "median"}]}),
+        ("none", [DISTRIBUTION], {"fill": True}, None),
+        ("none", [DISTRIBUTION, NOW], {"fill": True}, None),
+        ("fiscal_only", [DISTRIBUTION], {"temporal_role": FISCAL_DAY, "fill": True}, None),
     ],
     ids=[
         "authored",
@@ -526,11 +531,10 @@ def test_a_filled_distribution_refuses(
     package: str,
     select: list[dict[str, Any]],
     time: dict[str, Any],
-    metric_filters: list[dict[str, Any]],
+    internal: dict[str, Any] | None,
 ) -> None:
-    query = {**_ask("month", *select, fill=True, **time), "metric_filters": metric_filters}
     with pytest.raises(SemanticLayerError) as refused:
-        _query(packages[package], query)
+        _query(packages[package], _ask("month", *select, **time), internal=internal)
 
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     if package == "fiscal_only":
@@ -583,7 +587,8 @@ def test_a_distribution_over_a_per_entity_window_refuses(
     """Its dense series held every order in every month: November's median read 0, not 7.5."""
     query = _ask("month", {**MEDIAN_OF[shape], "as": "value"})
     if shape == "prior_period_filter":
-        query["metric_filters"] = [{"expression": PRIOR_REVENUE, "op": ">=", "value": 0}]
+        query["select"].append(_prior("month"))
+        query["having"] = [{"field": "prior", "op": "gte", "value": 0}]
     with pytest.raises(SemanticLayerError) as refused:
         _query(packages["authored"], query)
 
@@ -594,18 +599,17 @@ def test_a_distribution_over_a_per_entity_window_refuses(
 @pytest.mark.parametrize(
     "query",
     [
-        _ask("month", NOW, fill=True, start="2023-10-15", end="2024-08-01"),
+        _ask("month", NOW, start="2023-10-15", end="2024-08-01"),
         _ask("month", NOW, _prior("month")),
     ],
 )
 def test_a_metric_predicate_matches_an_authored_calendar(
     packages: dict[str, Path], query: dict[str, Any]
 ) -> None:
-    query = {**query, "metric_filters": [{"expression": LARGE_ORDER, "op": "=", "value": True}]}
-    rows, sql = _query(packages["none"], query)
+    rows, sql = _query(packages["none"], query, internal=LARGE_ORDERS)
 
     assert "implicit_calendar" in sql
-    assert rows == _query(packages["authored"], query)[0]
+    assert rows == _query(packages["authored"], query, internal=LARGE_ORDERS)[0]
 
 
 @pytest.mark.parametrize(
@@ -683,6 +687,13 @@ def no_calendar_config(packages: dict[str, Path]) -> Any:
     return load_package_config(str(packages["none"]))
 
 
+def _compile(config: Any, query: dict[str, Any], *, fill: bool) -> dict[str, Any]:
+    """The compiled call; ``fill`` asks the engine itself to fill the window."""
+    payload, _ = read_call(query, config=config)
+    payload["time"]["fill"] = fill
+    return compile_query(config, Registry(config), payload)
+
+
 @pytest.mark.parametrize("bounded", [False, True])
 @pytest.mark.parametrize("warehouse", [*GOLDENS, "clickhouse", "generic"])
 def test_each_warehouse_generates_a_bounded_day_spine_or_refuses(
@@ -691,13 +702,13 @@ def test_each_warehouse_generates_a_bounded_day_spine_or_refuses(
     config = replace(
         no_calendar_config, package=replace(no_calendar_config.package, warehouse=warehouse)
     )
-    window = {"fill": True, "start": "2023-10-15", "end": "2024-08-01"}
-    query = {"version": 1, **(_ask("month", NOW, **window) if bounded else BESIDE_PRIOR_MONTH)}
+    window = {"start": "2023-10-15", "end": "2024-08-01"}
+    query = _ask("month", NOW, **window) if bounded else BESIDE_PRIOR_MONTH
     if warehouse not in GOLDENS:
         with pytest.raises(SemanticLayerError, match="has no implicit calendar"):
-            compile_query(config, Registry(config), query)
+            _compile(config, query, fill=bounded)
         return
-    sql = compile_query(config, Registry(config), query)["sql"]
+    sql = _compile(config, query, fill=bounded)["sql"]
     days, bucket = GOLDENS[warehouse]
 
     assert (
@@ -724,8 +735,8 @@ def test_each_warehouse_generates_a_bounded_day_spine_or_refuses(
 def test_bounded_padding_is_clamped_to_the_calendar(
     no_calendar_config: Any, start: str, end: str, first: str, last: str
 ) -> None:
-    query = {"version": 1, **_ask("month", NOW, fill=True, start=start, end=end)}
-    sql = compile_query(no_calendar_config, Registry(no_calendar_config), query)["sql"]
+    query = _ask("month", NOW, start=start, end=end)
+    sql = _compile(no_calendar_config, query, fill=True)["sql"]
 
     assert f"CAST('{first}' AS DATE) AS range_start" in sql
     assert f"CAST('{last}' AS DATE) AS range_end" in sql
