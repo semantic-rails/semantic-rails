@@ -1070,8 +1070,9 @@ def test_as_of_cues_read_a_balance_on_their_day(
         [(gold,)] = connection.execute(
             "SELECT SUM(mrr) FROM account_day WHERE day = ?", [day]
         ).fetchall()
-    # The seed has rows for 2026-10-04 only: a day without rows returns none, never another.
-    assert [row[_alias(query["select"][0])] for row in rows] == ([] if gold is None else [gold])
+    # The seed has rows for 2026-10-04 only: a named day without rows returns its one row with
+    # no value (NULL), never another day's.
+    assert [row[_alias(query["select"][0])] for row in rows] == [gold]
 
 
 def test_current_before_a_metric_is_an_as_of_cue(subscriptions: Runtime) -> None:

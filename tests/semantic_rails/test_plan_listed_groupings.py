@@ -665,14 +665,25 @@ def test_a_comma_before_a_trailing_clause_keeps_the_original_plan(
                 [start, end],
             ).fetchall()
         )
+        if grain and not groups:
+            # A named window returns every period: NULL for a month before the first order.
+            first = connection.execute("SELECT MIN(ordered_at) FROM jaffle_order").fetchone()[0]
+            months = connection.execute(
+                "SELECT CAST(range AS DATE) FROM range(CAST(? AS TIMESTAMP), "
+                "CAST(? AS TIMESTAMP), INTERVAL 1 MONTH)",
+                [start, end],
+            ).fetchall()
+            totals = dict(reference)
+            reference = [
+                (month, None if month < first.date().replace(day=1) else totals.get(month, 0))
+                for (month,) in months
+            ]
     finally:
         connection.close()
     assert reference
-    actual = sorted(
-        tuple(row[field] for field in fields) + (float(row["revenue_usd"]),) for row in rows
-    )
+    actual = sorted(tuple(row[field] for field in fields) + (row["revenue_usd"],) for row in rows)
     assert [row[:-1] for row in actual] == [row[:-1] for row in reference]
-    assert [row[-1] for row in actual] == pytest.approx([float(row[-1]) for row in reference])
+    assert [row[-1] for row in actual] == pytest.approx([row[-1] for row in reference])
 
 
 def test_a_grouping_named_by_the_measure_word_is_not_dropped(

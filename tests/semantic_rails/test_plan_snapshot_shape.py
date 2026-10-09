@@ -216,8 +216,8 @@ def test_a_balance_reads_the_day_the_question_names(
     reference = _reference(_balance(column, day, by))
     answer = _answer(runtime, plan, PLAN if by else "")
     assert answer == reference
-    policy = bool(runtime._config.semantic_policies)
-    assert (DAY in query.get("group_by", [])) is policy
+    # The day grain meets a policy that asks for the day grouping, so none is added.
+    assert DAY not in query.get("group_by", [])
     if intent != "MRR as of 2026-09-30":
         [assumption] = plan["assumptions"]
         assert day in assumption
@@ -453,15 +453,15 @@ def test_no_single_complete_day_stays_held(runtime: Runtime, intent: str, code: 
         assert plan["why"]["code"] == code
 
 
-def test_an_unloaded_last_complete_day_returns_no_rows(runtime: Runtime) -> None:
+def test_an_unloaded_last_complete_day_returns_no_value(runtime: Runtime) -> None:
     later = {"now": "2026-10-06T06:00:00Z"}
     plan = _plan(runtime, "What's our MRR?", later)
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query"]
     assert query["time"]["last"] == {"unit": "day", "value": 1}
     result = runtime.query(query, now=later["now"])
-    assert result["rows"] == []
-    assert "EMPTY_RESULT_WINDOW" in {warning["code"] for warning in result["warnings"]}
+    # The named day returns its one row, with no value: no data was loaded for it.
+    assert result["rows"] == [{"period": "2026-10-05", "period_partial": False, "mrr": None}]
 
 
 def test_a_draft_forced_past_the_shaper_is_held(

@@ -81,7 +81,42 @@ class _Case:
         conditions = [*([self.where] if self.where else []), *window]
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         ranked = f" ORDER BY {len(columns)} DESC LIMIT {self.limit}" if self.limit else ""
-        return f"SELECT {', '.join(columns)} FROM {self.source}{where} GROUP BY ALL{ranked}"
+        answer = f"SELECT {', '.join(columns)} FROM {self.source}{where} GROUP BY ALL{ranked}"
+        if not (self.grain and self.window):
+            return answer
+        # A named window returns every period for every group: 0 where a group has no rows
+        # inside the loaded data, NULL for a period outside it (before the first order's
+        # period, or starting after the last order's day).
+        keys = [f"k{index}" for index in range(len(self.dims))]
+        named = [f"{column} AS {key}" for column, key in zip(columns, keys, strict=False)]
+        groups = f"SELECT DISTINCT {', '.join(named)} FROM {self.source}" + (
+            f" WHERE {self.where}" if self.where else ""
+        )
+        periods = (
+            "SELECT CAST(range AS DATE) AS p FROM range("
+            f"TIMESTAMP '{self.window[0]}', TIMESTAMP '{self.window[1]}', "
+            f"INTERVAL 1 {self.grain.upper()})"
+        )
+        rows = (
+            f"SELECT {', '.join(named)}, CAST(DATE_TRUNC('{self.grain}', o.ordered_at) AS DATE) "
+            f"AS p, {', '.join(f'{value} AS v{index}' for index, value in enumerate(self.values))} "
+            f"FROM {self.source}{where} GROUP BY ALL"
+        )
+        edge = "(SELECT CAST(MAX(ordered_at) AS DATE) FROM jaffle_order)"
+        first = f"(SELECT DATE_TRUNC('{self.grain}', MIN(ordered_at)) FROM jaffle_order)"
+        filled = ", ".join(
+            f"CASE WHEN periods.p > {edge} OR periods.p < {first} THEN NULL "
+            f"ELSE COALESCE(answer.v{index}, 0) END"
+            for index in range(len(self.values))
+        )
+        joined = " AND ".join(
+            [*(f"answer.{key} = groups.{key}" for key in keys), "answer.p = periods.p"]
+        )
+        return (
+            f"SELECT {', '.join(f'groups.{key}' for key in keys)}, periods.p, {filled} "
+            f"FROM ({groups}) groups CROSS JOIN ({periods}) periods "
+            f"LEFT JOIN ({rows}) answer ON {joined}"
+        )
 
     def __str__(self) -> str:
         return self.question + (f" {self.partial}" if self.partial else "")
@@ -339,12 +374,17 @@ def test_an_entity_grouping_answers_like_plain_sql(jaffle: Runtime, case: _Case)
     assert reference, case.sql()
     dims, keys = len(case.dims), len(case.dims) + bool(case.grain)
     bucket = "period" if case.grain else ""
-    values = [key for key in (rows[0] if rows else {}) if key not in case.dims and key != bucket]
+    # A series row also says whether its period is partial; that is no value.
+    values = [
+        key
+        for key in (rows[0] if rows else {})
+        if key not in case.dims and key not in {bucket, "period_partial"}
+    ]
     actual = [
         (
             *(str(row[dim]) for dim in case.dims),
             *([str(row[bucket])[:10]] if case.grain else []),
-            *(float(row[key]) for key in values),
+            *(None if row[key] is None else float(row[key]) for key in values),
         )
         for row in rows
     ]
@@ -352,7 +392,7 @@ def test_an_entity_grouping_answers_like_plain_sql(jaffle: Runtime, case: _Case)
         (
             *(str(value) for value in row[:dims]),
             *([str(row[dims])[:10]] if case.grain else []),
-            *(float(value) for value in row[keys:]),
+            *(None if value is None else float(value) for value in row[keys:]),
         )
         for row in reference
     ]

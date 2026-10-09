@@ -1836,8 +1836,18 @@ def test_the_order_date_answer_groups_by_store_and_month_only(
     assert plan["status"] == "ok"
     query = plan["best"]["query"]
     rows = adapter.call_tool("execute", {"query": query})["rows"]
-    assert len(rows) == 4  # Philadelphia for three months, Brooklyn from March
-    assert {key for row in rows for key in row} == {*STORES, "period", "revenue_usd"}
+    # A named window returns every month for both stores: Brooklyn reads 0 before it opened in
+    # March.
+    assert len(rows) == 6
+    assert sorted(
+        row["revenue_usd"] for row in rows if row["dimension.jaffle_store_name"] == "Brooklyn"
+    )[:2] == [0, 0]
+    assert {key for row in rows for key in row} == {
+        *STORES,
+        "period",
+        "period_partial",
+        "revenue_usd",
+    }
 
 
 def test_another_clocks_date_is_not_the_order_clock(adapter: SemanticLayerMCPAdapter) -> None:

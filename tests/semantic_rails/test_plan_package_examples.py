@@ -151,7 +151,13 @@ def test_authored_snapshot_question_answers_reference(subscriptions):
 
 
 def test_snapshot_policy_holds_a_query_without_the_day(subscriptions):
-    query = {**QUERY, "group_by": [NAME], "order_by": [{"field": NAME, "direction": "asc"}]}
+    # Neither a day grouping nor a day grain: the balance isn't read per day.
+    query = {
+        **QUERY,
+        "group_by": [NAME],
+        "time": {"temporal_role": ROLE, "last": {"unit": "day", "value": 1}},
+        "order_by": [{"field": NAME, "direction": "asc"}],
+    }
     with pytest.raises(SemanticLayerError, match="blocked by policy"):
         subscriptions.query(query, now=NOW["now"])
 
