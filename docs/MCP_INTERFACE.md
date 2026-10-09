@@ -292,10 +292,12 @@ the whole question's own hold (such as `multiple_questions_unrealized`) in
 is one of:
 
 - `too_many_parts`: more than four parts;
-- `dependent_part`: a part points back at another ("…, and what share of those closed?");
+- `dependent_part`: a part points back at another ("…, and what share of those closed?", "…,
+  and how much of that came from new accounts?");
 - `part_without_subject`: a part names nothing to measure ("…, and how many?");
-- `part_without_window` or `part_without_grouping`: some parts state a time window or a "by"
-  grouping and others don't, so a trailing "last week" or "by plan" may be meant for every part;
+- `part_without_window` or `part_without_grouping`: some parts state a time window or a
+  grouping ("by plan", "per plan", "for each plan", "monthly", "over time") and others don't,
+  so a trailing "last week" or "per plan" may be meant for every part;
 - `part_filters_differ`: the planned parts filter their rows differently, so a filter one part
   states may be meant for every part.
 

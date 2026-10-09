@@ -147,8 +147,9 @@ example after editing Query IR or after `low_confidence`.
 
 A question that asks several things one draft can't answer ("Last week, how many accounts signed
 up, and what was the MRR?") comes back as `parts`, one plan per clause, each with its own
-`status`, `best` and `why`. Execute each part's `best.query_ir` and report each answer; the
-top-level `status` is `ok` only when every part is, and `best` is the first part's. With
+`status`, `best` and `why`; the top-level `status` is `ok` only when every part is, and `best` is
+the first part's. When `status` is `ok`, execute each part's `best.query_ir` and report each
+answer. With
 `why.code="PLAN_PARTS_HELD"`, plan couldn't read the parts alone (a part points back at another,
 names nothing, or lacks a window, grouping or filter another part states): ask them one at a
 time. See "Questions that ask several things" in [MCP_INTERFACE.md](MCP_INTERFACE.md).

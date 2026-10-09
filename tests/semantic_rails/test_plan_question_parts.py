@@ -252,7 +252,10 @@ def test_mcp_and_rest_plan_the_same_parts(runtime: Runtime) -> None:
     [tool] = [tool for tool in list_tool_definitions() if tool["name"] == "plan"]
     assert "parts" in tool["outputSchema"]["properties"]
     Draft202012Validator(tool["outputSchema"]).validate(mcp)
-    assert "execute each part's best.query_ir" in MCP_SERVER_INSTRUCTIONS
+    assert (
+        "When status is ok, a question asking several things returns parts; execute each "
+        "part's best.query_ir." in MCP_SERVER_INSTRUCTIONS
+    )
 
 
 @pytest.mark.parametrize(
@@ -280,8 +283,10 @@ def test_a_question_one_plan_answers_has_no_parts(runtime: Runtime, question: st
         "Last week, what was the MRR?",
     ],
 )
-def test_a_grouping_list_quote_or_conjoined_subject_is_not_split(question: str) -> None:
-    assert split_question(question) is None
+def test_a_grouping_list_quote_or_conjoined_subject_is_not_split(
+    runtime: Runtime, question: str
+) -> None:
+    assert split_question(question, runtime._config) is None
 
 
 # (question, hold, the parts it names).
@@ -291,6 +296,7 @@ HELD = [
         "dependent_part",
         [2],
     ),
+    ("Last week, what was the MRR, and how much of that came from new accounts?", "dependent_part", [2]),
     ("How many new accounts last week, and how many?", "part_without_subject", [2]),
     (
         "How many new accounts, how many closures, how many upgrades, what was the MRR, and "
@@ -301,6 +307,11 @@ HELD = [
     # A trailing window, grouping or filter may be meant for every part.
     ("How many new accounts, and how many closures last week?", "part_without_window", [1]),
     ("How many new accounts, and how many closures by segment?", "part_without_grouping", [1]),
+    # Every grouping form plan reads, not only "by".
+    ("How many new accounts, and how many closures per segment?", "part_without_grouping", [1]),
+    ("How many new accounts, and how many closures for each segment?", "part_without_grouping", [1]),
+    ("How many new accounts, and how many closures monthly?", "part_without_grouping", [1]),
+    ("How many new accounts, and how many closures over time?", "part_without_grouping", [1]),
     (
         "Last week, how many new accounts were there, and how many closures where segment is "
         "internal?",

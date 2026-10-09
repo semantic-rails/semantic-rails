@@ -153,8 +153,8 @@ MCP_SERVER_INSTRUCTIONS = (
     "2. plan(intent) drafts Query IR; draft with plan rather than writing Query IR from "
     'scratch. Run best.query_ir only when status is "ok" and there are no warnings; '
     "otherwise why and warnings name what the draft misses, so fix the Query IR or ask the "
-    "user. out_of_scope or unrealizable means the package can't answer. A question asking "
-    "several things returns parts; execute each part's best.query_ir.\n"
+    "user. out_of_scope or unrealizable means the package can't answer. When status is ok, a "
+    "question asking several things returns parts; execute each part's best.query_ir.\n"
     "3. execute(query) validates, compiles and runs the Query IR and returns at most "
     f"max_rows rows (default {MCP_DEFAULT_MAX_ROWS}); a capped result reports truncated and "
     'total_row_count. mode "validate" only checks the query; mode "sql" also returns its '

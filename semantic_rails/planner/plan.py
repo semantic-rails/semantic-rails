@@ -177,7 +177,7 @@ def plan_payload(
     payload = plan_question(intent)
     # A question asking several things that one plan can't answer is planned part by part.
     split = (
-        split_question(intent)
+        split_question(intent, catalog_config)
         if payload["status"] not in {"ok", "out_of_scope"} and _caller_sets_no_query(partial_query)
         else None
     )
