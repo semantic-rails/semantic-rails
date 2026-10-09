@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from semantic_rails.planner import compose, plan_payload
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.intent_holds import _qualifying_entity_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
@@ -23,8 +24,8 @@ STORE_ID = "dimension.retail_store_id"
 STORE_NAME = "dimension.retail_store_name"
 STORE_LABEL = "dimension.retail_store_label"
 STORE_COLUMNS = {STORE_ID: "store_id", STORE_NAME: "store_name", STORE_LABEL: "store_label"}
-ID_FILTER = {"field": STORE_ID, "op": "IN", "value": ["a", "b", "c"]}
-NAME_FILTER = {"field": STORE_NAME, "op": "IN", "value": ["Central", "Harbor"]}
+ID_FILTER = {"field": STORE_ID, "op": "is", "value": ["a", "b", "c"]}
+NAME_FILTER = {"field": STORE_NAME, "op": "is", "value": ["Central", "Harbor"]}
 # A question that names store attributes plainly is answered, grouped by those attributes.
 ANSWERED = {
     "revenue by store id",
@@ -44,6 +45,9 @@ ANSWERED_PRIMARY = {
     "revenue every store name",
     "revenue for each store name",
 }
+# A qualification beside a window, which doesn't say whether each entity's count is taken in
+# that window or over all time: plan asks which.
+UNSTATED = ("needs_clarification", "ENTITY_FILTER_PERIOD_UNSTATED")
 
 
 def _alias(item: Any) -> str:
@@ -132,7 +136,7 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
         (
             "revenue by store label",
             [STORE_LABEL],
-            [{"field": STORE_LABEL, "op": "IN", "value": ["East", "West", "South"]}],
+            [{"field": STORE_LABEL, "op": "is", "value": ["East", "West", "South"]}],
         ),
         ("revenue by store", None, []),
         ("revenue by stores", None, []),
@@ -159,8 +163,8 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
             "revenue by store id and store name",
             [STORE_ID, STORE_NAME],
             [
-                {"field": STORE_ID, "op": "IN", "value": ["a", "b"]},
-                {"field": STORE_NAME, "op": "IN", "value": ["Central"]},
+                {"field": STORE_ID, "op": "is", "value": ["a", "b"]},
+                {"field": STORE_NAME, "op": "is", "value": ["Central"]},
             ],
         ),
     ],
@@ -194,8 +198,8 @@ def test_store_attribute_matches_reference_sql_or_withholds_execution(
     result_columns = list(dimensions)
     if "per month" in intent:
         assert query["time"]["grain"] == "month"
-        columns.append("DATE_TRUNC('month', reported_at)")
-        result_columns.append(query["time"]["temporal_role"] + "__month")
+        columns.append("CAST(DATE_TRUNC('month', reported_at) AS DATE)")
+        result_columns.append("period")
     predicates = []
     parameters = []
     for row in filters:
@@ -240,7 +244,7 @@ def test_filtered_store_name_matches_reference_sql_or_withholds_execution(
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     dimension = "dimension.jaffle_store_name"
-    filters = [{"field": dimension, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}]
+    filters = [{"field": dimension, "op": "is", "value": ["Brooklyn", "Philadelphia"]}]
     try:
         _force_fallback(runtime, monkeypatch, intent, path)
         payload = plan_payload(runtime, intent=intent, partial_query={"where": filters})
@@ -282,10 +286,9 @@ def test_store_list_is_grouped_by_store_or_withholds_execution(
     try:
         _force_fallback(runtime, monkeypatch, intent, path)
         payload = plan_payload(runtime, intent=intent)
-        assert payload["status"] == "low_confidence", payload
         assert "execute" not in payload["next"].get("ready_for", []), payload
-        assert payload["why"]["code"] == (
-            "PLAN_INTENT_COVERAGE_GAP" if path == "primary" else "PLAN_UNMATCHED_TERMS"
+        assert (payload["status"], payload["why"]["code"]) == (
+            UNSTATED if path == "primary" else ("low_confidence", "PLAN_UNMATCHED_TERMS")
         ), payload
     finally:
         runtime.close()
@@ -415,7 +418,7 @@ def test_qualification_requires_entity_keys_or_a_selected_key_count(
                 }
             ],
         }
-        why = _qualifying_entity_why(runtime, intent, query)
+        why = _qualifying_entity_why(runtime, intent, Call.from_call(query))
         assert bool(why) is held
         if held:
             assert why["code"] == "PLAN_INTENT_COVERAGE_GAP"
@@ -424,7 +427,7 @@ def test_qualification_requires_entity_keys_or_a_selected_key_count(
             query["select"][0]["expression"]["predicates"] = [
                 {"measure": "measure.jaffle.customer_count", "aggregation": "count_distinct"}
             ]
-            assert _qualifying_entity_why(runtime, intent, query) is not None
+            assert _qualifying_entity_why(runtime, intent, Call.from_call(query)) is not None
     finally:
         runtime.close()
 
@@ -464,16 +467,17 @@ def test_number_of_open_stores_reads_the_last_complete_day(
 ) -> None:
     # Each store reports three snapshots, then stops: only one still reports on 2018-05-01,
     # while each store's last snapshot would count all five.
-    now = {"now": "2018-05-02T06:00:00Z"}
+    now = "2018-05-02T06:00:00Z"
     question = "number of stores open"
     runtime = runtime_factory("jaffle_shop")
     try:
         _force_fallback(runtime, monkeypatch, question, path)
-        payload = plan_payload(runtime, intent=question, partial_query={"policy_context": now})
+        payload = plan_payload(runtime, intent=question, now=now)
         assert payload["status"] == "ok", payload.get("why")
         query = payload["best"]["query"]
-        assert (query["time"]["start"], query["time"]["end"]) == ("2018-05-01", "2018-05-02")
-        rows = runtime.query(query, now=now["now"])["rows"]
+        # The last complete day before now: 2018-05-01.
+        assert query["time"]["last"] == {"unit": "day", "value": 1}
+        rows = runtime.query(query, now=now)["rows"]
         answer = [row[_alias(query["select"][0])] for row in rows]
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
@@ -516,7 +520,8 @@ def test_named_store_revenue_is_one_combined_monthly_series(
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = dict(
                 connection.execute(
-                    "SELECT date_trunc('month', o.ordered_at), SUM(o.order_total_cents / 100.0) "
+                    "SELECT CAST(date_trunc('month', o.ordered_at) AS DATE), "
+                    "SUM(o.order_total_cents / 100.0) "
                     "FROM jaffle_order o JOIN jaffle_store s USING (store_id) "
                     "WHERE s.store_name IN (" + ",".join("?" for _ in names) + ") GROUP BY 1",
                     names,
@@ -542,8 +547,8 @@ def test_forcing_a_qualification_draft_through_fallback_still_holds(
     try:
         result = compose(runtime, question)
         assert result.draft is not None
-        assert runtime.validate(result.draft.query)["ok"]
-        assert not result.draft.query.get("group_by")
+        assert runtime.validate(result.draft.query.to_call())["ok"]
+        assert not result.draft.query.group_by
         if path == "fallback":
             monkeypatch.setattr(
                 module, "compose", lambda *args, **kwargs: replace(result, draft=None)
@@ -554,28 +559,41 @@ def test_forcing_a_qualification_draft_through_fallback_still_holds(
                 lambda *args, **kwargs: [(result.draft, result.pattern)],
             )
         payload = plan_payload(runtime, intent=question)
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert (payload["status"], payload["why"]["code"]) == UNSTATED
         assert "execute" not in payload["next"].get("ready_for", [])
     finally:
         runtime.close()
 
 
+# Counted in each month, "in that month" drafts the cohort per period, which a monthly answer
+# carries (rows: test_a_cohort_counted_in_each_month_matches_plain_sql).
+_EACH_MONTH = [
+    "monthly order volume for customers that made more than 10 purchases in that month",
+    "monthly orders from customers who made more than 10 purchases in that month",
+    "What is the monthly order volume for customers who made more than 10 purchases in that month?",
+]
+
+
 @pytest.mark.parametrize(
-    "question",
+    ("question", "outcome"),
     [
-        "stores with more than 2000 orders in 2017",
-        "customers with more than 3 orders in 2017",
-        "daily order volume from customers who made more than 10 purchases in that month",
-        "daily order volume from customers with at least 10 orders in that month",
-        "monthly order volume for customers that made more than 10 purchases in that month",
-        "monthly orders from customers who made more than 10 purchases in that month",
-        "What is the daily order volume for customers who made more than 10 purchases in that month?",
-        "What is the monthly order volume for customers who made more than 10 purchases in that month?",
+        ("stores with more than 2000 orders in 2017", UNSTATED),
+        ("customers with more than 3 orders in 2017", UNSTATED),
+        # A daily answer has no month to count "that month" in, so the month goes unused.
+        *(
+            (question, ("low_confidence", "PLAN_UNMATCHED_TERMS"))
+            for question in [
+                "daily order volume from customers who made more than 10 purchases in that month",
+                "daily order volume from customers with at least 10 orders in that month",
+                "What is the daily order volume for customers who made more than 10 purchases in "
+                "that month?",
+            ]
+        ),
+        *((question, ("ok", None)) for question in _EACH_MONTH),
     ],
 )
 def test_qualification_check_only_downgrades_scalar_cohort_answers(
-    runtime_factory, monkeypatch, question
+    runtime_factory, monkeypatch, question, outcome
 ) -> None:
     import semantic_rails.planner.plan as module
 
@@ -585,12 +603,45 @@ def test_qualification_check_only_downgrades_scalar_cohort_answers(
         with monkeypatch.context() as without_check:
             without_check.setattr(module, "_qualifying_entity_why", lambda *args: None)
             before = plan_payload(runtime, intent=question)
-        assert before["status"] == "ok"
-        assert "execute" in before["next"]["ready_for"]
-        assert after["status"] == "low_confidence"
-        assert after["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert "execute" not in after["next"].get("ready_for", [])
+        # Each draft states its cohort and the rows it is counted over, or is held before the
+        # check for another reason: with or without the check, plan answers alike.
+        for key in ("status", "why", "next"):
+            assert after.get(key) == before.get(key)
         assert after["best"]["query"] == before["best"]["query"]
+        status, code = outcome
+        assert (after["status"], (after.get("why") or {}).get("code")) == (status, code)
+        assert ("execute" in after["next"].get("ready_for", [])) is (status == "ok")
+        if code == "PLAN_UNMATCHED_TERMS":
+            assert after["why"]["details"]["terms"] == ["month"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("question", _EACH_MONTH)
+def test_a_cohort_counted_in_each_month_matches_plain_sql(runtime_factory, question) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent=question)
+        assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"]["ready_for"]
+        query = payload["best"]["query"]
+        assert query["time"]["grain"] == "month"
+        alias = _alias(query["select"][0])
+        actual = {row["period"]: row[alias] for row in typed_rows(runtime.query(query))}
+        runtime.close()
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = dict(
+                connection.execute(
+                    "WITH cohort AS (SELECT customer_id, DATE_TRUNC('month', ordered_at) AS month "
+                    "FROM jaffle_order GROUP BY 1, 2 HAVING COUNT(DISTINCT order_id) > 10) "
+                    "SELECT CAST(DATE_TRUNC('month', o.ordered_at) AS DATE), "
+                    "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN cohort c "
+                    "ON o.customer_id = c.customer_id "
+                    "AND DATE_TRUNC('month', o.ordered_at) = c.month GROUP BY 1"
+                ).fetchall()
+            )
+        assert expected
+        assert actual == expected
     finally:
         runtime.close()
 
@@ -647,12 +698,14 @@ def test_grouped_customer_qualification_matches_reference_or_holds(
     try:
         result = compose(runtime, question)
         assert result.draft is not None
-        query = {**result.draft.query, "group_by": ["dimension.jaffle_customer_id"]}
+        query = {**result.draft.query.to_call(), "group_by": ["dimension.jaffle_customer_id"]}
         if omit_threshold:
-            query.pop("metric_filters", None)
+            # The threshold is the customer filter's aggregate condition.
+            query["where"] = [row for row in query.get("where", []) if "entity" not in row]
+            query = {key: value for key, value in query.items() if value}
             query.pop("having", None)
         assert runtime.validate(query)["ok"]
-        draft = replace(result.draft, query=query)
+        draft = replace(result.draft, query=Call.from_call(query))
         monkeypatch.setattr(
             module,
             "compose",

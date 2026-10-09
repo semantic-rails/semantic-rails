@@ -50,7 +50,7 @@ ORDERS = "COUNT(DISTINCT o.order_id)"
 AOV = f"{REVENUE} / {ORDERS}"
 ITEM_REVENUE = "SUM(i.item_revenue_cents / 100.0)"
 BOTH = "s.store_name IN ('Brooklyn', 'Philadelphia')"
-BOTH_PARTIAL = {"where": [{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}]}
+BOTH_PARTIAL = {"where": [{"field": STORE, "op": "is", "value": ["Brooklyn", "Philadelphia"]}]}
 AUGUST = "2017-08-21"  # "last month" is July 2017, "last week" 2017-08-14 .. 2017-08-21
 JULY = ("2017-07-01", "2017-08-01")
 YEAR_2017 = ("2017-01-01", "2018-01-01")
@@ -138,7 +138,11 @@ CASES = [
             "select": [
                 {
                     "as": "avg_rev",
-                    "expression": {"aggregation": "avg", "measure": "measure.jaffle.revenue_usd"},
+                    "expression": {
+                        "kind": "measure",
+                        "measure": "measure.jaffle.revenue_usd",
+                        "aggregation": "avg",
+                    },
                 }
             ]
         },
@@ -149,21 +153,16 @@ CASES = [
         dims=(STORE,),
         partial={
             "group_by": [STORE],
-            "select": [{"expression": {"kind": "metric", "metric": "metric.sales.aov_usd"}}],
+            "select": ["metric.sales.aov_usd"],
         },
     ),
     _Case(
         "revenue by store",
         (AOV, REVENUE),
         dims=(STORE,),
-        partial={
-            "select": [
-                {"metric": "metric.sales.aov_usd"},
-                {"expression": {"dimension": STORE}},
-            ]
-        },
+        partial={"select": ["metric.sales.aov_usd", STORE]},
     ),
-    _Case("revenue by store", dims=(STORE,), partial={"group_by": [{"dimension": STORE}]}),
+    _Case("revenue by store", dims=(STORE,), partial={"group_by": [STORE]}),
     _Case(
         "item revenue by store",
         (ITEM_REVENUE,),
@@ -202,16 +201,17 @@ CASES = [
         window=("2017-05-01", "2017-08-01"),
         now=AUGUST,
     ),
-    _Case("revenue by store for March 2017", grain="month", window=("2017-03-01", "2017-04-01")),
     _Case(
         "revenue by store from January 1 2016 to December 31 2017 by year",
         grain="year",
         window=("2016-01-01", "2018-01-01"),
     ),
-    _Case("revenue in Q1 2017 by store", grain="quarter", window=("2017-01-01", "2017-04-01")),
-    _Case("revenue by store in Q2 2017", grain="quarter", window=("2017-04-01", "2017-07-01")),
+    # A window no grain splits: one total per store over it.
+    _Case("revenue by store for March 2017", window=("2017-03-01", "2017-04-01")),
+    _Case("revenue in Q1 2017 by store", window=("2017-01-01", "2017-04-01")),
+    _Case("revenue by store in Q2 2017", window=("2017-04-01", "2017-07-01")),
     *(
-        _Case(question, grain="month", window=JULY, now=AUGUST)
+        _Case(question, window=JULY, now=AUGUST)
         for question in [
             "revenue by store last month",
             "revenue last month by store",
@@ -223,25 +223,22 @@ CASES = [
     _Case(
         "revenue by store last month and customer type",
         dims=(*KEYED, CUSTOMER_TYPE),
-        grain="month",
         window=JULY,
         now=AUGUST,
     ),
     _Case(
         "average order value by store in Q2 2017 for Philadelphia and Brooklyn",
         (AOV,),
-        grain="quarter",
         window=("2017-04-01", "2017-07-01"),
         where=BOTH,
     ),
     _Case(
         "orders on 15 March 2017 by store",
         (ORDERS,),
-        grain="day",
         window=("2017-03-15", "2017-03-16"),
     ),
     *(
-        _Case(question, (ORDERS,), grain="week", window=("2017-08-14", "2017-08-21"), now=AUGUST)
+        _Case(question, (ORDERS,), window=("2017-08-14", "2017-08-21"), now=AUGUST)
         for question in [
             "Show orders by store last week.",
             "How many orders did each store get last week?",
@@ -250,7 +247,6 @@ CASES = [
     _Case(
         "Revenue and order count by store last quarter",
         (REVENUE, ORDERS),
-        grain="quarter",
         window=("2017-01-01", "2017-04-01"),
         now="2017-04-15",
     ),
@@ -270,19 +266,22 @@ CASES = [
         for select in [
             {
                 "as": "rev",
-                "expression": {"aggregation": "sum", "measure": "measure.jaffle.revenue_usd"},
+                "expression": {
+                    "kind": "measure",
+                    "measure": "measure.jaffle.revenue_usd",
+                    "aggregation": "sum",
+                },
             },
-            {"as": "rev", "expression": {"measure": "measure.jaffle.revenue_usd"}},
-            {"expression": {"measure": "measure.jaffle.revenue_usd"}},
+            {"as": "rev", "expression": "measure.jaffle.revenue_usd"},
+            "measure.jaffle.revenue_usd",
         ]
     ),
-    _Case("top 5 stores by revenue in 2017", grain="year", window=YEAR_2017, limit=5),
+    _Case("top 5 stores by revenue in 2017", window=YEAR_2017, limit=5),
     _Case("top 3 stores by orders", (ORDERS,), limit=3),
     _Case("which 5 stores had the most orders", (ORDERS,), limit=5),
     _Case(
         "which store had the most orders in 2017",
         (ORDERS,),
-        grain="year",
         window=YEAR_2017,
         limit=1,
     ),
@@ -323,25 +322,23 @@ def jaffle(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
     runtime.close()
 
 
-def _context(case: _Case) -> dict[str, Any]:
-    return {"policy_context": {"now": case.now}} if case.now else {}
-
-
 @pytest.mark.parametrize("case", CASES, ids=str)
 def test_an_entity_grouping_answers_like_plain_sql(jaffle: Runtime, case: _Case) -> None:
-    partial = {**(case.partial or {}), **_context(case)}
-    payload = plan_payload(jaffle, intent=case.question, partial_query=partial or None)
+    now = case.now or None
+    payload = plan_payload(
+        jaffle, intent=case.question, partial_query=case.partial or None, now=now
+    )
     assert payload["status"] == "ok", payload.get("why")
     assert "execute" in payload["next"]["ready_for"]
     query = payload["best"]["query"]
     assert query.get("group_by") == list(case.dims)
     assert query.get("limit") == (case.limit or None)
-    rows = jaffle.query({**query, **_context(case)})["rows"]
+    rows = jaffle.query(query, now=now)["rows"]
     with duckdb.connect(str(Path(jaffle.db_path)), read_only=True) as connection:
         reference = connection.execute(case.sql()).fetchall()
     assert reference, case.sql()
     dims, keys = len(case.dims), len(case.dims) + bool(case.grain)
-    bucket = next((key for key in rows[0] if key.startswith("temporal_role.")), "") if rows else ""
+    bucket = "period" if case.grain else ""
     values = [key for key in (rows[0] if rows else {}) if key not in case.dims and key != bucket]
     actual = [
         (
@@ -407,7 +404,8 @@ def test_a_ranking_that_names_only_its_rows_is_held(jaffle: Runtime, question: s
     ids=str,
 )
 def test_an_unnamed_value_is_held(jaffle: Runtime, case: _Case) -> None:
-    partial = {**(case.partial or {}), **_context(case)}
-    payload = plan_payload(jaffle, intent=case.question, partial_query=partial or None)
+    payload = plan_payload(
+        jaffle, intent=case.question, partial_query=case.partial or None, now=case.now or None
+    )
     assert payload["status"] != "ok"
     assert "execute" not in payload["next"].get("ready_for", [])

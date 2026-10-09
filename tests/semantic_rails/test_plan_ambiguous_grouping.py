@@ -13,6 +13,7 @@ import yaml
 
 from semantic_rails.planner import generators, grouping_checks, plan_payload
 from semantic_rails.planner import plan as plan_module
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.conftest import copy_package_config
@@ -156,13 +157,7 @@ def test_shared_grouping_offers_each_visible_meaning_with_reference_rows(
     assert [option["id"] for option in options] == [CUSTOMER, STORE]
     assert [option["label"] for option in options] == ["Customer district", "Store district"]
     for option in options:
-        query = {
-            **payload["best"]["query"],
-            "group_by": option["group_by"],
-            "where": option["where"],
-            "order_by": option["order_by"],
-        }
-        _rows_match_reference(shop, query, option["id"], *REFERENCES[option["id"]])
+        _rows_match_reference(shop, option["call"], option["id"], *REFERENCES[option["id"]])
 
 
 @pytest.mark.parametrize("shop", ["plural_store"], indirect=True)
@@ -180,14 +175,10 @@ def test_strict_match_does_not_hide_a_discovered_meaning(shop, monkeypatch, path
     assert [option["id"] for option in options] == [CUSTOMER, STORE]
     assert [option["label"] for option in options] == ["Customer district", "Store districts"]
     for option in options:
-        query = {
-            **payload["best"]["query"],
-            **{field: option[field] for field in ("group_by", "where", "order_by")},
-        }
         reference, expected = REFERENCES[option["id"]]
         if option["id"] == STORE:
             reference = reference.replace("s.district", "s.districts")
-        _rows_match_reference(shop, query, option["id"], reference, expected)
+        _rows_match_reference(shop, option["call"], option["id"], reference, expected)
 
 
 @pytest.mark.parametrize("shop", ["plural_store"], indirect=True)
@@ -197,7 +188,10 @@ def test_discovery_only_match_does_not_satisfy_an_explicit_grouping(shop):
         "group_by": [STORE],
     }
     why = grouping_checks._dropped_grouping_why(
-        shop, "item revenue by district", query, {"group_by": [STORE]}
+        shop,
+        "item revenue by district",
+        Call.from_call(query),
+        Call.from_call({"group_by": [STORE]}),
     )
     assert why is not None
     assert why["code"] == "PLAN_UNMATCHED_TERMS"
@@ -220,7 +214,7 @@ def test_multiple_ambiguous_grouping_options_compose(runtime_factory, tmp_path, 
     try:
         if term == "district":
             _with_districts(runtime, monkeypatch)
-        where = [{"field": JAFFLE_STORE, "op": "in", "value": ["Brooklyn", "Philadelphia"]}]
+        where = [{"field": JAFFLE_STORE, "op": "is", "value": ["Brooklyn", "Philadelphia"]}]
         kept_sort = {"field": "order_count", "direction": "desc"}
         payload = plan_payload(
             runtime,
@@ -242,7 +236,7 @@ def test_multiple_ambiguous_grouping_options_compose(runtime_factory, tmp_path, 
         assert {option["term"] for option in options} == {"name", term}
         draft = payload["best"]["query"]
         for option in options:
-            assert set(option) == {"id", "label", "term", "replaces"}
+            assert set(option) == {"id", "label", "term", "call", "replaces"}
             assert option["term"] in details["ambiguous_groupings"]
             meanings = {other["id"] for other in options if other["term"] == option["term"]}
             assert option["replaces"] == [item for item in draft["group_by"] if item in meanings]
@@ -374,7 +368,7 @@ def test_settled_grouping_overlap_offers_no_options_for_several_terms(runtime_fa
     draft = plan_payload(runtime, intent=intent)["best"]["query"]
     query = {**draft, "group_by": [JAFFLE_STORE, JAFFLE_CUSTOMER, ITEM_PRODUCT_TYPE]}
     assert runtime.validate(query)["ok"]
-    why = grouping_checks._dropped_grouping_why(runtime, intent, query)
+    why = grouping_checks._dropped_grouping_why(runtime, intent, Call.from_call(query))
     _assert_no_grouping_options(why, ["name", "product type"])
 
 
@@ -406,7 +400,9 @@ def test_discovery_cannot_widen_a_whole_dimension_name(shop, monkeypatch, term, 
         "select": [{"as": "revenue", "expression": "measure.shop.item_revenue"}],
         "group_by": [customer.id],
     }
-    why = grouping_checks._dropped_grouping_why(shop, f"item revenue by {term}", query)
+    why = grouping_checks._dropped_grouping_why(
+        shop, f"item revenue by {term}", Call.from_call(query)
+    )
     if ambiguous:
         assert why["code"] == "PLAN_UNMATCHED_TERMS"
         assert why["details"]["ambiguous_groupings"] == [term]
@@ -491,13 +487,13 @@ def test_an_alias_ambiguous_only_through_a_hidden_dimension_answers_the_visible_
     monkeypatch.setattr(
         shop, "_config", replace(shop._config, dimensions=dimensions, semantic_policies=[policy])
     )
-    north = {"all": [{"dimension": "district", "op": "=", "value": "north"}]}
+    north = {"all": [{"dimension": "district", "op": "is", "value": "north"}]}
     revenue = {"kind": "aggregate", "measure": "measure.shop.item_revenue", "filter": north}
     query = {"select": [{"as": "revenue", "expression": revenue}]}
     assert shop.validate(query)["errors"][0]["code"] == "AMBIGUOUS_ALIAS"
-    external = {**query, "policy_context": {"audience": "external"}}
-    assert shop.validate(external)["ok"] is True
-    rows = shop.query(external)["rows"]
+    external = {"audience": "external"}
+    assert shop.validate(query, context=external)["ok"] is True
+    rows = shop.query(query, context=external)["rows"]
     shop.close()
     owner = "store" if hidden == CUSTOMER else "customer"
     reference = (
@@ -519,7 +515,7 @@ def test_root_owned_match_is_required_even_for_a_bypassing_draft(
     result = plan_module.compose(shop, intent)
     if path == "primary":
         draft = replace(
-            result.draft, query={**result.draft.query, "group_by": [dimension], "order_by": []}
+            result.draft, query=replace(result.draft.query, group_by=(dimension,), order_by=())
         )
         monkeypatch.setattr(plan_module, "compose", lambda *args: replace(result, draft=draft))
     else:
@@ -543,14 +539,8 @@ def test_root_owned_match_is_required_even_for_a_bypassing_draft(
 
 
 def test_options_preserve_the_callers_where(shop):
-    where = [{"field": STORE, "op": "in", "value": ["north", "south"]}]
+    where = [{"field": STORE, "op": "is", "value": ["north", "south"]}]
     payload = plan_payload(shop, intent="item revenue by district", partial_query={"where": where})
     for option in payload["why"]["details"]["clarification"]["options"]:
-        assert option["where"] == where
-        query = {
-            **payload["best"]["query"],
-            "group_by": option["group_by"],
-            "where": option["where"],
-            "order_by": option["order_by"],
-        }
-        _rows_match_reference(shop, query, option["id"], *REFERENCES[option["id"]])
+        assert option["call"]["where"] == where
+        _rows_match_reference(shop, option["call"], option["id"], *REFERENCES[option["id"]])

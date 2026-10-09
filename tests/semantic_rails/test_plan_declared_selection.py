@@ -21,6 +21,7 @@ import yaml
 from semantic_rails.planner import generators, plan_payload
 from semantic_rails.planner import plan as planner
 from semantic_rails.planner._base import _named_metric
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.result_helpers import disable_planner_patterns
 
@@ -250,7 +251,7 @@ def _calls_gold(*, customers: bool, week: bool) -> int:
 
 
 def _plan(engine: Runtime, intent: str, **partial: Any) -> dict[str, Any]:
-    return plan_payload(engine, intent=intent, partial_query={"policy_context": NOW, **partial})
+    return plan_payload(engine, intent=intent, partial_query=partial or None, now=NOW["now"])
 
 
 def _value(engine: Runtime, query: dict[str, Any]) -> int:
@@ -259,9 +260,9 @@ def _value(engine: Runtime, query: dict[str, Any]) -> int:
     return int(rows[0][_alias(query["select"][0])])
 
 
-def _selected(plan: dict[str, Any]) -> dict[str, Any]:
-    expression = plan["best"]["query"]["select"][0]["expression"]
-    return {key: value for key, value in expression.items() if key != "aggregation"}
+def _selected(plan: dict[str, Any]) -> str:
+    """The id the first select reads, at any aggregation."""
+    return Call.from_call(plan["best"]["query"]).select[0].ref
 
 
 def _governed_gaps(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -301,7 +302,7 @@ def test_a_whole_synonym_selects_its_metric_beside_a_measure_named_by_its_own_wo
     assert named is not None and named[0].id == UPGRADES
     plan = _plan(engine, UPGRADED)
     _assert_ok(plan)
-    assert _selected(plan) == {"metric": UPGRADES}
+    assert _selected(plan) == UPGRADES
     assert _value(engine, plan["best"]["query"]) == 1
 
 
@@ -316,7 +317,7 @@ def test_a_measure_name_outside_the_metric_s_words_still_vetoes(
     assert _named_metric(engine._config, question) is None
     plan = _plan(engine, question)
     _assert_held(plan)
-    assert _selected(plan) == {"measure": "measure.subscriptions.workspaces_all"}
+    assert _selected(plan) == "measure.subscriptions.workspaces_all"
 
 
 @pytest.mark.parametrize("form", ["zero_filled", "bare"])
@@ -333,7 +334,7 @@ def test_a_building_block_is_answered_with_its_governed_form(
     plan = _plan(engine, intent)
     _assert_ok(plan)
     query = plan["best"]["query"]
-    assert _selected(plan) == {"metric": CALLS}
+    assert _selected(plan) == CALLS
     assert ("time" in query) is week
     assert plan["best"]["resolved"][0]["id"] == CALLS
     assert _value(engine, query) == _calls_gold(customers=True, week=week)
@@ -353,7 +354,7 @@ def test_a_catalog_fallback_draft_over_the_measure_takes_the_same_swap(
         plan = _plan(engine, "How many calls last week?")
         _assert_ok(plan)
         assert plan["best"]["pattern"] == "catalog_fallback"
-        assert plan["best"]["query"]["select"] == [{"as": "calls", "expression": {"metric": CALLS}}]
+        assert plan["best"]["query"]["select"] == [CALLS]
         assert plan["best"]["resolved"][0]["id"] == CALLS
         assert _value(engine, plan["best"]["query"]) == _calls_gold(customers=True, week=True)
     finally:
@@ -362,7 +363,7 @@ def test_a_catalog_fallback_draft_over_the_measure_takes_the_same_swap(
 
 def _assert_measure_held(plan: dict[str, Any], metrics: list[str]) -> None:
     _assert_held(plan)
-    assert _selected(plan) == {"measure": CALLS_ALL}
+    assert _selected(plan) == CALLS_ALL
     assert [gap["expected"]["metrics"] for gap in _governed_gaps(plan)] == [metrics]
 
 
@@ -392,15 +393,15 @@ def test_a_filter_on_the_narrowing_dimension_keeps_the_measure(
     engine = engines["zero_filled"]
     plan = _plan(engine, "How many calls from internal accounts last week?")
     _assert_measure_held(plan, [CALLS])
-    assert plan["best"]["query"]["where"] == [{"field": SEGMENT, "op": "=", "value": "internal"}]
+    assert plan["best"]["query"]["where"] == [{"field": SEGMENT, "op": "is", "value": "internal"}]
 
 
 def test_a_caller_naming_the_measure_keeps_it(engines: dict[str, Runtime]) -> None:
     engine = engines["zero_filled"]
-    select = [{"as": "calls_all", "expression": {"measure": CALLS_ALL}}]
+    select = [CALLS_ALL]
     plan = _plan(engine, "How many calls last week?", select=select)
     _assert_ok(plan)
-    assert _selected(plan) == {"measure": CALLS_ALL}
+    assert _selected(plan) == CALLS_ALL
     assert _value(engine, plan["best"]["query"]) == _calls_gold(customers=False, week=True)
 
 
@@ -436,9 +437,9 @@ def test_a_compound_part_swaps_only_to_a_bare_governor(tmp_path: Path) -> None:
         plan = _plan(engine, "How many calls and how many callers last week")
         _assert_held(plan)
         assert plan["best"]["pattern"] == "conjoined_metrics"
-        assert [item["expression"] for item in plan["best"]["query"]["select"]] == [
-            {"metric": "metric.subscriptions.calls_all"},
-            {"metric": "metric.subscriptions.callers"},
+        assert plan["best"]["query"]["select"] == [
+            "metric.subscriptions.calls_all",
+            "metric.subscriptions.callers",
         ]
         assert [gap["expected"]["metrics"] for gap in _governed_gaps(plan)] == [
             ["metric.subscriptions.call"]
@@ -458,7 +459,7 @@ def test_a_stock_swaps_only_to_a_bare_governor(tmp_path: Path, form: str, intent
     try:
         plan = _plan(engine, intent)
         _assert_held(plan)
-        assert _selected(plan) == {"measure": MRR_ALL}
+        assert _selected(plan) == MRR_ALL
         assert [gap["expected"]["metrics"] for gap in _governed_gaps(plan)] == [
             ["metric.subscriptions.customer_mrr"]
         ]
