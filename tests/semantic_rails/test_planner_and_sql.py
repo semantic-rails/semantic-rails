@@ -1470,7 +1470,8 @@ def test_advanced_time_sql_supports_calendar_dense_fill_and_period_rewrites(pack
     compiled = compile_query(config, Registry(config), query)
     rendered = compiled["sql"]
 
-    assert "FROM jaffle_calendar" in rendered
+    # The authored default calendar takes no part: the implicit one fills the series.
+    assert "implicit_calendar" in rendered and "jaffle_calendar" not in rendered
     assert "LAG(base.m1, 12)" in rendered
     assert "DATE_TRUNC('quarter'" in rendered
 

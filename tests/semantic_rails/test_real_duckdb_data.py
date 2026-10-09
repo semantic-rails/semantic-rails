@@ -6,6 +6,7 @@ import duckdb
 import pytest
 
 from semantic_rails.compiler import compile_query
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr, RollingExpr
 from semantic_rails.metadata import _expr_summary, catalog_payload, valid_values_payload
 from semantic_rails.runtime import Runtime
@@ -951,14 +952,10 @@ def test_average_customer_lifetime_value_is_mean_not_ratio(runtime_factory, pack
         runtime.close()
 
 
-def test_fiscal_calendar_buckets_leaf_by_calendar_columns(runtime_factory):
-    """Regression test for CRITICAL #2: when calendar_id != default and
-    fill: true is set, the leaf SQL must JOIN the calendar table and
-    bucket by its grain columns (e.g. fiscal quarter_start), NOT by
-    Gregorian DATE_TRUNC('quarter', ordered_at). The previous bug
-    aligned the dense_time scaffold to fiscal but kept Gregorian
-    bucketing in the leaf — every row joined to nothing and COALESCE
-    filled all values with 0."""
+def test_fiscal_quarters_are_refused_not_bucketed_as_gregorian(runtime_factory):
+    """A fiscal quarterly fill once read every value as 0, and leaf paths could
+    bucket Gregorian quarters under fiscal labels. Authored non-default calendars
+    are refused in this release, before any SQL runs."""
     runtime = runtime_factory("jaffle_shop")
     try:
         fiscal_quarterly = {
@@ -978,16 +975,13 @@ def test_fiscal_calendar_buckets_leaf_by_calendar_columns(runtime_factory):
                 "end": "2017-12-31",
             },
         }
-        result = runtime.query(fiscal_quarterly)
-        assert result["row_count"] >= 1
-        # The bug returned all 0.0; now at least one fiscal quarter has
-        # real revenue.
-        nonzero = [row for row in result["rows"] if (row.get("revenue_usd") or 0) > 0]
-        assert len(nonzero) >= 1, f"fiscal quarterly query returned all-zero rows: {result['rows']}"
-        # Quarter starts must be fiscal anchors (Feb / May / Aug / Nov),
-        # NOT Gregorian (Jan / Apr / Jul / Oct).
-        quarter_starts = {row["temporal_role.jaffle_order_time__quarter"] for row in result["rows"]}
-        assert any(datetime.fromisoformat(qs).month in {2, 5, 8, 11} for qs in quarter_starts)
+        for fill in (True, False):
+            with pytest.raises(SemanticLayerError) as refused:
+                runtime.query(
+                    {**fiscal_quarterly, "time": {**fiscal_quarterly["time"], "fill": fill}}
+                )
+            assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+            assert refused.value.details["reason"] == "calendar_not_supported_yet"
     finally:
         runtime.close()
 
@@ -1062,7 +1056,8 @@ def test_historical_snapshot_lifecycle_and_fiscal_extensions_execute(runtime_fac
         historical_result = runtime.query(historical)
         snapshot_result = runtime.query(snapshots)
         lifecycle_result = runtime.query(lifecycle)
-        fiscal_result = runtime.query(fiscal)
+        with pytest.raises(SemanticLayerError) as fiscal_refused:
+            runtime.query(fiscal)
 
         assert historical_result["row_count"] > 0
         assert any(
@@ -1079,7 +1074,7 @@ def test_historical_snapshot_lifecycle_and_fiscal_extensions_execute(runtime_fac
         assert lifecycle_result["row_count"] > 0
         assert "delivered_orders" in lifecycle_result["rows"][0]
         assert "delivered_revenue" in lifecycle_result["rows"][0]
-        assert fiscal_result["row_count"] == 3
+        assert fiscal_refused.value.details["reason"] == "calendar_not_supported_yet"
     finally:
         runtime.close()
 

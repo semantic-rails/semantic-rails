@@ -31,7 +31,6 @@ from tests.semantic_rails.test_plan_value_lists import CUSTOMER_DISTRICT, STORE_
 ORDER_TIME = "temporal_role.jaffle_order_time"
 FIRST_ORDER = "temporal_role.jaffle_customer_first_order_at"
 LATEST_ORDER = "temporal_role.jaffle_customer_latest_ordered_at"
-FISCAL_DAY = "temporal_role.jaffle_fiscal_calendar_day"
 CUSTOMERS = "measure.jaffle.customer_count"
 ORDERS = "measure.jaffle.order_count"
 
@@ -73,16 +72,6 @@ def _producer_case(runtime, monkeypatch, producer):
                 STORE_DISTRICT,
                 CUSTOMER_DISTRICT,
             ],
-        )
-    if producer == "calendar":
-        query["time"]["calendar_id"] = "fiscal"
-        return (
-            query,
-            FISCAL_DAY,
-            "Fiscal calendar day",
-            "INCOMPATIBLE_CALENDAR",
-            ("alternative_temporal_roles"),
-            [FISCAL_DAY],
         )
     if producer == "conversion_events":
         from semantic_rails.compiler import compile_query
@@ -178,7 +167,7 @@ def _producer_response(runtime, query, transport):
 
 
 @pytest.mark.parametrize(
-    "producer", ["alias", "calendar", "measure_clocks", "predicate_clocks", "conversion_events"]
+    "producer", ["alias", "measure_clocks", "predicate_clocks", "conversion_events"]
 )
 @pytest.mark.parametrize("visibility", ["hidden", "visible", "unknown"])
 @pytest.mark.parametrize("transport", ["validate", "http", "mcp"])

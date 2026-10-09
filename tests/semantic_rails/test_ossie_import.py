@@ -119,7 +119,7 @@ def test_imported_jaffle_answers_every_example_like_the_original(tmp_path) -> No
         actual = {name: _answer(imported, example) for name, example in examples.items()}
     finally:
         imported.close()
-    assert len(examples) == 22 and all(isinstance(rows, list) for rows, *_ in expected.values())
+    assert len(examples) == 21 and all(isinstance(rows, list) for rows, *_ in expected.values())
     assert actual == expected
 
 

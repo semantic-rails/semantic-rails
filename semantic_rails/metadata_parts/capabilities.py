@@ -71,7 +71,6 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         expr_kinds |= _expr_kinds(recipe.expression)
     recipe_ids = {row.id for row in config.metric_recipes}
     measure_aggs = {agg for measure in config.measures for agg in measure.allowed_aggregations}
-    calendar_ids = {row.calendar_id for row in config.entities if row.calendar_id}
     supported = {
         "historical_joins": any(row.temporal_validity for row in config.relationships),
         "point_in_time_metrics": any(row.kind == "semi_additive" for row in config.metric_recipes)
@@ -94,21 +93,15 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         "percentile_metrics": "percentile" in measure_aggs
         or "median" in measure_aggs
         or any("p95" in row or "median" in row for row in recipe_ids),
-        # An authored default calendar, or the warehouse's implicit Gregorian one.
-        "dense_fill": any(
-            row.kind == "time" and (row.calendar_id or "default").strip().lower() == "default"
-            for row in config.entities
-        )
-        or dialect_for_warehouse(config.package.warehouse).has_implicit_calendar,
-        "alternate_calendars": len(calendar_ids) > 1,
+        # Every fill uses the warehouse's implicit Gregorian calendar.
+        "dense_fill": dialect_for_warehouse(config.package.warehouse).has_implicit_calendar,
+        "alternate_calendars": False,
     }
     reasons = {
         "conversion_metrics": "no conversion metrics are published"
         if "ConversionExpr" not in expr_kinds
         else "",
-        "alternate_calendars": "only the default calendar is declared"
-        if not supported["alternate_calendars"]
-        else "",
+        "alternate_calendars": "authored non-default calendars are not supported in this release",
         "period_to_date_metrics": "no PTD metric family is published"
         if not supported["period_to_date_metrics"]
         else "",

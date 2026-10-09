@@ -70,6 +70,11 @@ def test_coverage_renders_only_where_ci_executes_it(
     package_config_factory, warehouse, zone, storage, expressions, time
 ):
     config = _config(package_config_factory, warehouse, zone, storage)
+    if time.get("fill") and not dialect_for_warehouse(warehouse).has_implicit_calendar:
+        # Every fill uses the implicit calendar; an authored one takes no part.
+        with pytest.raises(SemanticLayerError, match="no implicit calendar"):
+            _compile(config, time, expressions)
+        return
     compiled = _compile(config, time, expressions)
     # A bounded single-measure query never settles from coverage: its leaf is main's.
     leaf = render_select(_cte(compiled, "leaf_1"))

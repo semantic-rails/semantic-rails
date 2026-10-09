@@ -7,6 +7,7 @@ import pytest
 from semantic_rails import runtime as runtime_module
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.result_helpers import typed_rows
@@ -254,34 +255,21 @@ def test_recent_observation_uses_the_roles_current_instant(changed_runtime, vari
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize("reverse_rows", [False, True])
-def test_fiscal_coverage_preserves_the_populated_final_quarter(
-    request, backend_name, raw_runtime, reverse_rows
-):
-    backend = _backend(request, backend_name)
-    result = raw_runtime("utc_authored").query(
-        _ask(
-            "quarter",
-            _item(REVENUE, "v"),
-            start="2024-05-01",
-            end="2024-11-01",
-            calendar_id="fiscal",
-            fill=True,
-        )
+@pytest.mark.parametrize("fill", [True, False])
+def test_a_fiscal_quarter_is_refused_before_any_sql_runs(raw_runtime, fill):
+    # Authored non-default calendars are not supported in this release.
+    query = _ask(
+        "quarter",
+        _item(REVENUE, "v"),
+        start="2024-05-01",
+        end="2024-11-01",
+        calendar_id="fiscal",
+        fill=fill,
     )
-    bucket = "date_trunc('quarter', ordered_at - INTERVAL '1 month') + INTERVAL '1 month'"
-    gold = backend.reference(
-        f"SELECT {bucket}, SUM(amount) FROM orders "
-        "WHERE ordered_at >= TIMESTAMP '2024-05-01' GROUP BY 1"
-    )
-    rows = typed_rows(result)
-    quarters = [r[f"{ROLE}__quarter"] for r in rows]
-    assert quarters == sorted(quarters)
-    # Exercise the value comparison in both result orders on each backend.
-    if reverse_rows:
-        rows.reverse()
-    _assert_rows(gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in rows], "fiscal coverage")
-    assert max(rows, key=lambda row: row[f"{ROLE}__quarter"])["v"] == 2
+    with pytest.raises(SemanticLayerError) as refused:
+        raw_runtime("utc_authored").query(query)
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
