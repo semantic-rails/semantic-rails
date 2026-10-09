@@ -462,7 +462,7 @@ def test_eastern_zone_month_buckets_keep_their_first_day(
                 "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
             }
         )
-        assert result["rows"] == [{"period": "2023-12-01", "revenue": 15}]
+        assert result["rows"] == [{"period": "2023-12-01", "period_partial": False, "revenue": 15}]
         # A month is a calendar date, whatever zone the driver read it in.
         assert result["column_types"]["period"] == {"type": "date"}
     finally:

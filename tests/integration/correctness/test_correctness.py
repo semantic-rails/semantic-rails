@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from semantic_rails.ast import PERIOD_PARTIAL
 from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
@@ -154,6 +155,23 @@ def _by(
 
 def _within(start: str, end: str, clock: str = "utc") -> str:
     return f"{CLOCK[clock]} >= TIMESTAMP '{start}' AND {CLOCK[clock]} < TIMESTAMP '{end}'"
+
+
+def _named_window(
+    grain: str, aliases: str, *, start: str, end: str, last: str, clock: str = "utc"
+) -> str:
+    """One row per bucket a named window ``[start, end)`` touches, from ``start``'s bucket to
+    ``last``: a sum or count of the window's orders in it, 0 with none (every bucket here is
+    inside the loaded data), and a sum of only unknown amounts NULL."""
+    value = {"revenue": "CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END"}
+    value["orders"] = "COUNT(o.order_id)"
+    return (
+        f"SELECT g.b, {', '.join(value[alias] for alias in aliases.split())}"
+        f" FROM generate_series(date_trunc('{grain}', TIMESTAMP '{start}'), TIMESTAMP '{last}',"
+        f" INTERVAL '{STEP[grain]}') AS g(b)"
+        f" LEFT JOIN orders AS o ON date_trunc('{grain}', {CLOCK[clock]}) = g.b"
+        f" AND {_within(start, end, clock)} GROUP BY 1"
+    )
 
 
 def _span(bounds: tuple[str, ...]) -> str:
@@ -430,29 +448,15 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         _by("month", "1.0 * SUM(o.amount) / COUNT(*)", store=True),
     )
     # 2024-05-06 holds only order 7, whose amount is NULL: its revenue is unknown, not 0, and
-    # its order still counts, sparse or filled (2024-05-07 has no order at all).
+    # its order still counts; the named window also answers 2024-05-07, which has no order.
     may_6 = {"start": "2024-05-06", "end": "2024-05-08"}
-    yield _plain(
-        "unknown_day",
-        "utc_authored",
-        "day",
-        "revenue orders",
-        sql_where=_within(*may_6.values()),
-        **may_6,
-    )
-    yield Case(
-        "unknown_day_filled",
-        "utc_implicit",
-        _ask("day", revenue, orders, **may_6),
-        """
-        SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END,
-          COUNT(o.order_id)
-        FROM generate_series(TIMESTAMP '2024-05-06', TIMESTAMP '2024-05-07', INTERVAL '1 day')
-          AS g(b)
-        LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b
-        GROUP BY 1
-        """,
-    )
+    for name, variant in (("unknown_day", "utc_authored"), ("unknown_day_filled", "utc_implicit")):
+        yield Case(
+            name,
+            variant,
+            _ask("day", revenue, orders, **may_6),
+            _named_window("day", "revenue orders", **may_6, last="2024-05-07"),
+        )
     # ...as is a ratio over it, which no threshold keeps: "below 5" holds the days of orders 6,
     # 9 and 11, and not the unknown one.
     yield _plain(
@@ -463,10 +467,11 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         having=[{"field": "metric.shop.average_order_value", "op": "lt", "value": 5}],
         sql_having="1.0 * SUM(o.amount) / COUNT(*) < 5",
     )
-    # Store a in May (order 7) is unknown on the base table and on the rollup alike, beside a
-    # store whose month mixes a known amount with nothing unknown.
+    # Store a in May (order 7) is unknown, beside a store whose month mixes a known amount with
+    # nothing unknown. A named window bounds its zeros by the base's loaded data, so the base
+    # answers even beside a rollup.
     may = {"start": "2024-05-01", "end": "2024-06-01"}
-    for variant, routes in (("utc_authored", True), ("utc_implicit", None)):
+    for variant, routes in (("utc_authored", False), ("utc_implicit", None)):
         yield _plain(
             f"{variant}-unknown_store_month",
             variant,
@@ -737,27 +742,35 @@ def _cases() -> Iterator[Case]:
                 f" HAVING (COUNT(*) > 3) {op} {str(value).upper()}",
             )
     yield from _child_filter_cases()
-    for name, variant, grain, start, end, routes in (
-        ("utc-march_bounds_by_day", "utc_implicit", "day", "2024-03-01", "2024-04-01", None),
-        ("ny-march_bounds_by_day", "ny_implicit", "day", "2024-03-01", "2024-04-01", None),
-        ("rollup_month_bounds", "utc_authored", "month", "2024-01-01", "2024-07-01", True),
+    # A named window answers every bucket it touches, reading its zeros on the base.
+    for name, variant, grain, start, end, last in (
+        (
+            "utc-march_bounds_by_day",
+            "utc_implicit",
+            "day",
+            "2024-03-01",
+            "2024-04-01",
+            "2024-03-31",
+        ),
+        ("ny-march_bounds_by_day", "ny_implicit", "day", "2024-03-01", "2024-04-01", "2024-03-31"),
+        ("rollup_month_bounds", "utc_authored", "month", "2024-01-01", "2024-07-01", "2024-06-01"),
         (
             "rollup_skipped_for_mid_month_bounds",
             "utc_authored",
             "month",
             "2024-01-15",
             "2024-06-15",
-            False,
+            "2024-06-01",
         ),
     ):
-        where = _within(start, end, variant.split("_")[0])
-        yield _plain(name, variant, grain, start=start, end=end, sql_where=where, routes=routes)
-    yield Case(
-        "empty_window",
-        "utc_authored",
-        _ask("month", revenue, start="2024-02-01", end="2024-03-01"),
-        "SELECT 1 WHERE FALSE",
-    )
+        clock = variant.split("_")[0]
+        yield Case(
+            name,
+            variant,
+            _ask(grain, revenue, start=start, end=end),
+            _named_window(grain, "revenue", start=start, end=end, last=last, clock=clock),
+            routes=False if variant == "utc_authored" else None,
+        )
     # An order's unknown revenue (order 7) meets no threshold, "below" included.
     for name, grain, aliases, predicate, where in (
         ("large_orders", "month", "revenue", LARGE_ORDER, "o.amount > 5"),
@@ -975,9 +988,10 @@ def _cases() -> Iterator[Case]:
         """,
     )
 
-    # A stock takes each account's last snapshot in the week, under the plan it has that day,
-    # so an account whose plan changes mid-week counts once. Grouped by its own day, each day
-    # is a period of its own.
+    # A stock reads the week's closing day only (its last day with a snapshot), under the plan
+    # each account has that day, so an account whose plan changes mid-week counts once and one
+    # whose last snapshot is earlier (account 3, Friday) isn't carried forward. Grouped by its
+    # own day, each day is a period of its own.
     seats = _item(SEATS, "seats")
     yield Case(
         "stock_by_changing_plan",
@@ -1027,14 +1041,14 @@ def _cases() -> Iterator[Case]:
 
 
 def _closing_seats(*, head: str = "") -> str:
-    """Seats per week (and ``head``): each account's last snapshot of the week."""
+    """Seats per week (and ``head``): the snapshots of the week's closing day, its last day with
+    any snapshot (one per account and day)."""
     week = "date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP))"
     return f"""
         SELECT {head}a.b, SUM(a.seats) FROM (
-          SELECT a.*, {week} AS b, ROW_NUMBER() OVER (
-            PARTITION BY a.account_id, {week} ORDER BY a.snapshot_day DESC) AS n
+          SELECT a.*, {week} AS b, MAX(a.snapshot_day) OVER (PARTITION BY {week}) AS closing
           FROM account_days AS a
-        ) AS a WHERE a.n = 1 GROUP BY {"1, 2" if head else "1"}
+        ) AS a WHERE a.snapshot_day = a.closing GROUP BY {"1, 2" if head else "1"}
     """
 
 
@@ -1109,8 +1123,13 @@ def _answer(backend: Backend, case: Case) -> list[tuple[Any, ...]]:
             return date.fromisoformat(value)
         return value
 
+    # The reference SQL computes values; a series' period_partial flag has tests of its own.
     return [
-        tuple(typed(value, result["column_types"][key]["type"]) for key, value in row.items())
+        tuple(
+            typed(value, result["column_types"][key]["type"])
+            for key, value in row.items()
+            if key != PERIOD_PARTIAL
+        )
         for row in result["rows"]
     ]
 

@@ -116,7 +116,9 @@ def test_window_total_coverage_keeps_unknown_amounts_and_positive_counts(tmp_pat
 
 ROUTING_CASES = {
     "plain": ((REVENUE,), {}, "duckdb", True),
-    "plain-bounded": ((REVENUE,), {"start": "2024-02-01", "end": "2024-03-01"}, "duckdb", True),
+    "plain-open": ((REVENUE,), {"start": "2024-02-01"}, "duckdb", True),
+    # A named window answers every period, its zeros bounded by the base's loaded data.
+    "plain-named": ((REVENUE,), {"start": "2024-02-01", "end": "2024-03-01"}, "duckdb", False),
     "fill": ((REVENUE,), {"fill": True}, "duckdb", False),
     "dense": (
         ({"kind": "rolling", "input": REVENUE, "window": {"unit": "month", "value": 3}},),

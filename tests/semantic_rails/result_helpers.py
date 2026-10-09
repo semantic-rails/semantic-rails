@@ -7,6 +7,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from semantic_rails.ast import PERIOD_PARTIAL
+
 
 def disable_planner_patterns(runtime: Any, *patterns: str) -> None:
     """Exercise fallback guards when the named answer patterns are unavailable."""
@@ -34,12 +36,17 @@ def held_candidate(payload: dict[str, Any], code: str) -> dict[str, Any]:
 
 
 def typed_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
-    """Restore decimal, date and timestamp values without guessing from text."""
+    """Restore decimal, date and timestamp values without guessing from text.
+
+    A series row's ``period_partial`` flag is left out: reference SQL computes the values,
+    and the flag, which only reads the period and ``now``, has tests of its own.
+    """
     decoders = {"decimal": Decimal, "date": date.fromisoformat, "timestamp": datetime.fromisoformat}
     return [
         {
             key: decoders[kind](value) if value is not None and kind in decoders else value
             for key, value in row.items()
+            if key != PERIOD_PARTIAL
             for kind in [result["column_types"][key]["type"]]
         }
         for row in result["rows"]

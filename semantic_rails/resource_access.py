@@ -578,6 +578,8 @@ def _run_in_view(
                     # Fixed engine strings that name no objects.
                     "assumptions",
                     "time_shape",
+                    "window",
+                    "observation_scope",
                     "withheld",
                     "warnings",
                 }
@@ -585,6 +587,8 @@ def _run_in_view(
             permitted = set(access.context.metric_allowlist or ()) | set(
                 access.context.dimension_allowlist or ()
             )
+            if result.get("clock") in permitted:
+                response["clock"] = result["clock"]
             if "withheld" in result:
                 response["withheld"] = [
                     object_id for object_id in result["withheld"] if object_id in permitted

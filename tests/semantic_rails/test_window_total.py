@@ -199,8 +199,9 @@ def _filtered_revenue(predicate: dict[str, Any]) -> dict[str, Any]:
 FILTERED_REVENUE = _filtered_revenue(CUSTOMER_PREDICATE)
 
 
-def test_a_metric_predicate_in_an_aggregate_filter_is_not_collapsed(runtime: Runtime) -> None:
-    """The predicate is tested per raw timestamp, so a total over the window would be wrong."""
+def test_a_predicate_tested_per_period_asks_for_a_grain(runtime: Runtime) -> None:
+    """The predicate is tested per output period, so it has no total over the window; the
+    answer is never a row per raw timestamp."""
     time = {"start": "2017-04-01", "end": "2017-04-04"}
     payload = _query([{"as": "revenue", "expression": FILTERED_REVENUE}], time)
     assert not plan_query(runtime._config, None, payload).time.get("window_total")
@@ -215,12 +216,42 @@ def test_a_metric_predicate_in_an_aggregate_filter_is_not_collapsed(runtime: Run
     via_recipe = _query([{"as": "revenue", "expression": recipe.id}], time)
     assert not _plan(config, via_recipe).time.get("window_total")
 
-    response = runtime.query_internal(payload)
-    assert response["row_count"] > 1
-    assert all(ORDER_TIME in row for row in response["rows"])
-    assert "UNGRAINED_TIME_PROJECTION" in _codes(response)
-    assert response["assumptions"] == []
-    assert "time_shape" not in response
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query_internal(payload)
+    assert raised.value.code == "WINDOW_TOTAL_UNSUPPORTED"
+    assert raised.value.details["path"] == "time.grain"
+    grained = runtime.query_internal({**payload, "time": {**payload["time"], "grain": "day"}})
+    assert grained["rows"] and all("period" in row for row in grained["rows"])
+
+
+@pytest.mark.parametrize(("over", "counts"), [("window", [1, 2]), ("all_time", [10, 11, 12])])
+def test_an_entity_filter_over_the_entity_s_own_rows_has_one_total(
+    runtime: Runtime, over: str, counts: list[int]
+) -> None:
+    """Customers with so many orders (in the window, or ever): their orders in the window, one
+    total, never a row per order time."""
+    window = "ordered_at >= TIMESTAMP '2016-09-01' AND ordered_at < TIMESTAMP '2017-01-01'"
+    call = _query(
+        [{"as": "orders", "expression": "measure.jaffle.order_count"}],
+        {"start": "2016-09-01", "end": "2017-01-01"},
+        where=[
+            {
+                "entity": "entity.jaffle_customer",
+                "having": [{"field": "measure.jaffle.order_count", "op": "is", "value": counts}],
+                "over": over,
+            }
+        ],
+    )
+    result = runtime.query(call)
+    population = window if over == "window" else "TRUE"
+    gold = _gold(
+        runtime,
+        f"SELECT COUNT(DISTINCT order_id) AS orders FROM jaffle_order WHERE {window} "
+        "AND customer_id IN (SELECT customer_id FROM jaffle_order "
+        f"WHERE {population} GROUP BY 1 HAVING COUNT(DISTINCT order_id) IN {tuple(counts)})",
+    )
+    assert result["rows"] == gold
+    assert result["time_shape"] == "window_total"
 
 
 def test_a_cross_clock_predicate_in_an_aggregate_filter_is_refused(runtime: Runtime) -> None:
@@ -242,10 +273,11 @@ INVENTORY_TIME = "temporal_role.jaffle_inventory_day"
 INVENTORY = {"expression": "metric.sales.inventory_on_hand_eop", "as": "inventory"}
 INVENTORY_SPAN = {"temporal_role": INVENTORY_TIME, "start": "2016-09-01", "end": "2017-04-02"}
 INVENTORY_WINDOW = "i.date_day >= DATE '2016-09-01' AND i.date_day < DATE '2017-04-02'"
+# A balance reads the window's closing day only (its last day with a snapshot).
 LAST_SNAPSHOT = (
-    "SELECT store_id, inventory_on_hand FROM (SELECT i.store_id, i.inventory_on_hand, "
-    "ROW_NUMBER() OVER (PARTITION BY i.store_id ORDER BY i.date_day DESC) AS n "
-    f"FROM jaffle_store_inventory_snapshot i WHERE {INVENTORY_WINDOW}) WHERE n = 1"
+    "SELECT store_id, inventory_on_hand FROM jaffle_store_inventory_snapshot i "
+    f"WHERE {INVENTORY_WINDOW} AND i.date_day = (SELECT MAX(date_day) "
+    f"FROM jaffle_store_inventory_snapshot i WHERE {INVENTORY_WINDOW})"
 )
 
 
@@ -393,7 +425,9 @@ def test_a_balance_is_the_last_snapshot_in_the_window_not_a_sum(runtime: Runtime
         "SELECT SUM(inventory_on_hand) AS inventory FROM jaffle_store_inventory_snapshot i "
         f"WHERE {INVENTORY_WINDOW}",
     )[0]["inventory"]
-    assert balance == 1085 + 860  # each store's last snapshot in the window
+    # The window closes on April 1, 2017: the store last seen in October 2016 (1085) is not
+    # carried forward.
+    assert balance == 860
     assert balance != summed
 
 

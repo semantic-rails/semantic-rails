@@ -7,13 +7,16 @@ import ast
 import hashlib
 import json
 import re
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 import yaml
 
 from semantic_rails import package_tools, result_values, yaml_loader
+from semantic_rails.ast import PERIOD_PARTIAL as PARTIAL
 from semantic_rails.clock import parse_now
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import _time_zone
@@ -211,14 +214,38 @@ def encode(runtime, spec, reference=None):
     payload = runtime.engine_payload(spec["query"], **call_arguments(spec))
     compiled = runtime._compile(payload, policy_context=payload["policy_context"])
     columns = output_columns(runtime._config, compiled)
+    zone = _time_zone(runtime._config, compiled)
     rows = spec.get("expected_rows") or []
     if reference is not None:
-        keys = list(rows[0]) if rows else [col["field"] for col in columns]
+        keys = list(rows[0]) if rows else [c["field"] for c in columns if c["field"] != PARTIAL]
+        keys = [key for key in keys if key != PARTIAL]
         rows = [dict(zip(keys, row, strict=True)) for row in reference(spec["reference_sql"])]
-    encoded = result_values.result_rows(
-        rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
-    )
+    grain = (spec["query"].get("time") or {}).get("grain")
+    if any(column["field"] == PARTIAL for column in columns):
+        now = parse_now(payload["policy_context"]["now"])
+        rows = [_with_partial(row, grain, now, zone or "UTC") for row in rows]
+    encoded = result_values.result_rows(rows, output_columns=columns, zone=zone)
     return {**encoded, "output_columns": columns}
+
+
+def _with_partial(row, grain, now, zone):
+    """``row`` with the series flag a frozen row leaves out, worked out from the calendar: its
+    period ends after ``now`` on the clock's wall time."""
+    if PARTIAL in row:
+        return row
+    start = date.fromisoformat(str(row["period"])[:10])
+    if grain in {"day", "week"}:
+        end = start + timedelta(days=1 if grain == "day" else 7)
+    else:
+        index = start.month - 1 + {"month": 1, "quarter": 3, "year": 12}[grain]
+        end = date(start.year + index // 12, index % 12 + 1, 1)
+    local = now.astimezone(ZoneInfo(zone)).replace(tzinfo=None)
+    out = {}
+    for key, value in row.items():
+        out[key] = value
+        if key == "period":
+            out[PARTIAL] = datetime(end.year, end.month, end.day) > local
+    return out
 
 
 def comparable(result, *, ordered=False, positional=False):

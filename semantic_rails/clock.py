@@ -8,6 +8,7 @@ bounds that the compiler reads; the answer reports the same window back.
 from __future__ import annotations
 
 from calendar import monthrange
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -64,6 +65,15 @@ def _zone(name: str) -> Any:
             f"The clock's time zone '{name}' is not a known zone",
             details={"timezone": name},
         ) from exc
+
+
+def known_zone(name: str) -> bool:
+    """Whether ``name`` is a time zone the clock can read its days in."""
+    try:
+        _zone(name)
+    except SemanticLayerError:
+        return False
+    return True
 
 
 def local_now(now: datetime, timezone: str) -> datetime:
@@ -201,6 +211,25 @@ def resolve_window(spec: dict[str, Any], *, now: datetime, timezone: str = "UTC"
         named=start_value is not None and end_value is not None,
         partial=partial,
     )
+
+
+def engine_window(time: Mapping[str, Any], *, now: datetime, timezone: str = "UTC") -> Window:
+    """The window an engine time block resolved, with its relative spelling kept."""
+    if time.get("last_unit"):
+        spec: dict[str, Any] = {
+            "last": {"unit": time["last_unit"], "value": int(time.get("last_value") or 1)}
+        }
+    elif time.get("this"):
+        spec = {"this": time["this"]}
+    else:
+        spec = {key: time[key] for key in ("start", "end") if time.get(key) is not None}
+    return resolve_window(spec, now=now, timezone=timezone)
+
+
+def local_date(instant: datetime, timezone: str = "UTC") -> str:
+    """The calendar date of ``instant`` (naive means UTC) in ``timezone``."""
+    aware = instant if instant.tzinfo is not None else instant.replace(tzinfo=UTC)
+    return aware.astimezone(_zone(timezone)).date().isoformat()
 
 
 def _end_moment(value: Any) -> datetime | None:

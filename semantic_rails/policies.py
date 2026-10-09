@@ -24,6 +24,7 @@ from .ast import (
     plain_filters,
     time_output_alias,
 )
+from .clock import UNITS
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .compiler_parts.bind import (
     _resolve_column_entity,
@@ -693,6 +694,19 @@ def _metric_constraint_effect(
     return effect
 
 
+def _period_is(dimension_id: str, bound: BoundQuery) -> bool:
+    """Whether the bound query's period is ``dimension_id``: the clock's own date dimension,
+    under a grain at or below that dimension's own (its finest supported grain)."""
+    time = normalize_query(bound.plan.query, config=bound.config).time
+    role = next(
+        (r for r in bound.config.temporal_roles if r.id == getattr(time, "temporal_role", "")), None
+    )
+    if time is None or not time.grain or role is None or role.dimension != dimension_id:
+        return False
+    grains = [grain for grain in UNITS if grain in (role.supported_grains or UNITS)] or ["day"]
+    return time.grain in UNITS and UNITS.index(time.grain) <= UNITS.index(grains[0])
+
+
 def _metric_constraint_violations(
     policy: SemanticPolicyConfig,
     query_payload: Mapping[str, Any],
@@ -707,6 +721,7 @@ def _metric_constraint_violations(
     if "required_group_by" in policy_config:
         required = _config_str_list(policy_config, "required_group_by")
         missing = [field for field in required if field not in set(query.group_by)]
+        missing = [field for field in missing if not _period_is(field, bound())]
         if missing:
             violations.append(
                 {

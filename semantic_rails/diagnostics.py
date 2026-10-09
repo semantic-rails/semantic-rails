@@ -829,6 +829,18 @@ def recovery_hints_for_error(
         # An authored filter or policy is not a caller-editable time boundary.
         if details.get("filter_source") in {"measure", "policy"}:
             return []
+        if details.get("comparison_beside_window"):
+            series = dict(details.get("time") or {})
+            return [
+                {
+                    "kind": "ask_for_a_series",
+                    "message": (
+                        "Ask for the series: keep time.grain and leave out the window "
+                        "(last, this, start and end), then read the periods you need."
+                    ),
+                    "patch": {"replace": {"time": series}},
+                }
+            ]
         # The error message already says what to do — agents need a
         # structured patch they can apply without parsing English.
         # Two patches: ``drop_time_start`` (remove the boundary entirely)

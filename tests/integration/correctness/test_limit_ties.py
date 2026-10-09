@@ -30,8 +30,12 @@ def test_top_n_cutoff_ties_match_reference_on_repeated_calls(request, backend, m
         assert not result["truncated"]
         warnings = [warning for warning in result["warnings"] if warning["code"] == "TIES_AT_LIMIT"]
         assert [warning["details"] for warning in warnings] == [{"at": 1, "tied": 2}]
-    assert len(statements) == 3  # One warehouse query per call, including cache hits.
-    assert all("LIMIT 2" in sql for sql in statements)
+    # One answer query per call, including cache hits; beside it, the window total's loaded
+    # coverage is read once per call for its data-through date.
+    answers = [sql for sql in statements if "guarded_base" in sql]
+    assert len(answers) == 3
+    assert all("LIMIT 2" in sql for sql in answers)
+    assert len(statements) == 6
 
 
 @pytest.mark.parametrize(
