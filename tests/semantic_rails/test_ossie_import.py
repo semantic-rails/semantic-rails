@@ -105,6 +105,7 @@ def test_imported_jaffle_answers_every_example_like_the_original(tmp_path) -> No
         )["examples"].items()
     }
     original = Runtime.from_path(str(source))
+    original._package_examples = []  # Compare generic planning; the import has no examples.
     try:
         expected = {name: _answer(original, example) for name, example in examples.items()}
     finally:
@@ -113,6 +114,7 @@ def test_imported_jaffle_answers_every_example_like_the_original(tmp_path) -> No
     report = import_ossie(document, tmp_path / "imported", default_db="jaffle_shop.duckdb")
     shutil.copy2(source / "jaffle_shop.duckdb", Path(report["package_dir"]) / "jaffle_shop.duckdb")
     imported = Runtime.from_path(report["package_dir"])
+    imported._package_examples = []
     try:
         actual = {name: _answer(imported, example) for name, example in examples.items()}
     finally:

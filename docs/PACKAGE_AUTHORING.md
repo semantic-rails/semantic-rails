@@ -1447,6 +1447,14 @@ surrogate such as `inventory_row_id` that is unique per snapshot row, and the se
 columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
 check below but still sums). Give the snapshot time `class: as_of_time`.
 
+`plan` reads such a balance on one day of that clock: the last complete day when a question
+names none ("What's our MRR?"), or the closing day of the period it names ("at the end of last
+month"); see "How plan reads a balance" in [MCP_INTERFACE.md](MCP_INTERFACE.md#plan). To have
+every query read a balance per day, declare a `metric_constraint` on the stock with
+`required_group_by: [<the clock's date dimension>]` (and `supported_grains: [day]` on the
+clock if weeks or months are never meaningful). `plan` then adds that grouping to its drafts,
+and asks which day for a question by week or month rather than drafting against the policy.
+
 The snapshot is chosen per series per period first. A grouped attribute stored on the
 snapshot rows, such as an account's plan that changes mid-week, is read from that
 snapshot, so the series counts once, under the value it holds that day, and the summed
@@ -2472,6 +2480,26 @@ Metrics do NOT inherit a model's default time — they remain explicit because
 metrics often span entities.
 
 ## Examples and tests
+
+Examples also teach `plan` the package's own questions. An example answers only
+its exact question, with the authored Query IR and pattern `package_example`.
+Case and whitespace aside (and the contractions `plan` expands in every
+question, so "What's" reads as "What is"), any other wording gets normal
+planning: different punctuation, plurals, numbers, signs or symbols, a different
+top-N count, or another day or time phrase. The authored query is never edited.
+The author's groupings, filters, ordering and limit count as requested, and the
+whole matched question is recorded as a consumed span. The query still passes
+the normal validation and caller visibility checks. There is no fuzzy matching.
+Several valid, visible examples matching the same question require clarification with
+their IDs. Invalid examples fall through to normal planning with their IDs in
+`why.details.invalid_examples`. An example referring to a hidden object, in a value
+or in a mapping key such as `temporal_role_overrides`, is invalid for that caller,
+exactly as it would be in a package without the object; the response never names
+the hidden object.
+
+The runtime loads the same `examples/` entries that package validation checks,
+once per runtime generation. `reload` refreshes them. A runtime without a
+source path has no package examples.
 
 Package-local review assets:
 

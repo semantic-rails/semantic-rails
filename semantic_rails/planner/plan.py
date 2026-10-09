@@ -31,6 +31,7 @@ from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from .answer_shape import _answer_shape_why
 from .consumed_spans import unconsumed_terms
+from .examples import example_plan
 from .faithfulness import intent_faithfulness_why, intent_subject_why, named_subject_why
 from .generators import blocked_object_not_found, fallback_drafts
 from .grouping_checks import _dropped_grouping_why
@@ -64,6 +65,7 @@ from .plan_trace import (
     _select_best_plan,
     _slim_best,
 )
+from .snapshot import shape_snapshot, snapshot_read
 from .time_reference import with_time_reference
 from .time_windows import _with_fiscal_calendar
 from .unasked_groupings import _unasked_grouping_why
@@ -175,6 +177,30 @@ def plan_payload(
     if detail_level not in {"query", "best", "full", "debug"}:
         detail_level = "best"
 
+    example, invalid_examples = example_plan(
+        runtime,
+        intent_str,
+        partial_query,
+        normalize=lambda text: _normalize_question(text, _apostrophe_names(catalog_config)),
+        planned_row=_planned_row,
+        detail=detail_level,
+    )
+
+    def finish(payload: dict[str, Any]) -> dict[str, Any]:
+        if invalid_examples:
+            payload.setdefault(
+                "why",
+                {
+                    "code": "PLAN_INVALID_EXAMPLE",
+                    "message": "An authored example failed validation; normal planning was used.",
+                },
+            )
+            payload["why"].setdefault("details", {})["invalid_examples"] = invalid_examples
+        return _query_detail_payload(payload) if detail_level == "query" else payload
+
+    if example is not None:
+        return _query_detail_payload(example) if detail_level == "query" else example
+
     if intent_str:
         classification = classify_question(intent_str)
         if classification.category != "data_query":
@@ -183,7 +209,7 @@ def plan_payload(
                 intent_ir=parse_intent(runtime, intent),
                 out_of_scope=scope_block_payload(intent_str, classification),
             )
-            return _query_detail_payload(payload) if detail_level == "query" else payload
+            return finish(payload)
         catalog_tokens = _catalog_token_index(
             catalog_config,
             search_index=(
@@ -200,7 +226,7 @@ def plan_payload(
                     intent_str, overlap_tokens=overlap, catalog_token_sample=sample
                 ),
             )
-            return _query_detail_payload(payload) if detail_level == "query" else payload
+            return finish(payload)
         grounded, _strong = _intent_passes_grounding_floor(
             intent_str,
             catalog_tokens,
@@ -215,7 +241,7 @@ def plan_payload(
                     intent_str, overlap_tokens=overlap, catalog_token_sample=sample
                 ),
             )
-            return _query_detail_payload(payload) if detail_level == "query" else payload
+            return finish(payload)
 
     collision_why = named_subject_why(runtime, intent_str, partial_query)
     if collision_why is not None:
@@ -228,7 +254,7 @@ def plan_payload(
             "why": collision_why,
             "next": {"action": "clarify"},
         }
-        return _query_detail_payload(payload) if detail_level == "query" else payload
+        return finish(payload)
 
     validate_temporal_support(runtime._config, partial_query or {})
     # compose and every fallback helper inherit the request's time reference.
@@ -279,7 +305,7 @@ def plan_payload(
             },
             "blocked": [blocked_object_not_found(intent_str)] if detail_level != "best" else [],
         }
-        return _query_detail_payload(payload) if detail_level == "query" else payload
+        return finish(payload)
 
     planned: list[dict[str, Any]] = []
     for draft, pattern in draft_rows:
@@ -314,6 +340,8 @@ def plan_payload(
     best_draft = best["draft"]
     best_validation = best["validation"]
     best_ok = bool(best_validation.get("ok"))
+    # The balance read the draft realizes consumes the question's as-of words.
+    read = snapshot_read(runtime, intent_str, best_draft.query) if best_ok else None
     # No natural-language draft is ready on a package without a time axis.
     # Preserve the Query IR and use one warning independent of question wording.
     atemporal_why = (
@@ -348,7 +376,7 @@ def plan_payload(
     # asked. Downgrade instead of marking it ready to execute.
     time_why = (
         atemporal_why
-        or _unresolved_time_why(intent_str, partial_query)
+        or _unresolved_time_why(intent_str, partial_query, read.spans if read else ())
         or _unclocked_window_why(runtime._config, intent_str, best_draft.query, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
@@ -427,11 +455,13 @@ def plan_payload(
     ready = best_ok and not (
         faithfulness_why or time_why or conversion_why or subject_why or value_why or shape_why
     )
+    # A balance compared, or asked per week or month where the package reads it per day.
+    clarify_why = best.get("clarify")
     payload = {
         "plan_version": _VERSION,
         "intent": intent,
         "intent_ir": intent_ir.to_dict(),
-        "status": "ok" if ready else "low_confidence",
+        "status": "ok" if ready else "needs_clarification" if clarify_why else "low_confidence",
         "best": _slim_best(
             best_draft,
             pattern=best["pattern"],
@@ -440,9 +470,13 @@ def plan_payload(
             intent_ir=intent_ir,
             fallback=_fallback_trace(best, planned),
         ),
-        "next": _next_block(best_draft.query, ready=ready),
+        "next": {"action": "clarify"}
+        if clarify_why
+        else _next_block(best_draft.query, ready=ready),
     }
-    if fallback_drift_why is not None:
+    if clarify_why is not None:
+        payload["why"] = clarify_why
+    elif fallback_drift_why is not None:
         payload["why"] = fallback_drift_why
         if detail_level == "best":
             details = dict(fallback_drift_why["details"])
@@ -480,6 +514,7 @@ def plan_payload(
             list(best_validation.get("recovery_hints") or [])
         )
     assumptions = _time_assumptions(intent_str, best_draft.query) if best_ok else []
+    assumptions += [read.reading] if read is not None and read.reading else []
     if assumptions:
         payload["assumptions"] = assumptions
     if unmatched:
@@ -551,7 +586,7 @@ def plan_payload(
                     else value
                     for key, value in gap["actual"].items()
                 }
-    return _query_detail_payload(payload) if detail_level == "query" else payload
+    return finish(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -605,23 +640,12 @@ def _planned_row(
         merged_draft.resolved,
     )
     if merged_draft.blocked_reason:
-        why = dict(merged_draft.blocked_reason)
-        blocked.append(
-            {
-                "pattern": pattern,
-                "query_ir": merged_draft.query,
-                "resolved": merged_draft.resolved,
-                "why": why,
-                "recovery_hints": list(why.get("recovery_hints", []) or []),
-            }
-        )
-        return {
-            "status": "low_confidence",
-            "draft": merged_draft,
-            "pattern": pattern,
-            "validation": {"ok": False, "errors": [why], "recovery_hints": []},
-            "blocked": True,
-        }
+        return _blocked_row(merged_draft, pattern, dict(merged_draft.blocked_reason), blocked)
+    # A balance reads the one day the question names (planner/snapshot.py).
+    shaped, ask = shape_snapshot(runtime, intent, merged_draft.query, partial_query)
+    if ask is not None:
+        return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
+    merged_draft = replace(merged_draft, query=shaped)
     validation = _validate_query(runtime, merged_draft.query, partial_query)
     start_dropped = ""
     time_spec = merged_draft.query.get("time")
@@ -644,6 +668,21 @@ def _planned_row(
             merged_draft, validation = retry, retry_validation
         else:
             start_dropped = ""
+    if missing := _missing_group_by(validation):
+        # A metric constraint reads a balance per day: reshape once with the day grouping. Any
+        # other denial, or a field the shaper doesn't add, stays the hold it is.
+        reshaped, ask = shape_snapshot(
+            runtime, intent, merged_draft.query, partial_query, required=missing
+        )
+        if ask is not None:
+            return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
+        retry_validation = (
+            _validate_query(runtime, reshaped, partial_query)
+            if reshaped != merged_draft.query
+            else validation
+        )
+        if retry_validation["ok"]:
+            merged_draft, validation = replace(merged_draft, query=reshaped), retry_validation
     return {
         "status": "ok" if validation["ok"] else "low_confidence",
         "draft": merged_draft,
@@ -654,10 +693,61 @@ def _planned_row(
     }
 
 
+def _blocked_row(
+    draft: Any,
+    pattern: str,
+    why: dict[str, Any],
+    blocked: list[dict[str, Any]],
+    *,
+    clarify: bool = False,
+) -> dict[str, Any]:
+    """A draft plan doesn't validate: its pattern blocked it, or plan asks about a balance."""
+
+    blocked.append(
+        {
+            "pattern": pattern,
+            "query_ir": draft.query,
+            "resolved": draft.resolved,
+            "why": why,
+            "recovery_hints": list(why.get("recovery_hints", []) or []),
+        }
+    )
+    return {
+        "status": "low_confidence",
+        "draft": draft,
+        "pattern": pattern,
+        "validation": {"ok": False, "errors": [why], "recovery_hints": []},
+        "blocked": True,
+        **({"clarify": why} if clarify else {}),
+    }
+
+
 # Validation codes for a bounded time.start that a lookback metric can't take.
 _LOOKBACK_TIME_CODES = frozenset(
     {"WINDOWED_TIME_FILTER_UNSUPPORTED", "CUMULATIVE_TIME_FILTER_UNSUPPORTED"}
 )
+
+
+def _missing_group_by(validation: dict[str, Any]) -> tuple[str, ...]:
+    """The group_by fields a policy denial asks for, when that is all every error asks."""
+
+    errors = [row for row in validation.get("errors") or [] if isinstance(row, dict)]
+    violations = [
+        row
+        for error in errors
+        for row in (error.get("details") or {}).get("policy_violations") or []
+        if isinstance(row, dict)
+    ]
+    if (
+        validation.get("ok")
+        or not violations
+        or any(error.get("code") != "POLICY_DENIED" for error in errors)
+        or any(row.get("kind") != "missing_required_group_by" for row in violations)
+    ):
+        return ()
+    return tuple(
+        dict.fromkeys(str(field) for row in violations for field in row.get("missing") or [])
+    )
 
 
 def _codes(validation: dict[str, Any]) -> set[str]:

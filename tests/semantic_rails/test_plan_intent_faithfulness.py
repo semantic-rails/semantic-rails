@@ -246,7 +246,8 @@ def trailing_window_runtime(tmp_path_factory):
         ("unique visitors over 14 days by week", "low_confidence"),
         ("rolling unique visitors by week", "low_confidence"),
         ("unique visitors trailing 7 days", "low_confidence"),
-        # No period asked for: the stock still needs one as-of day per row.
+        # No period asked for: plan reads the stock on the last complete day, and a 14-day
+        # count as of that day is still not that day's count.
         ("how many unique visitors", "low_confidence"),
     ],
 )
@@ -256,11 +257,9 @@ def test_a_subject_with_its_own_window_is_flagged_for_another_period(
     payload = plan_payload(trailing_window_runtime, intent=intent)
     assert payload["status"] == status, payload.get("why")
     assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
-    assert ("subject_window_mismatch" in _gap_kinds(payload)) == (
-        intent != "how many unique visitors"
-    )
+    assert "subject_window_mismatch" in _gap_kinds(payload)
     if intent == "how many unique visitors":
-        assert "stock_as_of_unrealized" in _gap_kinds(payload)
+        assert payload["best"]["query_ir"]["time"]["grain"] == "day"
 
 
 def test_rolling_metrics_are_not_checked(runtime_factory) -> None:

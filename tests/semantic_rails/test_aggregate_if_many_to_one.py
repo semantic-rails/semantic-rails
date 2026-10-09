@@ -85,6 +85,7 @@ package:
   warehouse: duckdb
   default_db: data/shop.duckdb
   seed: {kind: sql_script, source: data/seed.sql}
+  schema_strict: true
 defaults:
   dimension: {groupable: true, filterable: true}
 """
@@ -358,10 +359,16 @@ def _write_package(
 
 @pytest.fixture(scope="module")
 def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    recipe = {"as": "metric.shop.euro_share", "kind": "derived", "expression": SUM_EUR}
+    recipe = {
+        "as": "metric.shop.euro_share",
+        "kind": "derived",
+        "value_type": "number",
+        "expression": SUM_EUR,
+    }
     filtered = {
         "as": "metric.shop.filtered_amount",
         "kind": "aggregate",
+        "value_type": "number",
         "expression": {
             "kind": "aggregate",
             "measure": "measure.shop.amount",
@@ -1186,6 +1193,7 @@ def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
                 "shop.conditional": {
                     "as": "metric.shop.conditional",
                     "kind": "derived",
+                    "value_type": "number",
                     "expression": SUM_PERIOD,
                 }
             }

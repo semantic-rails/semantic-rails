@@ -84,6 +84,7 @@ def _upkeep(path: Path, noun: str, measure: str, *, revisions: bool = False) -> 
                 "warehouse": "duckdb",
                 "default_db": "data/upkeep.duckdb",
                 "seed": {"kind": "csv_dir_duckdb", "source": "data/csv"},
+                "schema_strict": True,
             },
         },
         "graph.yml": {
@@ -110,6 +111,18 @@ def _upkeep(path: Path, noun: str, measure: str, *, revisions: bool = False) -> 
                         "default_agg": "sum",
                     }
                 },
+            }
+        },
+        "metrics.yml": {
+            "metrics": {
+                f"{measure}_cost": {
+                    "kind": "aggregate",
+                    "label": f"{measure.title()} cost",
+                    "measure": f"measure.upkeep.{measure}_cost",
+                    "aggregation": "sum",
+                    "temporal_role": f"temporal_role.upkeep_{noun}_reported_at",
+                    "value_type": "number",
+                }
             }
         },
     }

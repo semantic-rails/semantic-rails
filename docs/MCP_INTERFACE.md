@@ -117,7 +117,19 @@ tool/schema drift cannot be merged silently.
 - `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values.
-- `plan`: draft Query IR from a natural-language question.
+- `plan`: draft Query IR from a natural-language question. A fully matched
+  package example uses its validated authored query (`best.pattern:
+  package_example`), including its groupings, filters and limit. An example
+  answers only its exact question: case and whitespace aside (and the
+  contractions `plan` expands in every question), any other wording, including
+  punctuation, plurals, numbers, signs, symbols, a different top-N count or
+  another date or time phrase, gets normal planning. Multiple
+  valid visible matches return
+  `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
+  `why.details.example_ids`. Invalid examples fall through with
+  `why.details.invalid_examples`; an example that reads a hidden object is
+  invalid for that caller, as in a package without the object.
+  Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
@@ -312,8 +324,9 @@ A draft that validates can still leave out part of the question. `plan` returns
   `actual.grain` the draft's grain (`null` with no time block). For a direct balance read,
   ask for one day ("MRR yesterday", `MRR on <YYYY-MM-DD>`), or set `time.grain: day` with
   that day's start and end. A stock keyed by its clock alone (a
-  daily rollup) is one series and isn't held. A question with an as-of cue ("MRR right now")
-  stays `TIME_WINDOW_UNRESOLVED`;
+  daily rollup) is one series and isn't held. `plan` drafts most balance questions on one
+  day itself (see "How plan reads a balance" below); an as-of cue on anything else ("new
+  accounts right now") stays `TIME_WINDOW_UNRESOLVED`;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue";
@@ -635,6 +648,34 @@ provides a complete window in `query.time` (both `start` and `end`, or a relativ
 they return `TIME_WINDOW_UNRESOLVED` with a request to shorten the question or supply those
 bounds. Include the selected `temporal_role` and `grain` in that time block. A date or
 qualifier beyond the limit therefore cannot silently disappear from an otherwise ready draft.
+**How plan reads a balance.** When every select reads a balance directly (a stock measure, or
+a metric that is one aggregate of it, on the stock's `as_of_time` clock), `plan` drafts it on
+one day: the last complete day before `policy_context.now` in the clock's zone when the question
+has no time words or says "now", "right now", "currently", "current" or "at the moment"; the closing
+day of the period an "end of" or "as of" phrase names ("at the end of last month" on 2026-10-05
+is 2026-09-30); a day the question states; or the closing day of one stated period ("MRR last
+month"; the opening day for a `start_of_period` stock). The draft carries `time.grain: day` on
+that clock with the day (`range.last` of one day for the last complete day), and `assumptions`
+names the day. A generated building-block stock measure is answered with the metric governing
+it, as for any draft on that metric's clock; a caller's select, expression and alias are kept.
+A generated governed balance must be named in full: "pro accounts" cannot stand for "Paying
+accounts". Time words without a single-day reading ("all time", "ever", "to date", "since
+launch", "trend") keep the `stock_as_of_unrealized` hold. A day that isn't complete (today,
+the end of this week) isn't ready to execute, and no earlier day stands in for one. A
+day-grain balance window is read only when both bounds are whole days and it ends on or
+before the last complete day; otherwise `stock_as_of_unrealized`. This includes a caller's
+`query.time`; the gap hints at the last complete day. When that day has no rows,
+`execute` returns none with `EMPTY_RESULT_WINDOW`. When a `metric_constraint` requires the
+clock's date dimension in `group_by`, `plan` adds it (beside the day grain it adds no row) and
+counts it as asked; any other required field, or one hidden from the caller, keeps the
+`POLICY_DENIED` hold. A balance the question compares ("MRR right now compared with a week
+ago"), or asks for by week, month, quarter or year where the clock or a constraint reads it per
+day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of_unrealized`
+gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
+weeks are allowed), a stock on an event clock, a ratio, or a balance beside a flow keep the
+holds above, and a window in `query.time` is used as passed: a day-grain balance window is read
+only when both bounds are whole days and it ends on or before the last complete day;
+otherwise `stock_as_of_unrealized`.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.
@@ -729,6 +770,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
+| `NO_DATA_YET` | `execute` | Guarded `NULL` series buckets beyond visible coverage, empty totals with coverage proven before the window, or no visible coverage. `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`. `last_bucket` names the SQL bucket key (date for day or coarser grains, full ISO timestamp for sub-day grains); `before_window` names the resolved window start. Both `edge` and `edge_source` are null with no visible coverage. Empty series with dated coverage keep existing warnings. Replaces `EMPTY_RESULT_WINDOW`; covered outputs are excluded from `NO_DATA_IN_SCOPE`. Granted only when every named measure is granted. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. Under `observation_scope: "dataset"` an empty answer to a filtered query never gets it. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `=` or `IN` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. Aggregate-filter literals of a retained additive series are checked in both observation scopes. One warning; `details.filters` lists each `dimension`, `value` and closest `suggestion`. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. See [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers) |
