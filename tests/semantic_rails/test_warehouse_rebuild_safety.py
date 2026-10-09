@@ -592,10 +592,7 @@ def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: 
             run_checks=False,
         )["project_path"]
     )
-    order_count = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.shop.order_count"}, "as": "orders"}],
-    }
+    order_count = {"select": [{"expression": "metric.shop.order_count", "as": "orders"}]}
 
     def run() -> tuple[int, list[str]]:
         runtime = Runtime.from_path(str(project))

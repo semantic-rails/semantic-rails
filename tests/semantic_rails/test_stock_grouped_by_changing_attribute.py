@@ -154,9 +154,9 @@ def _query(
     *,
     aggregation: str | None = None,
 ) -> list[tuple]:
-    expression = {"measure": f"measure.seats.{measure}"}
+    expression: Any = f"measure.seats.{measure}"
     if aggregation:
-        expression["aggregation"] = aggregation
+        expression = {"kind": "measure", "measure": expression, "aggregation": aggregation}
     query: dict[str, Any] = {
         "select": [{"expression": expression, "as": "v"}],
         "group_by": group_by,
@@ -165,7 +165,7 @@ def _query(
         query["time"] = time
     result = runtime.query(query)
     assert result["ok"], result.get("errors")
-    time_alias = f"{ROLE}__{time['grain']}" if time else None
+    time_alias = "period" if time else None
     rows = []
     for row in result["rows"]:
         period = [_day(row[time_alias])] if time_alias else []

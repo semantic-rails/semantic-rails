@@ -25,10 +25,8 @@ from semantic_rails.runtime import Runtime
 from tests.integration.harness import assert_column_types_match, assert_rows_match, normalize_rows
 from tests.semantic_rails.dbt_warehouse import write_orders_package
 
-QUERY = {
-    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-    "verbosity": "minimal",
-}
+QUERY = {"select": [{"expression": "measure.jaffle.order_count", "as": "orders"}]}
+MINIMAL = {"verbosity": "minimal"}
 
 
 @pytest.mark.parametrize(
@@ -100,7 +98,7 @@ def test_runtime_preserves_container_integers(
     runtime = runtime_factory("jaffle_shop")
     monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: rows)
     try:
-        result = runtime.query(QUERY)
+        result = runtime.query(QUERY, **MINIMAL)
         assert result["rows"] == [{"orders": expected}]
         assert result["column_types"] == {"orders": {"type": kind}}
         assert json.loads(json.dumps(result, allow_nan=False))["rows"] == [{"orders": expected}]
@@ -153,12 +151,12 @@ def test_date_bucket_and_timestamp_bucket_have_one_wire_type(runtime_factory, mo
     monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: [row])
     query = {**QUERY, "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"}}
     try:
-        duckdb_result = runtime.query(query)
+        duckdb_result = runtime.query(query, **MINIMAL)
         row[column] = datetime(2026, 9, 30)
-        postgres_result = runtime.query(query)
+        postgres_result = runtime.query(query, **MINIMAL)
         assert json_text(duckdb_result) == json_text(postgres_result)
-        assert duckdb_result["column_types"][column] == {"type": "timestamp", "timezone": "naive"}
-        assert duckdb_result["rows"][0][column] == "2026-09-30T00:00:00"
+        assert duckdb_result["column_types"][column] == {"type": "date"}
+        assert duckdb_result["rows"][0][column] == "2026-09-30"
     finally:
         runtime.close()
 
@@ -229,9 +227,11 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
     try:
         for row in driver_rows:
             raw_rows[:] = [row]
-            sdk = runtime.query(QUERY)
+            sdk = runtime.query(QUERY, **MINIMAL)
             assert sdk["truncated"] is True
-            http, status = SemanticHTTPService(runtime).handle("POST", "/query", {"query": QUERY})
+            http, status = SemanticHTTPService(runtime).handle(
+                "POST", "/query", {"query": QUERY, "options": MINIMAL}
+            )
             assert status == 200
             sent = []
 
@@ -240,7 +240,7 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
 
             asyncio.run(app._send(send, 200, http))
             http = json.loads(sent[-1]["body"])
-            mcp = json.loads(json_text(adapter.call_tool("execute", {"query": QUERY})))
+            mcp = json.loads(json_text(adapter.call_tool("execute", {"query": QUERY, **MINIMAL})))
             _print_json(sdk)
             cli = json.loads(capsys.readouterr().out)
             for payload in (sdk, http, mcp, cli):
@@ -250,7 +250,9 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
             assert sdk["rows"] == [{"amount": "12.5", "orders": 3, bucket: "2026-09-30T00:00:00"}]
         else:
             assert sdk["rows"][0]["precise"] == "123456789012345678.123456789"
-        columnar = adapter.call_tool("execute", {"query": QUERY, "row_format": "columns"})
+        columnar = adapter.call_tool(
+            "execute", {"query": QUERY, "row_format": "columns", **MINIMAL}
+        )
         assert columnar["column_types"] == sdk["column_types"]
         assert columnar["rows"] == [[sdk["rows"][0][key] for key in columnar["columns"]]]
     finally:
@@ -467,7 +469,7 @@ def test_runtime_encoding_follows_driver_values_over_authored_types(tmp_path, ca
     model["model"]["measures"]["order_count"]["value_type"] = "integer"
     model["model"]["dimensions"]["status"]["kind"] = "integer"
     path.write_text(yaml.safe_dump(model))
-    expression = {"measure": "measure.shop.order_count"}
+    expression = "measure.shop.order_count"
     if case == "division":
         expression = {
             "kind": "arithmetic",

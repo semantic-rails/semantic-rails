@@ -47,6 +47,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import ColumnRefExpr
 from semantic_rails.fanout import pass_through, resolve_path
 from semantic_rails.metadata_parts.path_coverage import _path_availability
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.route_census import census_pairs, resolve_pairs
 from semantic_rails.runtime import Runtime
@@ -295,8 +296,7 @@ def _rows(out: dict[str, Any], columns: list[str]) -> list[tuple]:
 
 
 def _query(select: str, **parts: Any) -> dict[str, Any]:
-    kind = "metric" if select.startswith("metric.") else "measure"
-    return {"version": 1, "select": [{"expression": {kind: select}, "as": "v"}], **parts}
+    return {"select": [{"expression": select, "as": "v"}], **parts}
 
 
 def _route_notes(out: dict[str, Any]) -> dict[tuple[str, str], tuple[str, list[str]]]:
@@ -397,8 +397,8 @@ def test_no_route_note_where_nothing_was_chosen_or_in_the_minimal_response(
     """A pair with one route had nothing to choose, recorded or not; and the minimal response
     (the MCP default) carries no route note at all."""
     pkg = _write_package(tmp_path, relationships=relationships, pins=pins)
-    query = {**_query(BALANCE, group_by=[REGION_NAME]), "verbosity": verbosity}
-    out = Runtime.from_path(str(pkg)).query(query)
+    query = _query(BALANCE, group_by=[REGION_NAME])
+    out = Runtime.from_path(str(pkg)).query(query, verbosity=verbosity)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
     assert _route_notes(out) == {}
 
@@ -465,7 +465,8 @@ def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkey
         pytest.fail("a pinned compile or its notes must not enumerate candidates")
 
     monkeypatch.setattr(fanout_module, "enumerate_paths", count_enumeration)
-    query = _query("measure.e10_count", group_by=["dimension.e0_id"], verbosity="compact")
+    call = _query("measure.e10_count", group_by=["dimension.e0_id"])
+    query = {**read_call(call, config=config)[0], "verbosity": "compact"}
     compiled = compile_query(config, Registry(config), query)
     notes = compiled_route_notes(config, compiled, query)
     assert [(note["code"], note["details"]) for note in notes] == [
@@ -665,16 +666,13 @@ def test_adding_a_route_never_changes_an_answer_silently(
     assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_COLOCATED_KEY", BRANCH)}
 
 
-_METRIC_PREDICATE = {
-    "kind": "metric_predicate",
+# Regions holding at least 500 in balance, over every account of the region.
+_RICH_REGIONS = {
     "entity": REGION,
-    "scope_mode": "entity_only",
-    "input": {"measure": BALANCE},
-    "op": ">=",
-    "value": 500,
+    "having": [{"field": BALANCE, "op": "gte", "value": 500}],
+    "over": "all_time",
 }
 _CONVERSION = {
-    "version": 1,
     "select": [
         {
             "as": "v",
@@ -693,16 +691,15 @@ _CONVERSION = {
 # None where the answer isn't a plain table (checked by its SQL).
 ENTRY_POINTS = {
     "group_by": (_query(BALANCE, group_by=[REGION_NAME]), [REGION_NAME, "v"]),
-    "where": (_query(BALANCE, where=[{"field": REGION_NAME, "op": "=", "value": "North"}]), ["v"]),
+    "where": (_query(BALANCE, where=[{"field": REGION_NAME, "op": "is", "value": "North"}]), ["v"]),
     "measure_filter": (_query("metric.bank.north_balance"), ["v"]),
-    "metric_predicate": (
-        _query(
-            BALANCE, metric_filters=[{"expression": _METRIC_PREDICATE, "op": "=", "value": True}]
-        ),
-        ["v"],
-    ),
+    "metric_predicate": (_query(BALANCE, where=[_RICH_REGIONS]), ["v"]),
+    # Each region launched on its own day, so a day grain keeps one row per launch.
     "time_role": (
-        _query(LAUNCH_BALANCE, time={"temporal_role": "temporal_role.bank_region_launched"}),
+        _query(
+            LAUNCH_BALANCE,
+            time={"temporal_role": "temporal_role.bank_region_launched", "grain": "day"},
+        ),
         ["v"],
     ),
     "direct_key_read": (_query(BALANCE, group_by=[REGION_KEY]), [REGION_KEY, "v"]),

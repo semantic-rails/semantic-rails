@@ -111,9 +111,8 @@ def test_caller_values_cannot_create_attributes(value):
     body = {"policy_context": {"actor": "local", "attributes": value}}
     headers = {"X-Semantic-Attributes": json.dumps(SPOOF), "X-Attributes": "customer_id=x"}
     assert not context_from_policy_context(body["policy_context"]).attributes
-    resolved = context_from_headers(headers, payload=body)
-    assert resolved.actor == "local"
-    assert not resolved.attributes
+    # Identity never comes from a body; headers are not a trusted source of attributes either.
+    assert not context_from_headers(headers).attributes
 
 
 @pytest.fixture
@@ -203,27 +202,26 @@ def _call(app, transport, operation, arguments):
 def test_host_attributes_reach_the_runtime_and_never_leave_it(host_app, transport):
     app, seen, events = host_app
     spoof = {"attributes": SPOOF, "actor": "spoofed-user"}
-    plan = _call(
-        app,
-        transport,
-        "plan",
-        {"intent": "revenue by store", "policy_context": spoof, "query": {"policy_context": spoof}},
-    )
+    # A request that says who is asking is refused; identity comes from the host's resolver.
+    claimed = _call(app, transport, "plan", {"intent": "revenue by store", "policy_context": spoof})
+    assert claimed["ok"] is False
+    assert claimed["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED"
+    plan = _call(app, transport, "plan", {"intent": "revenue by store"})
     assert plan["ok"] is True, plan
-    query = {**plan["best"]["query_ir"], "policy_context": spoof}
-    responses = [plan]
+    query = plan["best"]["query_ir"]
+    responses = [claimed, plan]
     for operation, arguments in [
         ("validate", {"query": query}),
         ("compile", {"query": query}),
         ("query", {"query": query}),
         ("segment-preview", {"segment_id": "segment.jaffle.high_value_customers"}),
     ]:
-        response = _call(app, transport, operation, {**arguments, "policy_context": spoof})
+        response = _call(app, transport, operation, arguments)
         assert response["ok"] is True, response
         assert response["request_context"]["actor"] == "end-user"
         responses.append(response)
-    broken = {"select": [{"expression": {"metric": "metric.missing"}}], "policy_context": spoof}
-    failed = _call(app, transport, "compile", {"query": broken, "policy_context": spoof})
+    broken = {"select": ["metric.missing"]}
+    failed = _call(app, transport, "compile", {"query": broken})
     assert failed["ok"] is False
     responses.append(failed)
 

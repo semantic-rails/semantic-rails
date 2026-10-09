@@ -181,22 +181,6 @@ def test_renderer_revalidates_tokens_before_interpolation(
     ("token_kind", "query"),
     [
         (
-            "operator",
-            {
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
-                "where": [
-                    {
-                        "field": "dimension.jaffle_store_name",
-                        "op": "= 1); DROP TABLE jaffle_order; --",
-                        "value": "Downtown",
-                    }
-                ],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            },
-        ),
-        (
             "sort",
             {
                 "select": [
@@ -237,6 +221,29 @@ def test_query_compile_rejects_adversarial_tokens(
 
     assert exc.value.code == "INVALID_EXPRESSION_AST"
     assert exc.value.details["token_kind"] == token_kind
+
+
+def test_query_compile_refuses_an_adversarial_filter_op_as_an_unknown_word(package_config_factory):
+    """A filter op is one of the operator words; anything else is refused before SQL exists."""
+    config, _ = package_config_factory("jaffle_shop")
+    query = {
+        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "where": [
+            {
+                "field": "dimension.jaffle_store_name",
+                "op": "= 1); DROP TABLE jaffle_order; --",
+                "value": "Downtown",
+            }
+        ],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+    }
+
+    with pytest.raises(SemanticLayerError) as exc:
+        compile_query(config, Registry(config), query)
+
+    assert exc.value.code == "INVALID_QUERY"
+    assert exc.value.details["path"].endswith("op")
+    assert "DROP TABLE" not in str(exc.value)
 
 
 def test_dialect_tokens_still_render_with_expected_duckdb_and_snowflake_sql():

@@ -24,6 +24,12 @@ ROLE = "temporal_role.jaffle_order_time"
 REVENUE = {"measure": "measure.jaffle.revenue_usd"}
 ORDERS = {"measure": "measure.jaffle.order_count"}
 RATIO = {"kind": "ratio", "numerator": REVENUE, "denominator": ORDERS}
+# The same ratio as a call spells it.
+RATIO_CALL = {
+    "kind": "ratio",
+    "numerator": "measure.jaffle.revenue_usd",
+    "denominator": "measure.jaffle.order_count",
+}
 CONDITIONAL_COUNT = {
     "kind": "aggregate_if",
     "aggregation": "count",
@@ -320,7 +326,7 @@ def test_literal_scaling_preserves_windowed_totals(
     runtime = runtime_factory("jaffle_shop")
     try:
         literal = {"kind": "literal", "value": factor}
-        input_expr = {"measure": measure_id}
+        input_expr = measure_id
         expression = {
             "kind": "arithmetic",
             "op": op,
@@ -333,7 +339,7 @@ def test_literal_scaling_preserves_windowed_totals(
         scaled = result["rows"]
         assert original and len(scaled) == len(original)
         for before, after in zip(original, scaled, strict=True):
-            assert before[f"{ROLE}__month"] == after[f"{ROLE}__month"]
+            assert before["period"] == after["period"]
             expected = before["value"] * factor if op == "multiply" else before["value"] / factor
             assert float(after["value"]) == pytest.approx(expected)
     finally:
@@ -410,12 +416,12 @@ def test_direct_window_lowering_cannot_bypass_the_guard(config, input_expr):
 
 
 @pytest.mark.parametrize("transport", ["rest", "mcp"])
-@pytest.mark.parametrize("input_expr", [RATIO, {"measure": "measure.jaffle.inventory_on_hand_eop"}])
+@pytest.mark.parametrize("input_expr", [RATIO_CALL, "measure.jaffle.inventory_on_hand_eop"])
 def test_execute_uses_the_same_window_rule(runtime_factory, transport, input_expr, monkeypatch):
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = query(window(input_expr))
-        stock = input_expr != RATIO
+        stock = input_expr != RATIO_CALL
         if stock:
             payload["time"]["temporal_role"] = "temporal_role.jaffle_inventory_day"
             monkeypatch.setattr(runtime, "_get_adapter", lambda: pytest.fail("refused before SQL"))
@@ -502,16 +508,15 @@ def test_fiscal_period_to_date_cannot_hide_behind_another_expression(config, rou
         payload = query(
             REVENUE, metric_filters=[{"expression": expression, "op": ">", "value": 10}]
         )
-    payload["time"].update(calendar_id="fiscal", fill=True)
-    if route == "role_calendar":
-        config = replace(
-            config,
-            entities=[
-                replace(e, calendar_id="fiscal") if e.id == "entity.jaffle_order" else e
-                for e in config.entities
-            ],
-        )
-        payload["time"].update(calendar_id="default", fill=False)
+    # The clock's own calendar is fiscal; a call names no calendar.
+    payload["time"]["fill"] = route != "role_calendar"
+    config = replace(
+        config,
+        entities=[
+            replace(e, calendar_id="fiscal") if e.id == "entity.jaffle_order" else e
+            for e in config.entities
+        ],
+    )
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), payload)
     assert raised.value.code == "REWRITE_NOT_SUPPORTED"
@@ -523,12 +528,12 @@ def test_zero_windowed_denominator_stays_null(runtime_factory):
     try:
         input_expr = {
             "kind": "ratio",
-            "numerator": REVENUE,
+            "numerator": RATIO_CALL["numerator"],
             "denominator": {
                 "kind": "arithmetic",
                 "op": "subtract",
-                "left": ORDERS,
-                "right": ORDERS,
+                "left": RATIO_CALL["denominator"],
+                "right": RATIO_CALL["denominator"],
             },
         }
         result = runtime.query(query(window(input_expr)))
