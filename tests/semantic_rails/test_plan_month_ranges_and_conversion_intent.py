@@ -17,7 +17,6 @@ structured ``why`` instead of a confident wrong answer.
 from __future__ import annotations
 
 from semantic_rails.planner.plan import plan_payload
-from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def _plan(runtime, intent: str, detail: str = "best") -> dict:
@@ -31,7 +30,7 @@ def _best_time(payload: dict) -> dict:
 def test_month_range_with_both_years_lands_in_query_ir(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     payload = _plan(runtime, "monthly revenue by store from January 2017 through June 2017")
-    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+    assert payload["status"] == "ok"
     time_spec = _best_time(payload)
     assert time_spec.get("start") == "2017-01-01"
     assert time_spec.get("end") == "2017-07-01"
@@ -50,7 +49,7 @@ def test_month_range_with_shared_year_lands_in_query_ir(runtime_factory):
 def test_single_month_with_year_lands_in_query_ir(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     payload = _plan(runtime, "revenue by store for March 2017")
-    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+    assert payload["status"] == "ok"
     time_spec = _best_time(payload)
     assert time_spec.get("start") == "2017-03-01"
     assert time_spec.get("end") == "2017-04-01"
@@ -92,8 +91,8 @@ def test_conversion_intent_resolved_to_conversion_metric_stays_ok(runtime_factor
 def test_non_conversion_intent_is_unaffected_by_the_guard(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     payload = _plan(runtime, "monthly revenue by store")
-    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
-    assert payload["best"]["query_ir"]["time"]["grain"] == "month"
+    assert payload["status"] == "ok"
+    assert "why" not in payload
 
 
 def test_currency_conversion_phrasing_does_not_trip_the_guard(runtime_factory):

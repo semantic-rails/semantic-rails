@@ -9,9 +9,11 @@ not a tangle of features.
 from __future__ import annotations
 
 import runpy
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 import yaml
 
@@ -19,6 +21,7 @@ from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.config import _load_package_source, load_package_config
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1310,6 +1313,240 @@ def test_measure_inherits_defaults_accumulation_kind(tmp_path: Path) -> None:
     balance = next(m for m in config.measures if "balance_usd" in m.id)
     assert balance.measure_class == "semi_additive"
     assert balance.default_aggregation == "last_value"
+
+
+# ---------------------------------------------------------------------------
+# Section 8: A measure's accumulation states the kind and snapshot it means
+# ---------------------------------------------------------------------------
+
+_STOCK_SOP = {"kind": "stock", "snapshot": "start_of_period"}
+_BALANCES = [
+    ("a", date(2026, 1, 3), 10),
+    ("a", date(2026, 1, 20), 15),
+    ("a", date(2026, 2, 2), 20),
+    ("a", date(2026, 2, 27), 25),
+    ("b", date(2026, 1, 5), 100),
+    ("b", date(2026, 1, 31), 90),
+    ("b", date(2026, 2, 1), 80),
+    ("b", date(2026, 2, 15), 70),
+]
+
+
+def _write_balance_package(
+    package_dir: Path,
+    *,
+    default: Any = _DELETE,
+    accumulation: Any = _DELETE,
+    layout: str = "directory",
+) -> Path:
+    """Daily balances of two accounts. ``default`` is `defaults.measure.accumulation` and
+    ``accumulation`` the balance measure's own; ``_DELETE`` leaves either unauthored."""
+    measure: dict[str, Any] = {"kind": "aggregate", "expr": "balance", "value_type": "currency"}
+    if accumulation is not _DELETE:
+        measure["accumulation"] = accumulation
+    pkg = _write_synthetic_package(
+        package_dir,
+        package_extra={"seed": {"kind": "external"}},
+        graph_entities={"account_day": {"key": ["account_id", "date_day"], "model": "balances"}},
+        models={
+            "balances": {
+                "relation": "balances",
+                "entities": {"account_day": {}},
+                "times": {
+                    "date_day": {
+                        "column": "date_day",
+                        "kind": "date",
+                        "class": "as_of_time",
+                        "default": True,
+                    },
+                },
+                "measures": {"balance_usd": measure},
+            },
+        },
+    )
+    if default is not _DELETE:
+        raw = yaml.safe_load((pkg / "package.yml").read_text(encoding="utf-8"))
+        raw["defaults"]["measure"] = {"accumulation": default}
+        _write_yaml(pkg / "package.yml", raw)
+    if layout == "single_file":
+        merged = _load_package_source(str(pkg))
+        pkg = pkg / "package.yml"
+        _write_yaml(pkg, merged)
+    return pkg
+
+
+@pytest.mark.parametrize(
+    ("default", "accumulation", "expected"),
+    [
+        pytest.param(
+            _DELETE,
+            {"kind": "stock", "snapshot": "start_of_peroid"},
+            ("measure 'balance_usd'", "unknown accumulation snapshot 'start_of_peroid'"),
+            id="snapshot-typo",
+        ),
+        pytest.param(
+            _DELETE,
+            {"kind": "stock", "snapshot": None},
+            ("measure 'balance_usd'", "unknown accumulation snapshot ''"),
+            id="snapshot-empty",
+        ),
+        pytest.param(
+            _DELETE,
+            {"snapshot": "start_of_period"},
+            ("measure 'balance_usd'", "without 'kind: stock'"),
+            id="snapshot-without-kind",
+        ),
+        pytest.param(
+            _DELETE,
+            {"kind": "flow", "snapshot": "end_of_period"},
+            ("measure 'balance_usd'", "without 'kind: stock'"),
+            id="snapshot-on-flow",
+        ),
+        pytest.param(
+            {"kind": "stock"},
+            {"snapshot": "start_of_period"},
+            ("measure 'balance_usd'", "without 'kind: stock'"),
+            id="override-drops-default-kind",
+        ),
+        pytest.param(
+            "stock",
+            {},
+            ("measure 'balance_usd'", "names no 'kind:'"),
+            id="override-names-no-kind",
+        ),
+        pytest.param(
+            {"kind": "stock"},
+            None,
+            ("measure 'balance_usd'", "names no 'kind:'"),
+            id="override-null",
+        ),
+        pytest.param(
+            _STOCK_SOP,
+            {"kind": "stock"},
+            ("measure 'balance_usd'", "names no 'snapshot:'", "'start_of_period'"),
+            id="override-drops-default-snapshot",
+        ),
+        pytest.param(
+            _STOCK_SOP,
+            "stock",
+            ("measure 'balance_usd'", "names no 'snapshot:'", "'start_of_period'"),
+            id="scalar-override-drops-default-snapshot",
+        ),
+        pytest.param(
+            {"kind": "stock", "snapshot": "start_of_peroid"},
+            _DELETE,
+            ("defaults.measure", "unknown accumulation snapshot 'start_of_peroid'"),
+            id="defaults-snapshot-typo",
+        ),
+        pytest.param(
+            {"snapshot": "start_of_period"},
+            _DELETE,
+            ("defaults.measure", "without 'kind: stock'"),
+            id="defaults-snapshot-without-kind",
+        ),
+        pytest.param(
+            {"kind": "flow", "snapshot": "start_of_period"},
+            _DELETE,
+            ("defaults.measure", "without 'kind: stock'"),
+            id="defaults-snapshot-on-flow",
+        ),
+    ],
+)
+@pytest.mark.parametrize("layout", ["directory", "single_file"])
+def test_accumulation_read_as_another_is_refused_at_load(
+    tmp_path: Path, default: Any, accumulation: Any, expected: tuple[str, ...], layout: str
+) -> None:
+    """A measure's `accumulation:` replaces `defaults.measure.accumulation` whole, and the
+    loader reads an unknown snapshot as end_of_period and a snapshot without `kind: stock`
+    as a sum. A value that doesn't state what it means is refused instead of read as another."""
+    pkg = _write_balance_package(
+        tmp_path / "balances", default=default, accumulation=accumulation, layout=layout
+    )
+    expected = (*expected, "replaces `defaults.measure.accumulation` whole")
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    errors = exc.value.details["errors"]
+    assert any(all(part in error for part in expected) for error in errors), errors
+    assert any(all(part in error for part in expected) for error in validate_runtime_package(pkg))
+
+
+@pytest.mark.parametrize(
+    ("default", "accumulation", "aggregation"),
+    [
+        pytest.param(_DELETE, _STOCK_SOP, "first_value", id="complete"),
+        pytest.param(_STOCK_SOP, _DELETE, "first_value", id="inherits-default"),
+        pytest.param(
+            _STOCK_SOP,
+            {"kind": "stock", "snapshot": " End_Of_Period "},
+            "last_value",
+            id="complete-override",
+        ),
+        pytest.param(_STOCK_SOP, "flow", "sum", id="override-names-kind"),
+    ],
+)
+@pytest.mark.parametrize("layout", ["directory", "single_file"])
+def test_accumulation_stated_whole_loads(
+    tmp_path: Path, default: Any, accumulation: Any, aggregation: str, layout: str
+) -> None:
+    pkg = _write_balance_package(
+        tmp_path / "balances", default=default, accumulation=accumulation, layout=layout
+    )
+    balance = next(m for m in load_package_config(str(pkg)).measures if "balance_usd" in m.id)
+    assert balance.default_aggregation == aggregation
+    assert not [
+        error
+        for error in validate_runtime_package(pkg)
+        if "measure 'balance_usd'" in error or "defaults.measure" in error
+    ]
+
+
+def _load_balances(connection: duckdb.DuckDBPyConnection) -> None:
+    connection.execute("create table balances (account_id varchar, date_day date, balance integer)")
+    connection.executemany("insert into balances values (?, ?, ?)", _BALANCES)
+
+
+def test_start_of_period_stock_sums_each_series_opening_balance(tmp_path: Path) -> None:
+    """The complete start-of-period stock reads each account's first balance in the month,
+    then adds up the accounts: the reference SQL's rows."""
+    pkg = _write_balance_package(tmp_path / "balances", accumulation=_STOCK_SOP)
+    (pkg / "data").mkdir()
+    connection = duckdb.connect(str(pkg / "data" / "example.duckdb"))
+    try:
+        _load_balances(connection)
+    finally:
+        connection.close()
+    reference_db = duckdb.connect()
+    try:
+        _load_balances(reference_db)
+        reference = reference_db.execute(
+            "with opening as (select date_trunc('month', date_day)::date as period, balance, "
+            "row_number() over (partition by account_id, date_trunc('month', date_day) "
+            "order by date_day) as rn from balances) "
+            "select period, sum(balance) from opening where rn = 1 group by period order by period"
+        ).fetchall()
+    finally:
+        reference_db.close()
+    assert reference == [(date(2026, 1, 1), 110), (date(2026, 2, 1), 100)]
+
+    runtime = Runtime.from_path(str(pkg))
+    try:
+        balance = next(m.id for m in runtime.config.measures if "balance_usd" in m.id)
+        role = next(r.id for r in runtime.config.temporal_roles)
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": balance}, "as": "v"}],
+                "time": {"temporal_role": role, "grain": "month"},
+            }
+        )
+    finally:
+        runtime.close()
+    assert result["ok"], result.get("errors")
+    rows = sorted(
+        (date.fromisoformat(str(row[f"{role}__month"])[:10]), row["v"]) for row in result["rows"]
+    )
+    assert rows == reference
 
 
 # ---------------------------------------------------------------------------

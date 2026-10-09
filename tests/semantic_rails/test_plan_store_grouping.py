@@ -35,6 +35,15 @@ ANSWERED = {
     "revenue by store label",
     "revenue by store id and store name",
 }
+# "each" and "every" name a grouping the primary draft reads; the catalog fallback holds them.
+ANSWERED_PRIMARY = {
+    "revenue each store id",
+    "revenue every store id",
+    "revenue for each store id",
+    "revenue each store name",
+    "revenue every store name",
+    "revenue for each store name",
+}
 
 
 @pytest.fixture()
@@ -121,7 +130,12 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
             [{"field": STORE_LABEL, "op": "IN", "value": ["East", "West", "South"]}],
         ),
         ("revenue by store", None, []),
+        ("revenue by stores", None, []),
         ("revenue by stores", None, [ID_FILTER]),
+        ("revenue each store id", [STORE_ID], [ID_FILTER]),
+        ("revenue every store id", [STORE_ID], [ID_FILTER]),
+        ("revenue each store name", [STORE_NAME], [NAME_FILTER]),
+        ("revenue every store name", [STORE_NAME], [NAME_FILTER]),
         ("revenue by, store name", [STORE_NAME], [NAME_FILTER]),
         ("revenue by, store name and store id", [STORE_NAME, STORE_ID], [NAME_FILTER, ID_FILTER]),
         ("revenue for each store name", [STORE_NAME], [NAME_FILTER]),
@@ -156,8 +170,10 @@ def test_store_attribute_matches_reference_sql_or_withholds_execution(
 ) -> None:
     _force_fallback(retail, monkeypatch, intent, path)
     payload = plan_payload(retail, intent=intent, partial_query={"where": filters})
-    if intent in ANSWERED:
+    if intent in ANSWERED or (path == "primary" and intent in ANSWERED_PRIMARY):
         assert payload["status"] == "ok", payload
+        # The question names the dimension it groups by, so no row name is assumed.
+        assert "assumptions" not in payload, payload
     if payload["status"] != "ok":
         assert "execute" not in payload["next"].get("ready_for", []), payload
         return
@@ -309,19 +325,33 @@ def test_store_ranking_with_shared_name_matches_reference_sql_or_withholds_execu
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
-def test_preferred_store_draft_is_never_execute_ready(runtime_factory, monkeypatch, path) -> None:
+def test_store_answers_by_its_key_and_name_on_both_paths(
+    runtime_factory, monkeypatch, path
+) -> None:
+    # "store" names the Store entity: never a customer's preferred store, found by its words.
     runtime = runtime_factory("jaffle_shop")
     try:
         _force_fallback(runtime, monkeypatch, "revenue by store", path)
         payload = plan_payload(runtime, intent="revenue by store")
-        assert payload["best"]["query_ir"]["group_by"] == [
-            "dimension.jaffle_customer_history_preferred_store_id"
-        ]
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
-        assert "execute" not in payload["next"].get("ready_for", [])
+        query = payload["best"]["query_ir"]
+        assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
+        assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"]["ready_for"]
+        alias = query["select"][0]["as"]
+        actual = sorted(
+            (row["dimension.jaffle_store_id"], row["dimension.jaffle_store_name"], row[alias])
+            for row in typed_rows(runtime.query(query))
+        )
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = connection.execute(
+                "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0) "
+                "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
+                "GROUP BY 1, 2 ORDER BY 1, 2"
+            ).fetchall()
     finally:
         runtime.close()
+    assert [row[:2] for row in actual] == [row[:2] for row in expected]
+    assert [float(row[2]) for row in actual] == pytest.approx([float(row[2]) for row in expected])
 
 
 @pytest.mark.parametrize(

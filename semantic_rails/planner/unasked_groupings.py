@@ -9,7 +9,7 @@ from typing import Any
 
 from ._base import _object_by_id, _singular
 from .grouping_checks import _entity_grouping_dimensions, _query_clocks, _reads_grouping, _time_of
-from .groupings import _listed_grouping_terms
+from .groupings import _listed_grouping_terms, _named_run
 from .plan_query import _where_filters
 from .ranking_checks import _dimension_nouns, _ranking_request
 from .time_phrases import _TIME_UNITS, _names_time_axis
@@ -111,17 +111,21 @@ _PER_GROUPING_RE = re.compile(
 
 def _asked_grouping_terms(config: Any, question: str) -> list[str]:
     """What the question asks to group by: each grouping it lists (``_listed_grouping_terms``),
-    the noun a ranking ranks ("which 5 stores had the most orders"), and the words after
-    "per", "each" or "every" ("revenue per store"). Windows are not part of any of them."""
+    the noun a ranking ranks ("which 5 stores had the most orders"), and the words after "per",
+    "each" or "every" ("revenue per store"; "each plan" in "did each plan make", where a name
+    ends). Windows are not part of any of them."""
 
     request = _ranking_request(question, _dimension_nouns(config))
+    lowered = _without_windows(question)
+    each: list[str] = []
+    for match in _PER_GROUPING_RE.finditer(lowered):
+        run = _named_run(config, lowered, match.start(1))
+        named = run is not None and run[1] <= match.end(1)
+        each.append(lowered[run[0] : run[1]] if run and named else match.group(1).strip())
     return [
         *_listed_grouping_terms(question, config),
         *([str(request["noun"])] if request else []),
-        *(
-            match.group(1).strip()
-            for match in _PER_GROUPING_RE.finditer(_without_windows(question))
-        ),
+        *each,
     ]
 
 
