@@ -12,6 +12,7 @@ from semantic_rails import runtime as runtime_module
 from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts import answer_warnings as answer_warnings_module
 from semantic_rails.schema import SeedSpec
 
 from .conftest import _rows
@@ -215,7 +216,7 @@ def test_past_coverage_names_its_bucket_without_changing_sql_or_rows(
     assert all(row["value"] is None for row in result["rows"])
     assert result["window"]["data_through"] == "2026-09-12"
     with monkeypatch.context() as patch:
-        patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
+        patch.setattr(answer_warnings_module, "_no_data_yet_warnings", lambda *a, **k: [])
         next_main = len(prepared_calls)
         before = rt.query(query, verbosity=verbosity, now=NOW)
     assert prepared_calls[0] == prepared_calls[next_main]
@@ -296,7 +297,7 @@ def test_unproven_coverage_never_says_no_data_yet(sparse_runtime, monkeypatch, c
     assert "NO_DATA_IN_SCOPE" in codes
     assert ("data_through" in result["window"]) is (case != "failed_read")
     with monkeypatch.context() as patch:
-        patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
+        patch.setattr(answer_warnings_module, "_no_data_yet_warnings", lambda *a, **k: [])
         assert result["warnings"] == rt.query(query, now=NOW)["warnings"]
 
 
@@ -336,7 +337,7 @@ def test_series_disclosure_uses_bucket_precision(sparse_runtime, monkeypatch, gr
         == ({"week": "2024-09-16T00:00:00", "day": "2024-09-21T00:00:00"}[grain])
     )
     with monkeypatch.context() as patch:
-        patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
+        patch.setattr(answer_warnings_module, "_no_data_yet_warnings", lambda *a, **k: [])
         before = rt.query(query, now=NOW)
     assert result["rows"] == before["rows"]
     assert result["rendered_sql"] == before["rendered_sql"]

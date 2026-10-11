@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-import semantic_rails.runtime as runtime_module
+import semantic_rails.runtime_parts.answer_warnings as answer_warnings_module
 from semantic_rails.issues import ASSUMPTION, CODES
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 
@@ -102,7 +102,9 @@ def test_a_disclosure_registered_as_an_assumption_is_stated_under_assumptions(
         "severity": "info",
         "details": {"measure": "measure.jaffle.revenue_usd", "rows": 1234},
     }
-    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args, **kwargs: [disclosure])
+    monkeypatch.setattr(
+        answer_warnings_module, "_compiled_warnings", lambda *args, **kwargs: [disclosure]
+    )
     out = runtime.query(PLAIN, now=NOW, verbosity=verbosity)
     assert out["assumptions"] == [
         {

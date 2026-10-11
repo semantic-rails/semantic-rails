@@ -166,6 +166,7 @@ def test_visibility_is_invisible_to_enforcement(runtimes, enforcement, visibilit
 
 
 def test_enforcement_never_takes_a_view(runtimes):
+    from semantic_rails.answer import _withhold_values
     from semantic_rails.ast import normalize_query
     from semantic_rails.compiler import _guard_route_row_filters, _validate_measure_validity_windows
     from semantic_rails.policies import (
@@ -178,7 +179,7 @@ def test_enforcement_never_takes_a_view(runtimes):
         withheld_shape,
     )
     from semantic_rails.row_filters import row_filter
-    from semantic_rails.runtime import _measure_validity_warnings, _withhold_values
+    from semantic_rails.runtime_parts.answer_warnings import _measure_validity_warnings
 
     runtime = runtimes(visibility_policy("hidden", REVENUE))
     view = runtime.view_for(CALLER)
