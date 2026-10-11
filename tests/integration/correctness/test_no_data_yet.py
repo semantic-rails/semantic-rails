@@ -255,7 +255,7 @@ def test_coverage_uses_only_the_callers_visible_rows(sparse_runtime, grain, call
     result = rt.query(query, context=_caller(caller), now=NOW)
     # The window's week (or total) follows the early caller's last row: no data yet for them.
     expected = caller in {"missing", "early"}
-    assert any(row["code"] == "NO_DATA_YET" for row in result["warnings"]) is expected
+    assert any(row["code"] == "NO_DATA_YET" for row in result.get("warnings", [])) is expected
     if expected:
         warning = _warning(result)
         if caller == "missing":

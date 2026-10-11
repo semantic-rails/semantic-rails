@@ -284,7 +284,7 @@ def _yoy_query(grain: str) -> dict[str, Any]:
 def test_inline_yoy_validates_and_compiles(runtime: Runtime) -> None:
     validate_out = runtime.validate(_yoy_query("year"))
     assert validate_out.get("ok") is True
-    assert validate_out.get("errors") == []
+    assert "errors" not in validate_out
 
     compile_out = runtime.compile(_yoy_query("year"))
     sql = str(compile_out.get("rendered_sql", ""))
