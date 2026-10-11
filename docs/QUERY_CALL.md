@@ -911,7 +911,7 @@ row.
 operand reads `0` for an entity with no match where its measure has data somewhere in the
 filter's scope, and `NULL` where it has none. So `large_order_count is 0` ("customers with no
 large orders") keeps every customer without one when some order in scope is large, and keeps
-nobody when none is. `NULL` fails every threshold, `is 0` and `lt 1` included. Only a count or
+nobody when none is. `NULL` fails every threshold, `is 0`, `lt 1` and `not 0` included. Only a count or
 sum threshold that 0 passes reaches an entity with no rows at all.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
