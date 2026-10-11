@@ -446,13 +446,17 @@ def observed_periods_reason(query: NormalizedQuery, config: PackageConfig) -> st
 
 
 def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool:
-    """A named window under a grain answers one row per period it holds, like ``fill``."""
+    """A named window under a grain answers one row per period it holds, like ``fill``: for
+    what it selects, or for a result filter's measure that it computes without selecting."""
     time = query.time
+    measured = query.select or any(
+        not isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
+    )
     return bool(
         time is not None
         and time.named
         and time.grain in UNITS
-        and query.select
+        and measured
         and not observed_periods_reason(query, config)
     )
 
