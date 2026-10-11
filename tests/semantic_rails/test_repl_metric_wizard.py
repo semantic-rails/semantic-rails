@@ -1668,7 +1668,7 @@ def test_segment_values_keep_their_type_from_the_wizard_to_preview(
         runtime.close()
     # Validation type-checks booleans and numbers; for text it says only the warehouse can.
     assert validated["ok"] is True
-    warned = [warning["code"] for warning in validated["warnings"]]
+    warned = [warning["code"] for warning in validated.get("warnings", [])]
     assert warned == (["SEGMENT_VALUES_UNCHECKED"] if dimension == "status" else [])
 
     # Enter at every prompt keeps the saved segment byte for byte, a hand-written 10 included.
@@ -1769,7 +1769,9 @@ def test_segment_validate_says_which_values_only_the_warehouse_can_check(
     index = next(i for i, row in enumerate(dimensions) if row.id == tier)
     dimensions[index] = dataclasses.replace(dimensions[index], data_type=data_type)
     try:
-        codes = [row["code"] for row in runtime.segment_validate("segment.shop.s")["warnings"]]
+        codes = [
+            row["code"] for row in runtime.segment_validate("segment.shop.s").get("warnings", [])
+        ]
     finally:
         runtime.close()
 
