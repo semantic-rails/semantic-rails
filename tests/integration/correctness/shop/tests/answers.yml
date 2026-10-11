@@ -288,6 +288,26 @@ tests:
       GROUP BY o.customer_id, s.name
       ORDER BY revenue DESC NULLS LAST, o.customer_id ASC NULLS LAST, s.name ASC NULLS LAST
       LIMIT 2
+  shop/share-over-a-name-spans-every-namesake:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The name groups by the customer key too, and a share over the name takes its total over every customer of that name, so customers 101 and 103 (both Ann, 23 each) hold half each.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.dimensions.name, docs/QUERY_CALL.md#inline-expression-kinds]
+    query:
+      select: [{expression: {kind: share, input: measure.shop.revenue, over: [dimension.shop_customer_name]}, as: share}]
+      group_by: [dimension.shop_customer_name]
+      where: [{field: dimension.shop_customer_name, op: is, value: Ann}]
+    expected_rows:
+      - {dimension.shop_customer_id: 101, dimension.shop_customer_name: Ann, share: 0.5}
+      - {dimension.shop_customer_id: 103, dimension.shop_customer_name: Ann, share: 0.5}
+    reference_sql: |
+      SELECT customer_id, name, revenue / CAST(SUM(revenue) OVER () AS DOUBLE PRECISION) AS share
+      FROM (
+        SELECT o.customer_id, s.name, SUM(o.amount) AS revenue
+        FROM orders o JOIN signups s ON o.customer_id = s.customer_id
+        WHERE s.name = 'Ann'
+        GROUP BY o.customer_id, s.name
+      ) q
   shop/top-orders-by-revenue-rank-a-null-revenue-last:
     kind: query_matches_snapshot
     expect: answer
@@ -3387,6 +3407,113 @@ tests:
       - {dimension.shop_order_store_id: a, period: '2023-01-01', revenue: 17}
       - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 20}
       - {dimension.shop_order_store_id: b, period: '2024-01-01', revenue: 3}
+  shop/entity-filter-unknown-aggregate-fails-not:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Every refund leaves tax_amount NULL, so each refunded order's tax total is unknown, and an unknown aggregate meets no threshold, not 0 included; an order with no refund totals 0, which fails it.
+    cites: &tax_cites [tests/integration/correctness/shop/models/refunds.yml#model.measures.tax_refunded, tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count, docs/QUERY_CALL.md#entity-filters]
+    tags: [null-vs-zero, empty-result]
+    query:
+      select: [measure.shop.refund_count]
+      group_by: [dimension.shop_order_id]
+      where:
+        - entity: entity.shop_order
+          having: [{field: measure.shop.tax_refunded, op: not, value: 0}]
+          over: all_time
+      observation_scope: query
+    reference_sql: |
+      SELECT r.order_id, COUNT(*) FROM refunds r
+      WHERE r.order_id IN (SELECT order_id FROM refunds GROUP BY order_id
+        HAVING SUM(tax_amount) IS NOT NULL AND SUM(tax_amount) <> 0)
+      GROUP BY 1
+    expected_rows: []
+  shop/entity-filter-unknown-aggregate-fails-not-in-the-window:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Inside the window too, each refunded order's tax total is unknown, so not 0 keeps no order.
+    cites: *tax_cites
+    tags: [null-vs-zero, empty-result, time-window]
+    query:
+      select: [measure.shop.refund_count]
+      group_by: [dimension.shop_order_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: year, start: '2023-01-01', end: '2025-01-01'}
+      where:
+        - entity: entity.shop_order
+          having: [{field: measure.shop.tax_refunded, op: not, value: 0}]
+          over: window
+      observation_scope: query
+    reference_sql: |
+      SELECT r.order_id, date_trunc('year', o.ordered_at), COUNT(*) FROM refunds r
+      JOIN orders o ON o.order_id = r.order_id
+      WHERE r.order_id IN (SELECT order_id FROM refunds GROUP BY order_id
+        HAVING SUM(tax_amount) IS NOT NULL AND SUM(tax_amount) <> 0)
+      GROUP BY 1, 2
+    expected_rows: []
+  shop/entity-filter-unknown-aggregate-fails-not-per-period:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Per year as well, each refunded order's tax total is unknown, so not 0 keeps no order.
+    cites: *tax_cites
+    tags: [null-vs-zero, empty-result, time-window]
+    query:
+      select: [measure.shop.refund_count]
+      group_by: [dimension.shop_order_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: year}
+      where:
+        - entity: entity.shop_order
+          having: [{field: measure.shop.tax_refunded, op: not, value: 0}]
+          over: period
+      observation_scope: query
+    reference_sql: |
+      SELECT r.order_id, date_trunc('year', o.ordered_at), COUNT(*) FROM refunds r
+      JOIN orders o ON o.order_id = r.order_id
+      WHERE r.order_id IN (SELECT order_id FROM refunds GROUP BY order_id
+        HAVING SUM(tax_amount) IS NOT NULL AND SUM(tax_amount) <> 0)
+      GROUP BY 1, 2
+    expected_rows: []
+  shop/scoped-predicate-unknown-aggregate-fails-not:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A scoped aggregate's predicate takes the same per-entity threshold, so an order whose tax total is unknown never meets not 0.
+    cites: *tax_cites
+    tags: [null-vs-zero, empty-result]
+    query:
+      select:
+        - as: refunds
+          expression:
+            kind: scoped_aggregate
+            measure: measure.shop.refund_count
+            predicates: [{entity: entity.shop_order, input: measure.shop.tax_refunded, op: not, value: 0, over: all_time}]
+      group_by: [dimension.shop_order_id]
+      observation_scope: query
+    reference_sql: |
+      SELECT r.order_id, COUNT(*) FROM refunds r
+      WHERE r.order_id IN (SELECT order_id FROM refunds GROUP BY order_id
+        HAVING SUM(tax_amount) IS NOT NULL AND SUM(tax_amount) <> 0)
+      GROUP BY 1
+    expected_rows: []
+  shop/entity-filter-not-leaves-out-unknown-and-matching-aggregates:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Goods refunded per order is 6 (order 2), unknown (order 4, shipping only), 4 (order 6) and 2 (order 7); not 4 keeps orders 2 and 7, never order 4's unknown total.
+    cites: [tests/integration/correctness/shop/models/refunds.yml#model.measures.goods_refunded, tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count, docs/QUERY_CALL.md#entity-filters]
+    tags: [null-vs-zero]
+    query:
+      select: [measure.shop.refund_count]
+      group_by: [dimension.shop_order_id]
+      where:
+        - entity: entity.shop_order
+          having: [{field: measure.shop.goods_refunded, op: not, value: 4}]
+          over: all_time
+      observation_scope: query
+    reference_sql: |
+      SELECT r.order_id, COUNT(*) FROM refunds r
+      WHERE r.order_id IN (SELECT order_id FROM refunds GROUP BY order_id
+        HAVING SUM(goods_amount) IS NOT NULL AND SUM(goods_amount) <> 4)
+      GROUP BY 1
+    expected_rows:
+      - {dimension.shop_order_id: 2, refund_count: 2}
+      - {dimension.shop_order_id: 7, refund_count: 2}
   shop/contains-is-case-insensitive:
     kind: query_matches_snapshot
     expect: answer

@@ -427,7 +427,9 @@ named window is refused, because a named window already returns every period. Th
 exception is a `group_by` on a date or time dimension: each of its values sits in one period,
 so filling would repeat every value in every period. Such an answer keeps the rows that hold
 data and says so in `assumptions` (`OBSERVED_PERIODS_ONLY`), and `fill: true` beside such a
-group is refused at `time.fill`.
+group is refused at `time.fill`. The same assumption, with its `reason`, marks a named window
+that can't list its empty periods: on ClickHouse, which has no day spine, or on a clock whose
+zone is not a known time zone. Its series keeps the periods that have rows, never a made-up 0.
 
 What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full rule):
 
@@ -776,8 +778,9 @@ per-entity aggregation.
   segment; `as` wins; the time axis is `period` (an ISO date), followed by `period_partial`.
 - `window` holds only the keys that apply: `start`/`end` as resolved (`last` becomes dates;
   `this` starts on a date and ends at `now`, stated with the clock zone's offset), `now` as
-  used, `partial`, and `data_through` once a warehouse with loaded coverage (DuckDB,
-  MotherDuck, DuckLake, Postgres) has read the edge.
+  used, `partial`, and `data_through` once loaded coverage has read the edge (DuckDB,
+  MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a named
+  window's series).
 - No field is empty: `routes`, `assumptions`, `warnings` and `errors` appear only when they
   have entries, and a list, object or string with nothing in it is left out (`rows` stays: an
   empty result is an answer).
@@ -911,18 +914,21 @@ row.
 operand reads `0` for an entity with no match where its measure has data somewhere in the
 filter's scope, and `NULL` where it has none. So `large_order_count is 0` ("customers with no
 large orders") keeps every customer without one when some order in scope is large, and keeps
-nobody when none is. `NULL` fails every threshold, `is 0` and `lt 1` included. Only a count or
+nobody when none is. `NULL` fails every threshold, `is 0`, `lt 1` and `not 0` included. Only a count or
 sum threshold that 0 passes reaches an entity with no rows at all.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
-Postgres, an empty period inside the base relation's loaded range reads `0`; one before its
-first loaded row or after its last row at or before `now` reads `NULL`. Coverage reads the
+Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an
+empty period inside the base relation's loaded range reads `0`; one before its first loaded
+row or after its last row at or before `now` reads `NULL`. Coverage reads the
 whole base relation under policy row filters, ignoring measure and call filters, and is
 reported as `window.data_through`. Populated sums and positive counts always survive, including
 future-dated rows. `NO_DATA_YET` names each affected output and measure with its `edge` and
 `edge_source` (`last_bucket`: the last period with data; `before_window`: the data ends before
-the window starts). On Snowflake, BigQuery, Databricks, Athena and ClickHouse an empty period
-reads `0` only while the measure has data inside the window.
+the window starts). Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+empty period reads `0` only while the measure has data inside the window. Those warehouses
+read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
+see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
 
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A

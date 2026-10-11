@@ -18,8 +18,7 @@ from typing import Any
 
 from .. import operators
 from ..clock import Window, resolve_window
-from ..errors import SemanticLayerError
-from ..query_call import EXPRESSION_KEYS, REFERENCE_PREFIXES, TIME_AXIS
+from ..query_call import EXPRESSION_KEYS, REFERENCE_PREFIXES, TIME_AXIS, refusal
 
 # The window keys of a time block; ``last`` and ``this`` read relative to ``now``.
 WINDOW_KEYS = ("last", "this", "start", "end")
@@ -472,8 +471,7 @@ def _row(rows: Iterable[Any], object_id: str) -> Any | None:
     return next((row for row in rows if getattr(row, "id", "") == object_id), None)
 
 
-def _refuse(path: str, message: str, code: str = "PLAN_DRAFT_INVALID") -> SemanticLayerError:
-    return SemanticLayerError(code, f"{path}: {message}", details={"path": path})
+_WORDS = f"Use a filter word: {', '.join(operators.WORDS)}."
 
 
 def _check(config: Any, call: Call) -> None:
@@ -493,32 +491,54 @@ def _check(config: Any, call: Call) -> None:
     }
     for index, ref in enumerate(call.references()):
         if ref not in known:
-            raise _refuse(f"references[{index}]", f"unknown id '{ref}'", "OBJECT_NOT_FOUND")
+            raise refusal(
+                f"references[{index}]",
+                f"unknown id '{ref}'",
+                fix="Name an id discover lists.",
+                code="OBJECT_NOT_FOUND",
+            )
     aliases = call.aliases
     if len(set(aliases)) != len(aliases):
-        raise _refuse("select", "every select item has its own alias")
+        raise refusal(
+            "select",
+            "every select item has its own alias",
+            fix="Give each select item its own 'as'.",
+            code="DUPLICATE_OUTPUT_ALIAS",
+        )
     for index, row in enumerate(call.where):
         for item in row.conditions if isinstance(row, EntityFilter) else (row,):
             if item.op not in operators.WORDS:
-                raise _refuse(f"where[{index}].op", f"'{item.op}' is not a filter word")
+                raise refusal(f"where[{index}].op", f"'{item.op}' is not a filter word", fix=_WORDS)
     for index, row in enumerate(call.having):
         if row.op not in operators.WORDS:
-            raise _refuse(f"having[{index}].op", f"'{row.op}' is not a filter word")
+            raise refusal(f"having[{index}].op", f"'{row.op}' is not a filter word", fix=_WORDS)
         if row.field not in aliases and not row.field.startswith(REFERENCE_PREFIXES):
-            raise _refuse(f"having[{index}].field", "names a select alias, measure or metric")
+            raise refusal(
+                f"having[{index}].field",
+                "names a select alias, measure or metric",
+                fix="Name a select item's 'as', or a measure or metric id.",
+            )
     time = call.time
     if time is not None and time.relative and (time.start or time.end):
-        raise _refuse("time", "a relative window carries no dates")
+        raise refusal("time", "a relative window carries no dates", fix="Drop 'start' and 'end'.")
     if time is not None and time.last is not None and time.this:
-        raise _refuse("time", "one window spelling: last or this")
+        raise refusal("time", "one window spelling: last or this", fix="Keep 'last' or 'this'.")
     columns = {*aliases, *call.group_by, *([TIME_AXIS] if time is not None and time.grain else [])}
     for index, order in enumerate(call.order_by):
         if order.field not in columns:
-            raise _refuse(
-                f"order_by[{index}].field", "names a select alias, a group_by id or period"
+            raise refusal(
+                f"order_by[{index}].field",
+                "names a select alias, a group_by id or period",
+                fix="Order by a select item's 'as', a group_by id, or period with a grain.",
+                code="INVALID_ORDER_BY",
             )
         if order.direction not in {"asc", "desc"}:
-            raise _refuse(f"order_by[{index}].direction", "is asc or desc")
+            raise refusal(
+                f"order_by[{index}].direction",
+                "is asc or desc",
+                fix="Use 'asc' or 'desc'.",
+                code="INVALID_ORDER_BY",
+            )
 
 
 __all__ = [

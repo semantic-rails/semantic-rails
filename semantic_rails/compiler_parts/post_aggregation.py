@@ -53,6 +53,7 @@ from .bind import _expression_alias
 from .dependencies import _recipes, recipe_objects, record_leaf_reference
 from .indexes import _entity_index, _measure_has_source_row_key, _measure_index, _recipe_index
 from .namespacing import _namespace_sql_select
+from .paths import display_key
 from .temporal import _period_to_date_period, _window_unit_to_rows
 
 __all__ = [
@@ -343,11 +344,17 @@ def _compile_offset_window_expr(
 
 
 def share_partition(
-    expr: ShareExpr, table_alias: str, group_aliases: list[str], time_alias: str
+    expr: ShareExpr,
+    table_alias: str,
+    group_aliases: list[str],
+    time_alias: str,
+    config: PackageConfig,
 ) -> list[SqlExpr]:
-    """The columns a share's total is taken within: every key the share is not ``over``."""
-    keys = [*group_aliases, *([time_alias] if time_alias and "period" not in expr.over else [])]
-    return _window_partition_exprs(table_alias, [key for key in keys if key not in expr.over])
+    """The columns a share's total is taken within: every key the share is not ``over``. A
+    share over a name is over its entity's key too, which the name groups by beside it."""
+    over = {*expr.over, *filter(None, (display_key(config, column) for column in expr.over))}
+    keys = [*group_aliases, *([time_alias] if time_alias and "period" not in over else [])]
+    return _window_partition_exprs(table_alias, [key for key in keys if key not in over])
 
 
 def _compile_post_expr(
@@ -613,7 +620,7 @@ def _compile_post_expr(
         )
         total = SqlWindow(
             function=SqlCall("SUM", [value]),
-            partition_by=share_partition(expr, table_alias, group_aliases, time_alias),
+            partition_by=share_partition(expr, table_alias, group_aliases, time_alias, config),
         )
         return SqlBinary(value, "/", SqlCall("NULLIF", [total, SqlLiteral(0)]))
     if isinstance(expr, MetricPredicateExpr):

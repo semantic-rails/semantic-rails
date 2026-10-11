@@ -202,7 +202,7 @@ from .ir import (
 )
 from .naming import semantic_token as _semantic_token
 from .naming import slug as _slug
-from .query_call import call_where, engine_where
+from .query_call import call_where, engine_where, refusal
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
 from .renderer import render_select_for_profile
@@ -426,24 +426,35 @@ def _time_axis_kind(expr: Any, config: PackageConfig) -> str:
     return ""
 
 
-def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool:
-    """A named window under a grain answers one row per period it holds, like ``fill``.
+def observed_periods_reason(query: NormalizedQuery, config: PackageConfig) -> str:
+    """Why a named window under a grain answers only the periods that have rows ("" when it
+    answers every period it holds, like ``fill``).
 
-    Only where the warehouse bounds an empty period's 0 by the data's loaded edge, and the
-    clock's zone names its days; elsewhere the series keeps the periods that have rows, so no
-    period after the edge reads 0.
+    Every period needs a day spine and the data's loaded edge, which bounds an empty period's
+    0, on the warehouse, and a clock zone that names its days. Without them the series keeps
+    the periods that have rows, so no period after the edge reads 0, and the answer says so.
     """
     time = query.time
-    if not (
+    if not (time is not None and time.named and time.grain in UNITS and query.select):
+        return ""
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if not (dialect.reads_coverage and dialect.has_implicit_calendar):
+        return f"warehouse '{dialect.name}' can't list a window's empty periods"
+    role = _temporal_role_index(config).get(time.temporal_role)
+    zone = str(getattr(role, "timezone", "") or "UTC")
+    return "" if known_zone(zone) else f"the clock's zone '{zone}' is not a known time zone"
+
+
+def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool:
+    """A named window under a grain answers one row per period it holds, like ``fill``."""
+    time = query.time
+    return bool(
         time is not None
         and time.named
         and time.grain in UNITS
         and query.select
-        and dialect_for_warehouse(config.package.warehouse).has_time_coverage
-    ):
-        return False
-    role = _temporal_role_index(config).get(time.temporal_role)
-    return known_zone(str(getattr(role, "timezone", "") or "UTC"))
+        and not observed_periods_reason(query, config)
+    )
 
 
 def _time_valued_groups(query: NormalizedQuery, config: PackageConfig) -> list[str]:
@@ -1928,8 +1939,14 @@ def _path_selection(
 
 
 def _predicate_where_condition(op: str, value: Any) -> Any:
+    """An entity's aggregate meets the threshold. An unknown (NULL) aggregate meets none, so a
+    ``not``, which keeps unknown rows of a row or result filter, keeps no unknown entity here."""
     alias_ref = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
-    return build_filter_condition(alias_ref, op, value, path="metric_predicate")
+    condition = build_filter_condition(alias_ref, op, value, path="metric_predicate")
+    word, value = operators.normalize_condition(op, value, path="metric_predicate", internal=True)
+    if operators.rejects_unknown(word, value):
+        return condition
+    return SqlBinary(condition, "AND", SqlBinary(alias_ref, "IS NOT", SqlLiteral(None)))
 
 
 # A distinct count of a population is 0 over no rows too; it stays out of the empty-group
@@ -5163,10 +5180,19 @@ def _keyed_by_entity(config: PackageConfig, payload: dict[str, Any]) -> dict[str
     """A dimension that names an entity's rows (its ``display``) groups by the entity's key
     too, just before the name, so same-named entities never merge."""
     group_by = list(payload.get("group_by") or [])
+    named = {row.get("as"): index for index, row in enumerate(payload.get("select") or [])}
     keyed = list(group_by)
     for dimension in group_by:
         key = display_key(config, str(dimension))
         if key and key not in keyed:
+            if key in named:
+                raise refusal(
+                    f"select[{named[key]}]",
+                    f"its column '{key}' is the key the answer carries beside '{dimension}'",
+                    fix='Give it another name with "as".',
+                    code="DUPLICATE_OUTPUT_ALIAS",
+                    alias=key,
+                )
             keyed.insert(keyed.index(dimension), key)
     return payload if keyed == group_by else {**payload, "group_by": keyed}
 

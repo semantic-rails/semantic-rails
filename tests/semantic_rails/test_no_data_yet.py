@@ -5,11 +5,11 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
-from semantic_rails import runtime as runtime_module
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.empty_groups import sql_nodes
 from semantic_rails.registry import Registry
-from semantic_rails.runtime import _no_data_yet_warnings
+from semantic_rails.runtime_parts import answer_warnings as answer_warnings_module
+from semantic_rails.runtime_parts.answer_warnings import _no_data_yet_warnings
 from semantic_rails.sql_ast import SqlIdentifier
 
 ROLE = "temporal_role.jaffle_order_time"
@@ -204,7 +204,7 @@ def test_series_compares_only_compatible_sql_bucket_keys(
     for index in range(2, len(edges) + 1):
         compiled["sql_ast"].ctes.append(replace(coverage, name=f"coverage_{index}"))
     monkeypatch.setattr(
-        runtime_module,
+        answer_warnings_module,
         "_guard_probe_names",
         lambda *a: (
             {"m1": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},

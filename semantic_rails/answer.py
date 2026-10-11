@@ -12,19 +12,38 @@ assumption or a route.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import visible_view
 from .ast import PERIOD_PARTIAL, TIME_AXIS, normalize_query
-from .clock import describe_window, engine_window, format_now, local_date, period_is_partial
-from .compiler import observed_only_groups, read_routes
+from .clock import (
+    describe_window,
+    engine_window,
+    format_now,
+    local_date,
+    parse_now,
+    period_is_partial,
+)
+from .compiler import observed_only_groups, observed_periods_reason, read_routes
 from .compiler_parts.empty_groups import observation_scope
+from .diagnostics import semantic_issue
 from .errors import SemanticLayerError
-from .fanout import offered_rows, package_route, route_note
+from .fanout import (
+    build_hop_profile,
+    offered_rows,
+    package_route,
+    query_route_decisions,
+    route_note,
+)
 from .issues import ASSUMPTION, CODES
 from .query_call import call_from_query, call_where
+from .request_context import context_from_policy_context
 
 # Said when a time window with no grain was aggregated as one total.
 WINDOW_TOTAL_MESSAGE = (
@@ -110,7 +129,8 @@ def answer_fields(
         if "this" in window.spec:
             text = describe_window(window, now=now, timezone=zone)
             assumptions.append({"code": "PARTIAL_PERIOD", "message": text})
-        if held := observed_only_groups(normalize_query(plan.query, config=config), config):
+        query = normalize_query(plan.query, config=config)
+        if held := observed_only_groups(query, config):
             assumptions.append(
                 {
                     "code": "OBSERVED_PERIODS_ONLY",
@@ -119,6 +139,17 @@ def answer_fields(
                         "window's empty periods are not filled: only rows with data are shown."
                     ),
                     "group_by": held,
+                }
+            )
+        elif reason := observed_periods_reason(query, config):
+            assumptions.append(
+                {
+                    "code": "OBSERVED_PERIODS_ONLY",
+                    "message": (
+                        f"The window's empty periods are not filled because {reason}: only "
+                        "periods with data are shown."
+                    ),
+                    "reason": reason,
                 }
             )
     clocks = (
@@ -256,3 +287,406 @@ def _call(query: Mapping[str, Any]) -> dict[str, Any] | None:
         return call_from_query(query)
     except (SemanticLayerError, KeyError, TypeError, AttributeError):
         return None
+
+
+def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
+    if kind == "metric":
+        recipe = next((row for row in config.metric_recipes if row.id == object_id), None)
+        if recipe is None:
+            return {}
+        compatible = list(recipe.compatible_temporal_roles) or (
+            [recipe.temporal_role] if recipe.temporal_role else []
+        )
+        return {
+            "default_temporal_role": recipe.temporal_role or (compatible[0] if compatible else ""),
+            "compatible_temporal_roles": compatible,
+        }
+    if kind == "measure":
+        measure = next((row for row in config.measures if row.id == object_id), None)
+        if measure is None:
+            return {}
+        return {
+            "default_temporal_role": measure.default_temporal_role
+            or (measure.compatible_temporal_roles[0] if measure.compatible_temporal_roles else ""),
+            "compatible_temporal_roles": list(measure.compatible_temporal_roles),
+        }
+    return {}
+
+
+def _hop_profile(config, compiled) -> dict[str, Any]:
+    """``build_hop_profile`` under the query's own route rows, so a pair a row decided reports
+    ``route_basis: query``."""
+    plan = compiled["logical_plan"]
+    rows = {
+        (row["source_entity"], row["target_entity"]): row["relationship_path"]
+        for row in compiled.get("route_decisions") or []
+    }
+    with query_route_decisions(rows):
+        return build_hop_profile(
+            config,
+            root_entity=plan.root_entity,
+            selected_paths=plan.selected_paths,
+            candidate_paths=plan.candidate_paths,
+        )
+
+
+def _policy_context(payload: dict[str, Any]) -> dict[str, Any]:
+    context = dict(payload.get("policy_context", {}) or {})
+    normalized = context_from_policy_context(context).to_policy_context()
+    if context.get("now") not in (None, ""):
+        normalized["now"] = context.get("now")
+    return normalized
+
+
+def _answer_now(payload: dict[str, Any] | None) -> datetime:
+    """The instant relative windows resolved against for this request."""
+    return parse_now(_policy_context(payload or {}).get("now"))
+
+
+_SQL_OUTLINE_KEYWORDS = (
+    "with",
+    "select",
+    "from",
+    "join",
+    "left join",
+    "right join",
+    "inner join",
+    "full join",
+    "outer join",
+    "where",
+    "group by",
+    "order by",
+    "having",
+    "limit",
+    "union",
+    "union all",
+    "qualify",
+)
+
+
+def _sql_outline(sql: str) -> list[str]:
+    """Return a coarse structural outline of a rendered SQL string.
+
+    Lists which top-level SQL keywords appear, in order of first occurrence,
+    so error consumers can tell whether the failed plan was a join, a CTE
+    chain, an aggregate, etc. — without leaking column names, literals,
+    table identifiers, or join predicates.
+    """
+    if not sql:
+        return []
+    lowered = sql.lower()
+    seen: list[tuple[int, str]] = []
+    for keyword in _SQL_OUTLINE_KEYWORDS:
+        # word-boundary match so 'in' inside 'inner' / 'join' inside 'rejoin' do not pollute
+        pattern = re.compile(rf"\b{re.escape(keyword)}\b")
+        for match in pattern.finditer(lowered):
+            seen.append((match.start(), keyword))
+    seen.sort(key=lambda row: row[0])
+    out: list[str] = []
+    for _, keyword in seen:
+        if not out or out[-1] != keyword:
+            out.append(keyword)
+    return out
+
+
+def _sql_summary(sql: str) -> dict[str, Any]:
+    """Redacted structural summary of a rendered SQL string.
+
+    Replaces the raw SQL in error payloads by default so MNPI-tagged column
+    names, table identifiers, and literal filter values do not leak through
+    error envelopes into downstream logging sinks. Returns a deterministic
+    sha256 plus length + outline so debugging is still tractable.
+    """
+    body = str(sql or "")
+    return {
+        "sql_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest() if body else "",
+        "sql_chars": len(body),
+        "sql_outline": _sql_outline(body),
+    }
+
+
+def _debug_sql_authorized(payload: dict[str, Any], policy_context: dict[str, Any]) -> bool:
+    """Return True when raw SQL may be included in error envelopes.
+
+    Three conditions must all hold:
+
+    1. The request explicitly opts in (``debug: true`` in the payload).
+    2. The process operator opts in via the
+       ``SEMANTIC_RAILS_ALLOW_DEBUG_SQL`` env var. This protects the
+       OSS default: the bundled ``HeaderPolicyContextResolver`` lets a
+       caller self-assert ``roles=['debug']`` in headers or the request
+       body, so role membership alone is *not* sufficient to leak SQL.
+       Operators flip this flag only after they have replaced the
+       resolver with one that derives roles from authenticated identity.
+    3. The resolved request context carries the ``debug`` role.
+
+    The audit trail for raw-SQL exposure is therefore: opt-in flag in
+    payload + operator-controlled env var + identity-bound role.
+    """
+    if not bool(payload.get("debug", False)):
+        return False
+    if not _operator_allows_debug_sql():
+        return False
+    roles_raw = policy_context.get("roles", []) if isinstance(policy_context, dict) else []
+    if isinstance(roles_raw, (list, tuple, set)):
+        roles = {str(item).strip().lower() for item in roles_raw}
+    else:
+        roles = {str(roles_raw).strip().lower()}
+    return "debug" in roles
+
+
+def _operator_allows_debug_sql() -> bool:
+    """Honour ``SEMANTIC_RAILS_ALLOW_DEBUG_SQL`` as a boolean env flag.
+
+    Centralised so tests can monkeypatch ``os.environ`` and the value
+    is re-read on every request rather than frozen at import time.
+    """
+    raw = os.environ.get("SEMANTIC_RAILS_ALLOW_DEBUG_SQL", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _query_execution_error_details(
+    *,
+    engine: str,
+    sql: str,
+    payload: dict[str, Any],
+    policy_context: dict[str, Any],
+    extra: dict[str, Any] | None = None,
+    seed_warnings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the `details` payload for a QUERY_EXECUTION_ERROR.
+
+    Default (safe) mode returns a structural sha256 + outline rather than
+    the rendered SQL. The full SQL is only included when the caller opts
+    in via `debug: true` AND the request context has the `debug` role.
+    """
+    details: dict[str, Any] = {"engine": engine, **_sql_summary(sql)}
+    if _debug_sql_authorized(payload, policy_context):
+        details["sql"] = sql
+        details["sql_debug_authorized"] = True
+    else:
+        details["sql_redacted"] = True
+    if extra:
+        for key, value in extra.items():
+            if key not in {"sql", "sql_redacted", "sql_debug_authorized"}:
+                # The runtime owns SQL disclosure, including its authorization flags.
+                details[key] = value
+    if seed_warnings:
+        details["warnings"] = seed_warnings
+    return details
+
+
+def _time_zone(config: Any, compiled: dict[str, Any]) -> str:
+    """The zone a query runs in: its time role's, else UTC ("" if the name isn't a zone).
+
+    DuckDB and Postgres evaluate zone-dependent SQL in the session's zone: the clock of a
+    ``TIMESTAMP WITH TIME ZONE`` value, its comparison with a plain timestamp, ``now()``.
+    Their adapters run each query in this zone, so a zone-aware column buckets and filters
+    in the role's zone at every grain. Naive ``TIMESTAMP`` and ``DATE`` values don't
+    depend on the session zone.
+    """
+    role_id = (compiled["logical_plan"].time or {}).get("temporal_role")
+    zone = next((role.timezone for role in config.temporal_roles if role.id == role_id), "")
+    zone = str(zone or "UTC").strip()
+    try:
+        ZoneInfo(zone)
+    except (ValueError, KeyError, OSError):  # an unknown or malformed name
+        return ""
+    return zone
+
+
+def _withheld_columns(policy_effects: list[dict[str, Any]]) -> set[str]:
+    """The outputs excluded from both value diagnostics and public result metadata."""
+    return {row["withheld_column"] for row in policy_effects if row.get("withheld_column")}
+
+
+def _withhold_values(out: dict[str, Any], policy_effects: list[dict[str, Any]], config) -> None:
+    """Drop the column of a rank by withheld values, and name the withheld objects instead."""
+    visible_view.require_base(config)
+    effects = [row for row in policy_effects if row.get("withheld_column")]
+    if not effects:
+        return
+    columns = _withheld_columns(policy_effects)
+    column = effects[0]["withheld_column"]
+    withheld = sorted({object_id for row in effects for object_id in row["withheld_objects"]})
+    if "rows" in out:
+        out["rows"] = [
+            {key: value for key, value in row.items() if key not in columns} for row in out["rows"]
+        ]
+        for key in columns:
+            out["column_types"].pop(key, None)
+    if "output_columns" in out:
+        out["output_columns"] = [
+            row for row in out["output_columns"] if row.get("field") not in columns
+        ]
+    out["withheld"] = withheld
+    out["warnings"] = [
+        *out["warnings"],
+        semantic_issue(
+            code="VALUES_WITHHELD",
+            message=(
+                f"Rows are ordered by {', '.join(withheld)}, whose values are withheld by "
+                "policy and not shown; ties are ordered by the group keys."
+            ),
+            severity="info",
+            stage="policy",
+            details={"withheld_objects": withheld, "order_by": column},
+            object_ids=withheld,
+        ),
+    ]
+
+
+def _freshness_by_leaf(config, compiled) -> list[dict[str, Any]]:
+    entities = {row.id: row for row in config.entities}
+    aggregate_by_relation = {str(row.relation): row for row in config.aggregate_relations}
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for plan in list(getattr(compiled["logical_plan"], "measure_plans", []) or []):
+        entity = entities.get(plan.source_entity)
+        if entity is None or not (
+            entity.freshness_source or entity.freshness_sla_seconds or entity.freshness_as_of
+        ):
+            continue
+        key = (plan.cte_name, entity.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "leaf_id": plan.cte_name,
+                "source": entity.freshness_source,
+                "source_entity": entity.id,
+                "relation": entity.table,
+                "sla_seconds": entity.freshness_sla_seconds,
+                "as_of": entity.freshness_as_of,
+            }
+        )
+    for node in list(getattr(compiled["physical_plan"], "nodes", []) or []):
+        if node.kind != "Scan":
+            continue
+        relation = str(node.details.get("selected_relation") or node.details.get("relation") or "")
+        aggregate = aggregate_by_relation.get(relation)
+        if aggregate is None or not (
+            aggregate.freshness_source
+            or aggregate.freshness_sla_seconds
+            or aggregate.freshness_as_of
+        ):
+            continue
+        key = (node.id, aggregate.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "leaf_id": node.id,
+                "source": aggregate.freshness_source,
+                "source_entity": aggregate.source_entity,
+                "relation": relation,
+                "aggregate_relation_id": aggregate.id,
+                "sla_seconds": aggregate.freshness_sla_seconds,
+                "as_of": aggregate.freshness_as_of,
+            }
+        )
+    return rows
+
+
+def _freshness_as_of(freshness_rows: list[dict[str, Any]]) -> str:
+    values = sorted(str(row.get("as_of", "") or "") for row in freshness_rows if row.get("as_of"))
+    return values[0] if values else ""
+
+
+def _walk_expr_payload(expr: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = [expr]
+    for key in (
+        "left",
+        "right",
+        "input",
+        "numerator",
+        "denominator",
+        "over",
+        "base",
+        "converted",
+        "value",
+        "null_value",
+    ):
+        child = expr.get(key)
+        if isinstance(child, dict):
+            rows.extend(_walk_expr_payload(child))
+    for key in ("args",):
+        for child in list(expr.get(key, []) or []):
+            if isinstance(child, dict):
+                rows.extend(_walk_expr_payload(child))
+    for item in list(expr.get("whens", []) or []):
+        if isinstance(item, dict):
+            for key in ("when", "then"):
+                child = item.get(key)
+                if isinstance(child, dict):
+                    rows.extend(_walk_expr_payload(child))
+    return rows
+
+
+def _methodology_hints(config, payload: dict[str, Any], compiled) -> list[dict[str, Any]]:
+    measures = {row.id: row for row in config.measures}
+    hints: list[dict[str, Any]] = []
+    normalized = dict(compiled["explain"].normalized_query or {})
+    has_time_grain = bool(dict(normalized.get("time") or {}).get("grain"))
+    for select in list(normalized.get("select", []) or []):
+        expr = dict(select.get("expression", {}) or {})
+        for node in _walk_expr_payload(expr):
+            measure_id = str(node.get("measure", "") or "")
+            aggregation = str(node.get("aggregation", "") or "").lower()
+            measure = measures.get(measure_id)
+            if (
+                measure is not None
+                and has_time_grain
+                and aggregation == "sum"
+                and measure.measure_class == "semi_additive"
+            ):
+                hints.append(
+                    {
+                        "kind": "methodology_error",
+                        "code": "EXPLICIT_SUM_OVER_SNAPSHOT",
+                        "message": "This query explicitly sums a stock snapshot over a time grain; use the measure's natural snapshot aggregation unless a dollar-days style exposure is intended.",
+                        "severity": "warning",
+                        "query_patch": {
+                            "select": [
+                                {
+                                    "as": select.get("as", ""),
+                                    "expression": {
+                                        "measure": measure_id,
+                                        "aggregation": measure.default_aggregation,
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                )
+            if str(node.get("kind", "")) == "prior_period":
+                replacement = next(
+                    (
+                        row
+                        for row in config.metric_recipes
+                        if row.meta.get("published_ttm")
+                        or row.meta.get("replaces_hand_rolled_ttm")
+                        or "ttm" in row.id.lower()
+                    ),
+                    None,
+                )
+                if replacement is not None:
+                    hints.append(
+                        {
+                            "kind": "methodology_error",
+                            "code": "RECOMPUTED_TTM",
+                            "message": "A published TTM metric exists; prefer it over hand-rolled prior-period stitching.",
+                            "severity": "warning",
+                            "query_patch": {
+                                "select": [
+                                    {
+                                        "as": select.get("as", replacement.id.split(".")[-1]),
+                                        "expression": {"metric": replacement.id},
+                                    }
+                                ]
+                            },
+                        }
+                    )
+    return hints

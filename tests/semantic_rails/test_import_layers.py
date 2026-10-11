@@ -24,12 +24,15 @@ LAYERS = [
     " operations",
     "planner",
     "metadata metadata_parts catalog_service",
-    "runtime runtime_parts answer manifest segments caveats resource_access policies cache"
+    "runtime runtime_parts runtime_parts.answer_warnings answer manifest segments caveats resource_access policies cache"
     " request_context api_keys audit visible_view",
     "compiler compiler_parts fanout route_census relation_pipelines renderer ir registry"
     " diagnostics acceleration top_n",
     "db db_parts seed_provenance",
-    "config config_parts package_snapshot yaml_loader operational meta_contract",
+    "config config_parts package_snapshot yaml_loader operational meta_contract"
+    " config_parts.aggregate_rows config_parts.loader_chain config_parts.measure_rows"
+    " config_parts.metric_rows config_parts.model_rows config_parts.package_rows config_parts.policy_rows"
+    " config_parts.row_values config_parts.temporal_rows",
     "dialects sql_preparation sql_ast sql_identifiers row_filters",
     "ast expressions schema errors issues request_payload catalog_format catalog_search scope"
     " temporal_support"

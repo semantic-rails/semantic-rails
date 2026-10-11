@@ -473,15 +473,30 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
     return raw_expr
 
 
+def _reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """Whether the plan's empty periods are bounded by the base's loaded range: every series on
+    DuckDB and Postgres; elsewhere a named window's every-period series (``fill`` with both
+    bounds), which can't otherwise tell an empty period inside the data from one after its
+    edge."""
+    dialect = _dialect(config)
+    time = plan.time or {}
+    return dialect.has_time_coverage or bool(
+        dialect.reads_coverage
+        and time.get("fill")
+        and time.get("start") is not None
+        and time.get("end") is not None
+    )
+
+
 def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     """The one boundary for base time coverage: the guard emits it, routing refuses rollups.
 
     A fill, a dense series or combined branches can show a bucket no leaf has, and a retained
     filtered series one where its authored filter matched no row: each reads 0 only inside
-    the base's loaded range. Only DuckDB and Postgres execute that coverage.
+    the base's loaded range (``_reads_coverage``).
     Branches are counted unrouted, so the answer never depends on routing.
     """
-    if not plan.time or not _dialect(config).has_time_coverage:
+    if not plan.time or not _reads_coverage(plan, config):
         return False
     if plan.time.get("window_total"):
         return True
@@ -6227,7 +6242,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             assert isinstance(share, ShareExpr)
             spanned = SqlWindow(
                 function=SqlCall("COUNT", [SqlLiteral(1)]),
-                partition_by=share_partition(share, "base", group_aliases, time_alias),
+                partition_by=share_partition(share, "base", group_aliases, time_alias, config),
             )
             hidden.append(SqlField(spanned, shares[alias]))
         # Only an output that follows the rule (a sum, count or difference of them): a

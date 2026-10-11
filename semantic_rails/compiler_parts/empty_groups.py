@@ -267,7 +267,7 @@ def guard_empty_groups(
     ``keep`` names source columns passed through unchanged.
     ``names`` gives each measure alias's output names, which a refusal states.
     """
-    if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
+    if (scopes or time_key) and not (dialect is not None and dialect.reads_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
     rows = rows or {}
     measures = list(measures)
@@ -281,6 +281,16 @@ def guard_empty_groups(
     joins: list[SqlJoin] = []
     coverage: dict[str, str] = {}
     probes: dict[str, str] = {}
+
+    def probed(probe: SqlSelect) -> SqlBinary:
+        """Whether ``probe`` finds a row, read once through plain CTEs the guard cross-joins."""
+        name = probes.get(repr(probe))
+        if name is None:
+            name = probes[repr(probe)] = f"observed_{len(probes) + 1}"
+            ctes.extend(_dataset_probe_ctes(name, probe))
+            joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
+        return SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
+
     for alias in measures:
         value: Any = SqlIdentifier(parts=["base", alias])
         aggregation = zero.get(alias)
@@ -299,13 +309,7 @@ def guard_empty_groups(
             source_rows = gated or not bucketed
             if dataset:
                 probe = _seen_outside_window(observed[alias], source_rows=source_rows).query
-                name = probes.get(repr(probe))
-                if name is None:
-                    name = probes[repr(probe)] = f"observed_{len(probes) + 1}"
-                    ctes.extend(_dataset_probe_ctes(name, probe))
-                    joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
-                found = SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
-                seen = SqlBinary(seen, "OR", found)
+                seen = SqlBinary(seen, "OR", probed(probe))
             if alias in observed_buckets:
                 # A retained leaf group proves rows existed before its authored filter.
                 # A missing leaf beside another fact has NULL here and proves nothing.
@@ -322,16 +326,16 @@ def guard_empty_groups(
                     seen = SqlBinary(seen, "OR", SqlBinary(marker, ">=", SqlLiteral(0)))
             if scope is not None:
                 if scope.bounded and not dataset:
-                    seen = SqlBinary(
-                        seen,
-                        "OR",
-                        _seen_outside_window(
-                            scope,
-                            source_rows=source_rows
-                            and alias not in earlier
-                            and not earlier_settlement_applies(),
-                        ),
+                    outside = _seen_outside_window(
+                        scope,
+                        source_rows=source_rows
+                        and alias not in earlier
+                        and not earlier_settlement_applies(),
                     )
+                    # Where EXISTS may not sit in a select (Snowflake, Spark), the probe is read
+                    # through plain CTEs instead.
+                    found = outside if dialect.exists_in_select else probed(outside.query)
+                    seen = SqlBinary(seen, "OR", found)
                 if gated:
                     loaded = repr(
                         (

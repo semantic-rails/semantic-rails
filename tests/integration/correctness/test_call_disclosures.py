@@ -276,3 +276,24 @@ def test_keyword_aliases_are_names_in_every_clause(request, backend):
     ] == [(store, *(Decimal(str(value)) for value in values)) for store, *values in reference]
     for alias in ("end", "user", "order", "period"):
         assert f'AS "{alias}"' in result["rendered_sql"]
+
+
+def test_a_share_over_a_name_takes_its_total_over_the_namesakes_too(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    spec = ENTRIES["shop/share-over-a-name-spans-every-namesake"]
+    result = runtime.query(spec["query"])
+    assert [(row[CUSTOMER_ID], row["share"]) for row in result["rows"]] == [
+        (101, pytest.approx(0.5)),
+        (103, pytest.approx(0.5)),
+    ]
+
+
+def test_a_select_alias_cannot_take_the_name_of_an_implied_key(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {
+        "select": [{"expression": "measure.shop.revenue", "as": CUSTOMER_ID}],
+        "group_by": [CUSTOMER_NAME],
+    }
+    [error] = runtime.validate(call)["errors"]
+    assert error["code"] == "DUPLICATE_OUTPUT_ALIAS"
+    assert error["details"]["path"] == "select[0]"

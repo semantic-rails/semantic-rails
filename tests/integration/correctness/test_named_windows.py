@@ -297,3 +297,37 @@ def test_this_cuts_at_now_in_the_repeated_hour(fall_back: Runtime, now: str, gra
     rows = fall_back.query({"select": [ORDERS], "time": time}, now=now)["rows"]
     assert [row["order_count"] for row in rows] == [reference[0][0]]
     assert reference[0][0] == (1 if now.startswith("2024-11-03T05") else 2)
+
+
+def test_a_named_window_answers_the_same_with_its_probe_read_through_ctes(packages, monkeypatch):
+    # Snowflake and Spark can't put EXISTS in a select, so their guard reads the
+    # outside-the-window probe through plain CTEs. On DuckDB that form answers every frozen
+    # named-window series the same.
+    from semantic_rails import package_tools
+    from semantic_rails.dialects import DuckDbDialect
+
+    from .answer_ledger import load_entries
+
+    monkeypatch.setattr(DuckDbDialect, "exists_in_select", False)
+    cases = [
+        (case_id, spec)
+        for case_id, spec in load_entries()
+        if spec["expect"] == "answer"
+        and (time := spec["query"].get("time") or {}).get("grain")
+        and (time.get("last") or time.get("this") or ("start" in time and "end" in time))
+    ]
+    assert cases
+    runtimes: dict[str, Runtime] = {}
+    probed = 0
+    try:
+        for case_id, spec in cases:
+            variant = spec.get("variant", "utc_authored")
+            runtime = runtimes.setdefault(variant, _runtime(packages[variant]))
+            report = package_tools._run_test(runtime, case_id, spec)
+            assert report["ok"], report
+            sql = runtime.compile(spec["query"], now=spec.get("now"))["rendered_sql"]
+            probed += "observed_1_rows" in sql and "EXISTS" not in sql
+    finally:
+        for runtime in runtimes.values():
+            runtime.close()
+    assert probed

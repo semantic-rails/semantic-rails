@@ -97,31 +97,50 @@ def _nodes(node: Any) -> Iterable[dict[str, Any]]:
             yield from _nodes(value)
 
 
+def _measure_ids(node: Any) -> Iterable[str]:
+    """Every measure id a caller's expressions name, at any depth; a metric's own definition is
+    the package's and is never expanded."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _measure_ids(item)
+    elif isinstance(node, dict):
+        measure = node.get("measure")
+        if isinstance(measure, str) and measure.startswith("measure."):
+            yield measure
+        for value in node.values():
+            yield from _measure_ids(value)
+
+
 def refuse_hidden_governors(config: PackageConfig, query: dict[str, Any]) -> None:
-    """A raw measure governed by a metric the caller can't see is never answered as a number;
-    the refusal names neither the metric nor what it filters."""
-    select = list(query.get("select") or [])
-    for measure, _, hidden in _governors(config, select):
-        if hidden:
-            index = next(
-                index
-                for index, row in enumerate(select)
-                if any(node["measure"] == measure for node in select_measure_reads([row]))
-            )
-            raise SemanticLayerError(
-                "POLICY_DENIED",
-                f"select[{index}]: '{measure}' can't be answered as a raw number for you.",
-                details={
-                    "path": f"select[{index}]",
-                    "measure": measure,
-                    "recovery_hints": [
-                        {
-                            "kind": "ask_admin",
-                            "message": "Ask a package admin which metric answers this for you.",
-                        }
-                    ],
-                },
-            )
+    """A raw measure governed by a metric the caller can't see is never answered as a number,
+    nor probed by a threshold: every measure the caller's select, having, entity filters and
+    nested predicates read is checked. The refusal names neither the metric nor what it
+    filters."""
+    parts = {
+        "select": query.get("select"),
+        "having": query.get("metric_filters"),
+        "where": query.get("where"),
+    }
+    for path, part in parts.items():
+        for index, item in enumerate(part or []):
+            for measure in dict.fromkeys(_measure_ids(item)):
+                if not governed_out_of_view(config, measure):
+                    continue
+                at = f"select[{index}]" if path == "select" else path
+                raise SemanticLayerError(
+                    "POLICY_DENIED",
+                    f"{at}: '{measure}' can't be answered as a raw number for you.",
+                    details={
+                        "path": at,
+                        "measure": measure,
+                        "recovery_hints": [
+                            {
+                                "kind": "ask_admin",
+                                "message": "Ask a package admin which metric answers this for you.",
+                            }
+                        ],
+                    },
+                )
 
 
 def governed_metric_exists(config: PackageConfig, compiled: dict[str, Any]) -> list[dict[str, Any]]:

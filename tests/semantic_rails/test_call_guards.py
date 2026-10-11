@@ -147,3 +147,68 @@ def test_brooklyns_share_of_revenue_matches_reference_sql(runtime: Runtime) -> N
         "unit": "fraction",
         "rows": 2,
     }
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        # A result threshold reads the raw count per store.
+        {
+            "group_by": [STORE],
+            "having": [{"field": ORDERS, "op": "gte", "value": 30000}],
+        },
+        # An entity threshold reads it per customer.
+        {
+            "select": [REVENUE],
+            "where": [
+                {
+                    "entity": "entity.jaffle_customer",
+                    "having": [{"field": ORDERS, "op": "gte", "value": 5}],
+                    "over": "all_time",
+                }
+            ],
+        },
+        # A scoped aggregate's predicate reads it inside a select.
+        {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "scoped_aggregate",
+                        "measure": REVENUE,
+                        "predicates": [
+                            {
+                                "entity": "entity.jaffle_customer",
+                                "input": ORDERS,
+                                "op": "gte",
+                                "value": 5,
+                                "over": "all_time",
+                            }
+                        ],
+                    },
+                    "as": "revenue_of_regulars",
+                }
+            ]
+        },
+    ],
+    ids=["having", "entity-filter", "scoped-predicate"],
+)
+def test_no_threshold_reads_a_raw_measure_a_hidden_metric_governs(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, call: dict[str, Any]
+) -> None:
+    policy = SemanticPolicyConfig(
+        id="policy.hide_high_value",
+        kind="object_visibility",
+        object_ids=[GOVERNORS[0]],
+        action="hidden",
+        audiences=["external"],
+    )
+    monkeypatch.setattr(runtime, "_config", replace(runtime._config, semantic_policies=[policy]))
+    [error] = runtime.validate(call, context={"audience": "external"})["errors"]
+    assert error["code"] == "POLICY_DENIED"
+    assert GOVERNORS[0] not in json.dumps(error) and "high value" not in json.dumps(error).lower()
+    # A package metric reads the measure on its own terms: it is the caller's to use.
+    governed = {**call, "select": [GOVERNORS[1]]} if "select" not in call else None
+    if governed is not None:
+        assert runtime.validate(
+            {"select": [GOVERNORS[1]], "group_by": [STORE]}, context={"audience": "external"}
+        )["ok"]

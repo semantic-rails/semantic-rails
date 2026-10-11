@@ -1,8 +1,9 @@
 """Contract test: the code table in ``semantic_rails.issues`` and the codes the engine writes agree.
 
 Every code written anywhere — a ``SemanticLayerError``, a ``code=`` argument, a ``"code"`` key
-of an issue, a hint or a report row, or a helper that takes a code positionally — is listed
-in ``issues.CODES``, and every listed code is written somewhere.
+of an issue, a hint or a report row, a helper that takes a code positionally, or the default of
+a helper's ``code`` parameter — is listed in ``issues.CODES``, and every listed code is written
+somewhere.
 
 Catches:
 - Dead codes (declared but never written) — this kept happening pre-launch.
@@ -51,8 +52,9 @@ def _collect_written_codes() -> dict[str, list[str]]:
 
     Sites: ``SemanticLayerError("CODE", ...)`` and the other positional helpers (``raise`` or
     ``return``, the deferred-raise idiom), ``super().__init__("CODE", ...)`` in
-    SemanticLayerError subclasses, ``code="CODE"`` arguments, and ``{"code": "CODE"}`` keys.
-    Literal conditional expressions and f-strings count each possible code.
+    SemanticLayerError subclasses, ``code="CODE"`` arguments, ``{"code": "CODE"}`` keys, and a
+    ``code`` parameter's default (a helper called without one writes it). Literal conditional
+    expressions and f-strings count each possible code.
     """
     written: dict[str, list[str]] = {}
 
@@ -87,6 +89,21 @@ def _collect_written_codes() -> dict[str, list[str]]:
                     ):
                         subclass_initializers.add(call)
         for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                arguments = node.args
+                positional = [*arguments.posonlyargs, *arguments.args]
+                defaults = [
+                    *zip(
+                        positional[len(positional) - len(arguments.defaults) :],
+                        arguments.defaults,
+                        strict=True,
+                    ),
+                    *zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True),
+                ]
+                for argument, default in defaults:
+                    if argument.arg == "code" and default is not None:
+                        add(node, default)
+                continue
             if isinstance(node, ast.Dict):
                 for key, value in zip(node.keys, node.values, strict=True):
                     if isinstance(key, ast.Constant) and key.value == "code":
@@ -157,6 +174,13 @@ def test_collect_raised_codes_with_literal_alternatives(
         ),
         ('{"code": "not a code"}', set()),
         ("seen.add('NOT_A_CODE_SITE')", set()),
+        # A helper called without a code writes its default.
+        (
+            'None\ndef refuse(path, message, code="PLAN_DRAFT_INVALID"): pass',
+            {"PLAN_DRAFT_INVALID"},
+        ),
+        ('None\ndef refuse(path, *, code="INVALID_QUERY"): pass', {"INVALID_QUERY"}),
+        ('None\ndef refuse(path, kind="NOT_A_CODE_SITE"): pass', set()),
     ],
 )
 def test_collect_written_codes_from_every_site(tmp_path, monkeypatch, construction, expected):

@@ -14,8 +14,8 @@ The corpus:
 - the engine-form inputs of ``tests/semantic_rails/test_rendered_sql_snapshots.py``;
 - the payloads of ``scripts/dev/capture_sql_baseline.py``.
 
-Per query and dialect the record holds the rendered SQL, the output columns and the warning
-codes, or the refusal's code and path (a refusal is a result, not a skip), or the exception type
+Per query and dialect the record holds the rendered SQL, the output columns and the warning and
+assumption codes, or the refusal's code and path (a refusal is a result, not a skip), or the exception type
 of a crash. An entry's own ``now`` wins; every other query compiles at a pinned ``now``. The
 record is sorted JSON with no timings or request ids, so two runs on one commit are
 byte-identical, whatever the hash seed or worker count.
@@ -231,8 +231,9 @@ def _compile(runtime: Runtime, query: Query) -> dict[str, Any]:
         "output_columns": out["output_columns"],
         "warnings": [str(issue.get("code", "")) for issue in out.get("warnings") or []],
     }
-    if out.get("errors"):
-        result["errors"] = [str(issue.get("code", "")) for issue in out["errors"]]
+    for key in ("assumptions", "errors"):
+        if out.get(key):
+            result[key] = [str(issue.get("code", "")) for issue in out[key]]
     return result
 
 
