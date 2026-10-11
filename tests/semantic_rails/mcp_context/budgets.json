@@ -36,10 +36,10 @@
   "query.v2.session.lean.max_step_structured_tokens": 989,
   "query.v2.session.lean.structured_tokens": 4878,
   "query.v2.session.lean.text_tokens": 4878,
-  "query.v2.tools_list.largest_tool_tokens": 3186,
-  "query.v2.tools_list.model_visible_tokens": 4485,
+  "query.v2.tools_list.largest_tool_tokens": 3347,
+  "query.v2.tools_list.model_visible_tokens": 4645,
   "query.v2.tools_list.tools": 6,
-  "query.v2.tools_list.wire_tokens": 5386
+  "query.v2.tools_list.wire_tokens": 5546
  },
  "tracked": {
   "architect.instructions_tokens": 274,
