@@ -7,7 +7,6 @@ import pytest
 
 from semantic_rails.ast import normalize_partial_query, normalize_query
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.mcp import _grouped_ungrained_time_warning
 from semantic_rails.planner import plan_payload
 
 MEASURE = "measure.jaffle.revenue_usd"
@@ -110,19 +109,6 @@ def test_runtime_refuses_a_dimension_wrapped_in_an_expression(runtime_factory, k
         runtime.close()
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"].startswith("select[0].expression")
-
-
-def test_time_grain_warning_reads_the_group_by():
-    """A grouped engine query whose clock has no grain gets the grouped warning."""
-    canonical = {
-        "select": [{"expression": {"kind": "metric", "metric": METRIC}}],
-        "group_by": [DIM],
-        "time": {"temporal_role": "temporal_role.jaffle_order_time"},
-    }
-    assert (
-        _grouped_ungrained_time_warning(canonical, {})["code"]
-        == "UNGRAINED_GROUPED_TIME_PROJECTION"
-    )
 
 
 def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory):

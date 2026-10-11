@@ -27,7 +27,7 @@ STORE = "dimension.jaffle_store_name"
 REVENUE = ["measure.jaffle.revenue_usd"]
 # 365 daily buckets: more than the default cap.
 DAILY_REVENUE = {"select": REVENUE, "time": {"temporal_role": ORDER_TIME, "grain": "day"}}
-# Stores listed over a window with no grain: one row per store and order timestamp.
+# Stores listed over a window with no grain: one row per store, never one per timestamp.
 NO_GRAIN_WINDOW = {
     "group_by": [STORE],
     "time": {"temporal_role": ORDER_TIME, "start": "2016-01-01"},
@@ -88,14 +88,12 @@ def test_execute_fetches_only_its_cap(
     assert fetched == [{"max_rows": 7}]
 
 
-def test_a_window_without_a_grain_is_capped_and_flagged(adapter: SemanticLayerMCPAdapter) -> None:
+def test_a_window_without_a_grain_lists_each_group_once(adapter: SemanticLayerMCPAdapter) -> None:
     response = adapter.call_tool("execute", {"query": NO_GRAIN_WINDOW, "max_rows": 200})
     assert response["ok"], response["errors"]
-    assert response["row_count"] == MCP_DEFAULT_MAX_ROWS
-    assert response["truncated"] is True
-    assert response["total_row_count"] is None
-    assert "time.grain" in _truncation(response)["message"]
-    assert "UNGRAINED_GROUPED_TIME_PROJECTION" in _codes(response)
+    assert sorted(row[STORE] for row in response["rows"]) == ["Brooklyn", "Philadelphia"]
+    assert response["truncated"] is False
+    assert response["assumptions"][0]["code"] == "WINDOW_TOTAL"
 
 
 def test_max_rows_raises_the_cap(adapter: SemanticLayerMCPAdapter) -> None:
@@ -156,35 +154,8 @@ def test_columnar_results_are_capped_too(adapter: SemanticLayerMCPAdapter) -> No
     assert response["total_row_count"] is None
 
 
-@pytest.mark.parametrize("mode", ["validate", "sql"])
-def test_a_grouped_window_without_a_grain_is_flagged_before_execution(
-    adapter: SemanticLayerMCPAdapter, mode: str
-) -> None:
-    response = adapter.call_tool("execute", {"query": NO_GRAIN_WINDOW, "mode": mode})
-    assert response["ok"], response["errors"]
-    assert _codes(response).count("UNGRAINED_GROUPED_TIME_PROJECTION") == 1
-    warning = next(
-        w for w in response["warnings"] if w["code"] == "UNGRAINED_GROUPED_TIME_PROJECTION"
-    )
-    assert warning["details"]["recovery_hints"][0]["code"] == "SET_TIME_GRAIN"
-
-
 def test_a_role_without_a_window_or_grain_is_refused(adapter: SemanticLayerMCPAdapter) -> None:
     role_only = {**NO_GRAIN_WINDOW, "time": {"temporal_role": ORDER_TIME}}
     response = adapter.call_tool("execute", {"query": role_only, "max_rows": 200})
     assert response["ok"] is False
     assert response["errors"][0]["details"]["path"] == "time"
-
-
-def test_running_totals_do_not_hide_the_missing_grain() -> None:
-    from semantic_rails.mcp import _grouped_ungrained_time_warning
-
-    def query(kind: str) -> dict[str, Any]:
-        expression = {"kind": kind, "input": "measure.jaffle.revenue_usd"}
-        return {**NO_GRAIN_WINDOW, "select": [{"as": "v", "expression": expression}]}
-
-    # A running total's buckets come from time.grain, so its absence still matters...
-    assert _grouped_ungrained_time_warning(query("cumulative"), {}) is not None
-    assert _grouped_ungrained_time_warning(query("period_to_date"), {}) is not None
-    # ...while kinds on their own clock don't project the raw timestamp.
-    assert _grouped_ungrained_time_warning(query("rolling"), {}) is None

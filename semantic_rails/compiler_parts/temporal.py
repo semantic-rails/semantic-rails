@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import difflib
+import json
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timedelta
@@ -285,7 +286,7 @@ def _validate_leaf_window_clock(
                 "recovery_hints": [
                     {
                         "code": "CHOOSE_OUTPUT_CLOCK",
-                        "message": f"Set query.time.temporal_role to '{bound_role}'.",
+                        "message": f"Set time.temporal_role to '{bound_role}'.",
                     }
                 ],
             },
@@ -482,6 +483,37 @@ def refuse_authored_calendar(grain: Any, clocks: Iterable[str], config: PackageC
         "without a grain.",
         details=details,
     )
+
+
+def window_total_refusal(
+    time: Mapping[str, Any], why: str, *, grain: str = "", **details: Any
+) -> SemanticLayerError:
+    """A window with no grain is one total; ``why`` says what in the request has none.
+
+    The one hint is the call's own time block with a grain: ``grain`` when the request needs
+    one of its own (:func:`series_grain`), else the window's unit for ``last`` or ``this``,
+    else ``month``.
+    """
+    from ..query_call import call_from_query, refusal
+
+    grain = grain or time.get("last_unit") or time.get("this") or "month"
+    block = {**call_from_query({"time": dict(time)})["time"], "grain": grain}
+    return refusal(
+        "time.grain",
+        f"without a grain the answer is one total over the window, and {why}",
+        fix=f"Add a grain for one row per period: {json.dumps({'time': block})}.",
+        code="WINDOW_TOTAL_UNSUPPORTED",
+        temporal_role=time.get("temporal_role"),
+        **details,
+    )
+
+
+def series_grain(expr: SemanticExpr, config: PackageConfig) -> str:
+    """The grain a window in ``expr`` answers at: its own unit, or days for a period to date."""
+    lookback = _unsafe_windowed_lookback(expr, config) or {}
+    if lookback.get("kind") in {"PeriodToDateExpr", "OffsetWindowExpr[period_to_date]"}:
+        return "day"
+    return str(lookback.get("unit") or "")
 
 
 def _collect_conversion_bindings(
@@ -702,8 +734,13 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
     if query.time is None:
         for expr in expressions:
             if _requires_query_time(expr, config):
-                raise SemanticLayerError(
-                    "INVALID_QUERY", f"Expression '{expr_kind(expr)}' requires query.time"
+                from ..query_call import refusal
+
+                grain = series_grain(expr, config) or "month"
+                raise refusal(
+                    "time",
+                    f"'{expr_kind(expr)}' reads periods, so the call needs a time block",
+                    fix=f'Add "time": {{"grain": "{grain}"}}, or a window with that grain.',
                 )
         return
     requested = query.time.temporal_role
@@ -1026,7 +1063,7 @@ def _validate_restrictive_time_semantics(
         details: dict[str, Any]
         if query.time.start is not None:
             details = {"start": query.time.start}
-            bound, remedy = "a bounded query.time.start", "remove the start boundary"
+            bound, remedy = "a bounded time.start", "remove the start boundary"
         else:
             extras = []
             sources: dict[str, dict[str, Any]] = {}
@@ -1059,7 +1096,7 @@ def _validate_restrictive_time_semantics(
                 if operators.word_of(item.op) in {"gte", "gt"}:
                     details["start"] = item.value
                 bound = f"a where filter on a date or calendar dimension ({path}) other than an upper bound"
-                remedy = f"remove {path} (an upper bound or query.time.end still runs)"
+                remedy = f"remove {path} (an upper bound or time.end still runs)"
         details["expression"] = expr_to_dict(expr)
         if cumulative:
             message = f"Cumulative expressions do not support {bound}; " + (
