@@ -1399,7 +1399,9 @@ buckets, and a query's `start`/`end` bounds, are in that zone:
   - BigQuery buckets `DATETIME` values, so a `TIMESTAMP` column isn't bucketed in the role's zone.
 
   On those warehouses, store naive timestamps and declare their zone with
-  `column_timezone:`.
+  `column_timezone:`. Until a clock in a zone other than UTC declares it, a window
+  that ends at now (`this`, or `start` alone) is refused there: a plain and a
+  zone-aware timestamp would need different cutoffs. Dated windows still answer.
 
 ### Dimensions
 
