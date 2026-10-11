@@ -311,8 +311,10 @@ def test_day_ranges_remain_available_on_nondefault_calendars(config):
     finally:
         runtime.close()
     assert result["ok"] is True, result["errors"]
-    time = result["normalized_query"]["time"]
-    assert (time["start"], time["end"]) == ("2024-06-29", "2024-06-30")
+    # The echoed call keeps last; the answer's window states the resolved bounds.
+    assert result["normalized_query"]["time"]["last"] == {"unit": "day", "value": 1}
+    window = result["window"]
+    assert (window["start"], window["end"]) == ("2024-06-29", "2024-06-30")
 
 
 def test_role_bound_to_nondefault_calendar_cannot_bypass_the_period_guard(config):

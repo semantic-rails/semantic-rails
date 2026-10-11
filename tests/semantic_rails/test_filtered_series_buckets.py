@@ -102,7 +102,7 @@ def test_twelve_observed_weeks_include_five_zeros(series, scope, kind):
     assert [(row["period"], row["value"]) for row in typed_rows(response)] == [
         (row["bucket"], row["value"]) for row in gold
     ]
-    assert not any(w["code"] == "EMPTY_RESULT_WINDOW" for w in response["warnings"])
+    assert not any(w["code"] == "EMPTY_RESULT_WINDOW" for w in response.get("warnings", []))
 
 
 @pytest.mark.parametrize("scope", ["dataset", "query"])
@@ -159,7 +159,7 @@ def test_a_filtered_ratio_keeps_its_seven_populated_buckets(series):
             week + 1 for week in sorted(MATCHING_WEEKS)
         ]
         assert not any(
-            w["code"].startswith("FILTERED_SERIES_BUCKETS") for w in response["warnings"]
+            w["code"].startswith("FILTERED_SERIES_BUCKETS") for w in response.get("warnings", [])
         )
     finally:
         runtime.close()
@@ -244,7 +244,9 @@ def test_unsupported_conditional_operands_name_the_five_dropped_buckets(series):
         response = runtime.query(_query("sum"))
         assert len(response["rows"]) == 7
         warning = next(
-            w for w in response["warnings"] if w["code"] == "FILTERED_SERIES_BUCKETS_DROPPED"
+            w
+            for w in response.get("warnings", [])
+            if w["code"] == "FILTERED_SERIES_BUCKETS_DROPPED"
         )
         assert warning["details"]["dropped_buckets"] == [
             {"period": (START + timedelta(weeks=week)).date().isoformat()}
@@ -266,7 +268,9 @@ def test_a_diagnostic_cannot_read_through_a_metric_only_grant(series):
         query.pop("observation_scope")
         response = runtime.query(query, context=context)
         warning = next(
-            w for w in response["warnings"] if w["code"] == "FILTERED_SERIES_BUCKETS_UNVERIFIED"
+            w
+            for w in response.get("warnings", [])
+            if w["code"] == "FILTERED_SERIES_BUCKETS_UNVERIFIED"
         )
         assert warning["details"]["dropped_buckets"] == []
         assert warning["details"]["reason"] == "RESOURCE_ACCESS_DENIED"
@@ -382,7 +386,9 @@ def test_a_routed_series_warns_about_its_missing_months(tmp_path):
             row["aggregate_relation_id"] for row in response["logical_plan"]["measure_plans"]
         )
         warning = next(
-            w for w in response["warnings"] if w["code"] == "FILTERED_SERIES_BUCKETS_DROPPED"
+            w
+            for w in response.get("warnings", [])
+            if w["code"] == "FILTERED_SERIES_BUCKETS_DROPPED"
         )
         assert warning["details"]["dropped_buckets"] == [
             {"period": f"{month}-01"} for month in ["2023-12", "2024-01", "2024-05", "2024-08"]
@@ -407,7 +413,9 @@ def test_an_incomplete_source_probe_never_claims_a_dropped_bucket(series, monkey
     try:
         response = runtime.query(_query("sum"))
         warning = next(
-            w for w in response["warnings"] if w["code"] == "FILTERED_SERIES_BUCKETS_UNVERIFIED"
+            w
+            for w in response.get("warnings", [])
+            if w["code"] == "FILTERED_SERIES_BUCKETS_UNVERIFIED"
         )
         assert warning["details"]["dropped_buckets"] == []
         assert warning["details"]["reason"] == (
@@ -457,7 +465,7 @@ def test_retained_series_skip_bucket_probes_on_cold_and_cached_compiles(
         assert calls[1]["select"] == []
         assert not any(
             w["code"].startswith("FILTERED_SERIES_") or w["code"] == "RESOURCE_ACCESS_DENIED"
-            for w in response["warnings"]
+            for w in response.get("warnings", [])
         )
     finally:
         runtime.close()
@@ -493,7 +501,9 @@ def test_unsupported_series_accept_container_valued_group_keys(
         response = runtime.query({**_query("sum", "query"), "group_by": [STORE]})
         assert len(response["rows"]) == 7
         assert all(row[STORE] == expected for row in response["rows"])
-        (warning,) = [w for w in response["warnings"] if w["code"].startswith("FILTERED_SERIES_")]
+        (warning,) = [
+            w for w in response.get("warnings", []) if w["code"].startswith("FILTERED_SERIES_")
+        ]
         assert warning["code"] == "FILTERED_SERIES_BUCKETS_DROPPED"
         assert warning["details"]["dropped_buckets"] == [
             {STORE: expected, "period": (START + timedelta(weeks=week)).date().isoformat()}
@@ -517,7 +527,9 @@ def test_a_key_normalization_failure_only_warns_after_the_answer_is_computed(ser
     try:
         response = runtime.query(_query("sum", "query"))
         assert len(response["rows"]) == 7
-        (warning,) = [w for w in response["warnings"] if w["code"].startswith("FILTERED_SERIES_")]
+        (warning,) = [
+            w for w in response.get("warnings", []) if w["code"].startswith("FILTERED_SERIES_")
+        ]
         assert warning["code"] == "FILTERED_SERIES_BUCKETS_UNVERIFIED"
         assert warning["details"] == {"dropped_buckets": [], "reason": "source_probe_failed"}
     finally:
@@ -542,7 +554,7 @@ def test_retained_aggregate_filter_literals_keep_the_shared_misspelling_guard(
     ]
     response = series.query(query)
     assert len(response["rows"]) == 12
-    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+    (warning,) = [w for w in response.get("warnings", []) if w["code"] == "FILTER_VALUE_NOT_FOUND"]
     assert warning["details"]["filters"] == [
         {"dimension": PRODUCT, "value": "appels", "suggestion": "apple"}
     ]
@@ -562,5 +574,5 @@ def test_a_failed_retained_filter_literal_probe_warns_without_losing_rows(
     monkeypatch.setattr(series, "query_internal", query)
     response = series.query(_query("sum", scope))
     assert len(response["rows"]) == 12
-    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_UNVERIFIED"]
+    (warning,) = [w for w in response.get("warnings", []) if w["code"] == "FILTER_VALUE_UNVERIFIED"]
     assert warning["details"]["filters"] == [{"dimension": PRODUCT, "value": "apple"}]
