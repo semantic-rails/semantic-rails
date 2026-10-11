@@ -94,6 +94,7 @@ from ..sql_ast import (
     build_filter_condition,
     build_negation,
 )
+from . import nested
 from .aliasing import AliasRegistry, alias_select
 from .bind import (
     _aggregation_expr,
@@ -1582,8 +1583,6 @@ def _distribution_input_predicates(
 def _distribution_select(
     expr: DistributionExpr, *, alias: str, plan: LogicalPlan, config: PackageConfig
 ) -> SqlSelect:
-    from ..compiler import _compile_query_sql_ast
-
     # A dense per-entity series holds every entity in every period, so an entity with no rows
     # in a period (not yet created, or long gone) would enter that period's distribution.
     if _expr_requires_dense_series(expr.over.input, config) or _metric_filters_require_dense_series(
@@ -1619,7 +1618,7 @@ def _distribution_select(
     # Like a metric predicate's set, the per-entity values join their lookups INNER: a row whose
     # lookup of the entity finds no match is no entity, never one NULL entity of its own.
     with inner_lookups():
-        sql_ast = _compile_query_sql_ast(
+        sql_ast = nested.query_sql(
             config,
             entity_value_query,
             project_cut=project_is_cut() or bool(expr.over.where),
@@ -1674,8 +1673,6 @@ def _distribution_select(
 def _single_expression_branch_select(
     expr: SemanticExpr, *, alias: str, plan: LogicalPlan, config: PackageConfig
 ) -> SqlSelect:
-    from ..compiler import _compile_query_sql_ast
-
     if isinstance(expr, MetricRecipeRefExpr) and _expr_contains_distribution(expr, config):
         with recipe_objects(expr.metric_recipe):
             recipe = _recipe_index(config)[expr.metric_recipe]
@@ -1690,7 +1687,7 @@ def _single_expression_branch_select(
             "A distribution nested in another expression cannot retain its grouping grain; "
             "select the distribution separately.",
         )
-    return _compile_query_sql_ast(
+    return nested.query_sql(
         config, _branch_context_query(plan, expr_to_dict(expr), alias), project_cut=project_is_cut()
     )
 
@@ -2657,7 +2654,7 @@ def _parent_lookup_leaf_select(
     the child rows only. A parent with no source rows reads 0 while the source is observed (the
     gate), a NULL key reads NULL, and the guard proves one total per output row, so MAX picks it.
     """
-    from ..compiler import _compile_query_sql_ast, _validate_non_additive_sums
+    from ..compiler import _validate_non_additive_sums
 
     bound = measure_plan.bound_measure
     # Every plan that reaches this leaf passes the one-total-per-row guard here as well.
@@ -2681,7 +2678,7 @@ def _parent_lookup_leaf_select(
     # The inner query's settled values are internal: no NO_DATA_IN_SCOPE output of their own.
     with measure_objects(measure.id), recording_zero_outputs():
         record_bound_object(child_link, config)
-        source_sql = _compile_query_sql_ast(config, payload, project_cut=project_is_cut())
+        source_sql = nested.query_sql(config, payload, project_cut=project_is_cut())
     table = _measure_source_relation(measure, _entity_index(config)[measure.entity])
     occupied = {table.casefold()} | {
         node.name.casefold()
@@ -3563,7 +3560,7 @@ def _minimal_predicate_set_ctes(
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> PredicateSetSql:
-    from ..compiler import _compile_predicate_source_ast, _require_predicate_over_rows
+    from ..compiler import _require_predicate_over_rows
 
     query = normalize_query(plan.query)
     predicate = _predicate_expr_from_payload(predicate_payload)
@@ -3593,7 +3590,7 @@ def _minimal_predicate_set_ctes(
 
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = _compile_predicate_source_ast(config, mini_query)
+    predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name = f"{_semantic_set_name(predicate, index)}_source"
     set_name = _semantic_set_name(predicate, index)
     source_cte = SqlCte(

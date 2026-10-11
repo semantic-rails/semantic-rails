@@ -36,6 +36,7 @@ from .ast import (
     time_output_alias,
 )
 from .clock import UNITS, known_zone, parse_now
+from .compiler_parts import nested
 from .compiler_parts.bind import (
     _aggregation_expr,
     _bind_measure,
@@ -2795,7 +2796,7 @@ def _predicate_ctes_and_join(
     several = without_rows and not _predicate_reads_one_measure(predicate.input, config)
     with earlier_settlement(several):
         earlier = earlier_settlement_applies()
-        predicate_sql = _compile_predicate_source_ast(config, mini_query)
+        predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -3924,7 +3925,7 @@ def _conversion_predicate_set_ctes(
     with cut_owners():
         with binding_cut():
             _entity_index(config)[predicate.entity]
-        predicate_sql = _compile_predicate_source_ast(config, mini_query)
+        predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -5046,6 +5047,28 @@ def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]
     """
     with recording_zero_outputs(), inner_lookups():
         return _compile_query_sql_ast(config, payload, project_cut=True)
+
+
+class _NestedCompiles:
+    """The compiler's nested compiles (``compiler_parts.nested``), read at call time."""
+
+    def query_sql(
+        self,
+        config: PackageConfig,
+        payload: dict[str, Any],
+        *,
+        project_cut: bool = False,
+        guard_empty: bool = True,
+    ) -> SqlSelect:
+        return _compile_query_sql_ast(
+            config, payload, project_cut=project_cut, guard_empty=guard_empty
+        )
+
+    def predicate_source_sql(self, config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
+        return _compile_predicate_source_ast(config, payload)
+
+
+nested.register(_NestedCompiles())
 
 
 def _record_bound_plan(
