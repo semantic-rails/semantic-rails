@@ -111,12 +111,22 @@ def checked_discover_kinds(kinds: Sequence[str] | None, valid: frozenset[str]) -
     return requested
 
 
-def identity_claim_refusal(path: str, *, remote: bool) -> SemanticLayerError:
+# Where a trusted local caller's identity comes from, by transport.
+_LOCAL_IDENTITY = {
+    "sdk": "pass the caller's identity as the `context` argument",
+    "mcp": "this server reads the caller's identity from its configured credentials or session",
+    "cli": "pass identity with --environment and --audience",
+}
+
+
+def identity_claim_refusal(
+    path: str, *, remote: bool, transport: str = "sdk"
+) -> SemanticLayerError:
     """The refusal of a request that says who is asking: identity comes only from credentials.
 
     Behind a door that resolved the caller's credentials (``remote``) it is
-    ``IDENTITY_CLAIM_REFUSED``; a trusted local caller passes its identity as ``context``, so
-    for it the key is just unknown.
+    ``IDENTITY_CLAIM_REFUSED``; for a trusted local caller the key is just unknown, and the
+    hint says where that ``transport`` reads identity from.
     """
     from .query_call import refusal
 
@@ -129,14 +139,16 @@ def identity_claim_refusal(path: str, *, remote: bool) -> SemanticLayerError:
         )
     return refusal(
         path,
-        "is not part of a request; a local caller's identity is its `context` argument",
-        fix=f"Remove {path} and pass the caller's identity as `context`.",
+        "is not part of a request; identity never travels in it",
+        fix=f"Remove {path}; {_LOCAL_IDENTITY[transport]}.",
     )
 
 
-def refuse_identity_claims(request: Mapping[str, Any], *, remote: bool) -> None:
+def refuse_identity_claims(
+    request: Mapping[str, Any], *, remote: bool, transport: str = "sdk"
+) -> None:
     """Refuse ``policy_context`` beside or inside ``query``; it is never stripped."""
     query = request.get("query")
     for path, holder in (("policy_context", request), ("query.policy_context", query)):
         if isinstance(holder, Mapping) and "policy_context" in holder:
-            raise identity_claim_refusal(path, remote=remote)
+            raise identity_claim_refusal(path, remote=remote, transport=transport)

@@ -51,7 +51,7 @@ def test_an_override_equal_to_the_default_states_nothing(duckdb_backend):
         ]
     }
     result = runtime.query(call)
-    assert result["assumptions"] == []
+    assert result.get("assumptions", []) == []
     # Only a statistic the call changes carries its row count out of the leaf.
     assert "_rows" not in result["rendered_sql"].rsplit("SELECT", 1)[1]
 
@@ -224,7 +224,7 @@ def test_a_name_groups_by_its_entity_key_and_says_so(request, backend):
 def test_a_call_that_groups_by_the_key_and_the_name_states_nothing(duckdb_backend):
     runtime = duckdb_backend.runtimes["utc_authored"]
     call = {"select": ["measure.shop.revenue"], "group_by": [CUSTOMER_ID, CUSTOMER_NAME]}
-    assert runtime.query(call)["assumptions"] == []
+    assert runtime.query(call).get("assumptions", []) == []
 
 
 def test_an_entity_with_no_name_is_shown_by_its_key_and_says_so(duckdb_backend):
@@ -241,7 +241,9 @@ def test_an_entity_with_no_name_is_shown_by_its_key_and_says_so(duckdb_backend):
     ]
     # A dimension that is not an entity's key says nothing.
     assert (
-        runtime.query({"select": ["measure.shop.revenue"], "group_by": [STORE]})["assumptions"]
+        runtime.query({"select": ["measure.shop.revenue"], "group_by": [STORE]}).get(
+            "assumptions", []
+        )
         == []
     )
 

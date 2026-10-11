@@ -35,8 +35,8 @@ GROUP BY
   matches.t
 )
 SELECT
-  base.t AS "temporal_role.jaffle_session_started_at__month",
-  base.m1 AS session_to_order_conversion_rate_14d
+  base.t AS "period",
+  base.m1 AS "session_to_order_conversion_rate_14d"
 FROM conversion_leaf_1 AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

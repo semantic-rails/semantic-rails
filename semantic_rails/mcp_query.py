@@ -32,7 +32,7 @@ def coerce_arguments(arguments: Mapping[str, Any], *, tool: str, remote: bool) -
                 details={"field": "query", "argument_type": "str"},
             )
         out["query"] = query
-    refuse_identity_claims(out, remote=remote)
+    refuse_identity_claims(out, remote=remote, transport="mcp")
     if tool == "execute" and "query" not in out:
         flat = next((key for key in out if key in FIELDS), None)
         if flat is not None:

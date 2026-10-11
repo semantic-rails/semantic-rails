@@ -20,7 +20,7 @@ from difflib import get_close_matches
 from typing import Any
 
 from . import operators
-from .clock import UNITS, parse_now, resolve_window
+from .clock import UNITS, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
 from .schema import OBSERVATION_SCOPES, PackageConfig
 
@@ -55,8 +55,8 @@ TIME_AXIS = "period"
 # Keys that are not part of a call, with where each one went.
 RETIRED: dict[str, str] = {
     "policy_context": (
-        "Identity comes from your credentials, never from the call; pass `now` as an "
-        "argument beside the query."
+        "Identity never travels in the call: pass it as the `context` argument (HTTP and MCP "
+        "read it from credentials), and `now` beside the query."
     ),
     "metric_filters": (
         "Filter results with `having: [{field, op, value}]`, or entities with an entity "
@@ -723,6 +723,10 @@ def _where(
     )
     for index, item in enumerate(raw):
         path = f"where[{index}]"
+        if isinstance(item, Mapping) and (
+            _CHILD_GROUP_KEYS & set(item) or {"entity", "where"} <= set(item)
+        ):
+            raise _child_group_refusal(item, path)
         if isinstance(item, Mapping) and "entity" in item:
             group, having = _entity_filter(item, path, grain)
             rows.extend(group)
@@ -742,6 +746,29 @@ def _where(
             )
         rows.append(_condition(item, path))
     return rows, entity_having
+
+
+# Keys of the retired child group, ``{child, match, where}`` (or ``child_group``); an entity
+# with a ``where`` list is read as one too.
+_CHILD_GROUP_KEYS = frozenset({"child", "child_group", "match"})
+
+
+def _child_group_refusal(item: Mapping[str, Any], path: str) -> SemanticLayerError:
+    """A child group is an entity filter now: the same conditions under ``any`` or ``none``."""
+    entity = item.get("child") or item.get("entity")
+    word = item.get("match") if item.get("match") in {"any", "none"} else "any"
+    conditions = item.get("where")
+    shape = {
+        "entity": entity if isinstance(entity, str) else "entity.<id>",
+        word: conditions
+        if isinstance(conditions, list) and conditions
+        else [{"field": "dimension.<id>", "op": "is", "value": "<value>"}],
+    }
+    return refusal(
+        path,
+        "a child group is an entity filter: the entity, then any or none of its rows",
+        fix=f"Write {json.dumps(shape)}.",
+    )
 
 
 def _entity_filter(
@@ -942,8 +969,23 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
             "time.temporal_role", "is a temporal role id", fix='Write "temporal_role.<id>".'
         )
     role = (role or "").strip() or _default_role(select, context)
+    # A package with no clocks at all is refused by the engine ("declares no time").
+    if (
+        not role
+        and context.config is not None
+        and context.config.temporal_roles
+        and not context.partial
+    ):
+        raise refusal(
+            "time.temporal_role",
+            "nothing selected names a clock, so say which one",
+            fix='Add "temporal_role": "temporal_role.<id>" to time, one of the package\'s clocks.',
+        )
     timezone = _role_timezone(role, context.config)
-    window = resolve_window(dict(raw), now=context.now, timezone=timezone)
+    try:
+        window = resolve_window(dict(raw), now=context.now, timezone=timezone)
+    except (ValueError, OverflowError) as exc:
+        raise _off_calendar(raw, context.now, timezone) from exc
     time: dict[str, Any] = {"temporal_role": role}
     if grain:
         time["grain"] = grain
@@ -959,6 +1001,23 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
     if "this" in raw:
         time["this"] = raw["this"]
     return time
+
+
+def _off_calendar(raw: Mapping[str, Any], now: datetime, timezone: str) -> SemanticLayerError:
+    """The refusal of a window the calendar (0001-01-01 to 9999-12-31) can't hold."""
+    if "last" not in raw:
+        return refusal(
+            "now",
+            "is too near the calendar's first or last day for the clock's time zone",
+            fix="Send a now between 0001-01-02 and 9999-12-30.",
+        )
+    most = largest_last(raw["last"]["unit"], now, timezone)
+    return refusal(
+        "time.last.value",
+        "reaches back before the calendar's first day, 0001-01-01",
+        fix=(f"Use at most {most}, or " if most > 0 else "Use ")
+        + "a dated window with start and end.",
+    )
 
 
 def _default_role(select: list[dict[str, Any]], context: CallContext) -> str:
@@ -1094,6 +1153,15 @@ def _routes(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def route_entry(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A route decision row as the call's ``routes`` entry: ``{from, to, via}``."""
+    return {
+        "from": row["source_entity"],
+        "to": row["target_entity"],
+        "via": list(row["relationship_path"]),
+    }
+
+
 def route_options(call: Any, details: dict[str, Any]) -> None:
     """Make each option of an ``AMBIGUOUS_PATH`` refusal a complete call: ``call`` with the
     option's route added to ``routes``, ready to send."""
@@ -1101,12 +1169,7 @@ def route_options(call: Any, details: dict[str, Any]) -> None:
     if not isinstance(call, Mapping) or not options:
         return
     for option in options:
-        decision = option["decision"]
-        route = {
-            "from": decision["source_entity"],
-            "to": decision["target_entity"],
-            "via": list(decision["relationship_path"]),
-        }
+        route = route_entry(option["decision"])
         option["query"] = {**call, "routes": [*list(call.get("routes") or []), route]}
     details["hint"] = (
         "Which route is meant is a business definition. Ask which option the question means, "
@@ -1172,14 +1235,7 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
     if query.get("limit") is not None:
         call["limit"] = query["limit"]
     if query.get("route_decisions"):
-        call["routes"] = [
-            {
-                "from": row["source_entity"],
-                "to": row["target_entity"],
-                "via": list(row["relationship_path"]),
-            }
-            for row in query["route_decisions"]
-        ]
+        call["routes"] = [route_entry(row) for row in query["route_decisions"]]
     if query.get("observation_scope"):
         call["observation_scope"] = query["observation_scope"]
     return call

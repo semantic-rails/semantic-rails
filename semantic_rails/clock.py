@@ -148,7 +148,10 @@ def period_is_partial(period: Any, grain: str, now: datetime, timezone: str = "U
     start = _as_date(period)
     if start is None or grain not in UNITS:
         return False
-    end = period_end(start, grain)
+    try:
+        end = period_end(start, grain)
+    except (ValueError, OverflowError):
+        return True  # it ends after the calendar's last day, so after any now
     return datetime(end.year, end.month, end.day) > local_now(now, timezone)
 
 
@@ -213,6 +216,16 @@ def resolve_window(spec: dict[str, Any], *, now: datetime, timezone: str = "UTC"
     )
 
 
+def largest_last(unit: str, now: datetime, timezone: str = "UTC") -> int:
+    """The most whole ``unit`` periods a ``last`` window reaches back from ``now``, inside the
+    calendar (from 0001-01-01, a Monday, so every unit's periods start on it)."""
+    end = floor_period(local_now(now, timezone).date(), unit)
+    if unit in {"day", "week"}:
+        return (end - date.min).days // (7 if unit == "week" else 1)
+    months = (end.year - 1) * 12 + end.month - 1
+    return months // {"month": 1, "quarter": 3, "year": 12}[unit]
+
+
 def engine_window(time: Mapping[str, Any], *, now: datetime, timezone: str = "UTC") -> Window:
     """The window an engine time block resolved, with its relative spelling kept."""
     if time.get("last_unit"):
@@ -247,10 +260,12 @@ def describe_window(window: Window, *, now: datetime, timezone: str = "UTC") -> 
         return ""
     unit = window.spec["this"]
     start = date.fromisoformat(window.start)
-    end = period_end(start, unit)
     today = local_now(now, timezone).date()
     elapsed = (today - start).days + 1
-    total = (end - start).days
+    try:
+        total = (period_end(start, unit) - start).days
+    except (ValueError, OverflowError):
+        total = (date.max - start).days + 1  # the calendar's last period ends with it
     names = {
         "day": start.isoformat(),
         "week": f"the week of {start.isoformat()}",

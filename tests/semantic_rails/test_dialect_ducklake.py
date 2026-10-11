@@ -383,6 +383,8 @@ def test_ducklake_compiles_entire_conformance_battery():
 
     for case in battery:
         query, _ = read_call(case.payload, config=config)
+        # Coverage SQL caps at the request's now: pin it so both compilations read one instant.
+        query = {**query, "policy_context": {"now": "2026-10-09T00:00:00Z"}}
         compiled = compile_query(config, registry, query)
         sql = compiled["sql"]
         assert sql and sql.strip(), f"{case.name}: empty SQL for ducklake"

@@ -11,6 +11,7 @@ used by ``explain`` output.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from datetime import date, timedelta
@@ -304,17 +305,20 @@ def recovery_hints_for_error(
                     },
                 )
             return hints
-        return [
-            {
-                "kind": "fix_expression_shape",
-                "message": (
-                    f"Expression with kind={kind!r} in position {position!r} is malformed. "
-                    "For select, send a measure or metric id, or {expression, as}. Put "
-                    "dimension ids in group_by; send where entries as {field, op, value}."
-                ),
-                "details": dict(details),
-            }
-        ]
+        if details.get("recovery_hints"):
+            return list(details["recovery_hints"])
+        from .query_call import KIND_REQUIRED
+
+        where = f"the expression at {details['path']}" if details.get("path") else "the expression"
+        if kind in KIND_REQUIRED:
+            shape = {"kind": kind, **dict.fromkeys(KIND_REQUIRED[kind], "...")}
+            message = f"Write {where} as {json.dumps(shape)}, with each key's value as the query schema lists it."
+        else:
+            message = (
+                f"Write {where} as a measure or metric id, or an object with a kind the query "
+                "schema lists."
+            )
+        return [{"kind": "fix_expression_shape", "message": message}]
     if code == "PATH_NOT_FOUND" and details.get("reason") == "excluded_by_decision":
         return [
             {
@@ -859,8 +863,8 @@ def recovery_hints_for_error(
             {
                 "kind": "drop_time_start",
                 "message": (
-                    f"Remove {where_path or 'query.time.start'} entirely — the window function "
-                    "computes its own lookback. Keep query.time.end if you "
+                    f"Remove {where_path or 'time.start'} entirely — the window function "
+                    "computes its own lookback. Keep time.end if you "
                     "need an upper bound. This is the safe default — apply "
                     "this first."
                 ),
@@ -873,7 +877,7 @@ def recovery_hints_for_error(
                 {
                     "kind": "widen_time_window",
                     "message": (
-                        f"Widen {where_path + '.value' if where_path else 'query.time.start'} "
+                        f"Widen {where_path + '.value' if where_path else 'time.start'} "
                         "by the metric's lookback "
                         f"({lookback.get('value')} {lookback.get('unit')}) "
                         "so the leaf WHERE doesn't truncate the rows the "
@@ -1000,7 +1004,7 @@ def recovery_hints_for_error(
         # ``time.grain``, give the agent a structured patch with the
         # closest supported grain so it can retry without parsing English.
         path = str(details.get("path", "") or "")
-        if path == "time.grain":
+        if path == "time.grain" and "supported_grains" in details:
             received_grain = str(details.get("received", "") or "")
             closest_matches = list(details.get("closest_matches", []) or [])
             supported_grains = list(details.get("supported_grains", []) or [])
