@@ -566,6 +566,52 @@ def test_athena_filters_type_only_date_and_timestamp_dimensions():
     assert "TIMESTAMP '2026-01-01'" not in sql
 
 
+def test_athena_expressions_type_text_compared_only_with_temporal_columns():
+    from semantic_rails.config import load_package_config
+    from tests.integration.harness import PACKAGE_DIR
+
+    config = load_package_config(str(PACKAGE_DIR))
+    runtime = Runtime.from_config(
+        _athena_config(config), source_path=str(PACKAGE_DIR), package_id="jaffle_shop"
+    )
+
+    def column(name: str) -> dict[str, Any]:
+        return {"kind": "column", "column": name, "entity": "entity.jaffle_order"}
+
+    def count_if(name: str, condition: dict[str, Any]) -> dict[str, Any]:
+        value = column("order_id")
+        aggregate = {"kind": "aggregate_if", "aggregation": "count", "value": value}
+        return {"as": name, "expression": {**aggregate, "condition": condition}}
+
+    text = {"kind": "literal", "value": "2016-09-01"}
+    sql = runtime.compile(
+        {
+            "select": [
+                count_if(
+                    "since",
+                    {"kind": "comparison", "op": ">=", "left": column("ordered_at"), "right": text},
+                ),
+                count_if(
+                    "before",
+                    {"kind": "comparison", "op": ">", "left": text, "right": column("ordered_at")},
+                ),
+                count_if(
+                    "on", {"kind": "in", "expr": column("ordered_at"), "values": ["2016-09-02"]}
+                ),
+                count_if(
+                    "store",
+                    {"kind": "comparison", "op": "=", "left": column("store_id"), "right": text},
+                ),
+            ]
+        },
+        now="2026-10-01T00:00:00Z",
+    )["rendered_sql"]
+    assert "jaffle_order.ordered_at >= TIMESTAMP '2016-09-01'" in sql
+    assert "TIMESTAMP '2016-09-01' > jaffle_order.ordered_at" in sql
+    assert "jaffle_order.ordered_at IN (TIMESTAMP '2016-09-02')" in sql
+    assert "jaffle_order.store_id = '2016-09-01'" in sql
+
+
 def test_athena_adapter_query_prepares_once(monkeypatch: pytest.MonkeyPatch):
     log: dict[str, Any] = {}
     _install_fake_pyathena(monkeypatch, log)

@@ -7479,3 +7479,25 @@ tests:
           WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2024-04-15 12:00:00'
           GROUP BY customer_id HAVING COUNT(*) >= 2)
       GROUP BY 1
+  shop/text-compared-with-the-order-clock-reads-as-its-instant:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The condition compares the order clock with the text 2024-01-01 and reads the text as that instant, a typed literal where the warehouse refuses a timestamp beside text: the orders from January 2024 on count, the earlier ones do not.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_CALL.md#inline-expression-kinds]
+    tags: [clock]
+    query:
+      select:
+      - expression:
+          kind: aggregate_if
+          aggregation: count
+          value: {kind: column, column: order_id, entity: entity.shop_order}
+          condition:
+            kind: comparison
+            op: '>='
+            left: {kind: column, column: ordered_at, entity: entity.shop_order}
+            right: {kind: literal, value: '2024-01-01'}
+        as: orders
+    expected_rows:
+      - {orders: 8}
+    reference_sql: |
+      SELECT COUNT(*) FROM orders WHERE ordered_at >= TIMESTAMP '2024-01-01'

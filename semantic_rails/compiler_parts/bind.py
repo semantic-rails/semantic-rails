@@ -282,6 +282,36 @@ def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: Pack
         return _config_expr_to_sql_inner(expr, measure, config)
 
 
+def _reads_a_temporal_column(
+    expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig
+) -> bool:
+    """Whether ``expr`` reads a column that a date or timestamp dimension declares."""
+    if not isinstance(expr, ColumnRefExpr):
+        return False
+    entity_id = _resolve_expr_entity(expr, measure, config)
+    return any(
+        dim.entity == entity_id
+        and dim.column == expr.column
+        and dim.data_type in {"date", "timestamp"}
+        for dim in _dimension_index(config).values()
+    )
+
+
+def _operand_sql(
+    expr: SemanticExpr, beside: SemanticExpr, measure: MeasureConfig, config: PackageConfig
+) -> Any:
+    """One side of a comparison or a value of ``in``: text compared with a date or timestamp
+    column is a temporal literal (``SqlLiteral.temporal``), text beside any other column stays
+    text."""
+    if (
+        isinstance(expr, LiteralExpr)
+        and isinstance(expr.value, str)
+        and _reads_a_temporal_column(beside, measure, config)
+    ):
+        return SqlLiteral(expr.value, temporal=True)
+    return _config_expr_to_sql(expr, measure, config)
+
+
 def _config_expr_to_sql_inner(
     expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig
 ) -> Any:
@@ -306,14 +336,14 @@ def _config_expr_to_sql_inner(
         )
     if isinstance(expr, ComparisonExpr):
         return build_comparison_condition(
-            _config_expr_to_sql(expr.left, measure, config),
+            _operand_sql(expr.left, expr.right, measure, config),
             expr.op,
-            _config_expr_to_sql(expr.right, measure, config),
+            _operand_sql(expr.right, expr.left, measure, config),
         )
     if isinstance(expr, InExpr):
         return SqlIn(
             expr=_config_expr_to_sql(expr.expr, measure, config),
-            values=[_config_expr_to_sql(value, measure, config) for value in expr.values],
+            values=[_operand_sql(value, expr.expr, measure, config) for value in expr.values],
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
