@@ -91,7 +91,7 @@ tree is `54c6621`, and it isn't exactly a tagged release, so it is labeled
 "0.3.2rc3, not a release (engine tree 54c6621)" wherever the version is shown. The commit it
 records may not survive a squash merge, but the tree hashes do.
 
-The latest release checked on 2026-10-09 was PyPI `semantic-rails==0.3.1`. An isolated
+The latest release checked on 2026-10-11 was PyPI `semantic-rails==0.3.1`. An isolated
 installation ran the same bootstrap and `semantic_rails/scripts/run_questions.py` against a copy
 of the unchanged package and queries, on the package digest pinned in `shared/frozen_model.yml`.
 It refuses to load this package version, so it answers no question: `INVALID_CONFIG`,
