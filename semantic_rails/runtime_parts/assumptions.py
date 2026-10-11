@@ -12,7 +12,7 @@ from typing import Any
 
 from ..compiler_parts.bind import aggregation_overrides, select_measure_reads
 from ..compiler_parts.paths import display_key, keyed_entity
-from ..config_parts.measure_governance import governing_metrics
+from ..config_parts.measure_governance import governed_out_of_view, governing_metrics
 from ..db_parts.base import QueryRows
 from ..errors import SemanticLayerError
 from ..schema import PackageConfig, base_of
@@ -83,7 +83,7 @@ def _governors(config: PackageConfig, select: Any) -> list[tuple[str, list[str],
     for measure in dict.fromkeys(str(node["measure"]) for node in select_measure_reads(select)):
         governors = [row.id for row in governing_metrics(base_of(config), measure)]
         visible = [metric for metric in governors if metric in shown and metric not in selected]
-        out.append((measure, visible, any(metric not in shown for metric in governors)))
+        out.append((measure, visible, governed_out_of_view(config, measure)))
     return out
 
 
