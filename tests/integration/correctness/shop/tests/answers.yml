@@ -7261,3 +7261,22 @@ tests:
           WHERE snapshot_day >= CAST(m.period AS DATE)
             AND snapshot_day < CAST(m.period + INTERVAL '1' MONTH AS DATE))
       GROUP BY m.period
+  shop/a-named-window-by-order-time-keeps-its-observed-rows:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Grouped by the order time itself, the first quarter keeps the three orders it holds, one row each: its empty periods are not filled across every order instant (the answer says so), which would pad each order into all three months.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_CALL.md#named-and-open-windows]
+    tags: [time-window]
+    query:
+      select: [measure.shop.order_count]
+      group_by: [dimension.shop_order_ordered_at]
+      time: {start: '2024-01-01', end: '2024-04-01', grain: month}
+    now: '2024-07-05T06:00:00Z'
+    expected_rows:
+      - {dimension.shop_order_ordered_at: '2024-01-15T12:00:00', period: '2024-01-01', order_count: 1}
+      - {dimension.shop_order_ordered_at: '2024-03-01T02:00:00', period: '2024-03-01', order_count: 1}
+      - {dimension.shop_order_ordered_at: '2024-03-31T23:00:00', period: '2024-03-01', order_count: 1}
+    reference_sql: |
+      SELECT o.ordered_at, date_trunc('month', o.ordered_at), COUNT(o.order_id) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-01-01' AND o.ordered_at < TIMESTAMP '2024-04-01'
+      GROUP BY 1, 2

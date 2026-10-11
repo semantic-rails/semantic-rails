@@ -415,8 +415,9 @@ beside `intent` and its seed `query`.
 - A window with no `time.grain` is one total per `group_by` group, with no time column; the
   response says so in `assumptions` (`WINDOW_TOTAL`). With a grain, the
   time axis is the `period` column (an ISO date) and each row carries `period_partial`.
-- A named window (`last`, `this`, or `start` with `end`) answers every period; see
-  [Named and open windows](QUERY_CALL.md#named-and-open-windows).
+- A named window (`last`, `this`, or `start` with `end`) answers every period, except
+  beside a `group_by` on a date or time dimension, where it keeps the rows with data
+  (`OBSERVED_PERIODS_ONLY`); see [Named and open windows](QUERY_CALL.md#named-and-open-windows).
 - `order_by.field` names a select alias, a `group_by` dimension id, or `period`. Without
   `order_by`, a series returns its periods ascending, then its `group_by` dimensions in their
   stated order (also ascending), on every warehouse. A window total has no default order.

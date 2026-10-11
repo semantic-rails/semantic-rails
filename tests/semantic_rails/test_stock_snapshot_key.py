@@ -111,13 +111,13 @@ def _query_warning_codes(runtime: Runtime, measure: str) -> list[str]:
         }
     )
     assert result["ok"], result.get("errors")
-    return [warning["code"] for warning in result["warnings"]]
+    return [warning["code"] for warning in result.get("warnings", [])]
 
 
 def _warning_codes(package: Path) -> list[str]:
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
     assert report["ok"], report["errors"]
-    return [warning["code"] for warning in report["warnings"]]
+    return [warning["code"] for warning in report.get("warnings", [])]
 
 
 def test_compound_key_takes_one_snapshot_per_series(tmp_path: Path) -> None:
@@ -173,17 +173,17 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
         )
     finally:
         adapter.close()
-    assert [row["code"] for row in response["warnings"]].count(WARNING) == 1
+    assert [row["code"] for row in response.get("warnings", [])].count(WARNING) == 1
     # So does a dry-run validation, and a ratio reading both stocks warns for each.
     validated = runtime.validate({"select": [{"expression": "measure.f4stock.stars", "as": "v"}]})
-    assert [row["code"] for row in validated["warnings"]].count(WARNING) == 1
+    assert [row["code"] for row in validated.get("warnings", [])].count(WARNING) == 1
     ratio = {
         "kind": "ratio",
         "numerator": "measure.f4stock.stars",
         "denominator": "measure.f4stock.visitors_14d",
     }
     result = runtime.query({"select": [{"expression": ratio, "as": "v"}]})
-    assert [row["code"] for row in result["warnings"]].count(WARNING) == 2
+    assert [row["code"] for row in result.get("warnings", [])].count(WARNING) == 2
     # A key holding the clock warns about nothing.
     keyed = _package(tmp_path / "keyed", key="[repo, snapshot_date]", clock_class=clock_class)
     assert WARNING not in _query_warning_codes(
@@ -230,7 +230,9 @@ def test_a_stock_read_only_by_a_metric_predicate_warns_too(
             result = runtime.query(query)
             assert result["explain"]["compile_stats"]["cache_hit"] is cached
             warned = [
-                row["details"]["measure_id"] for row in result["warnings"] if row["code"] == WARNING
+                row["details"]["measure_id"]
+                for row in result.get("warnings", [])
+                if row["code"] == WARNING
             ]
             assert warned.count("measure.f4stock.stars") == warnings
 
@@ -249,7 +251,7 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
         measure_times=", times: [collected_at, snapshot_date]",
     )
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
-    flagged = [row for row in report["warnings"] if row["code"] == WARNING]
+    flagged = [row for row in report.get("warnings", []) if row["code"] == WARNING]
     assert {row["details"]["clock_class"] for row in flagged} == {"as_of_time"}
     assert all("Its queries are refused" in row["message"] for row in flagged)
     # The key can't tell snapshots apart, so the stock refuses on its event clock and
@@ -316,7 +318,7 @@ def test_a_series_holding_an_as_of_clock_refuses(
         advice = "Keep one as-of clock" if "collected_at" in key else "Query it on its as-of"
         assert advice in str(raised.value)
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
-    flagged = [row for row in report["warnings"] if row["code"] == SERIES_WARNING]
+    flagged = [row for row in report.get("warnings", []) if row["code"] == SERIES_WARNING]
     assert len(flagged) == 2
     if isinstance(answers[ROLE], list):
         # The warning names the clock that answers.
@@ -354,7 +356,7 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
         tmp_path_factory.mktemp("stock_key"), "jaffle_shop", preseed_db=True
     )
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
-    flagged = [row for row in report["warnings"] if row["code"] == WARNING]
+    flagged = [row for row in report.get("warnings", []) if row["code"] == WARNING]
     assert [row["details"]["measure_id"] for row in flagged] == [
         "measure.jaffle.lifetime_spend_usd"
     ]
@@ -364,16 +366,16 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
         }
     )
     assert result["ok"] and result["rows"][0]["spend"] > 0
-    assert [row["code"] for row in result["warnings"]] == [WARNING]
+    assert [row["code"] for row in result.get("warnings", [])] == [WARNING]
     # A segment filtering on it through a metric predicate carries the warning too.
     runtime = Runtime.from_path(str(package))
     for answer in (
         runtime.segment_validate("segment.jaffle.high_value_customers"),
         runtime.segment_explain("segment.jaffle.high_value_customers"),
     ):
-        assert [(row["code"], row["details"]["measure_id"]) for row in answer["warnings"]] == [
-            (WARNING, "measure.jaffle.lifetime_spend_usd")
-        ]
+        assert [
+            (row["code"], row["details"]["measure_id"]) for row in answer.get("warnings", [])
+        ] == [(WARNING, "measure.jaffle.lifetime_spend_usd")]
 
 
 def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_factory) -> None:
@@ -385,7 +387,9 @@ def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_fac
     monthly = package / "models" / "core" / "monthly_metrics.yml"
     monthly.write_text(monthly.read_text().replace("class: calendar_time", "class: as_of_time", 1))
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
-    flagged = [row for row in report["warnings"] if str(row.get("code", "")).startswith("STOCK_")]
+    flagged = [
+        row for row in report.get("warnings", []) if str(row.get("code", "")).startswith("STOCK_")
+    ]
     assert [row["details"]["measure_id"] for row in flagged] == [
         "measure.jaffle.lifetime_spend_usd"
     ]
