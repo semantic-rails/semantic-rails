@@ -153,9 +153,8 @@ def test_api_v1_health_contract_envelope_and_request_id(runtime_factory):
         assert payload["package_id"] == "jaffle_shop"
         assert payload["package"]["id"] == "jaffle_shop"
         assert payload["service"] == "semantic-rails"
-        assert payload["warnings"] == []
-        assert payload["errors"] == []
-        assert payload["recovery_hints"] == []
+        # No empty fields: a clean answer carries no warnings, errors or hints.
+        assert not {"warnings", "errors", "recovery_hints"} & set(payload)
         assert isinstance(payload["timing_ms"], (int, float))
 
 
@@ -237,9 +236,8 @@ def test_public_http_contract_rejects_root_and_api_aliases(runtime_factory):
         assert queried["api_version"] == "v1"
         assert queried["status"] == "ok"
         assert queried["package_id"] == "jaffle_shop"
-        assert queried["warnings"] == []
-        assert queried["errors"] == []
-        assert queried["recovery_hints"] == []
+        # No empty fields: a clean answer carries no warnings, errors or hints.
+        assert not {"warnings", "errors", "recovery_hints"} & set(queried)
         assert queried["query"]["group_by"] == ["dimension.jaffle_store_name"]
         assert "request_id" not in queried["query"]
 

@@ -636,7 +636,7 @@ def test_the_query_gate_reads_every_bound_object_not_policy_matches(engine, monk
     ("roles", "eligible"), [([], False), (["writer"], False), (["reader"], True)]
 )
 @pytest.mark.parametrize("restricted", [route.OWNER, route.OWNER_ROUTE[0]])
-def test_route_notes_offer_a_restricted_waypoint_only_to_its_roles(
+def test_route_switches_offer_a_restricted_waypoint_only_to_its_roles(
     tmp_path, monkeypatch, restricted, roles, eligible
 ):
     monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
@@ -662,7 +662,8 @@ def test_route_notes_offer_a_restricted_waypoint_only_to_its_roles(
     disclosed = [
         object_id for object_id in [route.OWNER, *route.OWNER_ROUTE] if object_id in json.dumps(out)
     ]
-    assert bool(details["route_alternatives"]) is eligible
+    # The other route goes through the restricted waypoint: offered only to its roles.
+    assert bool(details.get("other_routes")) is eligible
     assert bool(disclosed) is eligible
 
 

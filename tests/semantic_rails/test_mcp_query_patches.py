@@ -133,7 +133,7 @@ def test_build_options_patches_are_pure_ir_and_run_at_every_step(
         assert set(patch) <= QUERY_IR_KEYS, (step, sorted(set(patch) - QUERY_IR_KEYS))
         if patch.get("select"):
             validated = adapter.call_tool("execute", {"query": patch, "mode": "validate"})
-            reasons = [error["details"].get("reason") for error in validated["errors"]]
+            reasons = [error["details"].get("reason") for error in validated.get("errors", [])]
             if reasons == ["time_valid_hop_without_query_time"]:
                 # A grouping read through a time-valid relationship runs once it has a time.
                 timed = {**patch, "time": ORDER_MONTH}
