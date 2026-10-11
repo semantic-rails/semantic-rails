@@ -20,6 +20,7 @@ from dataclasses import asdict
 from typing import Any
 
 from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query, time_output_alias
+from .catalog_format import format_catalog_payload
 from .catalog_search import (
     CatalogSearchDocument,
     SearchTerms,
@@ -1120,13 +1121,6 @@ def _summary_row(
     return row
 
 
-_MINIMAL_CATALOG_ROW_KEYS: frozenset[str] = frozenset({"id", "kind", "name", "label", "available"})
-
-
-def _minimal_catalog_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: row[key] for key in _MINIMAL_CATALOG_ROW_KEYS if key in row}
-
-
 @runtime_request_scope
 def catalog_payload(
     runtime: Runtime,
@@ -1218,122 +1212,6 @@ def catalog_payload(
     )
 
 
-def format_catalog_payload(
-    grouped: dict[str, Any],
-    *,
-    package: dict[str, Any],
-    schema_version: Any,
-    view: str,
-    verbosity: str,
-    supported_capabilities: list[dict[str, Any]],
-    unsupported_capabilities: list[dict[str, Any]],
-    aliases: dict[str, list[str]] | None = None,
-    alias_index: dict[str, list[str]] | None = None,
-) -> dict[str, Any]:
-    """Format already-authorized rows without reading package internals.
-
-    Shared by ordinary catalogs and restricted public projections so caps,
-    counts, full retrieval, and verbosity keep the same response contract.
-    """
-    grouped["meta"] = {
-        "package": package,
-        "schema_version": schema_version,
-        "view": view,
-        "verbosity": verbosity,
-    }
-    verbosity_norm = str(verbosity or "").lower()
-    if verbosity_norm == "summary":
-        # Cold-start orientation: counts + flat ID list per kind. No row
-        # dicts, no descriptions, no payload — agents inspect specific
-        # ids via the ``inspect`` tool. Target envelope: under 10KB even
-        # on a 300-object package. Capabilities ship here too so a single
-        # ``catalog?verbosity=summary`` call gives an agent everything it
-        # needs to choose its next move without paying for row metadata.
-        # ``kind_map`` (kind→bucket) reversed gives bucket→singular kind
-        # so id-list keys read naturally as ``measure_ids``, ``entity_ids``
-        # etc. rather than tripping over irregular plurals.
-        bucket_to_kind = {
-            "entities": "entity",
-            "dimensions": "dimension",
-            "measures": "measure",
-            "segments": "segment",
-            "temporal_roles": "temporal_role",
-            "relationships": "relationship",
-            "value_domains": "value_domain",
-            "metrics": "metric",
-        }
-        summary_payload: dict[str, Any] = {
-            "meta": grouped["meta"],
-            "counts": {
-                bucket_key: len(grouped[bucket_key])
-                for bucket_key in list(grouped)
-                if isinstance(grouped[bucket_key], list)
-            },
-            "capabilities": supported_capabilities,
-            "unsupported_capabilities": unsupported_capabilities,
-        }
-        for bucket_key in list(grouped):
-            bucket = grouped[bucket_key]
-            if not isinstance(bucket, list):
-                continue
-            singular = bucket_to_kind.get(bucket_key, bucket_key)
-            summary_payload[f"{singular}_ids"] = [
-                str(row.get("id", "")) for row in bucket if isinstance(row, dict)
-            ]
-        return summary_payload
-    if verbosity_norm == "minimal":
-        # Strip every row to {id, kind, name, label, available} and drop
-        # the alias dictionaries — both can be rebuilt by inspecting
-        # individual objects once the agent has narrowed its target.
-        for bucket_key in list(grouped.keys()):
-            bucket = grouped[bucket_key]
-            if isinstance(bucket, list):
-                grouped[bucket_key] = [
-                    _minimal_catalog_row(row) for row in bucket if isinstance(row, dict)
-                ]
-        grouped["counts"] = {
-            bucket_key: len(grouped[bucket_key])
-            for bucket_key in grouped
-            if isinstance(grouped[bucket_key], list)
-        }
-    elif verbosity_norm == "full":
-        # Full verbosity is opt-in: keep the alias maps for typo-resolution
-        # and emit every matching row uncapped.
-        grouped["aliases"] = aliases or {}
-        grouped["alias_index"] = alias_index or {}
-    else:
-        # Compact (the default). Round four dropped ``alias_index`` and
-        # ``aliases`` here — both grew unbounded with the catalog and
-        # drowned token budgets even with ``search=...``. Callers who
-        # need typo-resolution request ``verbosity=full``; callers who
-        # know an object id use ``inspect``. Compact also caps each
-        # bucket at ``_CATALOG_COMPACT_BUCKET_CAP`` rows and reports the
-        # pre-cap totals + a ``truncated`` flag when any bucket spilled.
-        counts_total: dict[str, int] = {}
-        truncated_buckets: list[str] = []
-        for bucket_key, bucket in list(grouped.items()):
-            if not isinstance(bucket, list):
-                continue
-            counts_total[bucket_key] = len(bucket)
-            if len(bucket) > _CATALOG_COMPACT_BUCKET_CAP:
-                grouped[bucket_key] = bucket[:_CATALOG_COMPACT_BUCKET_CAP]
-                truncated_buckets.append(bucket_key)
-        grouped["counts_total"] = counts_total
-        grouped["counts"] = {bucket_key: len(grouped[bucket_key]) for bucket_key in counts_total}
-        if truncated_buckets:
-            grouped["truncated"] = True
-            grouped["truncated_buckets"] = sorted(truncated_buckets)
-            grouped["truncation_hint"] = (
-                "Compact view caps each kind at "
-                f"{_CATALOG_COMPACT_BUCKET_CAP} rows. Narrow with "
-                "search=/kind=/entity= or request verbosity=full to see "
-                "the full inventory."
-            )
-    grouped["capabilities"] = supported_capabilities
-    grouped["unsupported_capabilities"] = unsupported_capabilities
-    return grouped
-
-
 # Name words that carry units or aggregation rather than meaning; a name
 # is covered by the question's terms without them.
 _NAME_UNIT_TOKENS: frozenset[str] = frozenset(
@@ -1373,12 +1251,6 @@ def _name_coverage(candidate: Mapping[str, Any], tokens: Iterable[str]) -> float
         if name_words and name_words <= words | singulars:
             best = max(best, min(1.0, len(name_words) / len(words)))
     return best
-
-
-# Compact-view per-bucket row cap. Sized so a 7-kind catalog stays under
-# ~5K tokens even with all buckets full. Callers asking for the full
-# inventory request ``verbosity=full``.
-_CATALOG_COMPACT_BUCKET_CAP: int = 200
 
 
 def _relevance_score(
@@ -3404,14 +3276,104 @@ def _query_patch_with_selection(
     return query
 
 
+def _metric_min_window_unit(expression: Any) -> str:
+    """Return the coarsest required window unit ('month', 'quarter', 'year')
+    found in a metric expression tree, or '' if none. Used by the probe
+    to pick a probe grain that matches `prior_period`/`rolling`/etc.
+    window units; without this, a `prior_period(month)` metric probed at
+    day grain raises REWRITE_NOT_SUPPORTED."""
+    if expression is None:
+        return ""
+    if isinstance(expression, dict):
+        units: list[str] = []
+        for key in ("offset", "window"):
+            spec = expression.get(key)
+            if isinstance(spec, dict):
+                unit = str(spec.get("unit", "")).strip().lower()
+                if unit:
+                    units.append(unit)
+        for child_key in (
+            "input",
+            "left",
+            "right",
+            "numerator",
+            "denominator",
+            "base",
+            "converted",
+        ):
+            units.append(_metric_min_window_unit(expression.get(child_key)))
+        for arg in expression.get("args", []) or []:
+            units.append(_metric_min_window_unit(arg))
+        order = ["year", "quarter", "month", "week", "day"]
+        coarsest = ""
+        for unit in units:
+            if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
+                coarsest = unit
+        return coarsest
+    # carry `.unit` directly; ``RollingExpr`` also carries `.unit` and
+    # `.value` directly (no `.window` attribute exists on the
+    # dataclass — see ``semantic_rails/expressions.py:RollingExpr``).
+    # The ``window`` branch below only fires for IR payloads that
+    # still carry a raw dict (``offset`` and ``window`` map keys on
+    # parsed but un-typed expressions).
+    units = []
+    direct_unit = getattr(expression, "unit", "")
+    if isinstance(direct_unit, str) and direct_unit:
+        units.append(direct_unit.lower())
+    for attr in ("offset", "window"):
+        if hasattr(expression, attr):
+            spec = getattr(expression, attr)
+            if isinstance(spec, dict):
+                unit = str(spec.get("unit", "")).strip().lower()
+                if unit:
+                    units.append(unit)
+    for attr in ("input", "left", "right", "numerator", "denominator", "base", "converted"):
+        if hasattr(expression, attr):
+            units.append(_metric_min_window_unit(getattr(expression, attr)))
+    if hasattr(expression, "args"):
+        for arg in expression.args or []:
+            units.append(_metric_min_window_unit(arg))
+    order = ["year", "quarter", "month", "week", "day"]
+    coarsest = ""
+    for unit in units:
+        if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
+            coarsest = unit
+    return coarsest
+
+
+def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
+    from .temporal_support import require_temporal_support
+
+    require_temporal_support(runtime._config)
+    role_id = str(recipe.temporal_role or "").strip()
+    if not role_id:
+        compatible_roles = list(recipe.compatible_temporal_roles or [])
+        default_roles = [
+            role.id
+            for role in runtime._config.temporal_roles
+            if role.default_query_time_axis and role.id in compatible_roles
+        ]
+        if default_roles:
+            role_id = default_roles[0]
+        elif compatible_roles:
+            role_id = compatible_roles[0]
+    if not role_id:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Metric recipe '{recipe.id}' needs a time block in the call but has no compatible temporal role",
+            details={"metric": recipe.id},
+        )
+    coarsest_unit = _metric_min_window_unit(recipe.expression)
+    grain = coarsest_unit if coarsest_unit in {"month", "quarter", "year"} else "day"
+    return {"temporal_role": role_id, "grain": grain}
+
+
 def _metric_patch_time(runtime: Runtime, metric_id: str) -> dict[str, Any]:
     """The default time block for a metric that can't run without one.
 
     Windowed metrics (cumulative, rolling and the like) require query.time,
     so a patch selecting one carries the metric's default window.
     """
-
-    from .config_validation import _default_time_spec_for_metric
 
     recipe = _config_maps(runtime._config)["metric_recipes"].get(metric_id)
     if recipe is None:

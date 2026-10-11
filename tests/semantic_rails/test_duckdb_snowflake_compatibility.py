@@ -28,11 +28,11 @@ def _default_time(recipe):
         recipe.compatible_temporal_roles[0] if recipe.compatible_temporal_roles else ""
     )
     assert role, f"{recipe.id} requires time but has no compatible role"
-    # Match _default_time_spec_for_metric in config_validation.py: pick the
+    # Match _default_time_spec_for_metric in metadata.py: pick the
     # coarsest window unit found in the metric expression so prior_period
     # / rolling metrics whose offset.unit is month/quarter/year don't blow
     # up at day grain.
-    from semantic_rails.config_validation import _metric_min_window_unit
+    from semantic_rails.metadata import _metric_min_window_unit
 
     coarsest = _metric_min_window_unit(recipe.expression)
     grain = coarsest if coarsest in {"month", "quarter", "year"} else "day"

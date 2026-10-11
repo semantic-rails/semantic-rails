@@ -20,12 +20,11 @@ from typing import Any
 import pytest
 import yaml
 
-from semantic_rails.catalog_service import resolve_catalog
+from semantic_rails.catalog_service import resolve_catalog, write_manifest
 from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import visible_route
-from semantic_rails.manifest import write_manifest
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.query_call import read_call

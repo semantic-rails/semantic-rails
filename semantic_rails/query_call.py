@@ -176,6 +176,144 @@ def call_kinds() -> dict[str, tuple[str, ...]]:
     }
 
 
+# Each expression shape the capabilities surface documents: its name, what it does, and an
+# example call fragment.
+EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "aggregate",
+        "description": (
+            "a measure with a statistic the package allows; a plain measure or metric is "
+            "its id string"
+        ),
+        "example": {"kind": "measure", "measure": "measure.<id>", "aggregation": "sum"},
+    },
+    {
+        "name": "metric",
+        "description": "governed metric recipe: its id string is the expression",
+        "example": "metric.<id>",
+    },
+    {
+        "name": "prior_period",
+        "description": "the input one or more periods earlier; needs time.grain",
+        "example": {
+            "kind": "prior_period",
+            "input": "measure.<id>",
+            "offset": {"unit": "month", "value": 1},
+        },
+    },
+    {
+        "name": "rolling",
+        "description": "rolling window. window is an object {unit, value} — not an int.",
+        "example": {
+            "kind": "rolling",
+            "input": "measure.<id>",
+            "window": {"unit": "day", "value": 7},
+        },
+    },
+    {
+        "name": "cumulative",
+        "description": (
+            "running total. grain comes from the call's time.grain — "
+            "cumulative itself takes only input + optional partition_by/window_scope."
+        ),
+        "example": {"kind": "cumulative", "input": "measure.<id>"},
+    },
+    {
+        "name": "ratio",
+        "description": "derived ratio",
+        "example": {
+            "kind": "ratio",
+            "numerator": "measure.<num>",
+            "denominator": "measure.<den>",
+        },
+    },
+    {
+        "name": "conversion",
+        "description": (
+            "event-pair conversion. Anchored to a single entity; window is an "
+            "object {unit, value}; matching_mode is required. base/converted "
+            "operands accept an aggregate with a 'filter' of dimension "
+            "predicates ({all: [{field, op, value}]}) to restrict each side — "
+            "e.g. base = orders containing Product A, converted = orders "
+            "containing Product B; the filters are applied in the event CTEs "
+            "with EXISTS semantics. Operand-level 'window' specs and "
+            "expression-valued filter clauses are rejected (use the call's "
+            "having or an entity filter for those)."
+        ),
+        "example": {
+            "kind": "conversion",
+            "base": {
+                "kind": "aggregate",
+                "measure": "measure.<start>",
+                "filter": {"all": [{"field": "dimension.<id>", "op": "is", "value": "<value>"}]},
+            },
+            "converted": "measure.<end>",
+            "entity": "entity.<id>",
+            "window": {"unit": "day", "value": 7},
+            "matching_mode": "first_converted_after_base",
+        },
+    },
+    {
+        "name": "distribution",
+        "description": (
+            "distribution view over entity-grain values. `over` must be an "
+            "entity_value expression; `function` selects the aggregator "
+            "(e.g. percentile)."
+        ),
+        "example": {
+            "kind": "distribution",
+            "function": "percentile",
+            "over": {
+                "kind": "entity_value",
+                "entity": "entity.<id>",
+                "input": "measure.<id>",
+            },
+            "p": 0.5,
+        },
+    },
+    {
+        "name": "aggregate_if",
+        "description": (
+            "shorthand for <AGG>(CASE WHEN cond THEN value END). Column refs "
+            "inside `condition` / `value` must specify `entity` or `table` "
+            "(no surrounding measure to inherit from). It aggregates the rows "
+            "of the value's entity; `condition` may also read entities that "
+            "entity reaches over many-to-one relationships. A value row with no "
+            "match there never satisfies it; a condition such a row could "
+            "satisfy (a missing test, OR with the value's own column) is refused. Compiles to "
+            "COUNT_IF / SUM_IF natively on Snowflake; portable CASE WHEN "
+            "elsewhere. `value` may be omitted when aggregation=count."
+        ),
+        "example": {
+            "kind": "aggregate_if",
+            "aggregation": "sum",
+            "condition": {
+                "kind": "comparison",
+                "op": "=",
+                "left": {"kind": "column", "column": "<col>", "entity": "entity.<id>"},
+                "right": {"kind": "literal", "value": True},
+            },
+            "value": {"kind": "column", "column": "<col>", "entity": "entity.<id>"},
+        },
+    },
+    {
+        "name": "between",
+        "description": (
+            "range predicate sugar; desugars at parse time to "
+            "`expr >= low AND expr <= high`. Use `kind: not_between` or "
+            "`negated: true` for the inverted form (lowers to "
+            "`expr < low OR expr > high`)."
+        ),
+        "example": {
+            "kind": "between",
+            "expr": {"kind": "column", "column": "<col>"},
+            "low": {"kind": "literal", "value": 0},
+            "high": {"kind": "literal", "value": 100},
+        },
+    },
+)
+
+
 def refusal(
     path: str, message: str, *, fix: str = "", code: str = "INVALID_QUERY", **details: Any
 ) -> SemanticLayerError:

@@ -189,7 +189,7 @@ def cmd_validate_config(args: argparse.Namespace) -> None:
     if not report["ok"]:
         raise SystemExit(1)
     if not getattr(args, "no_manifest", False):
-        from ...manifest import write_manifest
+        from ...catalog_service import write_manifest
 
         runtime = Runtime.from_path(ref.source_path) if ref.source_path else Runtime(ref.package_id)
         try:

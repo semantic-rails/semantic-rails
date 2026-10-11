@@ -78,7 +78,7 @@ def test_http_expression_shape_names_are_parser_kinds(runtime_factory):
             name = str(shape["name"])
             assert name in _VALID_KEYS_BY_KIND, (
                 f"expression shape {name!r} is not a parser-accepted kind; "
-                "update metadata_parts/capabilities._EXPRESSION_SHAPES"
+                "update query_call.EXPRESSION_SHAPES"
             )
     finally:
         runtime.close()

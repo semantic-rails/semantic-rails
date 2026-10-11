@@ -646,7 +646,7 @@ def test_catalog_compact_drops_alias_index_and_caps_rows(runtime_factory):
     when narrowed with ``search=``. Round four moved those maps to
     ``verbosity=full`` and added a per-kind row cap so the compact
     payload stays bounded by construction."""
-    from semantic_rails.metadata import _CATALOG_COMPACT_BUCKET_CAP
+    from semantic_rails.catalog_format import _CATALOG_COMPACT_BUCKET_CAP
 
     runtime = runtime_factory("jaffle_shop")
     try:

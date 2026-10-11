@@ -44,7 +44,8 @@ from .http_request import (
     request_id_from_parts,
     status_label,
 )
-from .metadata_parts.capabilities import _EXPRESSION_SHAPES, capabilities_payload
+from .metadata_parts.capabilities import capabilities_payload
+from .query_call import EXPRESSION_SHAPES
 from .request_context import (
     RequestContext,
     get_policy_context_resolver,
@@ -443,7 +444,7 @@ class SemanticHTTPService:
                 # ships (metadata_parts/capabilities.py), so the HTTP and MCP
                 # surfaces cannot drift apart — the examples there are
                 # parse-validated by tests/semantic_rails/test_mcp_tool_descriptions.py.
-                "expression_shapes": [dict(shape) for shape in _EXPRESSION_SHAPES],
+                "expression_shapes": [dict(shape) for shape in EXPRESSION_SHAPES],
             }
 
     def handle(

@@ -107,7 +107,8 @@ def test_source_fingerprint_frames_names_and_contents():
 def test_runtime_manifest_and_reload_share_the_loaded_generation(tmp_path):
     import json
 
-    from semantic_rails.manifest import load_manifest, write_manifest
+    from semantic_rails.catalog_service import write_manifest
+    from semantic_rails.manifest import load_manifest
     from semantic_rails.runtime import Runtime
 
     path = copy_package_config(tmp_path, "jaffle_shop")
@@ -136,13 +137,13 @@ def test_runtime_manifest_and_reload_share_the_loaded_generation(tmp_path):
 def test_manifest_variants_remain_one_generation_if_source_changes(tmp_path, monkeypatch):
     import json
 
-    from semantic_rails import metadata
-    from semantic_rails.manifest import write_manifest
+    from semantic_rails import catalog_service
+    from semantic_rails.catalog_service import write_manifest
     from semantic_rails.runtime import Runtime
 
     path = copy_package_config(tmp_path, "jaffle_shop")
     runtime = Runtime.from_path(str(path))
-    original = metadata.catalog_payload
+    original = catalog_service.catalog_payload
     calls = []
 
     def catalog_and_edit(runtime, **kwargs):
@@ -150,7 +151,7 @@ def test_manifest_variants_remain_one_generation_if_source_changes(tmp_path, mon
         _rename_package(path, f"edited {len(calls)}")
         return original(runtime, **kwargs)
 
-    monkeypatch.setattr(metadata, "catalog_payload", catalog_and_edit)
+    monkeypatch.setattr(catalog_service, "catalog_payload", catalog_and_edit)
     try:
         payload = json.loads(write_manifest(runtime).read_text())
         assert len(calls) > 1
@@ -323,7 +324,8 @@ def test_registered_snapshot_runtime_keeps_the_shared_asset_rule(tmp_path, monke
 
 def test_manifest_from_another_engine_version_is_ignored(tmp_path, monkeypatch):
     import semantic_rails
-    from semantic_rails.manifest import load_manifest, write_manifest
+    from semantic_rails.catalog_service import write_manifest
+    from semantic_rails.manifest import load_manifest
     from semantic_rails.runtime import Runtime
 
     path = copy_package_config(tmp_path, "jaffle_shop")
