@@ -144,11 +144,33 @@ def identity_claim_refusal(
     )
 
 
+# Keys that say who is asking: never part of a request, at any depth.
+IDENTITY_KEYS: frozenset[str] = frozenset({"policy_context"})
+
+
+def identity_claim_path(node: Any, prefix: str = "") -> str | None:
+    """The path of the shallowest identity key anywhere in ``node`` (annotations included),
+    or None: ``policy_context``, ``query.policy_context``, ``query._note.policy_context``."""
+    pending: list[tuple[str, Any]] = [(prefix, node)]
+    while pending:
+        nested: list[tuple[str, Any]] = []
+        for path, value in pending:
+            if isinstance(value, Mapping):
+                for key, item in value.items():
+                    child = f"{path}.{key}" if path else str(key)
+                    if key in IDENTITY_KEYS:
+                        return child
+                    nested.append((child, item))
+            elif isinstance(value, (list, tuple)):
+                nested.extend((f"{path}[{index}]", item) for index, item in enumerate(value))
+        pending = nested
+    return None
+
+
 def refuse_identity_claims(
     request: Mapping[str, Any], *, remote: bool, transport: str = "sdk"
 ) -> None:
-    """Refuse ``policy_context`` beside or inside ``query``; it is never stripped."""
-    query = request.get("query")
-    for path, holder in (("policy_context", request), ("query.policy_context", query)):
-        if isinstance(holder, Mapping) and "policy_context" in holder:
-            raise identity_claim_refusal(path, remote=remote, transport=transport)
+    """Refuse an identity key anywhere in a request, at its full path; it is never stripped."""
+    path = identity_claim_path(request)
+    if path is not None:
+        raise identity_claim_refusal(path, remote=remote, transport=transport)

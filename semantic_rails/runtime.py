@@ -119,6 +119,7 @@ from .policies import (
     row_filters_for_context,
     withheld_rank_order,
 )
+from .policy_rules import check_request_environment
 from .query_call import read_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
@@ -1594,17 +1595,24 @@ class Runtime:
 
         The call is read once, by :func:`semantic_rails.query_call.read_call`; identity comes
         only from ``context`` (a :class:`RequestContext`, or its mapping for a trusted local
-        caller) and ``now`` only from the argument.
+        caller) and ``now`` only from the argument. The call is read in the caller's visible
+        view, so a hidden id is refused exactly like an unknown one, before any definition of it
+        (its aggregations, its clock) is read.
         """
         instant = parse_now(now)
-        internal, notes = read_call(
-            query,
-            config=self._config,
-            now=instant,
-            default_clock=self._default_clock,
-            partial=partial,
-        )
-        payload: dict[str, Any] = {**internal, "policy_context": _context_mapping(context)}
+        policy = _context_mapping(context)
+        with self.request_scope():
+            # The request boundary's order: the environment first, then the caller's view.
+            check_request_environment(self.package_config, str(policy.get("environment") or ""))
+            with visible_view.request_view(self, policy):
+                internal, notes = read_call(
+                    query,
+                    config=self._config,
+                    now=instant,
+                    default_clock=self._default_clock,
+                    partial=partial,
+                )
+        payload: dict[str, Any] = {**internal, "policy_context": policy}
         payload["policy_context"]["now"] = format_now(instant)
         options = {
             "verbosity": verbosity,

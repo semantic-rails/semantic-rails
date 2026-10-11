@@ -1171,90 +1171,75 @@
       "type": "object"
     },
     "OpValue": {
-      "allOf": [
+      "anyOf": [
         {
-          "if": {
-            "properties": {
-              "op": {
-                "const": "missing"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "value": {
-                "type": "boolean"
-              }
+          "properties": {
+            "op": {
+              "pattern": "^\\s*(?:[iI][sS]|=|==|[eE][qQ]|[iI][nN]|[nN][oO][tT]|!=|<>|[nN][eE][qQ]|[nN][oO][tT]\\s+[iI][nN])\\s*$"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                },
+                {
+                  "items": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              ]
             }
           }
         },
         {
-          "if": {
-            "properties": {
-              "op": {
-                "const": "contains"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "value": {
-                "type": "string"
-              }
-            }
-          }
-        }
-      ],
-      "properties": {
-        "op": {
-          "enum": [
-            "!=",
-            "<",
-            "<=",
-            "<>",
-            "=",
-            "==",
-            ">",
-            ">=",
-            "EQ",
-            "IN",
-            "NEQ",
-            "NOT IN",
-            "contains",
-            "eq",
-            "gt",
-            "gte",
-            "in",
-            "is",
-            "lt",
-            "lte",
-            "missing",
-            "neq",
-            "not",
-            "not in"
-          ]
-        },
-        "value": {
-          "anyOf": [
-            {
+          "properties": {
+            "op": {
+              "pattern": "^\\s*(?:[gG][tT]|>|[gG][tT][eE]|>=|[lL][tT]|<|[lL][tT][eE]|<=)\\s*$"
+            },
+            "value": {
               "type": [
                 "string",
                 "number",
                 "boolean"
               ]
-            },
-            {
-              "items": {
-                "type": [
-                  "string",
-                  "number",
-                  "boolean"
-                ]
-              },
-              "minItems": 1,
-              "type": "array"
             }
-          ]
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "pattern": "^\\s*(?:[cC][oO][nN][tT][aA][iI][nN][sS])\\s*$"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "pattern": "^\\s*(?:[mM][iI][sS][sS][iI][nN][gG])\\s*$"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          }
+        }
+      ],
+      "description": "op is one of is, not, gt, gte, lt, lte, contains, missing or an alias (=, ==, eq, in, !=, <>, neq, not in, >, >=, <, <=), in any case. is and not take one value or a list; the ranges take one value; contains takes text; missing takes true or false.",
+      "properties": {
+        "op": {
+          "type": "string"
         }
       }
     },

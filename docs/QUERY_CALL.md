@@ -192,11 +192,13 @@ condition on a date dimension is legal; for a time window, use `time`.
 | `missing` | `true` | only unknown rows match | "with no X" |
 | `missing` | `false` | only known rows match | "only where X is known" |
 
-- SQL spellings are read as their word, case-insensitively: `=`, `==`, `eq`, `IN` → `is`;
+- Words are read in any case and spacing (`GT`, `not  in`), and SQL spellings as their word:
+  `=`, `==`, `eq`, `IN` → `is`;
   `!=`, `<>`, `neq`, `NOT IN` → `not`; `>`, `>=`, `<`, `<=` → `gt`, `gte`, `lt`, `lte`. A
   spelling takes its word's meaning, so `!=` keeps unknown rows too. Answers, refusals and
   clarifications always write the word.
-- A one-element list is the same value as the scalar. A `null` value, a `null` inside a list
+- For `is` and `not`, a one-element list is the same value as the scalar; the ranges,
+  `contains` and `missing` take one value, never a list. A `null` value, a `null` inside a list
   and an empty list are refused with the `missing` form. There is no `between`: a range is two
   conditions, `gte` and `lt`. `IS NULL`, `IS NOT NULL`, `LIKE` and `IS DISTINCT FROM` are refused
   with the word to write.

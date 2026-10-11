@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -63,6 +64,19 @@ def _kind_property(kind: str, key: str) -> dict[str, Any]:
     return {}
 
 
+def _spelling_pattern(names: Iterable[str]) -> str:
+    """A pattern matching exactly the spellings ``operators.operator_word`` reads as ``names``:
+    any letter case, surrounding whitespace, and any run of whitespace between words."""
+
+    def one(name: str) -> str:
+        return "".join(
+            r"\s+" if char == " " else f"[{char.lower()}{char.upper()}]" if char.isalpha() else char
+            for char in name
+        )
+
+    return r"^\s*(?:" + "|".join(one(name) for name in names) + r")\s*$"
+
+
 def query_call_schema_document() -> dict[str, Any]:
     """The query call's JSON Schema, generated from the parser's own tables."""
 
@@ -79,23 +93,29 @@ def query_call_schema_document() -> dict[str, Any]:
     )
     from semantic_rails.schema import OBSERVATION_SCOPES
 
-    ops = sorted(
-        {*operators.WORDS, *operators.ALIASES, *(alias.upper() for alias in operators.ALIASES)}
-    )
     scalar = {"type": ["string", "number", "boolean"]}
-    values = {"anyOf": [scalar, {"type": "array", "items": scalar, "minItems": 1}]}
-    # The op and value rules every condition follows, a per-entity value filter's too.
+    shapes = {
+        "scalar_or_list": {"anyOf": [scalar, {"type": "array", "items": scalar, "minItems": 1}]},
+        "scalar": scalar,
+        "text": {"type": "string"},
+        "boolean": {"type": "boolean"},
+    }
+    spellings: dict[str, list[str]] = {}
+    for word, operator in operators.OPERATORS.items():
+        aliases = [alias for alias, target in operators.ALIASES.items() if target == word]
+        spellings.setdefault(operator.value_shape, []).extend([word, *aliases])
+    # The op and value rules every condition follows, a per-entity value filter's too: one
+    # branch per value shape, with the spellings the parser reads for it (any case, any spacing).
     op_value = {
-        "properties": {"op": {"enum": ops}, "value": values},
-        "allOf": [
-            {
-                "if": {"properties": {"op": {"const": "missing"}}},
-                "then": {"properties": {"value": {"type": "boolean"}}},
-            },
-            {
-                "if": {"properties": {"op": {"const": "contains"}}},
-                "then": {"properties": {"value": {"type": "string"}}},
-            },
+        "description": (
+            f"op is one of {', '.join(operators.WORDS)} or an alias "
+            f"({', '.join(operators.ALIASES)}), in any case. is and not take one value or a "
+            "list; the ranges take one value; contains takes text; missing takes true or false."
+        ),
+        "properties": {"op": {"type": "string"}},
+        "anyOf": [
+            {"properties": {"op": {"pattern": _spelling_pattern(names)}, "value": shapes[shape]}}
+            for shape, names in spellings.items()
         ],
     }
     condition = {

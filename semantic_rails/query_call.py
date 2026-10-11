@@ -22,6 +22,7 @@ from typing import Any
 from . import operators
 from .clock import UNITS, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
+from .request_payload import identity_claim_path
 from .schema import OBSERVATION_SCOPES, PackageConfig
 
 SCHEMA_ID = "https://semantic-rails.com/schemas/query.v2.json"
@@ -438,7 +439,13 @@ def engine_where(
 
 def _check_top_level(payload: Mapping[str, Any]) -> None:
     for key in payload:
-        if key in FIELDS or key in IGNORED or str(key).startswith("_"):
+        if key in IGNORED or str(key).startswith("_"):
+            # Ignored and annotation keys are skipped, but an identity claim inside one is not.
+            claim = identity_claim_path(payload[key], str(key))
+            if claim is not None:
+                raise refusal(claim, "is not part of a query call", fix=RETIRED["policy_context"])
+            continue
+        if key in FIELDS:
             continue
         if key in RETIRED:
             raise refusal(key, "is not part of a query call", fix=f"{RETIRED[key]} {V2_POINTER}")

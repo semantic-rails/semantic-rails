@@ -904,7 +904,7 @@ def test_asgi_resolves_policy_context_once_for_valid_post() -> None:
 
 
 @pytest.mark.parametrize("route", ["validate", "compile", "query", "plan", "discover", "catalog"])
-@pytest.mark.parametrize("claim", ["outer", "nested"])
+@pytest.mark.parametrize("claim", ["outer", "nested", "annotation", "deep"])
 def test_asgi_refuses_every_identity_claim_in_the_body(route: str, claim: str) -> None:
     class TenantOnlyResolver:
         def resolve(self, headers, *, request_id=""):
@@ -915,10 +915,21 @@ def test_asgi_refuses_every_identity_claim_in_the_body(route: str, claim: str) -
     spoof = {"tenant": "spoofed-tenant", "roles": ["debug"], "audience": "spoofed-audience"}
     call: dict = {"select": [{"expression": "measure.jaffle.order_count", "as": "orders"}]}
     request: dict = {"query": call}
+    paths = {
+        "outer": "policy_context",
+        "nested": "query.policy_context",
+        "annotation": "query._note.policy_context",
+        "deep": "query._note.history[1].policy_context",
+    }
     if claim == "outer":
         request["policy_context"] = spoof
-    else:
+    elif claim == "nested":
         request["query"] = {**call, "policy_context": spoof}
+    elif claim == "annotation":
+        # An annotation is ignored, but a claim inside it is still a claim.
+        request["query"] = {**call, "_note": {"policy_context": spoof}}
+    else:
+        request["query"] = {**call, "_note": {"history": [{}, {"policy_context": spoof}]}}
     if route in {"plan", "discover"}:
         request.update(intent="orders", terms="orders")
     try:
@@ -928,9 +939,7 @@ def test_asgi_refuses_every_identity_claim_in_the_body(route: str, claim: str) -
         assert status == 400, payload
         error = payload["errors"][0]
         assert error["code"] == "IDENTITY_CLAIM_REFUSED"
-        assert error["details"]["path"] == (
-            "policy_context" if claim == "outer" else "query.policy_context"
-        )
+        assert error["details"]["path"] == paths[claim]
         assert payload["request_context"] == {
             "request_id": payload["request_id"],
             "tenant": "trusted-tenant",
