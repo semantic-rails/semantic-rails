@@ -86,7 +86,7 @@ def test_ties_break_by_group_by_then_period_never_by_a_measure(duckdb_backend):
     ] == [("a", "2023-11-01", 1), ("a", "2023-12-01", 1), ("a", "2024-01-01", 1)]
     order_by = result["rendered_sql"].rsplit("ORDER BY", 1)[1]
     assert order_by.index("dimension.shop_order_store_id") < order_by.index("period")
-    assert [w["details"] for w in result["warnings"] if w["code"] == "TIES_AT_LIMIT"] == [
+    assert [w["details"] for w in result.get("warnings", []) if w["code"] == "TIES_AT_LIMIT"] == [
         {"at": 3, "tied": 4}
     ]
 

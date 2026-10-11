@@ -34,7 +34,12 @@ from .answer_shape import _answer_shape_why
 from .call import Call, Order, QueryBuilder
 from .consumed_spans import unconsumed_terms
 from .examples import example_plan
-from .faithfulness import intent_faithfulness_why, intent_subject_why, named_subject_why
+from .faithfulness import (
+    hidden_governor_why,
+    intent_faithfulness_why,
+    intent_subject_why,
+    named_subject_why,
+)
 from .generators import _target_focus_text, blocked_object_not_found, fallback_drafts
 from .grouping_checks import _dropped_grouping_why
 from .groupings import _key_only_assumptions
@@ -714,6 +719,8 @@ def _planned_row(
         clarify = "clarification" in (why.get("details") or {})
         return _blocked_row(merged_draft, pattern, why, blocked, clarify=clarify)
     merged_draft = _governed_draft(config, intent, merged_draft, partial_query)
+    if (held := hidden_governor_why(config, merged_draft.query)) is not None:
+        return _blocked_row(merged_draft, pattern, held, blocked)
     # A balance reads the one day the question names (planner/snapshot.py).
     shaped, ask = shape_snapshot(runtime, intent, merged_draft.query, partial_query)
     if ask is not None:

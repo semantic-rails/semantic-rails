@@ -17,7 +17,7 @@ from dataclasses import replace
 from typing import Any
 
 from ..expressions import collect_object_references, expr_to_dict
-from ..schema import MetricConfig, PackageConfig
+from ..schema import MetricConfig, PackageConfig, base_of
 from .route_rows import hop_is_functional
 
 _AGGREGATES = frozenset({"aggregate", "measure", "scoped_aggregate"})
@@ -94,6 +94,14 @@ def governing_metrics(config: PackageConfig, measure_id: str) -> list[MetricConf
             for read, narrowing in _measure_reads(expr_to_dict(metric.expression))
         )
     ]
+
+
+def governed_out_of_view(config: PackageConfig, measure_id: str) -> bool:
+    """Whether a metric hidden from this view of the package governs ``measure_id``: its raw
+    number is never answered (a hold, never a wrong number), and nothing names the metric."""
+
+    shown = {metric.id for metric in config.metric_recipes}
+    return any(metric.id not in shown for metric in governing_metrics(base_of(config), measure_id))
 
 
 def _reachable_entities(config: PackageConfig, entity: str) -> set[str]:
