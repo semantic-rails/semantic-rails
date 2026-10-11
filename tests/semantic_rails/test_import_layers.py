@@ -20,7 +20,8 @@ LAYERS = [
     "api asgi http_core http_request mcp mcp_query mcp_server mcp_session mcp_streamable_http architect_mcp"
     " contracts.generation",
     "architect_service architect_transactions architect_introspection architect_scaffold"
-    " dbt_artifacts package_tools upgrade config_validation semantic_collisions contracts interop",
+    " dbt_artifacts package_tools upgrade config_validation semantic_collisions contracts interop"
+    " operations",
     "planner",
     "metadata metadata_parts catalog_service",
     "runtime runtime_parts answer manifest segments caveats resource_access policies cache"

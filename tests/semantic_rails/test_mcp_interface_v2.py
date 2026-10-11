@@ -744,8 +744,10 @@ def test_now_pins_a_relative_window_on_execute_and_rest(v2: SemanticLayerMCPAdap
 def test_plan_takes_now_on_mcp_and_rest(
     v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from dataclasses import replace
+
     import semantic_rails.http_core as http_core
-    import semantic_rails.mcp as mcp
+    from semantic_rails.operations import OPERATIONS
 
     seen: list[Any] = []
 
@@ -753,8 +755,7 @@ def test_plan_takes_now_on_mcp_and_rest(
         seen.append(now)
         return {"status": "ok", "best": None}
 
-    monkeypatch.setattr(mcp, "plan_payload", plan)
-    monkeypatch.setattr(http_core, "plan_payload", plan)
+    monkeypatch.setitem(OPERATIONS, "plan", replace(OPERATIONS["plan"], service=plan))
     v2.call_tool("plan", {"intent": "orders last month", "now": "2017-03-15"})
     http_core.SemanticHTTPService(v2.runtime).handle(
         "POST", "/plan", {"intent": "orders last month", "options": {"now": "2017-03-16"}}
