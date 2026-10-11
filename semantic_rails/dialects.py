@@ -826,11 +826,12 @@ class BigQueryDialect(SqlDialect):
 
             v[FLOOR(h)] + (h - FLOOR(h)) * (v[CEIL(h)] - v[FLOOR(h)])
 
-        via ``(ARRAY_AGG(expr ORDER BY expr ASC))[OFFSET(...)]`` array
-        references. When ``h`` is integral FLOOR = CEIL and the fraction
-        term is 0, so the result is the element itself. NOTE: BigQuery
-        ARRAY_AGG errors on NULL elements (IGNORE NULLS is not
-        representable in the SQL AST) — see capabilities().
+        via ``(ARRAY_AGG(expr IGNORE NULLS ORDER BY expr ASC))[SAFE_OFFSET(...)]``
+        array references. When ``h`` is integral FLOOR = CEIL and the fraction
+        term is 0, so the result is the element itself. NULLs are left out, as
+        DuckDB's QUANTILE_CONT leaves them out (an array holding NULL is an error
+        on BigQuery), and a group with no value reads NULL: its position is
+        negative, which SAFE_OFFSET reads as NULL.
         """
         from .sql_ast import SqlCallWithOrder, SqlIndexAccess
 
@@ -838,11 +839,12 @@ class BigQueryDialect(SqlDialect):
             return SqlCallWithOrder(
                 call=SqlCall("ARRAY_AGG", [expr]),
                 order_by=[SqlOrderTerm(expr=expr, direction="ASC")],
+                ignore_nulls=True,
             )
 
         def position() -> Any:
-            # h = p * (COUNT(expr) - 1); COUNT(expr) matches ARRAY_AGG's
-            # element count (both skip nothing — NULLs error out above).
+            # h = p * (COUNT(expr) - 1); COUNT(expr) is ARRAY_AGG's element
+            # count (both leave NULLs out).
             return SqlBinary(
                 SqlLiteral(float(percentile)),
                 "*",
@@ -853,7 +855,7 @@ class BigQueryDialect(SqlDialect):
             return SqlIndexAccess(
                 expr=sorted_values(),
                 index=SqlCast(SqlCall(index_call, [position()]), "BIGINT"),
-                wrapper="OFFSET",
+                wrapper="SAFE_OFFSET",
             )
 
         lower = element_at("FLOOR")
@@ -865,10 +867,9 @@ class BigQueryDialect(SqlDialect):
         return self.percentile_cont(expr, 0.5)
 
     def _array_agg_edge(self, expr: Any, order_expr: Any, direction: str) -> Any:
-        # No MIN_BY/MAX_BY — use ARRAY_AGG(expr ORDER BY o … LIMIT 1)
-        # [OFFSET(0)]. NOTE: BigQuery ARRAY_AGG errors on NULL elements
-        # and IGNORE NULLS is not representable in the SQL AST (see
-        # capabilities()).
+        # No MIN_BY/MAX_BY: ARRAY_AGG(expr IGNORE NULLS ORDER BY o … LIMIT 1)
+        # [SAFE_OFFSET(0)], the first non-NULL value (an array holding NULL is an
+        # error on BigQuery), or NULL for a group with none.
         from .sql_ast import SqlCallWithOrder, SqlIndexAccess
 
         return SqlIndexAccess(
@@ -876,9 +877,10 @@ class BigQueryDialect(SqlDialect):
                 call=SqlCall("ARRAY_AGG", [expr]),
                 order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
                 limit=1,
+                ignore_nulls=True,
             ),
             index=SqlLiteral(0),
-            wrapper="OFFSET",
+            wrapper="SAFE_OFFSET",
         )
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
@@ -948,19 +950,15 @@ class BigQueryDialect(SqlDialect):
                 "null_safe_equality_function": "IS NOT DISTINCT FROM",
                 "percentile_cont_exact": True,
                 "percentile_cont_method": (
-                    "exact linear interpolation over "
-                    "(ARRAY_AGG(expr ORDER BY expr))[OFFSET(FLOOR/CEIL(p * (COUNT(expr) - 1)))] "
-                    "— PERCENTILE_CONT is window-only in BigQuery, so the exact "
-                    "DuckDB QUANTILE_CONT definition is rebuilt from aggregates. "
-                    "CAVEAT: errors if aggregated values contain NULL elements "
-                    "(ARRAY_AGG rejects NULLs; IGNORE NULLS is not representable "
-                    "in the SQL AST)."
+                    "exact linear interpolation over (ARRAY_AGG(expr IGNORE NULLS ORDER BY "
+                    "expr))[SAFE_OFFSET(FLOOR/CEIL(p * (COUNT(expr) - 1)))] — PERCENTILE_CONT "
+                    "is window-only in BigQuery, so the exact DuckDB QUANTILE_CONT definition "
+                    "is rebuilt from aggregates; NULLs are left out."
                 ),
                 "median_exact": True,
                 "first_last_value_method": (
-                    "(ARRAY_AGG(expr ORDER BY order LIMIT 1))[OFFSET(0)] — "
-                    "errors if aggregated values contain NULL elements; "
-                    "IGNORE NULLS is not representable in the SQL AST."
+                    "(ARRAY_AGG(expr IGNORE NULLS ORDER BY order LIMIT 1))[SAFE_OFFSET(0)] — "
+                    "the first non-NULL value, NULL when there is none."
                 ),
             }
         )

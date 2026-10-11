@@ -450,22 +450,23 @@ class SqlWithinGroup:
 @dataclass(frozen=True)
 class SqlCallWithOrder:
     """Aggregate call with function-internal ORDER BY (and optional LIMIT):
-    ``name(args ORDER BY … [LIMIT n])``. Used by dialects without
+    ``name(args [IGNORE NULLS] ORDER BY … [LIMIT n])``. Used by dialects without
     MIN_BY/ARG_MIN — Postgres ``array_agg(x ORDER BY y)``, BigQuery
-    ``ARRAY_AGG(x ORDER BY y LIMIT 1)``."""
+    ``ARRAY_AGG(x IGNORE NULLS ORDER BY y LIMIT 1)``."""
 
     call: SqlCall
     order_by: list[SqlOrderTerm] = field(default_factory=list)
     limit: int | None = None
+    ignore_nulls: bool = False
 
 
-_INDEX_WRAPPERS = frozenset({"", "OFFSET", "ORDINAL"})
+_INDEX_WRAPPERS = frozenset({"", "OFFSET", "ORDINAL", "SAFE_OFFSET"})
 
 
 @dataclass(frozen=True)
 class SqlIndexAccess:
-    """Array subscript: ``expr[index]``, or BigQuery's
-    ``expr[OFFSET(index)]`` / ``expr[ORDINAL(index)]``."""
+    """Array subscript: ``expr[index]``, or BigQuery's ``expr[OFFSET(index)]`` /
+    ``expr[ORDINAL(index)]`` / ``expr[SAFE_OFFSET(index)]`` (NULL out of bounds)."""
 
     expr: SqlExpr
     index: SqlExpr

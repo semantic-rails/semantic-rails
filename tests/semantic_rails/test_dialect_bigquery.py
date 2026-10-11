@@ -174,11 +174,12 @@ def test_date_add_supports_month_unit():
 def _exact_percentile_sql(column: str, p: str) -> str:
     """The exact linear-interpolation form percentile_cont lowers to:
     v[FLOOR(h)] + (h - FLOOR(h)) * (v[CEIL(h)] - v[FLOOR(h)]) with
-    h = p * (COUNT(x) - 1) over ARRAY_AGG(x ORDER BY x ASC)."""
+    h = p * (COUNT(x) - 1) over ARRAY_AGG(x IGNORE NULLS ORDER BY x ASC); NULLs are left
+    out, and a group without a value reads NULL (SAFE_OFFSET of a negative position)."""
     h = f"{p} * (COUNT({column}) - 1)"
-    arr = f"(ARRAY_AGG({column} ORDER BY {column} ASC))"
-    lo = f"{arr}[OFFSET(CAST(FLOOR({h}) AS BIGINT))]"
-    hi = f"{arr}[OFFSET(CAST(CEIL({h}) AS BIGINT))]"
+    arr = f"(ARRAY_AGG({column} IGNORE NULLS ORDER BY {column} ASC))"
+    lo = f"{arr}[SAFE_OFFSET(CAST(FLOOR({h}) AS BIGINT))]"
+    hi = f"{arr}[SAFE_OFFSET(CAST(CEIL({h}) AS BIGINT))]"
     return f"{lo} + ({h} - FLOOR({h})) * ({hi} - {lo})"
 
 
@@ -202,14 +203,14 @@ def test_median_is_percentile_50():
     assert sql == render_expr(DIALECT.percentile_cont(_col("x"), 0.5))
 
 
-def test_first_value_uses_array_agg_order_limit_offset():
+def test_first_value_is_the_first_non_null_value():
     sql = render_expr(DIALECT.first_value(_col("x"), _col("o")))
-    assert sql == "(ARRAY_AGG(x ORDER BY o ASC LIMIT 1))[OFFSET(0)]"
+    assert sql == "(ARRAY_AGG(x IGNORE NULLS ORDER BY o ASC LIMIT 1))[SAFE_OFFSET(0)]"
 
 
 def test_last_value_orders_descending():
     sql = render_expr(DIALECT.last_value(_col("x"), _col("o")))
-    assert sql == "(ARRAY_AGG(x ORDER BY o DESC LIMIT 1))[OFFSET(0)]"
+    assert sql == "(ARRAY_AGG(x IGNORE NULLS ORDER BY o DESC LIMIT 1))[SAFE_OFFSET(0)]"
 
 
 def test_null_safe_eq_pairs_joinable_equality_with_exact_predicate():
@@ -643,7 +644,7 @@ def test_jaffle_battery_compiles_for_bigquery():
     assert "DATETIME_ADD(" in combined
     # Exact percentile lowering (ARRAY_AGG interpolation) is exercised
     # by the percentile battery cases.
-    assert "ORDER BY" in combined and "[OFFSET(CAST(FLOOR(" in combined
+    assert "IGNORE NULLS ORDER BY" in combined and "[SAFE_OFFSET(CAST(FLOOR(" in combined
 
 
 @pytest.mark.parametrize(

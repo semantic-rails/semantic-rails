@@ -8,6 +8,7 @@ so callers keep importing from there.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..errors import SemanticLayerError
@@ -102,10 +103,8 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
                 function=_expr(expr.function), order_by=[_expr(item) for item in expr.order_by]
             )
         if isinstance(expr, SqlCallWithOrder):
-            return SqlCallWithOrder(
-                call=_expr(expr.call),
-                order_by=[_expr(item) for item in expr.order_by],
-                limit=expr.limit,
+            return replace(
+                expr, call=_expr(expr.call), order_by=[_expr(item) for item in expr.order_by]
             )
         if isinstance(expr, SqlIndexAccess):
             return SqlIndexAccess(
