@@ -476,9 +476,14 @@ def capping_at(now: datetime) -> Iterator[CoverageClock]:
 
 
 def _now_literal(dialect: Any) -> Any:
+    return dialect.timestamp_cast(SqlLiteral(CoverageClock(request_now()).literal))
+
+
+def request_now() -> datetime:
+    """The request's ``now`` while it lowers; SQL that embeds it serves that ``now`` only."""
     clock = _coverage_clock.get() or CoverageClock(current_time())
     clock.read = True
-    return dialect.timestamp_cast(SqlLiteral(clock.literal))
+    return clock.now
 
 
 def require_time_scopes(aliases: Iterable[str], scopes: Mapping[str, LeafScope]) -> None:

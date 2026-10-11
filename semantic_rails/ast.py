@@ -159,12 +159,16 @@ class TimeSpec:
     last_unit: str = ""
     last_value: int = 0
     this: str = ""
+    # Only a start was given: ``end`` is the request's ``now`` and the window stays open.
+    to_now: bool = False
 
     @property
     def named(self) -> bool:
         """A named window (``last``, ``this``, or ``start`` and ``end``) answers with its rows."""
         return bool(
-            self.last_unit or self.this or (self.start is not None and self.end is not None)
+            self.last_unit
+            or self.this
+            or (self.start is not None and self.end is not None and not self.to_now)
         )
 
 
@@ -425,7 +429,7 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
 
 
 _TIME_KEYS = frozenset(
-    {"temporal_role", "grain", "start", "end", "fill", "last_unit", "last_value", "this"}
+    {"temporal_role", "grain", "start", "end", "fill", "last_unit", "last_value", "this", "to_now"}
 )
 
 
@@ -460,6 +464,7 @@ def _time_spec_from_payload(
         last_unit=str(payload.get("last_unit", "") or ""),
         last_value=int(payload.get("last_value", 0) or 0),
         this=str(payload.get("this", "") or ""),
+        to_now=bool(payload.get("to_now", False)),
     )
 
 

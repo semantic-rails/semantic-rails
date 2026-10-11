@@ -196,7 +196,7 @@ def resolve_window(spec: dict[str, Any], *, now: datetime, timezone: str = "UTC"
         return Window(
             spec={"this": unit},
             start=start.isoformat(),
-            end=today.isoformat(timespec="seconds"),
+            end=today.isoformat(),
             named=True,
             partial=True,
         )
@@ -207,10 +207,12 @@ def resolve_window(spec: dict[str, Any], *, now: datetime, timezone: str = "UTC"
         end_moment = _end_moment(end_value)
         partial = end_moment is not None and end_moment > today
     window_spec = {key: spec[key] for key in ("start", "end") if spec.get(key) is not None}
+    # A window with only a start runs to now; it stays open (it answers the periods it has).
+    to_now = today.isoformat() if start_value is not None else None
     return Window(
         spec=window_spec,
         start=None if start_value is None else str(start_value),
-        end=None if end_value is None else str(end_value),
+        end=to_now if end_value is None else str(end_value),
         named=start_value is not None and end_value is not None,
         partial=partial,
     )
@@ -235,7 +237,8 @@ def engine_window(time: Mapping[str, Any], *, now: datetime, timezone: str = "UT
     elif time.get("this"):
         spec = {"this": time["this"]}
     else:
-        spec = {key: time[key] for key in ("start", "end") if time.get(key) is not None}
+        keys = ("start",) if time.get("to_now") else ("start", "end")
+        spec = {key: time[key] for key in keys if time.get(key) is not None}
     return resolve_window(spec, now=now, timezone=timezone)
 
 

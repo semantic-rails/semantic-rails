@@ -110,8 +110,9 @@ def answer_fields(
     assumptions.extend(_entity_filter_over(plan.query))
     if time.get("grain") or time.get("start") is not None or time.get("end") is not None:
         window = engine_window(time, now=now, timezone=zone)
-        # A ``this`` window ends at now: state that instant with its offset, as ``now`` is.
-        end = _instant(now, zone) if "this" in window.spec else window.end
+        # A ``this`` window, or one with only a start, ends at now: state that instant with its
+        # offset, as ``now`` is.
+        end = _instant(now, zone) if "this" in window.spec or time.get("to_now") else window.end
         shown = {"start": window.start, "end": end, "now": format_now(now)}
         out["window"] = {key: value for key, value in shown.items() if value is not None}
         if window.start is not None or window.end is not None:
@@ -166,7 +167,7 @@ def answer_fields(
 
 def _instant(now: datetime, zone: str) -> str:
     """``now`` as wall time in the clock's zone with its offset (``Z`` for UTC)."""
-    local = now.astimezone(ZoneInfo(zone)).isoformat(timespec="seconds")
+    local = now.astimezone(ZoneInfo(zone)).isoformat()
     return local.replace("+00:00", "Z")
 
 

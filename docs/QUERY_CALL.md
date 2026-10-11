@@ -366,7 +366,7 @@ A result threshold filters result rows; to filter which entities count toward a 
 | `"last": {"unit", "value"}` | the last N complete periods before `now` | `{"last": {"unit": "week", "value": 2}, "grain": "week"}` |
 | `"this": "<unit>"` | from the start of the current period to `now` (partial) | `{"this": "month"}` |
 | `"start"` and `"end"` | `[start, end)`: `start` inclusive, `end` exclusive | `{"start": "2017-01-01", "end": "2017-04-01", "grain": "month"}` |
-| `"start"` alone / `"end"` alone | since / until | `{"start": "2017-06-01", "grain": "month"}` |
+| `"start"` alone / `"end"` alone | since (up to `now`, partial) / until | `{"start": "2017-06-01", "grain": "month"}` |
 | no window | all time | `{"grain": "year"}` |
 
 - Units and grains: `day`, `week`, `month`, `quarter`, `year`. Weeks start on Monday (ISO).
