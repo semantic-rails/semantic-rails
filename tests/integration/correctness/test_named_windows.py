@@ -97,7 +97,9 @@ def test_a_balance_right_now_is_its_last_closing_day(shop: Runtime) -> None:
 
 
 def _no_data_yet(result: dict) -> list[dict]:
-    return [w["details"]["measures"] for w in result["warnings"] if w["code"] == "NO_DATA_YET"]
+    return [
+        w["details"]["measures"] for w in result.get("warnings", []) if w["code"] == "NO_DATA_YET"
+    ]
 
 
 def test_a_balance_after_its_last_snapshot_says_no_data_yet(shop: Runtime) -> None:
@@ -106,7 +108,7 @@ def test_a_balance_after_its_last_snapshot_says_no_data_yet(shop: Runtime) -> No
     call = {"select": [SEATS], "time": {"start": "2024-01-01", "end": "2024-04-01", "grain": "month"}}  # fmt: skip
     result = shop.query(call, now="2024-03-10T12:00:00Z")
     assert result["window"]["data_through"] == "2024-01-15"
-    (warning,) = [w for w in result["warnings"] if w["code"] == "NO_DATA_YET"]
+    (warning,) = [w for w in result.get("warnings", []) if w["code"] == "NO_DATA_YET"]
     assert warning["details"]["outputs"] == ["seats"]
     assert warning["details"]["measures"] == [
         {"id": SEATS, "edge": "2024-01-01", "edge_source": "last_bucket"}

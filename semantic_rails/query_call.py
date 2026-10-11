@@ -969,7 +969,13 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
             "time.temporal_role", "is a temporal role id", fix='Write "temporal_role.<id>".'
         )
     role = (role or "").strip() or _default_role(select, context)
-    if not role and context.config is not None and not context.partial:
+    # A package with no clocks at all is refused by the engine ("declares no time").
+    if (
+        not role
+        and context.config is not None
+        and context.config.temporal_roles
+        and not context.partial
+    ):
         raise refusal(
             "time.temporal_role",
             "nothing selected names a clock, so say which one",
