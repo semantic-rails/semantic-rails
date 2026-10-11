@@ -54,6 +54,16 @@ def _gold(runtime: Runtime, sql: str) -> list[dict[str, Any]]:
     return list(runtime._get_adapter().query(sql))
 
 
+def _window_total_lines(response: dict[str, Any]) -> int:
+    """How many assumptions say the window was one total, beside the call's other assumptions."""
+    lines = [
+        entry["message"]
+        for entry in response.get("assumptions") or []
+        if entry.get("code") == "WINDOW_TOTAL"
+    ]
+    return len(lines) if all("one total" in line for line in lines) else -1
+
+
 def _codes(response: dict[str, Any]) -> list[str]:
     return [str(item.get("code")) for item in response.get("warnings") or []]
 
@@ -73,9 +83,7 @@ def test_a_window_without_a_grain_is_one_total(runtime: Runtime) -> None:
     assert row["orders"] == gold[0]["orders"]
     assert row["revenue"] == pytest.approx(gold[0]["revenue"])
     assert [column["field"] for column in response["output_columns"]] == ["revenue", "orders"]
-    assert (
-        len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]["message"]
-    )
+    assert _window_total_lines(response) == 1
     assert "UNGRAINED_TIME_PROJECTION" not in _codes(response)
 
 
@@ -408,9 +416,7 @@ def test_every_kind_of_measure_returns_the_window_total(runtime: Runtime, case: 
     for key, row_values in want.items():
         assert got[key] == pytest.approx(row_values), key
     assert response["row_count"] == len(gold)  # one row per group, never one per timestamp
-    assert (
-        len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]["message"]
-    )
+    assert _window_total_lines(response) == 1
     assert not {"UNGRAINED_TIME_PROJECTION", "UNGRAINED_GROUPED_TIME_PROJECTION"} & set(
         _codes(response)
     )

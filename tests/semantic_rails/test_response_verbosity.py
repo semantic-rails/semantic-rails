@@ -43,7 +43,7 @@ _COMPACT_DROPPED_KEYS = (
 
 
 # What the answer means (its status, window, clock, observation scope, routes and
-# assumptions) survives minimal too.
+# assumptions, such as a governed metric filtering order_count) survives minimal too.
 _TIME_MEANING_KEYS = frozenset(
     {"status", "window", "clock", "observation_scope", "routes", "assumptions"}
 )

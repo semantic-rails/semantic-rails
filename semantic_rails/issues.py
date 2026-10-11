@@ -73,7 +73,13 @@ CODES: dict[str, str] = {
     ),
     **_codes(NOTE, "VALUES_WITHHELD"),
     # One entry per disclosure an answer states under ``assumptions``.
-    **_codes(ASSUMPTION, "ENTITY_FILTER_OVER PARTIAL_PERIOD WINDOW_TOTAL"),
+    **_codes(
+        ASSUMPTION,
+        """
+        AGGREGATION_OVERRIDE ENTITY_FILTER_OVER GOVERNED_METRIC_EXISTS GROUPED_BY_KEY
+        PARTIAL_PERIOD SHARE_OF_TOTAL SHOWN_BY_KEY WINDOW_TOTAL
+        """,
+    ),
     **_codes(
         HOLD,
         """

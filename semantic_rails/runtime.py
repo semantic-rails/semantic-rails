@@ -134,6 +134,7 @@ from .request_context import (
     without_trusted_attributes,
 )
 from .result_values import result_rows
+from .runtime_parts.assumptions import call_assumptions, refuse_hidden_governors, split_hidden
 from .runtime_parts.disclosures import mixed_time_role_warnings
 from .runtime_parts.filtered_series import filtered_series_warnings
 from .runtime_parts.responses import (
@@ -2683,6 +2684,9 @@ class Runtime:
         binding: BoundQuery | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
+        if binding is not None:
+            # After the policy gate, so a policy that refuses the call outright speaks first.
+            refuse_hidden_governors(self._config, binding.plan.query)
         normalized = (
             binding.plan.query
             if binding is not None
@@ -2817,7 +2821,13 @@ class Runtime:
             payload = self.engine_payload(query, now=now, context=context, **options)
         except SemanticLayerError as exc:
             issue = exception_issue(exc, stage="validate")
-            return {"ok": False, "status": "error", "errors": [issue]}
+            hints = list(issue.get("recovery_hints") or [])
+            return {
+                "ok": False,
+                "status": "error",
+                "errors": [issue],
+                **({"recovery_hints": hints} if hints else {}),
+            }
         result = self.validate_internal(payload)
         for error in result.get("errors") or []:
             if error.get("code") == "AMBIGUOUS_PATH":
@@ -3085,6 +3095,7 @@ class Runtime:
                 from .top_n import limit_rows
 
                 rows, tie_warnings = limit_rows(rows, limit, compiled["limit_order_keys"])
+            rows, hidden = split_hidden(rows, compiled)
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -3149,7 +3160,7 @@ class Runtime:
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            **self._answer_fields(compiled, payload, coverage=coverage, rows=rows),
+            **self._answer_fields(compiled, payload, coverage=coverage, rows=rows, hidden=hidden),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -3288,8 +3299,10 @@ class Runtime:
             kind="execute",
         )
 
-    def _answer_fields(self, compiled, payload, *, coverage=None, rows=None) -> dict[str, Any]:
-        return answer_fields(
+    def _answer_fields(
+        self, compiled, payload, *, coverage=None, rows=None, hidden=None
+    ) -> dict[str, Any]:
+        out = answer_fields(
             self._config,
             compiled,
             now=_answer_now(payload),
@@ -3297,6 +3310,8 @@ class Runtime:
             coverage=coverage,
             rows=rows,
         )
+        out["assumptions"].extend(call_assumptions(self._config, compiled, payload or {}, hidden))
+        return out
 
     def _bind(self, payload: dict[str, Any], policy_context: dict[str, Any]) -> BoundQuery:
         """Bind the caller's query on their view; row filters and policies read the base."""

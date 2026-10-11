@@ -202,6 +202,17 @@ def _calls_in(node: Any) -> list[dict[str, Any]]:
     return [call for value in values for call in _calls_in(value)]
 
 
+def _yaml_calls(node: Any) -> list[tuple[dict[str, Any], str]]:
+    """``(call, refusal code or "")`` for each call in a YAML example: a package test of kind
+    ``validate_fails_with_code`` declares the refusal its call gets."""
+    if isinstance(node, dict) and node.get("kind") == "validate_fails_with_code":
+        return [(call, str(node.get("code") or "")) for call in _calls_in(node.get("query"))]
+    if _is_call(node):
+        return [(node, "")]
+    values = node.values() if isinstance(node, dict) else node if isinstance(node, list) else []
+    return [pair for value in values for pair in _yaml_calls(value)]
+
+
 def _python_calls(source: str) -> list[dict[str, Any]]:
     import ast
 
@@ -243,7 +254,9 @@ def _doc_calls() -> list[tuple[str, dict[str, Any], str]]:
                     refused = _REFUSED.match(after.group(2))
                     code = refused.group(1) if refused else ""
             elif language == "yaml":
-                calls = _calls_in(yaml.safe_load(body))
+                pairs = _yaml_calls(yaml.safe_load(body))
+                found.extend((f"{doc}:{line}", call, refused) for call, refused in pairs)
+                continue
             elif language == "python":
                 calls = _python_calls(body)
             elif language == "bash":

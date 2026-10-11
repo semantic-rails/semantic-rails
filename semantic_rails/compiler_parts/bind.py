@@ -38,6 +38,7 @@ from ..expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     collect_column_refs,
     expr_to_dict,
     parse_semantic_expression,
@@ -412,6 +413,40 @@ def _expression_alias(expr: SemanticExpr, config: PackageConfig | None = None) -
     return f"{expr_to_dict(expr)['kind']}__expr"
 
 
+_MEASURE_KINDS = frozenset({"measure", "aggregate", "semi_additive", "scoped_aggregate"})
+
+
+def select_measure_reads(select: Any) -> Iterator[dict[str, Any]]:
+    """Each measure node a query's ``select`` reads itself; a metric's reads are its own."""
+
+    def walk(node: Any) -> Iterator[dict[str, Any]]:
+        if isinstance(node, list):
+            for item in node:
+                yield from walk(item)
+        elif isinstance(node, dict):
+            if node.get("kind") in _MEASURE_KINDS and node.get("measure"):
+                yield node
+                return
+            for value in node.values():
+                yield from walk(value)
+
+    yield from walk([row.get("expression") for row in select or []])
+
+
+def aggregation_overrides(select: Any, config: PackageConfig) -> dict[str, tuple[str, str]]:
+    """Each measure a query's ``select`` reads with a statistic other than its package default,
+    by leaf alias: ``(measure id, aggregation)``. An override equal to the default is none, and
+    a metric's own aggregation is the package's definition, never the call's override."""
+    found: dict[str, tuple[str, str]] = {}
+    for node in select_measure_reads(select):
+        measure = _measure_index(config).get(str(node["measure"]))
+        aggregation = str(node.get("aggregation") or "")
+        if measure is not None and aggregation and aggregation != measure.default_aggregation:
+            expr = parse_semantic_expression(node, context="select")
+            found[_expression_alias(expr, config)] = (measure.id, aggregation)
+    return found
+
+
 def _bind_measure(
     expr: MeasureRefExpr,
     config: PackageConfig,
@@ -428,7 +463,9 @@ def _bind_measure(
     if aggregation not in measure.allowed_aggregations:
         raise SemanticLayerError(
             "UNSUPPORTED_AGGREGATION",
-            f"Aggregation '{aggregation}' is not allowed for '{measure_id}'",
+            f"Aggregation '{aggregation}' is not allowed for '{measure_id}'; it allows "
+            f"{list(measure.allowed_aggregations)}. Omit aggregation for the default "
+            f"({measure.default_aggregation}).",
             details={
                 "measure": measure_id,
                 "aggregation": aggregation,
@@ -811,7 +848,15 @@ def _collect_measure_refs(
             _collect_measure_refs(expr.else_expr, config, query, out)
         return
     if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
+        expr,
+        (
+            CumulativeExpr,
+            RollingExpr,
+            PriorPeriodExpr,
+            PeriodToDateExpr,
+            OffsetWindowExpr,
+            ShareExpr,
+        ),
     ):
         _collect_measure_refs(expr.input, config, query, out)
         return
@@ -875,6 +920,7 @@ def _collect_conversion_exprs(
             PeriodToDateExpr,
             MetricPredicateExpr,
             OffsetWindowExpr,
+            ShareExpr,
         ),
     ):
         _collect_conversion_exprs(expr.input, config, out)

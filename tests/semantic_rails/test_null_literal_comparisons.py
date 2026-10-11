@@ -311,7 +311,8 @@ def test_compile_binds_dialect_for_computed_boolean_null(runtime, warehouse):
     }
     sql = compile_query(config, None, query)["sql"]
     type_name = "Nullable(Bool)" if warehouse == "clickhouse" else "BOOLEAN"
-    assert f"CAST(NULL AS {type_name}) AS flag" in sql
+    quote = "`" if warehouse in {"bigquery", "databricks"} else '"'
+    assert f"CAST(NULL AS {type_name}) AS {quote}flag{quote}" in sql
     assert f"FALSE != CAST(NULL AS {type_name})" in sql
     if warehouse == "clickhouse":
         assert "CAST(NULL AS BOOLEAN)" not in sql

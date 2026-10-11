@@ -29,13 +29,12 @@ from ..sql_identifiers import quote_identifier
 from .base import WarehouseAdapter
 from .common import (
     DuckDbApiAdapter,
-    import_driver,
     normalize_connection_options,
     option_or_env,
     require_missing_env,
 )
 from .duckdb_confinement import confine_duckdb, confinement_directory, require_inside
-from .duckdb_setup import configure_duckdb_connection
+from .duckdb_setup import configure_duckdb_connection, connect_duckdb
 
 # Alias under which the lake catalog is ATTACHed on the in-memory host.
 # Invisible to compiled SQL: the adapter immediately USEs it, so table
@@ -137,19 +136,13 @@ class DuckLakeAdapter(DuckDbApiAdapter):
 
     # -- DbApiAdapter hook ----------------------------------------------------
     def _create_connection(self) -> Any:
-        driver = import_driver(
-            "duckdb",
-            extra="all",  # duckdb is a core dependency; ImportError means a broken install
-            engine=self.engine,
-            connection_kind=self.connection_kind,
-        )
         catalog_path, data_path = self._resolve_paths()
         parent = os.path.dirname(catalog_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         if data_path:
             os.makedirs(data_path, exist_ok=True)
-        conn = configure_duckdb_connection(driver.connect())
+        conn = connect_duckdb()
         try:
             conn.execute("INSTALL ducklake")
             conn.execute("LOAD ducklake")

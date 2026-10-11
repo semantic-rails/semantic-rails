@@ -1,6 +1,6 @@
 fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
-  data_sha256: 9c846589d4cc8d72b7e3f7bd19ea9d9a21ef246a87d6de79fe4727ea578223e5
+  data_sha256: 6326af948b83796bef51d7828ca1e74b9978f3b55893a92e7e8533f84ac8599f
 tests:
   shop/sibling-input-clock-filter-keeps-independent-history:
     kind: query_matches_snapshot
@@ -197,7 +197,7 @@ tests:
   shop/top-stores-with-cutoff-ties:
     kind: query_matches_snapshot
     expect: answer
-    why: Stores with equal order counts rank by the remaining output columns, keeping a stable subset.
+    why: Stores with equal order counts rank by the remaining group_by columns, keeping a stable subset.
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#order_by]
     tags: [time-window]
     query:
@@ -213,6 +213,81 @@ tests:
       WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2023-12-01'
       GROUP BY store_id
       ORDER BY orders DESC, store_id ASC NULLS LAST LIMIT 1
+  shop/top-store-months-break-ties-by-store-then-period:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Every store month has one order, so the cut-off keeps store a's first three months, ordered by store and then period, ascending.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#order_by]
+    tags: [time-window]
+    query:
+      select: [{expression: measure.shop.order_count, as: orders}]
+      group_by: [dimension.shop_order_store_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+      order_by: [{field: orders, direction: desc}]
+      limit: 3
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2023-11-01', orders: 1}
+      - {dimension.shop_order_store_id: a, period: '2023-12-01', orders: 1}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', orders: 1}
+    reference_sql: |
+      SELECT store_id, date_trunc('month', ordered_at) AS period, COUNT(order_id) AS orders
+      FROM orders
+      GROUP BY 1, 2
+      ORDER BY orders DESC, store_id ASC NULLS LAST, period ASC LIMIT 3
+  shop/largest-order-by-store-overrides-the-revenue-statistic:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue allows max, so the override reads each store's largest order amount, and the answer states the statistic and the rows it read.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#inline-expression-kinds]
+    query:
+      select: [{expression: {kind: measure, measure: measure.shop.revenue, aggregation: max}, as: largest}]
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: null, largest: 6}
+      - {dimension.shop_order_store_id: a, largest: 20}
+      - {dimension.shop_order_store_id: b, largest: 9}
+    reference_sql: |
+      SELECT store_id, MAX(amount) AS largest
+      FROM orders
+      GROUP BY store_id
+  shop/store-share-of-orders-is-a-fraction-of-the-kept-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each store's orders divided by the orders of every store the query keeps, the unknown store included; the shares add up to 1.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#inline-expression-kinds]
+    query:
+      select:
+        - {expression: measure.shop.order_count, as: orders}
+        - {expression: {kind: share, input: measure.shop.order_count, over: [dimension.shop_order_store_id]}, as: order_share}
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: null, orders: 1, order_share: 0.09090909090909091}
+      - {dimension.shop_order_store_id: a, orders: 6, order_share: 0.5454545454545454}
+      - {dimension.shop_order_store_id: b, orders: 4, order_share: 0.36363636363636365}
+    reference_sql: |
+      SELECT store_id, COUNT(order_id) AS orders,
+        COUNT(order_id) / CAST(SUM(COUNT(order_id)) OVER () AS DOUBLE PRECISION) AS order_share
+      FROM orders
+      GROUP BY store_id
+  shop/top-customers-by-name-rank-by-key-so-namesakes-stay-apart:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The customer name is the customer's display, so the ranking groups by the customer key too; customers 101 and 103 are both Ann and stay two rows instead of one Ann with 46.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.dimensions.name, docs/QUERY_CALL.md#order_by]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_customer_name]
+      order_by: [{field: revenue, direction: desc}]
+      limit: 2
+    expected_rows:
+      - {dimension.shop_customer_id: 101, dimension.shop_customer_name: Ann, revenue: 23}
+      - {dimension.shop_customer_id: 103, dimension.shop_customer_name: Ann, revenue: 23}
+    reference_sql: |
+      SELECT o.customer_id, s.name, SUM(o.amount) AS revenue
+      FROM orders o LEFT JOIN signups s ON o.customer_id = s.customer_id
+      GROUP BY o.customer_id, s.name
+      ORDER BY revenue DESC NULLS LAST, o.customer_id ASC NULLS LAST, s.name ASC NULLS LAST
+      LIMIT 2
   shop/top-orders-by-revenue-rank-a-null-revenue-last:
     kind: query_matches_snapshot
     expect: answer

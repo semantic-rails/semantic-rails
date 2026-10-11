@@ -360,6 +360,15 @@ class RatioExpr:
 
 
 @dataclass(frozen=True)
+class ShareExpr:
+    """A fraction (0 to 1) of its additive input's total over the rows the query keeps, the
+    total taken across the ``over`` columns (group_by ids or ``period``) within the others."""
+
+    input: SemanticExpr
+    over: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EntityValueExpr:
     entity: str
     input: SemanticExpr
@@ -408,6 +417,7 @@ SemanticExpr = (
     | ConditionalAggregateExpr
     | ScopedAggregateExpr
     | RatioExpr
+    | ShareExpr
     | EntityValueExpr
     | DistributionExpr
     | ConversionExpr
@@ -580,7 +590,8 @@ REFERENCE_KEYS = {
     "basis_metric",
     "temporal_role",
 }
-REFERENCE_LISTS = {"partition_by", "constant_properties", "group_by", "preview_dimensions"}
+# A share's ``over`` lists group_by ids, and ``period`` (the time axis, not an object).
+REFERENCE_LISTS = {"partition_by", "constant_properties", "group_by", "preview_dimensions", "over"}
 
 
 def collect_object_references(
@@ -611,7 +622,7 @@ def collect_object_references(
                     references[reference] = None
                 if key in REFERENCE_LISTS and isinstance(child, (list, tuple)):
                     for reference in child:
-                        if isinstance(reference, str) and reference.strip():
+                        if isinstance(reference, str) and reference.strip() not in {"", "period"}:
                             references[reference.strip()] = None
                 if key in {"dimension_bindings", "temporal_role_overrides"} and isinstance(
                     child, Mapping
@@ -819,6 +830,8 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             "numerator": expr_to_dict(expr.numerator),
             "denominator": expr_to_dict(expr.denominator),
         }
+    if isinstance(expr, ShareExpr):
+        return {"kind": "share", "input": expr_to_dict(expr.input), "over": list(expr.over)}
     if isinstance(expr, EntityValueExpr):
         return {
             "kind": "entity_value",
@@ -1007,6 +1020,7 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
         "window",
     },
     "ratio": _COMMON_KEYS | {"numerator", "denominator"},
+    "share": _COMMON_KEYS | {"input", "over"},
     "entity_value": _COMMON_KEYS | {"entity", "input", "where"},
     "distribution": _COMMON_KEYS | {"function", "over", "p", "parameters"},
     "conversion": _COMMON_KEYS
@@ -2058,6 +2072,21 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         return RatioExpr(
             numerator=parse_semantic_expression(expr.get("numerator"), context=context),
             denominator=parse_semantic_expression(expr.get("denominator"), context=context),
+        )
+    if kind == "share":
+        over = expr.get("over")
+        if context == "config":
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST",
+                "share is a query's own calculation; a package metric can't be one",
+            )
+        if "input" not in expr or not isinstance(over, list) or not over:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", "share expressions require input and a list over"
+            )
+        return ShareExpr(
+            input=parse_semantic_expression(expr.get("input"), context=context),
+            over=[str(item) for item in over],
         )
     if kind == "entity_value":
         entity = str(expr.get("entity", "")).strip()

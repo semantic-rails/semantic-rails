@@ -131,8 +131,10 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
   `{"kind": "metric", ...}` objects are refused with the string to write.
 - A measure uses its package aggregation. `{"kind": "measure", "measure", "aggregation"}`
   overrides it (see [The `aggregation` override](#the-aggregation-override)).
-- The column is the id's last segment (`order_count`), or `as`. Two columns with one name are
-  refused with `DUPLICATE_OUTPUT_ALIAS`; set `as`. Give every inline kind an `as`.
+- The column is the id's last segment (`order_count`), or `as`. An inline kind without `as`
+  gets the engine's name (`expr_<n>`, its position in `select`), so give every inline kind an
+  `as`. A name used twice is refused with `DUPLICATE_OUTPUT_ALIAS` at the repeating item's
+  path, with the `as` that makes it unique.
 - A `dimension.` id in `select` is moved to `group_by` when `group_by` is empty or already
   lists it (the answer notes `QUERY_SHORTHAND_NORMALIZED`); beside a `group_by` that lists
   other dimensions it is refused.
@@ -158,6 +160,13 @@ guessing. Time is never a `group_by` item: ask for `time.grain` and the answer h
 column. Groups with no rows stay absent: the engine never cross-joins dimension values. A
 policy's `required_group_by` on the clock's own date dimension is met by any `time.grain` at or
 below that dimension's grain.
+
+A dimension the package declares as an entity's `display` (the name of one row, see
+[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)) groups by the entity's key too: the key column
+comes just before the name, so two customers named Ann stay two rows, and the answer's
+`assumptions` carries `GROUPED_BY_KEY {dimension, key}`. A call grouped by an entity's key,
+when the entity declares no `display`, carries `SHOWN_BY_KEY {entity, dimension}`: its rows
+show only the key.
 
 ## `where`
 
@@ -550,7 +559,8 @@ A positive integer: the question's top N. `0`, `null` and non-integers are refus
 of a transport is a separate tool argument (MCP `max_rows`).
 
 With a `limit`, rows tied on every `order_by` term at the cut-off are broken by the remaining
-output columns, ascending, and the answer says ties were cut:
+`group_by` columns, then `period`, ascending with NULLs last (never by a measure), so the same
+call keeps the same rows, and the answer says ties were cut:
 
 ```json
 {"group_by": ["dimension.jaffle_store_name", "dimension.jaffle_store_tax_rate"],
@@ -561,11 +571,11 @@ output columns, ascending, and the answer says ties were cut:
 ```jsonc
 {"rows": [{"dimension.jaffle_store_name": "Brooklyn", "dimension.jaffle_store_tax_rate": 0.04}],
  "warnings": [{"code": "TIES_AT_LIMIT",
-   "message": "At least 2 rows share the requested sort key at the limit; remaining output columns determine which rows are returned.",
-   "details": {"limit": 1, "tie_count": 2, "tie_count_is_lower_bound": true}}]}
+   "message": "At least 2 rows tie on the requested order at the limit of 1; the group_by columns, then the period, ascending, chose which of them are returned.",
+   "details": {"at": 1, "tied": 2}}]}
 ```
 
-Execution fetches one row past the limit to see the tie, so `tie_count` is a lower bound. A
+Execution fetches one row past the limit to see the tie, so `tied` is a lower bound. A
 transport cap at or below `limit` takes precedence, and then ties cannot be reported.
 
 ## `routes`
@@ -646,6 +656,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `period_to_date` | `{kind: period_to_date, input, period, partition_by?}` |
 | `cumulative` | `{kind: cumulative, input, partition_by?, window_scope?}` |
 | `ratio` | `{kind: ratio, numerator, denominator}` |
+| `share` | `{kind: share, input: <id>, over: [<group_by id> \| "period"]}` |
 | `arithmetic` (`binary`) | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
 | `aggregate_if` | `{kind: aggregate_if, aggregation, condition, value?}` |
@@ -682,18 +693,54 @@ you need from it").
 
 ### The `aggregation` override
 
-`{"kind": "measure", "measure": <id>, "aggregation": <statistic>}` reads a statistic the
-measure allows (its `allowed_aggregations`); any other is refused with
-`UNSUPPORTED_AGGREGATION`, listing the allowed ones. An override equal to the default changes
-nothing. Prefer a governed metric when the package has one: the metric is the package's
-definition, and the raw measure may count rows the metric leaves out.
+`{"kind": "measure", "measure": <id>, "aggregation": <statistic>}` (and the same key on
+`aggregate` and `scoped_aggregate`) reads a statistic the measure allows (its
+`allowed_aggregations`); any other is refused with `UNSUPPORTED_AGGREGATION` at
+`...aggregation`, listing the allowed ones and saying to omit `aggregation` for the default. A
+time-ordered statistic (`first_value`, `last_value`) on a measure with no clock is refused by
+the clock rule instead. An override equal to the default changes nothing and is not stated.
+Any other override is stated in `assumptions`, with the source rows the returned numbers
+aggregated (counted beside the measure in the same scan; a rollup holds no source rows, so an
+answer a rollup serves states none):
+
+```jsonc
+{"rows": [{"dimension.jaffle_store_name": "Brooklyn", "median_order": 6.24},
+          {"dimension.jaffle_store_name": "Philadelphia", "median_order": 6.36}],
+ "assumptions": [{"code": "AGGREGATION_OVERRIDE", "measure": "measure.jaffle.revenue_usd",
+                  "aggregation": "median", "default": "sum", "rows": 59652}]}
+```
+
+Prefer a governed metric when the package has one: the metric is the package's definition,
+and the raw measure may count rows the metric leaves out. Selecting a measure that a governed
+metric filters adds `GOVERNED_METRIC_EXISTS {measure, metric}` for each such metric the caller
+sees and doesn't select. When a metric hidden from the caller governs the measure, the raw
+number is refused (`POLICY_DENIED`, naming neither the metric nor what it filters).
 
 ### Share of a total
 
 `{"kind": "share", "input": <id>, "over": [<group_by id> | "period"]}` is the fraction (0 to 1)
-of an additive measure's total over the rows the call keeps (after `where`, `time` and entity
-filters, before `limit`); a zero or NULL total reads NULL. The answer names the denominator in
-`assumptions`.
+of its input's total over the `over` columns, within each combination of the other `group_by`
+columns (and `period`, unless `over` names it), among the rows the call keeps: after `where`,
+`time`, entity filters and the caller's policies, before `limit`; `having` filters after it. A
+zero or NULL total reads NULL. The input is one measure or metric id whose values add up across
+rows (a sum or count of a flow, a count of distinct row keys, or sums and differences of
+them); a ratio, an average or other statistic, or a stock is refused with `ROLLUP_UNSAFE`. Each `over` item is a `group_by` id of
+the call, or `period` when `time` has a grain, or it is refused at its path. The answer names
+the denominator and the unit in `assumptions`, with how many rows the total spans when every
+returned row's total spans the same number:
+
+```json
+{"select": ["measure.jaffle.revenue_usd",
+            {"expression": {"kind": "share", "input": "measure.jaffle.revenue_usd", "over": ["dimension.jaffle_store_name"]}, "as": "store_share"}],
+ "group_by": ["dimension.jaffle_store_name"]}
+```
+
+```jsonc
+{"rows": [{"dimension.jaffle_store_name": "Brooklyn", "revenue_usd": 259424.85000000204, "store_share": 0.3478043627784724},
+          {"dimension.jaffle_store_name": "Philadelphia", "revenue_usd": 486468.17999984865, "store_share": 0.6521956372215276}],
+ "assumptions": [{"code": "SHARE_OF_TOTAL", "column": "store_share", "input": "measure.jaffle.revenue_usd",
+                  "over": ["dimension.jaffle_store_name"], "unit": "fraction", "rows": 2}]}
+```
 
 ### Per-entity value filters
 
@@ -711,7 +758,9 @@ per-entity aggregation.
  "clock": "temporal_role.<id>",                       // whenever a time-bearing measure was read
  "observation_scope": "dataset",                      // always
  "routes": [{"from", "to", "via"}],                   // only when a route was chosen among several
- "assumptions": [...],                                // only when the answer assumed something: WINDOW_TOTAL, PARTIAL_PERIOD, ENTITY_FILTER_OVER
+ "assumptions": [...],                                // only when the answer assumed something: a window total, a partial
+                                                      // period, an entity filter's over, a statistic override, a governed
+                                                      // metric, a share's denominator, a key beside a name
  "warnings": [...]}                                   // only when there are some: NO_DATA_YET, UNKNOWN_ROWS_KEPT, TIES_AT_LIMIT, ...
 ```
 
