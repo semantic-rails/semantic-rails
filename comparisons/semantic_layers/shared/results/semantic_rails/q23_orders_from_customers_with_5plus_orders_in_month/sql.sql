@@ -46,8 +46,8 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.t AS "temporal_role.jaffle_order_time__month",
-  base.m1 AS qualifying_orders
+  base.t AS "period",
+  base.m1 AS "qualifying_orders"
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

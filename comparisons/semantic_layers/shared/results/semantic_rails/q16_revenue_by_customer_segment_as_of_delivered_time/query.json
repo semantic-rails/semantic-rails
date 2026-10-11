@@ -4,25 +4,19 @@
   ],
   "order_by": [
     {
-      "direction": "ASC",
-      "field": "temporal_role.jaffle_lifecycle_delivered_at__month"
+      "direction": "asc",
+      "field": "period"
     },
     {
-      "direction": "ASC",
+      "direction": "asc",
       "field": "dimension.jaffle_customer_history_segment"
     }
   ],
   "select": [
-    {
-      "as": "delivered_revenue",
-      "expression": {
-        "metric": "metric.jaffle.delivered_revenue"
-      }
-    }
+    "metric.jaffle.delivered_revenue"
   ],
   "time": {
     "grain": "month",
     "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
-  },
-  "version": 1
+  }
 }

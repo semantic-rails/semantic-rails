@@ -4,27 +4,16 @@
   ],
   "order_by": [
     {
-      "direction": "DESC",
+      "direction": "desc",
       "field": "orders"
     }
   ],
   "select": [
-    {
-      "as": "orders",
-      "expression": {
-        "metric": "metric.jaffle.orders"
-      }
-    },
-    {
-      "as": "item_revenue_usd",
-      "expression": {
-        "metric": "metric.jaffle.item_revenue_usd"
-      }
-    }
+    "metric.jaffle.orders",
+    "metric.jaffle.item_revenue_usd"
   ],
   "time": {
     "grain": "month",
     "temporal_role": "temporal_role.jaffle_order_time"
-  },
-  "version": 1
+  }
 }
