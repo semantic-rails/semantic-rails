@@ -13,7 +13,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 
-from .conftest import _runtime
+from .conftest import SESSION_ZONE, _rows, _runtime, _write_variant
 
 ORDERS = "measure.shop.order_count"
 SEATS = "measure.shop.seats"
@@ -228,3 +228,72 @@ def test_filling_a_series_grouped_by_the_order_time_is_refused(shop: Runtime) ->
     (error,) = shop.validate(call, now="2024-07-05T06:00:00Z")["errors"]
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"] == "time.fill"
+
+
+def test_a_window_with_only_a_start_runs_to_now(shop: Runtime) -> None:
+    # Order 11 (2024-08-01) is after now: the window stops at the request instant.
+    call = {"select": [ORDERS], "time": {"start": "2024-07-01"}}
+    result = shop.query(call, now="2024-07-15T00:00:00Z")
+    assert result["rows"] == [{"order_count": 1}]
+    assert result["window"]["end"] == "2024-07-15T00:00:00Z"
+    assert result["window"]["partial"] is True
+    assert result["normalized_query"]["time"] == {
+        "temporal_role": ORDER_CLOCK,
+        "start": "2024-07-01",
+    }
+    # Still an open window: the months it answers are the ones with rows, up to now.
+    series = {**call, "time": {"start": "2024-06-01", "grain": "month"}}
+    rows = shop.query(series, now="2024-07-15T00:00:00Z")["rows"]
+    assert [(r["period"], r["period_partial"], r["order_count"]) for r in rows] == [
+        ("2024-06-01", False, 1),
+        ("2024-07-01", True, 1),
+    ]
+
+
+def test_this_keeps_the_request_instant_to_the_microsecond(shop: Runtime) -> None:
+    # Order 10 is at 03:30:00, half a second before now.
+    call = {"select": [ORDERS], "time": {"this": "month", "grain": "day"}}
+    result = shop.query(call, now="2024-07-01T03:30:00.500000Z")
+    assert result["rows"] == [{"period": "2024-07-01", "period_partial": True, "order_count": 1}]
+    assert result["window"]["end"] == "2024-07-01T03:30:00.500000Z"
+
+
+@pytest.fixture
+def fall_back(tmp_path) -> Runtime:
+    """The New York order clock with two orders in the hour New York repeats on 2024-11-03:
+    05:15 UTC (01:15 EDT) and 06:15 UTC (01:15 EST)."""
+    package = _write_variant(tmp_path, "ny_authored")
+    seed = package / "data" / "seed.sql"
+    last = "(11, 108, 'a', TIMESTAMP '2024-08-01 02:00:00', DATE '2024-08-01', 2.00)"
+    text = seed.read_text(encoding="utf-8")
+    assert text.count(last) == 1
+    seed.write_text(
+        text.replace(
+            last,
+            last
+            + ",\n  (12, 101, 'a', TIMESTAMP '2024-11-03 05:15:00', DATE '2024-11-03', 1.00)"
+            + ",\n  (13, 101, 'a', TIMESTAMP '2024-11-03 06:15:00', DATE '2024-11-03', 1.00)",
+        ),
+        encoding="utf-8",
+    )
+    runtime = _runtime(package)
+    try:
+        _rows(runtime, f"SET GLOBAL TimeZone = '{SESSION_ZONE}'")
+        yield runtime
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("now", ["2024-11-03T05:30:00Z", "2024-11-03T06:30:00Z"])
+@pytest.mark.parametrize("grain", ["day", None])
+def test_this_cuts_at_now_in_the_repeated_hour(fall_back: Runtime, now: str, grain) -> None:
+    # Both orders read 01:15 in New York; only those before now in UTC count.
+    reference = _rows(
+        fall_back,
+        "SELECT COUNT(order_id) FROM orders WHERE ordered_at >= TIMESTAMP '2024-11-03 04:00:00' "
+        f"AND ordered_at < TIMESTAMP '{now[:-1].replace('T', ' ')}'",
+    )
+    time = {"this": "day", **({"grain": grain} if grain else {})}
+    rows = fall_back.query({"select": [ORDERS], "time": time}, now=now)["rows"]
+    assert [row["order_count"] for row in rows] == [reference[0][0]]
+    assert reference[0][0] == (1 if now.startswith("2024-11-03T05") else 2)

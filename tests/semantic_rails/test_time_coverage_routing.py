@@ -28,8 +28,8 @@ def _query(*expressions, **time):
     }
 
 
-def _compile(config, query):
-    return compile_query(config, Registry(config), read_call(query, config=config)[0])
+def _compile(config, query, now=None):
+    return compile_query(config, Registry(config), read_call(query, config=config, now=now)[0])
 
 
 def _answers(package, query):
@@ -116,6 +116,7 @@ def test_window_total_coverage_keeps_unknown_amounts_and_positive_counts(tmp_pat
 
 ROUTING_CASES = {
     "plain": ((REVENUE,), {}, "duckdb", True),
+    # An open window runs to now, here a month's first instant, so the monthly rollup answers.
     "plain-open": ((REVENUE,), {"start": "2024-02-01"}, "duckdb", True),
     # A named window answers every period, its zeros bounded by the base's loaded data.
     "plain-named": ((REVENUE,), {"start": "2024-02-01", "end": "2024-03-01"}, "duckdb", False),
@@ -150,7 +151,7 @@ def test_coverage_emitted_exactly_when_rollups_are_refused(
 ):
     config = load_package_config(str(_write_variant(tmp_path, "utc_authored")))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    compiled = _compile(config, _query(*expressions, **time))
+    compiled = _compile(config, _query(*expressions, **time), now="2024-07-01T00:00:00Z")
     report = compiled["performance_plan"].aggregate_routing
     refused = any(r["reason"] == "base_time_coverage_required" for r in report["candidates"])
     assert bool(report["selected"]) is routes
@@ -191,3 +192,12 @@ def test_injected_rollup_cannot_bypass_the_coverage_guard(tmp_path, window_total
     with pytest.raises(SemanticLayerError) as caught:
         lower_to_sql(bypass, config)
     assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"
+
+
+def test_an_open_window_ending_inside_a_month_reads_the_base(tmp_path):
+    # Mid-month, the monthly rollup would also count the month's rows after now.
+    config = load_package_config(str(_write_variant(tmp_path, "utc_authored")))
+    compiled = _compile(config, _query(start="2024-02-01"), now="2024-07-15T00:00:00Z")
+    report = compiled["performance_plan"].aggregate_routing
+    assert not report["selected"]
+    assert [r["reason"] for r in report["candidates"]] == ["time_bounds_not_aligned"]

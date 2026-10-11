@@ -147,6 +147,7 @@ from .empty_groups import (
     recording_zero_outputs,
     refuse_shared_names,
     refuse_unsettled,
+    request_now,
     require_settled_source,
     require_time_scopes,
     resolves_to_zero,
@@ -5414,7 +5415,9 @@ def _window_is_named(time: Mapping[str, Any]) -> bool:
     return bool(
         time.get("last_unit")
         or time.get("this")
-        or (time.get("start") is not None and time.get("end") is not None)
+        or (
+            time.get("start") is not None and time.get("end") is not None and not time.get("to_now")
+        )
     )
 
 
@@ -5435,7 +5438,12 @@ def _calendar_fill_binding(
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED", f"time.fill does not support grain '{grain}'"
         )
-    bounded = plan.time.get("start") is not None and plan.time.get("end") is not None
+    # A window with only a start runs to now but stays open: its series spans its own periods.
+    bounded = (
+        plan.time.get("start") is not None
+        and plan.time.get("end") is not None
+        and not plan.time.get("to_now")
+    )
     return _IMPLICIT_CALENDAR, "bucket", "date_day" if bounded else None
 
 
@@ -5453,7 +5461,11 @@ def _implicit_calendar_ctes(plan: LogicalPlan, config: PackageConfig) -> list[Sq
     """
     dialect = _dialect(config)
     ctes: list[SqlCte] = []
-    if plan.time.get("start") is not None and plan.time.get("end") is not None:
+    if (
+        plan.time.get("start") is not None
+        and plan.time.get("end") is not None
+        and not plan.time.get("to_now")
+    ):
         ordinals = []
         for key in ("start", "end"):
             moment = _calendar_bound(plan.time[key])
@@ -5631,11 +5643,45 @@ def _source_time_window(
         ):
             column = SqlCast(column, "DATE")
         return _whole_day_window(column, {**time, "temporal_role": role_id}, config)
-    return [
+    bounds = [
         SqlBinary(column, operator, SqlLiteral(time[key], temporal=True))
         for key, operator in (("start", ">="), ("end", "<"))
         if time.get(key) is not None
     ]
+    zones = _role_conversion(role)
+    if zones and time.get("end") is not None and (time.get("this") or time.get("to_now")):
+        # The end is now. Converted wall time repeats an hour each autumn, so the cutoff
+        # reads the stored instant; wall time only buckets periods and starts them.
+        stored = _stored_time(column, zones, config)
+        if stored is not None:
+            cutoff = request_now().astimezone(ZoneInfo(zones[0])).replace(tzinfo=None)
+            bounds[-1] = SqlBinary(stored, "<", SqlLiteral(cutoff.isoformat(), temporal=True))
+    return bounds
+
+
+def _stored_time(column: Any, zones: tuple[str, str], config: PackageConfig) -> Any | None:
+    """``column`` before the dialect's conversion between ``zones``; None when it isn't one."""
+    hole = SqlIdentifier(parts=["stored"])
+
+    def match(pattern: Any, value: Any) -> Any | None:
+        if pattern is hole:
+            return value
+        if not (isinstance(pattern, SqlCall) and isinstance(value, SqlCall)) or (
+            pattern.name,
+            len(pattern.args),
+        ) != (value.name, len(value.args)):
+            return None
+        found = None
+        for part, other in zip(pattern.args, value.args, strict=True):
+            if part is hole or isinstance(part, SqlCall):
+                found = match(part, other)
+                if found is None:
+                    return None
+            elif part != other:
+                return None
+        return found
+
+    return match(_dialect(config).convert_timezone(*zones, hole), column)
 
 
 def _source_bucket_recovery_ctes(time_alias: str) -> list[SqlCte]:

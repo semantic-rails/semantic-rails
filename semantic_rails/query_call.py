@@ -1131,6 +1131,8 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
         time["start"] = window.start
     if window.end is not None:
         time["end"] = window.end
+    if window.end is not None and "end" not in window.spec and not window.named:
+        time["to_now"] = True  # only a start: the window runs to now and stays open
     if raw.get("fill"):
         time["fill"] = True
     if "last" in raw:
@@ -1443,7 +1445,7 @@ def _call_time(time: Mapping[str, Any]) -> dict[str, Any]:
         out["last"] = dict(time["range"]["last"])
     else:
         for key in ("start", "end"):
-            if time.get(key) is not None:
+            if time.get(key) is not None and not (key == "end" and time.get("to_now")):
                 out[key] = time[key]
     if time.get("fill") and not (
         out.get("last") or out.get("this") or ("start" in out and "end" in out)

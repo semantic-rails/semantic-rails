@@ -808,7 +808,9 @@ def query_slots(
         select.append(signature)
     filters = [_filter_parts(item) for item in normalized["where"]]
     time = normalized.get("time") or {}
-    start, end = _bound(time.get("start")), _bound(time.get("end"))
+    # A window that runs to now ends at each call's own instant: its start says which it is.
+    to_now = time.get("this") or time.get("to_now")
+    start, end = _bound(time.get("start")), None if to_now else _bound(time.get("end"))
     slots: dict[str, Any] = {
         "select": sorted(select),
         "group_by": sorted(set(normalized["group_by"]) - _pinned_dimensions(normalized)),

@@ -7280,3 +7280,50 @@ tests:
       SELECT o.ordered_at, date_trunc('month', o.ordered_at), COUNT(o.order_id) FROM orders AS o
       WHERE o.ordered_at >= TIMESTAMP '2024-01-01' AND o.ordered_at < TIMESTAMP '2024-04-01'
       GROUP BY 1, 2
+  shop/a-window-with-only-a-start-runs-to-now:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'A window with only a start runs to now: the July order counts and the August order, after now, does not.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_CALL.md#named-and-open-windows]
+    tags: [time-window]
+    query:
+      select: [measure.shop.order_count]
+      time: {start: '2024-07-01'}
+    now: '2024-07-15T00:00:00Z'
+    expected_rows:
+      - {order_count: 1}
+    reference_sql: |
+      SELECT COUNT(o.order_id) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-07-01' AND o.ordered_at < TIMESTAMP '2024-07-15 00:00:00'
+  shop/an-open-series-stops-at-now:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'An open series answers the months it has rows in, up to now: June and July, not the August order after now.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_CALL.md#named-and-open-windows]
+    tags: [time-window]
+    query:
+      select: [measure.shop.order_count]
+      time: {start: '2024-06-01', grain: month}
+    now: '2024-07-15T00:00:00Z'
+    expected_rows:
+      - {period: '2024-06-01', order_count: 1}
+      - {period: '2024-07-01', order_count: 1}
+    reference_sql: |
+      SELECT date_trunc('month', o.ordered_at), COUNT(o.order_id) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-06-01' AND o.ordered_at < TIMESTAMP '2024-07-15 00:00:00'
+      GROUP BY 1
+  shop/this-month-ends-at-now-to-the-microsecond:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Now is half a second after order 10, so this month so far counts it: the cutoff keeps the instant to the microsecond.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_CALL.md#named-and-open-windows]
+    tags: [time-window]
+    query:
+      select: [measure.shop.order_count]
+      time: {this: month, grain: day}
+    now: '2024-07-01T03:30:00.500000Z'
+    expected_rows:
+      - {period: '2024-07-01', order_count: 1}
+    reference_sql: |
+      SELECT DATE '2024-07-01', COUNT(o.order_id) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-07-01' AND o.ordered_at < TIMESTAMP '2024-07-01 03:30:00.5'
