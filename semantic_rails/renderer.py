@@ -258,6 +258,9 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             return "TRUE" if expr.value else "FALSE"
         if isinstance(expr.value, (int, float)):
             return str(expr.value)
+        dialect = _ACTIVE_DIALECT.get()
+        if expr.temporal and dialect is not None:
+            return dialect.temporal_literal(str(expr.value))
         return _render_string_literal(str(expr.value))
     if isinstance(expr, SqlCall):
         function_name = normalize_sql_function_name(expr.name)

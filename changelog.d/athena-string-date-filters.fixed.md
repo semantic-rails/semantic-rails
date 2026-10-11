@@ -1,0 +1,3 @@
+- Athena: a filter on a string dimension whose value looks like a date (`dt = '2026-01-01'`)
+  stays a string comparison. Only time windows and filters on date or timestamp dimensions
+  compare as `TIMESTAMP` literals, now including `is` with several values.

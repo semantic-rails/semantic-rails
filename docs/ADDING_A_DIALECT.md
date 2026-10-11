@@ -323,7 +323,10 @@ quote-aware passes in `sql_preparation.py`. For example, Redshift's
 
 Existing preparation covers PostgreSQL's 63-byte identifiers and floating-point
 ratios; BigQuery's backticks and legal field names; Databricks backticks and ratio
-precision; Athena temporal comparisons and ratios; and Snowflake ratio precision.
+precision; Athena ratios; and Snowflake ratio precision. A date or timestamp compared
+with text is typed when rendered (`SqlDialect.temporal_literal`): Athena spells
+`TIMESTAMP '2016-09-01'` there, for a time window or a filter on a date or timestamp
+dimension only, so a string filter stays a string compare.
 Every rewrite must preserve intended semantics, skip literal contents, and document
 the warehouse behavior it compensates for. Reuse the quote-aware helpers in
 `sql_preparation.py` instead of implementing another scanner.

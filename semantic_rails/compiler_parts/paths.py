@@ -50,6 +50,7 @@ from ..sql_ast import (
     SqlJoin,
     SqlLiteral,
     SqlTableRef,
+    build_filter_condition,
 )
 from .dependencies import record_bound_object
 from .indexes import (
@@ -101,6 +102,16 @@ def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[Any, st
         )
     table = _entity_index(config)[dim.entity].table
     return unknown_as_null(_column_ref(table, dim.column), dim), dim.id
+
+
+def dimension_filter(
+    expr: Any, field: str, op: Any, value: Any, config: PackageConfig, *, path: str = "where"
+) -> Any:
+    """:func:`build_filter_condition` for a filter on the dimension ``field``: on a date or
+    timestamp dimension, its text values are temporal literals."""
+    dim = _dimension_index(config).get(field)
+    temporal = dim is not None and dim.data_type in {"date", "timestamp"}
+    return build_filter_condition(expr, op, value, path=path, temporal=temporal)
 
 
 def _pair_orientations(

@@ -9,6 +9,7 @@ and compiler call. Also owns the connection-option schema used by
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -42,7 +43,6 @@ from .sql_ast import (
 )
 from .sql_preparation import (
     PreparedQuery,
-    athena_compat_sql,
     bigquery_compat_sql,
     float_nullif_divisions,
     postgres_compat_sql,
@@ -93,6 +93,10 @@ def backslash_escaped_string_literal(value: str) -> str:
     applied to a quote-escape this function introduced itself.
     """
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+# An ISO date or naive timestamp, the text a TIMESTAMP literal reads.
+_ISO_TEMPORAL = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)?")
 
 
 def _day_rows(day: Any, source: str, series: SqlTableFunction | None = None) -> SqlSelect:
@@ -175,6 +179,11 @@ class SqlDialect:
         *here* would corrupt the value on these warehouses instead.
         """
         return "'" + value.replace("'", "''") + "'"
+
+    def temporal_literal(self, value: str) -> str:
+        """Date or timestamp text compared with a clock or date column (``SqlLiteral.temporal``);
+        the comparison coerces the text."""
+        return self.quote_string_literal(value)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlCall("QUANTILE_CONT", [expr, SqlLiteral(percentile)])
@@ -1092,7 +1101,13 @@ class AthenaDialect(SqlDialect):
         return _day_rows(SqlIdentifier(parts=["day_series", "series_day"]), source, series)
 
     def prepare_query(self, sql: str) -> PreparedQuery:
-        return PreparedQuery(athena_compat_sql(sql))
+        return PreparedQuery(float_nullif_divisions(sql, cast_type="DOUBLE"))
+
+    def temporal_literal(self, value: str) -> str:
+        # Trino refuses a timestamp compared with text (TYPE_MISMATCH) where DuckDB coerces the
+        # text; a typed literal compares the same way, and a DATE operand coerces to it.
+        quoted = self.quote_string_literal(value)
+        return f"TIMESTAMP {quoted}" if _ISO_TEMPORAL.fullmatch(value) else quoted
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # Trino: with_timezone(naive_ts, tz) attaches a zone;

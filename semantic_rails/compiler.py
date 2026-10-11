@@ -99,6 +99,7 @@ from .compiler_parts.paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
+    dimension_filter,
     display_key,
     inner_lookups,
     unknown_as_null,
@@ -3728,10 +3729,12 @@ def _conversion_event_cte(
     where_items = [
         *where_items,
         *[
-            build_filter_condition(
+            dimension_filter(
                 _resolve_dimension_expr(str(item["dimension"]), config)[0],
+                str(item["dimension"]),
                 item["op"],
                 item["value"],
+                config,
             )
             for item in operand_filters
         ],
@@ -4147,7 +4150,9 @@ def _conversion_leaf_cte(
             else base_group_where
         )
         dim_expr, _ = _resolve_dimension_expr(str(item.field), config)
-        where_target.append(build_filter_condition(dim_expr, item.op, item.value))
+        where_target.append(
+            dimension_filter(dim_expr, str(item.field), item.op, item.value, config)
+        )
 
     base_cte_name = f"conversion_base_{index + 1}"
     converted_cte_name = f"conversion_converted_{index + 1}"
