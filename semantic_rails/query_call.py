@@ -22,10 +22,32 @@ from typing import Any
 from . import operators
 from .clock import UNITS, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
-from .request_payload import identity_claim_path
 from .schema import OBSERVATION_SCOPES, PackageConfig
 
 SCHEMA_ID = "https://semantic-rails.com/schemas/query.v2.json"
+
+# Keys that say who is asking; identity comes only from credentials or ``context``.
+IDENTITY_KEYS: frozenset[str] = frozenset({"policy_context"})
+
+
+def identity_claim_path(node: Any, prefix: str = "") -> str | None:
+    """The path of the shallowest identity key anywhere in ``node`` (annotations included),
+    or None: ``policy_context``, ``query.policy_context``, ``query._note.policy_context``."""
+    pending: list[tuple[str, Any]] = [(prefix, node)]
+    while pending:
+        nested: list[tuple[str, Any]] = []
+        for path, value in pending:
+            if isinstance(value, Mapping):
+                for key, item in value.items():
+                    child = f"{path}.{key}" if path else str(key)
+                    if key in IDENTITY_KEYS:
+                        return child
+                    nested.append((child, item))
+            elif isinstance(value, (list, tuple)):
+                nested.extend((f"{path}[{index}]", item) for index, item in enumerate(value))
+        pending = nested
+    return None
+
 
 FIELDS: tuple[str, ...] = (
     "select",
