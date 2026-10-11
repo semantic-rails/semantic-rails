@@ -5674,11 +5674,31 @@ def _source_time_window(
         if stored is not None:
             cutoff = request_now().astimezone(ZoneInfo(zones[0])).replace(tzinfo=None)
             bounds[-1] = SqlBinary(stored, "<", SqlLiteral(cutoff.isoformat(), temporal=True))
-    elif _dialect(config).session_zone and str(role.timezone or "UTC") != "UTC":
-        # The query runs in the clock's zone: a zone-aware column compares instants with now,
-        # and a plain one reads as wall time in that zone.
-        instant = SqlLiteral(request_now().astimezone(UTC).isoformat(sep=" "))
-        bounds[-1] = SqlBinary(column, "<", SqlCast(instant, "TIMESTAMPTZ"))
+    elif str(role.timezone or "UTC") != "UTC" and not str(role.column_timezone or "").strip():
+        # A plain timestamp keeps its wall time (the bound above); a zone-aware one compares
+        # instants with now. Only a query run in the clock's zone can tell them apart.
+        if not _dialect(config).session_zone:
+            from ..query_call import refusal
+
+            raise refusal(
+                "time.this" if time.get("this") else "time.start",
+                f"a window that ends at now can't be cut on {config.package.warehouse}: clock "
+                f"'{role.id}' reads its timestamps in {role.timezone} with no column_timezone, "
+                "and a plain timestamp and a zone-aware one need different cutoffs",
+                fix="Declare the clock's column_timezone (the zone its timestamps are stored "
+                "in; UTC for instant columns such as BigQuery TIMESTAMP), or use a dated window.",
+                temporal_role=role.id,
+            )
+        now = SqlCast(SqlLiteral(request_now().astimezone(UTC).isoformat(sep=" ")), "TIMESTAMPTZ")
+        aware = SqlBinary(
+            SqlCast(SqlCall("PG_TYPEOF", [column]), "VARCHAR"),
+            "=",
+            SqlLiteral("timestamp with time zone"),
+        )
+        before = SqlBinary(SqlCast(column, "TIMESTAMPTZ"), "<", now)
+        bounds[-1] = SqlBinary(
+            SqlLiteral(True), "=", SqlCase([SqlCaseWhen(aware, before)], bounds[-1])
+        )
     return bounds
 
 
