@@ -842,7 +842,7 @@ def test_a_recorded_direct_route_is_allowed(tmp_path: Path, start: str) -> None:
 def test_a_route_conflict_bypassing_load_is_refused_by_the_guard(
     tmp_path: Path, monkeypatch, start: str, group_by: list[str]
 ) -> None:
-    from semantic_rails import config as config_module
+    from semantic_rails.config_parts import package_rows as config_module
 
     # Bypass only the loader's recorded-route check, preserving all other lookup checks.
     resolve = config_module.resolve_lookup_measures

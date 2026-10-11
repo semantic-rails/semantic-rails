@@ -10,6 +10,7 @@ import yaml
 
 from semantic_rails import config as config_module
 from semantic_rails.config import load_package_config, load_package_snapshot
+from semantic_rails.config_parts import package_rows
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.package_snapshot import capture_package_source
 from tests.semantic_rails.conftest import copy_package_config
@@ -49,12 +50,13 @@ def test_loaded_snapshot_is_isolated_from_sources_and_returned_views(tmp_path):
 def test_source_edit_during_parse_cannot_mix_loaded_views(tmp_path, monkeypatch):
     path = copy_package_config(tmp_path, "jaffle_shop")
     original = load_package_snapshot(path)
-    parse = config_module._parse_package
+    parse = package_rows._parse_package
 
     def parse_and_edit(raw, *, path):
         _rename_package(Path(path), "edited while parsing")
         return parse(raw, path=path)
 
+    monkeypatch.setattr(package_rows, "_parse_package", parse_and_edit)
     monkeypatch.setattr(config_module, "_parse_package", parse_and_edit)
     captured = load_package_snapshot(path)
     assert captured.config == original.config
