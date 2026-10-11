@@ -863,8 +863,8 @@ def recovery_hints_for_error(
             {
                 "kind": "drop_time_start",
                 "message": (
-                    f"Remove {where_path or 'query.time.start'} entirely — the window function "
-                    "computes its own lookback. Keep query.time.end if you "
+                    f"Remove {where_path or 'time.start'} entirely — the window function "
+                    "computes its own lookback. Keep time.end if you "
                     "need an upper bound. This is the safe default — apply "
                     "this first."
                 ),
@@ -877,7 +877,7 @@ def recovery_hints_for_error(
                 {
                     "kind": "widen_time_window",
                     "message": (
-                        f"Widen {where_path + '.value' if where_path else 'query.time.start'} "
+                        f"Widen {where_path + '.value' if where_path else 'time.start'} "
                         "by the metric's lookback "
                         f"({lookback.get('value')} {lookback.get('unit')}) "
                         "so the leaf WHERE doesn't truncate the rows the "

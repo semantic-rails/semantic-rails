@@ -5414,7 +5414,7 @@ def _calendar_fill_binding(
         return None
     grain = str(plan.time.get("grain", "") or "").lower()
     if not grain:
-        raise SemanticLayerError("INVALID_QUERY", "time.fill requires query.time.grain")
+        raise SemanticLayerError("INVALID_QUERY", "time.fill needs time.grain")
     if grain not in {"day", "week", "month", "quarter", "year"}:
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED", f"time.fill does not support grain '{grain}'"

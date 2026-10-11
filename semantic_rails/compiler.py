@@ -3614,7 +3614,7 @@ def _conversion_operand_problem(measure: MeasureConfig, entity: Any) -> tuple[st
         return (
             f"counts an expression, not {the_key} of '{measure.entity}'",
             "Use a measure that counts the entity key and restrict the operand with "
-            "'filter', for example filter: {all: [{field: <dimension id>, op: '=', "
+            "'filter', for example filter: {all: [{field: <dimension id>, op: 'is', "
             "value: ...}]}.",
         )
     events_hint = "Use a measure that counts the key of the entity whose rows are the events."

@@ -969,6 +969,12 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
             "time.temporal_role", "is a temporal role id", fix='Write "temporal_role.<id>".'
         )
     role = (role or "").strip() or _default_role(select, context)
+    if not role and context.config is not None and not context.partial:
+        raise refusal(
+            "time.temporal_role",
+            "nothing selected names a clock, so say which one",
+            fix='Add "temporal_role": "temporal_role.<id>" to time, one of the package\'s clocks.',
+        )
     timezone = _role_timezone(role, context.config)
     try:
         window = resolve_window(dict(raw), now=context.now, timezone=timezone)
