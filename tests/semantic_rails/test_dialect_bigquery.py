@@ -249,6 +249,61 @@ def test_timestamp_type_is_datetime_and_cast_is_identity():
     assert DIALECT.timestamp_cast(expr) is expr
 
 
+# BigQuery reference, conversion functions: CAST AS TIMESTAMP takes a DATE, a DATETIME (read in
+# UTC) or a TIMESTAMP; timestamp functions: TIMESTAMP(x, zone) takes a STRING, DATE or DATETIME,
+# never a TIMESTAMP; datetime functions: DATETIME(timestamp, zone).
+# https://cloud.google.com/bigquery/docs/reference/standard-sql/conversion_functions#cast_as_timestamp
+# https://cloud.google.com/bigquery/docs/reference/standard-sql/timestamp_functions#timestamp
+# https://cloud.google.com/bigquery/docs/reference/standard-sql/datetime_functions#datetime
+@pytest.mark.parametrize(
+    ("storage_zone", "converted"),
+    [
+        # Stored in UTC: a DATETIME, a DATE or an instant (TIMESTAMP) column alike.
+        ("UTC", "DATETIME(CAST(t.ts AS TIMESTAMP), 'America/New_York')"),
+        # Wall time stored in another zone is a DATETIME or a DATE.
+        ("Europe/Berlin", "DATETIME(TIMESTAMP(t.ts, 'Europe/Berlin'), 'America/New_York')"),
+    ],
+)
+def test_zone_conversion_reads_a_column_stored_in_utc_whatever_its_type(storage_zone, converted):
+    expr = DIALECT.convert_timezone(storage_zone, "America/New_York", _col("t", "ts"))
+    assert render_expr(expr) == converted
+
+
+def test_a_window_to_now_on_a_utc_stored_clock_never_reads_its_column_as_wall_time():
+    """The column_timezone the refusal's hint asks for (UTC for a TIMESTAMP column) compiles to
+    SQL a TIMESTAMP column accepts: the column never enters TIMESTAMP(x, zone), and the cutoff
+    at now compares the stored value with now in UTC."""
+    from semantic_rails.runtime import Runtime
+
+    role_id = "temporal_role.jaffle_order_time"
+    config = _bigquery_config(
+        load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
+    )
+    roles = [
+        replace(role, timezone="America/New_York", column_timezone="UTC")
+        if role.id == role_id
+        else role
+        for role in config.temporal_roles
+    ]
+    config = replace(config, aggregate_relations=[], temporal_roles=roles)
+    runtime = Runtime.from_config(
+        config, source_path="configs/semantic_rails/jaffle_shop", package_id="jaffle_shop"
+    )
+    try:
+        sql = runtime.compile(
+            {
+                "select": ["measure.jaffle.order_count"],
+                "time": {"temporal_role": role_id, "this": "day", "grain": "day"},
+            },
+            now="2026-11-01T05:30:00Z",
+        )["rendered_sql"]
+    finally:
+        runtime.close()
+    assert "DATETIME(CAST(jaffle_order.ordered_at AS TIMESTAMP), 'America/New_York')" in sql
+    assert "jaffle_order.ordered_at < '2026-11-01T05:30:00'" in sql
+    assert re.search(r"TIMESTAMP\(\s*jaffle_order\.ordered_at", sql) is None
+
+
 def test_capabilities_flag_exact_percentiles_and_array_agg_nulls():
     caps = DIALECT.capabilities()
     assert caps["timestamp_type"] == "DATETIME"

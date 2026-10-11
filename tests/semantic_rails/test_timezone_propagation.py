@@ -141,7 +141,7 @@ def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory)
         ("postgres", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
         ("snowflake", "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"),
         ("databricks", "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"),
-        ("bigquery", "DATETIME(TIMESTAMP(t.ts, 'UTC'), 'America/New_York')"),
+        ("bigquery", "DATETIME(CAST(t.ts AS TIMESTAMP), 'America/New_York')"),
         ("clickhouse", "toTimeZone(toDateTime(t.ts, 'UTC'), 'America/New_York')"),
         ("athena", "AT_TIMEZONE(WITH_TIMEZONE(t.ts, 'UTC'), 'America/New_York')"),
     ],
