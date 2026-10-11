@@ -4,6 +4,7 @@ import pytest
 
 from semantic_rails.ast import normalize_query
 from semantic_rails.config import load_package_config, resolve_repo_path
+from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
     AggregateExpr,
@@ -590,5 +591,5 @@ def test_coverage_cutoff_functions_are_engine_only(name):
         {"kind": "call", "name": name, "args": []}, context="query"
     )
     with pytest.raises(SemanticLayerError) as caught:
-        validate_expression_calls(expression, config)
+        validate_expression_calls(expression, dialect_for_warehouse(config.package.warehouse))
     assert caught.value.code == "INVALID_EXPRESSION_AST"

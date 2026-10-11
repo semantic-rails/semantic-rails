@@ -178,10 +178,9 @@ def test_last_query_schema_describes_object_shape():
 def test_expression_shapes_examples_parse(runtime_factory):
     """Every shipped example reads through the call's front door, so shape edits stay
     self-consistent (a rolling window is ``{unit, value}``, never an int)."""
-    from semantic_rails.metadata_parts.capabilities import _EXPRESSION_SHAPES
-    from semantic_rails.query_call import read_call
+    from semantic_rails.query_call import EXPRESSION_SHAPES, read_call
 
-    for shape in _EXPRESSION_SHAPES:
+    for shape in EXPRESSION_SHAPES:
         # Deep copy: the placeholder swap must not edit the shared shapes.
         example = copy.deepcopy({"expression": shape["example"], "as": "x"})
         _replace_placeholder_ids(example)
@@ -229,7 +228,7 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
     structural problem with the expression).
     """
     from semantic_rails.mcp import SemanticLayerMCPAdapter
-    from semantic_rails.metadata_parts.capabilities import _EXPRESSION_SHAPES
+    from semantic_rails.query_call import EXPRESSION_SHAPES
 
     # Some shapes need scaffolding beyond a single select expression:
     # - conversion + aggregate_if reference column refs that must bind
@@ -270,7 +269,7 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         failures = []
-        for shape in _EXPRESSION_SHAPES:
+        for shape in EXPRESSION_SHAPES:
             # Deep copy: the placeholder swap must not edit the shared shapes.
             example = copy.deepcopy(shape["example"])
             replace(example)

@@ -30,6 +30,7 @@ from .config_parts.route_rows import (
 )
 from .dialects import (
     connection_option_errors,
+    dialect_for_warehouse,
     snowflake_adbc_connect_errors,
     snowflake_native_direct_connect_errors,
     supported_warehouses,
@@ -3033,7 +3034,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     for policy in config.semantic_policies:
         policy_action(policy)
     _validate_policy_scopes(config, path=path)
-    validate_expression_calls(config, config)
+    validate_expression_calls(config, dialect_for_warehouse(config.package.warehouse))
     return config
 
 

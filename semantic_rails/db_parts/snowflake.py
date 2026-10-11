@@ -18,11 +18,12 @@ from typing import Any
 from ..dialects import (
     SNOWFLAKE_CLI_CONNECTION_OPTIONS,
     SNOWFLAKE_NATIVE_CONNECTION_OPTIONS,
+    dialect_for_warehouse,
     normalize_connection_option_name,
     snowflake_native_direct_connect_errors,
 )
 from ..errors import SemanticLayerError, query_execution_error
-from ..sql_preparation import PreparedQuery, prepare_query
+from ..sql_preparation import PreparedQuery
 from .base import (
     ConnectionCredentialProvider,
     WarehouseAdapter,
@@ -87,7 +88,9 @@ class SnowflakeCliAdapter(WarehouseAdapter):
         self.options = _normalize_snowflake_cli_options(options or {})
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+        return self.query_prepared(
+            dialect_for_warehouse(self.engine).prepare_query(sql), limits=limits
+        )
 
     def query_prepared(
         self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None
@@ -388,7 +391,9 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
         return self._conn
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+        return self.query_prepared(
+            dialect_for_warehouse(self.engine).prepare_query(sql), limits=limits
+        )
 
     def query_prepared(
         self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None

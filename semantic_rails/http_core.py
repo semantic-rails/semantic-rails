@@ -21,8 +21,8 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from . import operations
 from .api_keys import api_key_auth_result
-from .catalog_service import resolve_catalog
 from .diagnostics import (
     enrich_expression_ast_error,
     enrich_object_not_found,
@@ -44,14 +44,8 @@ from .http_request import (
     request_id_from_parts,
     status_label,
 )
-from .metadata import (
-    build_options_payload,
-    discover_payload,
-    inspect_payload,
-    valid_values_payload,
-)
-from .metadata_parts.capabilities import _EXPRESSION_SHAPES, capabilities_payload
-from .planner import plan_payload
+from .metadata_parts.capabilities import capabilities_payload
+from .query_call import EXPRESSION_SHAPES
 from .request_context import (
     RequestContext,
     get_policy_context_resolver,
@@ -422,7 +416,8 @@ class SemanticHTTPService:
                         self.runtime, policy_context=context.to_policy_context()
                     ),
                 }
-            catalog = resolve_catalog(
+            catalog = operations.run(
+                "catalog",
                 self.runtime,
                 view="summary",
                 verbosity="compact",
@@ -449,7 +444,7 @@ class SemanticHTTPService:
                 # ships (metadata_parts/capabilities.py), so the HTTP and MCP
                 # surfaces cannot drift apart — the examples there are
                 # parse-validated by tests/semantic_rails/test_mcp_tool_descriptions.py.
-                "expression_shapes": [dict(shape) for shape in _EXPRESSION_SHAPES],
+                "expression_shapes": [dict(shape) for shape in EXPRESSION_SHAPES],
             }
 
     def handle(
@@ -515,7 +510,8 @@ class SemanticHTTPService:
             return {
                 "ok": True,
                 "package_id": self.package_id,
-                "catalog": resolve_catalog(
+                "catalog": operations.run(
+                    "catalog",
                     self.runtime,
                     view=str(query_params.get("view", "summary")),
                     verbosity=str(query_params.get("verbosity", "compact")),
@@ -538,7 +534,8 @@ class SemanticHTTPService:
             return {
                 "ok": True,
                 "package_id": self.package_id,
-                "catalog": resolve_catalog(
+                "catalog": operations.run(
+                    "catalog",
                     self.runtime,
                     view=str(payload.get("view", "summary")),
                     verbosity=str(payload.get("verbosity", "compact")),
@@ -551,7 +548,8 @@ class SemanticHTTPService:
         if route == "/discover":
             return {
                 "ok": True,
-                **discover_payload(
+                **operations.run(
+                    "discover",
                     self.runtime,
                     terms=str(payload.get("terms", "")),
                     kinds=coerce_string_list(payload.get("kinds"), field="kinds"),
@@ -565,7 +563,8 @@ class SemanticHTTPService:
         if route == "/inspect":
             return {
                 "ok": True,
-                **inspect_payload(
+                **operations.run(
+                    "inspect",
                     self.runtime,
                     object_id=str(payload.get("object_id", "")),
                     partial_query=self._seed(payload, policy_context),
@@ -575,7 +574,8 @@ class SemanticHTTPService:
         if route == "/build-options":
             return {
                 "ok": True,
-                **build_options_payload(
+                **operations.run(
+                    "build-options",
                     self.runtime,
                     partial_query=self.runtime.engine_seed(
                         {**_seed_call(payload), "policy_context": policy_context}
@@ -592,7 +592,8 @@ class SemanticHTTPService:
         if route == "/plan":
             return {
                 "ok": True,
-                **plan_payload(
+                **operations.run(
+                    "plan",
                     self.runtime,
                     intent=payload.get("intent"),
                     # Plan is an intent envelope: the seed call is its query.
@@ -604,29 +605,37 @@ class SemanticHTTPService:
             }, 200
         if route in {"/validate", "/compile", "/query"}:
             call, options = call_arguments(payload)
-            operation = getattr(self.runtime, route.lstrip("/"))
-            return {"ok": True, **operation(call, context=policy_context, **options)}, 200
+            answer = operations.run(
+                route.lstrip("/"), self.runtime, query=call, context=policy_context, **options
+            )
+            return {"ok": True, **answer}, 200
         if route == "/segment-validate":
             return {
                 "ok": True,
-                **self.runtime.segment_validate(
-                    str(payload.get("segment_id", "")),
+                **operations.run(
+                    "segment-validate",
+                    self.runtime,
+                    segment_id=str(payload.get("segment_id", "")),
                     policy_context=policy_context,
                 ),
             }, 200
         if route == "/segment-explain":
             return {
                 "ok": True,
-                **self.runtime.segment_explain(
-                    str(payload.get("segment_id", "")),
+                **operations.run(
+                    "segment-explain",
+                    self.runtime,
+                    segment_id=str(payload.get("segment_id", "")),
                     policy_context=policy_context,
                 ),
             }, 200
         if route == "/segment-preview":
             return {
                 "ok": True,
-                **self.runtime.segment_preview(
-                    str(payload.get("segment_id", "")),
+                **operations.run(
+                    "segment-preview",
+                    self.runtime,
+                    segment_id=str(payload.get("segment_id", "")),
                     limit=int(payload.get("limit", 50)),
                     policy_context=policy_context,
                 ),
@@ -634,7 +643,8 @@ class SemanticHTTPService:
         if route == "/valid-values":
             return {
                 "ok": True,
-                **valid_values_payload(
+                **operations.run(
+                    "valid-values",
                     self.runtime,
                     dimension_id=str(payload.get("dimension_id", "")),
                     query=self._seed(payload, policy_context),

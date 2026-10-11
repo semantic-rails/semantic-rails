@@ -15,11 +15,13 @@ from typing import Any
 
 from . import visible_view
 from .ast import child_groups, every_filter, normalize_query
+from .catalog_format import format_catalog_payload
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
 from .policies import enforce_query_policies, withheld_rank_order
 from .policy_rules import check_request_environment
+from .query_call import EXPRESSION_SHAPES
 from .request_context import RequestContext, context_from_policy_context
 from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
 from .runtime_parts.responses import (
@@ -65,8 +67,6 @@ def _public_error(exc: SemanticLayerError) -> SemanticLayerError:
 
 
 def _capabilities(access: ResourceAccess) -> dict[str, Any]:
-    from .metadata_parts.capabilities import _EXPRESSION_SHAPES
-
     available = any(row["kind"] == "metric" for row in access.visible_rows())
     return {
         "package_id": access.config.package.package_id,
@@ -93,7 +93,7 @@ def _capabilities(access: ResourceAccess) -> dict[str, Any]:
             )
         ],
         "expression_shapes": [
-            dict(shape) for shape in _EXPRESSION_SHAPES if shape["name"] == "metric"
+            dict(shape) for shape in EXPRESSION_SHAPES if shape["name"] == "metric"
         ]
         if available
         else [],
@@ -277,8 +277,6 @@ _BUCKETS = {
 
 
 def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
-    from .metadata import format_catalog_payload
-
     rows = access.visible_rows()
     kind, search = kwargs.get("kind", ""), str(kwargs.get("search", "")).lower()
     rows = [

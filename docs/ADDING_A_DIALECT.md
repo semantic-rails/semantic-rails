@@ -316,14 +316,17 @@ the helper's relation limit; calling `fetchmany` would reopen a streamed result.
 `SqlDialect.prepare_query` to produce a driver-free `PreparedQuery`: the exact
 executable SQL and an immutable mapping from physical result columns to semantic
 aliases. Compile, explain, performance analysis, and execution use that statement.
-Warehouse syntax and precision rules live in `sql_preparation.py`; add a rule
-there when introducing a dialect that needs final preparation. For example,
-Redshift's `x / NULLIF(y, 0)` requires the shared `float_nullif_divisions` pass
-with `cast_type="DOUBLE PRECISION"` to preserve fractional ratios.
+A dialect that needs final preparation overrides `prepare_query`, built from the
+quote-aware passes in `sql_preparation.py`. For example, Redshift's
+`x / NULLIF(y, 0)` requires the shared `float_nullif_divisions` pass with
+`cast_type="DOUBLE PRECISION"` to preserve fractional ratios.
 
 Existing preparation covers PostgreSQL's 63-byte identifiers and floating-point
 ratios; BigQuery's backticks and legal field names; Databricks backticks and ratio
-precision; Athena temporal comparisons and ratios; and Snowflake ratio precision.
+precision; Athena ratios; and Snowflake ratio precision. A date or timestamp compared
+with text is typed when rendered (`SqlDialect.temporal_literal`): Athena spells
+`TIMESTAMP '2016-09-01'` there, for a time window or a filter on a date or timestamp
+dimension only, so a string filter stays a string compare.
 Every rewrite must preserve intended semantics, skip literal contents, and document
 the warehouse behavior it compensates for. Reuse the quote-aware helpers in
 `sql_preparation.py` instead of implementing another scanner.

@@ -22,7 +22,7 @@ from semantic_rails.dialects import (
     warehouse_connector,
 )
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.renderer import render_expr
+from semantic_rails.renderer import render_expr, use_dialect
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, PackageMeta
 from semantic_rails.sql_ast import SqlBinary, SqlIdentifier, SqlLiteral
@@ -470,105 +470,101 @@ def test_create_warehouse_adapter_selects_athena(monkeypatch: pytest.MonkeyPatch
 # ---------------------------------------------------------------------------
 
 
-def test_athena_compat_casts_nullif_ratio_guard_to_double():
-    from semantic_rails.sql_preparation import _athena_compat_sql
+def _prepare(sql: str) -> str:
+    return DIALECT.prepare_query(sql).sql
 
+
+def test_athena_prepare_casts_nullif_ratio_guard_to_double():
     sql = "SELECT a / NULLIF(b, 0) AS ratio FROM t"
-    assert _athena_compat_sql(sql) == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) AS ratio FROM t"
+    assert _prepare(sql) == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) AS ratio FROM t"
 
 
-def test_athena_compat_rewrites_nested_nullif_divisions():
-    from semantic_rails.sql_preparation import _athena_compat_sql
-
+def test_athena_prepare_rewrites_nested_nullif_divisions():
     sql = "SELECT x / NULLIF(y / NULLIF(z, 0), 0) FROM t"
-    assert _athena_compat_sql(sql) == (
+    assert _prepare(sql) == (
         "SELECT x / CAST(NULLIF(y / CAST(NULLIF(z, 0) AS DOUBLE), 0) AS DOUBLE) FROM t"
     )
 
 
-def test_athena_compat_skips_string_literals():
-    from semantic_rails.sql_preparation import _athena_compat_sql
-
+def test_athena_prepare_skips_string_literals():
     sql = "SELECT 'a / NULLIF(b, 0)' AS doc, c / NULLIF(d, 0) FROM t"
-    assert _athena_compat_sql(sql) == (
+    assert _prepare(sql) == (
         "SELECT 'a / NULLIF(b, 0)' AS doc, c / CAST(NULLIF(d, 0) AS DOUBLE) FROM t"
     )
 
 
-def test_athena_compat_handles_quotes_and_parens_inside_guard():
-    from semantic_rails.sql_preparation import _athena_compat_sql
-
+def test_athena_prepare_handles_quotes_and_parens_inside_guard():
     sql = "SELECT a / NULLIF(SUM(CASE WHEN s = ')''(' THEN n END), 0) FROM t"
-    assert _athena_compat_sql(sql) == (
+    assert _prepare(sql) == (
         "SELECT a / CAST(NULLIF(SUM(CASE WHEN s = ')''(' THEN n END), 0) AS DOUBLE) FROM t"
     )
 
 
-def test_athena_compat_leaves_unbalanced_tail_untouched():
-    from semantic_rails.sql_preparation import _athena_compat_sql
-
-    sql = "SELECT a / NULLIF(b, 0"  # malformed — never rewrite blindly
-    assert _athena_compat_sql(sql) == sql
+def test_athena_prepare_leaves_unbalanced_tail_and_plain_division_alone():
+    for sql in ("SELECT a / NULLIF(b, 0", "SELECT a / b, NULLIF(c, 0) FROM t"):
+        assert _prepare(sql) == sql
 
 
-def test_athena_compat_leaves_plain_division_alone():
-    from semantic_rails.sql_preparation import _athena_compat_sql
+def test_athena_prepare_leaves_literals_alone():
+    # Typing is the renderer's (SqlLiteral.temporal): a string compare stays one.
+    sql = "SELECT 1 FROM t WHERE dt = '2026-01-01' AND ts >= '2016-09-01'"
+    assert _prepare(sql) == sql
 
-    sql = "SELECT a / b, NULLIF(c, 0) FROM t"
-    assert _athena_compat_sql(sql) == sql
+
+@pytest.mark.parametrize("op", ["=", "<", ">", "<=", ">="])
+@pytest.mark.parametrize("value", ["2016-09-01", "2016-09-01 12:30:00.123", "2016-09-01T12:30:00"])
+def test_athena_types_temporal_literals(op, value):
+    temporal = SqlBinary(_ident("t", "ts"), op, SqlLiteral(value, temporal=True))
+    text = SqlBinary(_ident("t", "dt"), op, SqlLiteral(value))
+    with use_dialect(DIALECT):
+        assert render_expr(temporal) == f"t.ts {op} TIMESTAMP '{value}'"
+        assert render_expr(text) == f"t.dt {op} '{value}'"
 
 
-def test_athena_compat_tags_temporal_comparison_literals_as_timestamp():
-    # Trino refuses `timestamp >= varchar` (DuckDB coerces), so the
-    # compiler's time-window bounds gain an explicit TIMESTAMP tag.
-    from semantic_rails.sql_preparation import _athena_compat_sql
+@pytest.mark.parametrize("value", ["2016-09", "2016-09-011", "last week"])
+def test_athena_leaves_non_iso_temporal_text_untyped(value):
+    expr = SqlBinary(_ident("t", "ts"), ">=", SqlLiteral(value, temporal=True))
+    with use_dialect(DIALECT):
+        assert render_expr(expr) == f"t.ts >= '{value}'"
 
-    sql = "WHERE t.ordered_at >= '2016-09-01'\n  AND t.ordered_at < '2017-01-01'"
-    assert _athena_compat_sql(sql) == (
-        "WHERE t.ordered_at >= TIMESTAMP '2016-09-01'\n  AND t.ordered_at < TIMESTAMP '2017-01-01'"
+
+def test_athena_filters_type_only_date_and_timestamp_dimensions():
+    from semantic_rails.config import load_package_config
+    from tests.integration.harness import PACKAGE_DIR
+
+    config = load_package_config(str(PACKAGE_DIR))
+    runtime = Runtime.from_config(
+        _athena_config(config), source_path=str(PACKAGE_DIR), package_id="jaffle_shop"
     )
+    sql = runtime.compile(
+        {
+            "select": ["measure.jaffle.order_count"],
+            "where": [
+                {"field": "dimension.jaffle_store_name", "op": "is", "value": "2026-01-01"},
+                {"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": "2016-09-01"},
+                {
+                    "field": "dimension.jaffle_order_ordered_at",
+                    "op": "is",
+                    "value": ["2016-09-01", "2016-09-02"],
+                },
+            ],
+        },
+        now="2026-10-01T00:00:00Z",
+    )["rendered_sql"]
+    assert "jaffle_store.store_name = '2026-01-01'" in sql
+    assert ">= TIMESTAMP '2016-09-01'" in sql
+    assert "IN (TIMESTAMP '2016-09-01', TIMESTAMP '2016-09-02')" in sql
+    assert "TIMESTAMP '2026-01-01'" not in sql
 
 
-def test_athena_compat_tags_full_timestamp_literals_and_all_operators():
-    from semantic_rails.sql_preparation import _athena_compat_sql
-
-    for op in ("=", "!=", "<>", "<", ">", "<=", ">="):
-        assert _athena_compat_sql(f"WHERE ts {op} '2016-09-01 12:30:00.123'") == (
-            f"WHERE ts {op} TIMESTAMP '2016-09-01 12:30:00.123'"
-        )
-
-
-def test_athena_compat_leaves_non_temporal_and_tagged_literals_alone():
-    from semantic_rails.sql_preparation import _athena_compat_sql
-
-    for sql in (
-        "WHERE name = 'Brooklyn' AND code = '2016-09'",  # not ISO dates
-        "WHERE ts >= TIMESTAMP '2016-09-01'",  # already tagged
-        "SELECT '2016-09-01' AS day_label FROM t",  # no comparison op
-        "WHERE batch = '2016-09-011'",  # longer than an ISO date
-    ):
-        assert _athena_compat_sql(sql) == sql
-
-
-def test_athena_compat_skips_comparisons_inside_string_literals():
-    from semantic_rails.sql_preparation import _athena_compat_sql
-
-    sql = "SELECT 'note: x >= ''2016-09-01''' AS doc, ts < '2016-10-01' FROM t"
-    assert _athena_compat_sql(sql) == (
-        "SELECT 'note: x >= ''2016-09-01''' AS doc, ts < TIMESTAMP '2016-10-01' FROM t"
-    )
-
-
-def test_athena_adapter_query_applies_compat_pass(monkeypatch: pytest.MonkeyPatch):
+def test_athena_adapter_query_prepares_once(monkeypatch: pytest.MonkeyPatch):
     log: dict[str, Any] = {}
     _install_fake_pyathena(monkeypatch, log)
     adapter = AthenaAdapter({"region": "us-east-1", "s3_staging_dir": "s3://sr-bucket/results"})
 
     adapter.query("SELECT a / NULLIF(b, 0) FROM t WHERE ts >= '2016-09-01'")
 
-    assert log["sql"] == (
-        "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) FROM t WHERE ts >= TIMESTAMP '2016-09-01'"
-    )
+    assert log["sql"] == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) FROM t WHERE ts >= '2016-09-01'"
 
 
 # ---------------------------------------------------------------------------

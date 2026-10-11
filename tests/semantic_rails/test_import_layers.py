@@ -20,37 +20,32 @@ LAYERS = [
     "api asgi http_core http_request mcp mcp_query mcp_server mcp_session mcp_streamable_http architect_mcp"
     " contracts.generation",
     "architect_service architect_transactions architect_introspection architect_scaffold"
-    " dbt_artifacts package_tools upgrade config_validation semantic_collisions contracts interop",
+    " dbt_artifacts package_tools upgrade config_validation semantic_collisions contracts interop"
+    " operations",
     "planner",
     "metadata metadata_parts catalog_service",
-    "runtime runtime_parts manifest segments caveats resource_access policies cache"
+    "runtime runtime_parts answer manifest segments caveats resource_access policies cache"
     " request_context api_keys audit visible_view",
     "compiler compiler_parts fanout route_census relation_pipelines renderer ir registry"
     " diagnostics acceleration top_n",
     "db db_parts seed_provenance",
     "config config_parts package_snapshot yaml_loader operational meta_contract",
     "dialects sql_preparation sql_ast sql_identifiers row_filters",
-    "ast expressions schema errors issues request_payload catalog_search scope temporal_support"
+    "ast expressions schema errors issues request_payload catalog_format catalog_search scope"
+    " temporal_support"
     " result_values policy_rules naming atomic_files operators clock query_call",
 ]
 LAYER_OF = {key: rank for rank, keys in enumerate(LAYERS) for key in keys.split()}
 LAYER_OF[""] = len(LAYERS) - 1  # the package root only reads its version
 
-# Upward imports that exist today, all inside functions. Remove each one, then its entry.
-ALLOWED_UPWARD = {
-    ("manifest", "metadata"),
-    ("metadata", "config_validation"),
-    ("resource_access", "metadata"),
-    ("resource_access", "metadata_parts.capabilities"),
-}
+# Upward imports kept as exceptions: none; one that points up fails.
+ALLOWED_UPWARD: set[tuple[str, str]] = set()
 
 # Each entry is one strongly connected group of modules; break a cycle, then shrink its entry.
 KNOWN_CYCLES = [
     "expressions schema",
     "config package_snapshot",
     "compiler compiler_parts.conversion compiler_parts.predicate compiler_parts.sql_lowering",
-    "config_validation manifest metadata metadata_parts.capabilities metadata_parts.valid_values"
-    " resource_access runtime",
 ]
 
 

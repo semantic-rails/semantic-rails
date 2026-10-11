@@ -21,8 +21,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from . import operations
 from .audit import emit_audit_event
-from .catalog_service import resolve_catalog
 from .diagnostics import (
     enrich_object_not_found,
     exception_issue,
@@ -30,15 +30,7 @@ from .diagnostics import (
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
 from .mcp_query import coerce_arguments
 from .mcp_session import MCPQuerySession
-from .metadata import (
-    _slim_discover_minimal,
-    build_options_payload,
-    catalog_payload,
-    discover_payload,
-    inspect_payload,
-    valid_values_payload,
-)
-from .planner import plan_payload
+from .metadata import _slim_discover_minimal
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -72,21 +64,15 @@ __all__ = [
     "SemanticLayerError",
     "SemanticLayerMCPAdapter",
     "ToolDefinition",
-    "build_options_payload",
-    "catalog_payload",
     "context_from_policy_context",
-    "discover_payload",
     "emit_audit_event",
     "enrich_object_not_found",
     "exception_issue",
-    "inspect_payload",
     "json_text",
     "list_prompt_definitions",
     "list_resource_definitions",
     "list_tool_definitions",
-    "plan_payload",
     "request_context_payload",
-    "valid_values_payload",
 ]
 
 
@@ -1730,7 +1716,8 @@ class SemanticLayerMCPAdapter:
         elif uri in {"semantic-rails://catalog/summary", "semantic-rails://catalog/index"}:
             payload = self._envelope(
                 {
-                    "catalog": resolve_catalog(
+                    "catalog": operations.run(
+                        "catalog",
                         self.runtime,
                         view="summary",
                         verbosity="compact" if uri.endswith("/summary") else "summary",
@@ -1743,7 +1730,8 @@ class SemanticLayerMCPAdapter:
         elif uri == "semantic-rails://catalog/full":
             payload = self._envelope(
                 {
-                    "catalog": resolve_catalog(
+                    "catalog": operations.run(
+                        "catalog",
                         self.runtime,
                         view="summary",
                         verbosity="full",
@@ -2017,7 +2005,8 @@ class SemanticLayerMCPAdapter:
                 requested_kinds = checked_discover_kinds(
                     requested_kinds, GRANT_DISCOVER_KINDS if granted else _CATALOG_KIND_FILTERS
                 )
-                catalog = resolve_catalog(
+                catalog = operations.run(
+                    "catalog",
                     self.runtime,
                     view="summary",
                     verbosity="summary",
@@ -2051,7 +2040,8 @@ class SemanticLayerMCPAdapter:
                     )
                 return {"catalog": page, "warnings": terms_warnings}
             verbosity = str(args.get("verbosity") or "minimal")
-            payload = discover_payload(
+            payload = operations.run(
+                "discover",
                 self.runtime,
                 terms=terms_str,
                 kinds=requested_kinds,
@@ -2136,7 +2126,8 @@ class SemanticLayerMCPAdapter:
     def _handle_inspect(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(
             arguments,
-            lambda args: inspect_payload(
+            lambda args: operations.run(
+                "inspect",
                 self.runtime,
                 object_id=str(args.get("object_id", "")),
                 partial_query=self._seed(args),
@@ -2161,7 +2152,7 @@ class SemanticLayerMCPAdapter:
                 "include_counts": _coerce_bool(args.get("include_counts"), False),
                 "allow_live_query": _coerce_bool(args.get("allow_live_query"), False),
             }
-            payload = valid_values_payload(self.runtime, **call_arguments)
+            payload = operations.run("valid-values", self.runtime, **call_arguments)
             if payload.get("status") == "needs_live_query":
                 retry = {**call_arguments, "allow_live_query": True, "query": args.get("query")}
                 if retry["query"] is None:
@@ -2174,7 +2165,8 @@ class SemanticLayerMCPAdapter:
     def _handle_plan(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(
             arguments,
-            lambda args: plan_payload(
+            lambda args: operations.run(
+                "plan",
                 self.runtime,
                 intent=str(args.get("intent", "")),
                 partial_query={
@@ -2207,13 +2199,17 @@ class SemanticLayerMCPAdapter:
 
     def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            return self.runtime.validate(args["query"], **self._call_options(args))
+            return operations.run(
+                "validate", self.runtime, query=args["query"], **self._call_options(args)
+            )
 
         return self._guarded(arguments, _run)
 
     def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            return self.runtime.compile(args["query"], **self._call_options(args))
+            return operations.run(
+                "compile", self.runtime, query=args["query"], **self._call_options(args)
+            )
 
         return self._guarded(arguments, _run)
 
@@ -2222,7 +2218,10 @@ class SemanticLayerMCPAdapter:
             row_format = _row_format_arg(args)
             cap = _max_rows_arg(args.get("max_rows")) or MCP_DEFAULT_MAX_ROWS
             call = args["query"]
-            result = self.runtime.query(call, limits={"max_rows": cap}, **self._call_options(args))
+            options = self._call_options(args)
+            result = operations.run(
+                "query", self.runtime, query=call, limits={"max_rows": cap}, **options
+            )
             if bool(result.get("ok", True)):
                 result = _truncate_rows(result, cap=cap, query=call)
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
@@ -2296,16 +2295,10 @@ class SemanticLayerMCPAdapter:
         def run(args: dict[str, Any]) -> dict[str, Any]:
             segment_id = str(args.get("segment_id", ""))
             policy_context = _policy_context_payload()
+            segment: dict[str, Any] = {"segment_id": segment_id, "policy_context": policy_context}
             if action == "preview":
-                payload = self.runtime.segment_preview(
-                    segment_id,
-                    limit=_coerce_int(args.get("limit"), 50, field="limit", minimum=1),
-                    policy_context=policy_context,
-                )
-            elif action == "explain":
-                payload = self.runtime.segment_explain(segment_id, policy_context=policy_context)
-            else:
-                payload = self.runtime.segment_validate(segment_id, policy_context=policy_context)
+                segment["limit"] = _coerce_int(args.get("limit"), 50, field="limit", minimum=1)
+            payload = operations.run(f"segment-{action}", self.runtime, **segment)
             return _segment_response(action, payload, args.get("verbosity"))
 
         return self._guarded(args, run)

@@ -50,7 +50,6 @@ from .sql_ast import (
     SqlJoin,
     SqlJsonExtract,
     SqlLiteral,
-    SqlNamedArg,
     SqlOrderTerm,
     SqlQuery,
     SqlSelect,
@@ -322,22 +321,10 @@ def _lower_json_extract(
     if not path:
         raise SemanticLayerError("INVALID_CONFIG", "json_extract requires path")
     fields = _column_fields(state.columns)
-    source_expr = SqlIdentifier(parts=["src", source_column])
-    json_expr: SqlJsonExtract | SqlCall
-    if dialect_for_warehouse(warehouse).name == "snowflake":
-        json_expr = SqlJsonExtract(
-            source_expr, path=path, as_text=bool(config.get("as_text", True))
-        )
-    else:
-        json_path = "$." + ".".join(path)
-        function = "JSON_EXTRACT_STRING" if bool(config.get("as_text", True)) else "JSON_EXTRACT"
-        json_expr = SqlCall(function, [source_expr, SqlLiteral(json_path)])
-    fields.append(
-        SqlField(
-            json_expr,
-            alias,
-        )
+    json_expr = dialect_for_warehouse(warehouse).json_extract(
+        SqlIdentifier(parts=["src", source_column]), path, as_text=bool(config.get("as_text", True))
     )
+    fields.append(SqlField(json_expr, alias))
     query = SqlSelect(select=fields, from_table=SqlTableRef(state.source_name, alias="src"))
     return _RelationState(
         source_name=output_name,
@@ -356,22 +343,11 @@ def _lower_explode(
     delimiter = str(config.get("delimiter", "") or "")
     if not source_column:
         raise SemanticLayerError("INVALID_CONFIG", "explode requires column")
-    dialect = dialect_for_warehouse(warehouse).name
     fields = _column_fields([column for column in state.columns if column != source_column])
-    if dialect == "snowflake":
-        input_expr: SqlExpr = SqlIdentifier(parts=["src", source_column])
-        if delimiter:
-            input_expr = SqlCall("SPLIT", [input_expr, SqlLiteral(delimiter)])
-        table = SqlTableFunction(
-            "FLATTEN", named_args=[SqlNamedArg("INPUT", input_expr)], alias="exploded", lateral=True
-        )
-        fields.append(SqlField(SqlIdentifier(parts=["exploded", "VALUE"]), alias))
-    else:
-        input_expr = SqlIdentifier(parts=["src", source_column])
-        if delimiter:
-            input_expr = SqlCall("STRING_SPLIT", [input_expr, SqlLiteral(delimiter)])
-        table = SqlTableFunction("UNNEST", args=[input_expr], alias="exploded", columns=[alias])
-        fields.append(SqlField(SqlIdentifier(parts=["exploded", alias]), alias))
+    table, element = dialect_for_warehouse(warehouse).explode(
+        SqlIdentifier(parts=["src", source_column]), delimiter, alias="exploded", column=alias
+    )
+    fields.append(SqlField(element, alias))
     query = SqlSelect(
         select=fields,
         from_table=SqlTableRef(state.source_name, alias="src"),

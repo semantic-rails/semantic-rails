@@ -1069,7 +1069,7 @@ def test_validate_config_writes_compiled_manifest(tmp_path: Path):
     # validate-config itself doesn't write — the CLI wrapper does. Call
     # write_manifest directly to assert the artifact's shape and on-disk
     # location are stable.
-    from semantic_rails.manifest import write_manifest
+    from semantic_rails.catalog_service import write_manifest
 
     runtime = Runtime.from_path(str(package_dir))
     try:
@@ -1099,7 +1099,7 @@ def test_runtime_manifest_catalog_returns_isolated_dicts(tmp_path: Path):
     _write_minimal_package(package_dir)
     runtime = Runtime.from_path(str(package_dir))
     try:
-        from semantic_rails.manifest import write_manifest
+        from semantic_rails.catalog_service import write_manifest
 
         write_manifest(runtime)
         first = runtime.manifest_catalog(view="summary", verbosity="compact")

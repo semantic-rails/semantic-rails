@@ -174,6 +174,7 @@ from .paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
+    dimension_filter,
     inner_lookups,
     rollup_held_lookups,
     unknown_as_null,
@@ -580,7 +581,7 @@ def _require_filtered_series_operand(
             config,
             source_relation_override=measure.source_relation,
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        conditions.append(_value_filter_condition(value, item))
+        conditions.append(_value_filter_condition(value, item, config))
     aggregate = next(
         field.expression for field in leaf.select if field.alias == row.bound_measure.alias
     )
@@ -718,7 +719,7 @@ def _dataset_scope(row: MeasurePlan, config: PackageConfig) -> LeafScope | None:
         expr, _ = _direct_dimension_source_expr(
             measure.entity, str(item["field"]), config, source_relation_override=override
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        where.append(_value_filter_condition(expr, item))
+        where.append(_value_filter_condition(expr, item, config))
     relation = _measure_source_relation(measure, _entity_index(config)[measure.entity])
     return LeafScope(
         from_table=SqlTableRef(name=relation),
@@ -879,10 +880,14 @@ def _plan_requires_agent_dag_lowering(plan: LogicalPlan, config: PackageConfig) 
     return False
 
 
-def _value_filter_condition(value_expr: Any, item: dict[str, Any], *, path: str = "where") -> Any:
+def _value_filter_condition(
+    value_expr: Any, item: dict[str, Any], config: PackageConfig, *, path: str = "where"
+) -> Any:
     # Single shared op/value → condition mapping; see
     # ``sql_ast.build_filter_condition`` for the NULL / IN semantics.
-    return build_filter_condition(value_expr, item.get("op", "="), item.get("value"), path=path)
+    field = str(item.get("field", "") or "")
+    op, value = item.get("op", "="), item.get("value")
+    return dimension_filter(value_expr, field, op, value, config, path=path)
 
 
 @dataclass(frozen=True)
@@ -1156,7 +1161,7 @@ def _filter_condition_for_item(
     expr, _ = _direct_dimension_source_expr(
         measure_entity, str(item["field"]), config
     ) or _resolve_dimension_expr(str(item["field"]), config)
-    return _value_filter_condition(expr, item)
+    return _value_filter_condition(expr, item, config)
 
 
 def _source_local_filter_conditions(
@@ -1348,7 +1353,11 @@ def _aggregate_relation_time_expr(
 
 
 def _aggregate_relation_filter_expr(
-    aggregate: AggregateRelationConfig, item: dict[str, Any], *, path: str = "where"
+    aggregate: AggregateRelationConfig,
+    item: dict[str, Any],
+    config: PackageConfig,
+    *,
+    path: str = "where",
 ) -> Any:
     dim_id = str(item.get("field", "") or "")
     column = aggregate.dimension_columns.get(dim_id)
@@ -1358,7 +1367,7 @@ def _aggregate_relation_filter_expr(
             f"Aggregate relation '{aggregate.id}' cannot satisfy filter dimension '{dim_id}'",
             details={"aggregate_relation": aggregate.id, "dimension": dim_id},
         )
-    return _value_filter_condition(_column_ref(aggregate.relation, column), item, path=path)
+    return _value_filter_condition(_column_ref(aggregate.relation, column), item, config, path=path)
 
 
 def _aggregate_relation_leaf_select(
@@ -1399,7 +1408,7 @@ def _aggregate_relation_leaf_select(
 
     where_clauses: list[Any] = []
     for item in refuse_child_groups(plan.query.get("where"), "on a rollup"):
-        where_clauses.append(_aggregate_relation_filter_expr(aggregate, dict(item)))
+        where_clauses.append(_aggregate_relation_filter_expr(aggregate, dict(item), config))
     if raw_time_expr is not None and plan.time:
         where_clauses.extend(
             _source_time_window(raw_time_expr, plan.time, config, role_id=aggregate.temporal_role)
@@ -1416,7 +1425,9 @@ def _aggregate_relation_leaf_select(
             )
         for item in _bound_filter_clauses(measure_plan.bound_measure, config):
             where_clauses.append(
-                _aggregate_relation_filter_expr(aggregate, dict(item), path="measure_filter")
+                _aggregate_relation_filter_expr(
+                    aggregate, dict(item), config, path="measure_filter"
+                )
             )
         aggregation = recombine_aggregation(aggregate, measure_id)
         held = _column_ref(aggregate.relation, column)
@@ -1582,7 +1593,7 @@ def _distribution_select(
         ],
         from_table=SqlTableRef(name=source_name),
         where=[
-            _value_filter_condition(value_ref, item)
+            _value_filter_condition(value_ref, item, config)
             for item in list(expr.over.where or [])
             if str(item.get("kind", "value_filter")) == "value_filter"
         ],
@@ -2465,12 +2476,12 @@ def _entity_in_terms_of_leaf_select(
         expr, _ = _direct_dimension_source_expr(
             anchor_entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item))
+        where_clauses.append(_value_filter_condition(expr, item, config))
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
         expr, _ = _direct_dimension_source_expr(
             anchor_entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item))
+        where_clauses.append(_value_filter_condition(expr, item, config))
     select_fields.append(
         SqlField(
             _aggregation_expr(
@@ -2776,7 +2787,8 @@ def _nested_exists(child_joins: list[SqlJoin], conditions: list[Any]) -> list[An
 def _distinct_parent_group_conditions(
     plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig, measure: Any
 ) -> list[Any]:
-    """A child group's conditions in the de-duplicated parent leaf, ClickHouse's semi-join.
+    """A child group's conditions in the de-duplicated parent leaf, the semi-join of a
+    warehouse without correlated EXISTS.
 
     The leaf joins the group's route once, INNER, so its conditions hold on one child row
     together: ``match: any``. A second group, a ``none`` group, a lookup from the child (an
@@ -2792,7 +2804,7 @@ def _distinct_parent_group_conditions(
     _, lookups = child_group_route(config, query, measure, group)
     crossing = [row for row in measure_plan.path_selections if row.analysis.get("status") != "ok"]
     if (
-        config.package.warehouse != "clickhouse"
+        _dialect(config).correlated_exists
         or len(groups) > 1
         or group.match != "any"
         or any(lookups)
@@ -2805,19 +2817,21 @@ def _distinct_parent_group_conditions(
                 "child": group.child,
                 "match": group.match,
                 "why_invalid": (
-                    "ClickHouse's de-duplicated parent leaf answers one 'any' child group on the "
+                    "The de-duplicated parent leaf answers one 'any' child group on the "
                     "child's own columns, as the leaf's only condition across a one-to-many hop."
                 ),
             },
         )
     return [
-        build_filter_condition(
+        dimension_filter(
             (
                 _direct_dimension_source_expr(group.child, condition.field, config)
                 or _resolve_dimension_expr(condition.field, config)
             )[0],
+            condition.field,
             condition.op,
             condition.value,
+            config,
         )
         for condition in group.where
     ]
@@ -2951,13 +2965,15 @@ def _child_group_condition(
         group.child, found, config, measure_entity=None, time_spec=plan.time
     )
     conditions = [
-        build_filter_condition(
+        dimension_filter(
             (
                 _direct_dimension_source_expr(group.child, condition.field, config)
                 or _resolve_dimension_expr(condition.field, config)
             )[0],
+            condition.field,
             condition.op,
             condition.value,
+            config,
         )
         for condition in group.where
     ]
@@ -3190,10 +3206,10 @@ def _measure_leaf_select(
         for row in measure_plan.path_selections
         if row.analysis.get("status") != "ok"
     }
-    # ClickHouse 24.8 has no correlated EXISTS; its existing DISTINCT-parent leaf
-    # implements the same semi-join without requiring a newer server.
+    # Without correlated EXISTS (ClickHouse 24.8), the DISTINCT-parent leaf implements the same
+    # semi-join.
     semijoin = (
-        config.package.warehouse != "clickhouse"
+        _dialect(config).correlated_exists
         and measure_plan.rewrite_strategy == "fanout_dedup"
         and all(
             purpose in {"where", "metric_filter", "child_group"} for _, purpose in crossing_filters
@@ -3222,7 +3238,7 @@ def _measure_leaf_select(
             if semijoin and (dimensions[item["field"]].entity, "where") in crossing_filters
             else where_clauses
         )
-        target.append(condition := _value_filter_condition(expr, item))
+        target.append(condition := _value_filter_condition(expr, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
@@ -3239,7 +3255,7 @@ def _measure_leaf_select(
             if preserve_buckets
             else where_clauses
         )
-        target.append(condition := _value_filter_condition(expr, item))
+        target.append(condition := _value_filter_condition(expr, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
     untimed = [*where_clauses, *authored_conditions]
@@ -4021,7 +4037,7 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
     where_clauses: list[Any] = []
     for item in refuse_child_groups(query.where, "in a query without a measure"):
         expr, _ = _resolve_dimension_expr(str(item.field), config)
-        where_clauses.append(build_filter_condition(expr, item.op, item.value))
+        where_clauses.append(dimension_filter(expr, str(item.field), item.op, item.value, config))
 
     if plan.time:
         time = dict(plan.time)
@@ -5278,13 +5294,13 @@ def _measure_group_leaf_select(
         expr, _ = _direct_dimension_source_expr(
             first_measure.entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item))
+        where_clauses.append(_value_filter_condition(expr, item, config))
     for item in _bound_filter_clauses(first_plan.bound_measure, config):
         expr, _ = _direct_dimension_source_expr(
             first_measure.entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
         (authored_conditions if preserve_buckets else where_clauses).append(
-            _value_filter_condition(expr, item)
+            _value_filter_condition(expr, item, config)
         )
     untimed = [*where_clauses, *authored_conditions]
     if plan.time:
@@ -5582,7 +5598,7 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
             if key == "end" and (after_midnight or ordinal > datetime.max.toordinal()):
                 operator = "<="
             value = day_value.date().isoformat()
-        bounds.append(SqlBinary(day, operator, SqlLiteral(value)))
+        bounds.append(SqlBinary(day, operator, SqlLiteral(value, temporal=True)))
     return bounds
 
 
@@ -5616,7 +5632,7 @@ def _source_time_window(
             column = SqlCast(column, "DATE")
         return _whole_day_window(column, {**time, "temporal_role": role_id}, config)
     return [
-        SqlBinary(column, operator, SqlLiteral(time[key]))
+        SqlBinary(column, operator, SqlLiteral(time[key], temporal=True))
         for key, operator in (("start", ">="), ("end", "<"))
         if time.get(key) is not None
     ]

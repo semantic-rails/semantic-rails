@@ -62,6 +62,7 @@ from .expressions import (
     resolve_filter_dimension,
 )
 from .meta_contract import validate_meta_payload
+from .metadata import _default_time_spec_for_metric
 from .metadata_parts.valid_values import max_valid_values_limit, valid_values_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
 from .registry import Registry
@@ -1137,98 +1138,6 @@ def _probe_query_for_measure(measure) -> dict[str, Any]:
         ],
         "limit": 0,
     }
-
-
-def _metric_min_window_unit(expression: Any) -> str:
-    """Return the coarsest required window unit ('month', 'quarter', 'year')
-    found in a metric expression tree, or '' if none. Used by the probe
-    to pick a probe grain that matches `prior_period`/`rolling`/etc.
-    window units; without this, a `prior_period(month)` metric probed at
-    day grain raises REWRITE_NOT_SUPPORTED."""
-    if expression is None:
-        return ""
-    if isinstance(expression, dict):
-        units: list[str] = []
-        for key in ("offset", "window"):
-            spec = expression.get(key)
-            if isinstance(spec, dict):
-                unit = str(spec.get("unit", "")).strip().lower()
-                if unit:
-                    units.append(unit)
-        for child_key in (
-            "input",
-            "left",
-            "right",
-            "numerator",
-            "denominator",
-            "base",
-            "converted",
-        ):
-            units.append(_metric_min_window_unit(expression.get(child_key)))
-        for arg in expression.get("args", []) or []:
-            units.append(_metric_min_window_unit(arg))
-        order = ["year", "quarter", "month", "week", "day"]
-        coarsest = ""
-        for unit in units:
-            if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
-                coarsest = unit
-        return coarsest
-    # carry `.unit` directly; ``RollingExpr`` also carries `.unit` and
-    # `.value` directly (no `.window` attribute exists on the
-    # dataclass — see ``semantic_rails/expressions.py:RollingExpr``).
-    # The ``window`` branch below only fires for IR payloads that
-    # still carry a raw dict (``offset`` and ``window`` map keys on
-    # parsed but un-typed expressions).
-    units = []
-    direct_unit = getattr(expression, "unit", "")
-    if isinstance(direct_unit, str) and direct_unit:
-        units.append(direct_unit.lower())
-    for attr in ("offset", "window"):
-        if hasattr(expression, attr):
-            spec = getattr(expression, attr)
-            if isinstance(spec, dict):
-                unit = str(spec.get("unit", "")).strip().lower()
-                if unit:
-                    units.append(unit)
-    for attr in ("input", "left", "right", "numerator", "denominator", "base", "converted"):
-        if hasattr(expression, attr):
-            units.append(_metric_min_window_unit(getattr(expression, attr)))
-    if hasattr(expression, "args"):
-        for arg in expression.args or []:
-            units.append(_metric_min_window_unit(arg))
-    order = ["year", "quarter", "month", "week", "day"]
-    coarsest = ""
-    for unit in units:
-        if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
-            coarsest = unit
-    return coarsest
-
-
-def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
-    from .temporal_support import require_temporal_support
-
-    require_temporal_support(runtime._config)
-    role_id = str(recipe.temporal_role or "").strip()
-    if not role_id:
-        compatible_roles = list(recipe.compatible_temporal_roles or [])
-        default_roles = [
-            role.id
-            for role in runtime._config.temporal_roles
-            if role.default_query_time_axis and role.id in compatible_roles
-        ]
-        if default_roles:
-            role_id = default_roles[0]
-        elif compatible_roles:
-            role_id = compatible_roles[0]
-    if not role_id:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"Metric recipe '{recipe.id}' needs a time block in the call but has no compatible temporal role",
-            details={"metric": recipe.id},
-        )
-    coarsest_unit = _metric_min_window_unit(recipe.expression)
-    grain = coarsest_unit if coarsest_unit in {"month", "quarter", "year"} else "day"
-    return {"temporal_role": role_id, "grain": grain}
 
 
 def _probe_query_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:

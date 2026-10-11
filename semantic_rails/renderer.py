@@ -64,8 +64,8 @@ if TYPE_CHECKING:
 # Snowflake, BigQuery, ClickHouse and Databricks honour backslash escapes
 # inside single-quoted literals and the rest do not, so the same value has to
 # be escaped differently per warehouse. Every other dialect choice is already
-# baked into the AST by the lowering pass, except typed boolean NULL casts:
-# ClickHouse requires a nullable destination type.
+# baked into the AST by the lowering pass, except typed boolean NULL casts
+# (``SqlDialect.null_boolean_type``).
 #
 # It is a ContextVar rather than a parameter because `render_expr` recurses
 # through ~35 internal call sites; threading an argument through all of them
@@ -258,6 +258,9 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             return "TRUE" if expr.value else "FALSE"
         if isinstance(expr.value, (int, float)):
             return str(expr.value)
+        dialect = _ACTIVE_DIALECT.get()
+        if expr.temporal and dialect is not None:
+            return dialect.temporal_literal(str(expr.value))
         return _render_string_literal(str(expr.value))
     if isinstance(expr, SqlCall):
         function_name = normalize_sql_function_name(expr.name)
@@ -325,13 +328,8 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlCast):
         type_name = normalize_sql_cast_type_name(expr.type_name)
         dialect = _ACTIVE_DIALECT.get()
-        if (
-            type_name == "BOOLEAN"
-            and is_null_literal(expr.expr)
-            and dialect is not None
-            and dialect.name == "clickhouse"
-        ):
-            type_name = "Nullable(Bool)"
+        if type_name == "BOOLEAN" and is_null_literal(expr.expr) and dialect is not None:
+            type_name = dialect.null_boolean_type
         return f"CAST({render_expr(expr.expr)} AS {type_name})"
     if isinstance(expr, SqlWindow):
         over_parts: list[str] = []
@@ -364,7 +362,8 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             for item in expr.order_by
         )
         limit_sql = f" LIMIT {int(expr.limit)}" if expr.limit is not None else ""
-        return f"{function_name}({args} ORDER BY {order_sql}{limit_sql})"
+        nulls = " IGNORE NULLS" if expr.ignore_nulls else ""
+        return f"{function_name}({args}{nulls} ORDER BY {order_sql}{limit_sql})"
     if isinstance(expr, SqlIndexAccess):
         index_sql = render_expr(expr.index)
         if expr.wrapper:

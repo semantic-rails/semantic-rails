@@ -977,9 +977,11 @@ def test_asgi_get_catalog_refuses_identity_query_parameters(monkeypatch) -> None
         captured.append(dict(kwargs.get("policy_context", {}) or {}))
         return {"source": "test"}
 
-    import semantic_rails.http_core as http_core
+    from dataclasses import replace
 
-    monkeypatch.setattr(http_core, "resolve_catalog", fake_catalog)
+    from semantic_rails.operations import OPERATIONS
+
+    monkeypatch.setitem(OPERATIONS, "catalog", replace(OPERATIONS["catalog"], service=fake_catalog))
     resolver = TenantOnlyResolver()
     set_policy_context_resolver(resolver)
     app = SemanticLayerASGIApp(package_id="jaffle_shop")

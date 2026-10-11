@@ -18,7 +18,6 @@ from semantic_rails.expressions import (
     CallExpr,
     ColumnRefExpr,
     LiteralExpr,
-    accepted_call_names,
     parse_semantic_expression,
     validate_expression_calls,
 )
@@ -204,7 +203,7 @@ def test_refused_cast_shapes(package, args):
     with pytest.raises(SemanticLayerError, match="string literal type"):
         validate_expression_calls(
             parse_semantic_expression(call("CAST", *args), context="query"),
-            load_package_config(str(package)),
+            dialect_for_warehouse(load_package_config(str(package)).package.warehouse),
         )
 
 
@@ -250,7 +249,7 @@ def test_allowed_names_are_constructible_and_duckdb_executes_each(package, wareh
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     dialect = dialect_for_warehouse(warehouse)
-    for name in sorted(accepted_call_names(warehouse)):
+    for name in sorted(dialect_for_warehouse(warehouse).call_names):
         if warehouse == "athena" and name == "DATE_DIFF":
             continue  # Registered shape, but every unit is covered by the refusal tests.
         values = SMOKE_ARGS.get(
@@ -259,7 +258,7 @@ def test_allowed_names_are_constructible_and_duckdb_executes_each(package, wareh
         expr = parse_semantic_expression(
             call(name.lower(), *(literal(v) for v in values)), context="query"
         )
-        validate_expression_calls(expr, config)
+        validate_expression_calls(expr, dialect)
         compile_query(config, None, query(maximum(call(name, *(literal(v) for v in values)))))
         sql_args = [SqlLiteral(v) for v in values]
         if name in {"DATE_PART", "DATE_TRUNC"}:
@@ -293,7 +292,7 @@ def test_excluded_calls_report_exact_dialect_list(package, warehouse, name):
     with pytest.raises(SemanticLayerError) as exc:
         plan_query(config, None, query(call(name, literal(1))))
     assert exc.value.code == "INVALID_EXPRESSION_AST"
-    assert exc.value.details["allowed"] == sorted(accepted_call_names(warehouse))
+    assert exc.value.details["allowed"] == sorted(dialect_for_warehouse(warehouse).call_names)
 
 
 @pytest.mark.parametrize("warehouse", WAREHOUSES)
@@ -461,8 +460,11 @@ def test_bigquery_decimal_constraints_refused_at_load_and_validation(package, ta
             ),
         ]
         for warehouse in WAREHOUSES
-        if expression["name"] in accepted_call_names(warehouse)
-        and (expression["name"] != "DATE_PART" or "SPLIT" in accepted_call_names(warehouse))
+        if expression["name"] in dialect_for_warehouse(warehouse).call_names
+        and (
+            expression["name"] != "DATE_PART"
+            or "SPLIT" in dialect_for_warehouse(warehouse).call_names
+        )
     ],
 )
 def test_supported_overloads_compile_in_queries_and_packages(
@@ -522,7 +524,7 @@ def test_direct_lowering_cannot_bypass_call_guard(package):
     expr = CallExpr("DATE_PART", [LiteralExpr("year"), LiteralExpr(None)])
     with pytest.raises(SemanticLayerError) as exc:
         _config_expr_to_sql(expr, config.measures[0], config)
-    assert exc.value.details["allowed"] == sorted(accepted_call_names("bigquery"))
+    assert exc.value.details["allowed"] == sorted(dialect_for_warehouse("bigquery").call_names)
 
 
 @pytest.mark.parametrize(
@@ -539,9 +541,10 @@ def test_dialect_spelling_is_refused_by_walker(package, warehouse, name):
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     with pytest.raises(SemanticLayerError) as exc:
         validate_expression_calls(
-            parse_semantic_expression(call(name, literal(1)), context="config"), config
+            parse_semantic_expression(call(name, literal(1)), context="config"),
+            dialect_for_warehouse(warehouse),
         )
-    assert exc.value.details["allowed"] == sorted(accepted_call_names(warehouse))
+    assert exc.value.details["allowed"] == sorted(dialect_for_warehouse(warehouse).call_names)
 
 
 @pytest.mark.parametrize("path", ["select", "measure", "relation"])
@@ -690,7 +693,7 @@ def test_operational_expression_shaped_metadata_stays_data(package):
 def test_unowned_projection_column_does_not_borrow_dimension_type(package):
     config = load_package_config(str(package))
     expr = CallExpr("ABS", [ColumnRefExpr("text_value", table="src")])
-    validate_expression_calls(expr, config)
+    validate_expression_calls(expr, dialect_for_warehouse(config.package.warehouse))
     assert (
         render_expr(_semantic_expr_to_sql(expr, default_alias="src", warehouse="duckdb"))
         == "ABS(src.text_value)"
@@ -745,7 +748,7 @@ def test_unsupported_date_diff_refused_on_every_surface(package, warehouse, unit
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     parsed = parse_semantic_expression(expression, context="query")
     with pytest.raises(SemanticLayerError) as validation:
-        validate_expression_calls(parsed, config)
+        validate_expression_calls(parsed, dialect_for_warehouse(warehouse))
     with pytest.raises(SemanticLayerError) as lowering:
         if surface == "package":
             path = package / "package.yml"
@@ -983,7 +986,7 @@ def test_malformed_date_diff_refused_by_validation_and_lowering(package, warehou
     expression = call("DATE_DIFF", *args)
     parsed = parse_semantic_expression(expression, context="query")
     with pytest.raises(SemanticLayerError) as validation:
-        validate_expression_calls(parsed, config)
+        validate_expression_calls(parsed, dialect_for_warehouse(warehouse))
     with pytest.raises(SemanticLayerError) as lowering:
         _semantic_expr_to_sql(parsed, warehouse=warehouse)
     assert validation.value.code == lowering.value.code == "INVALID_EXPRESSION_AST"

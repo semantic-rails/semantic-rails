@@ -6,7 +6,7 @@ Utility scripts used during refactors. Not part of the user-facing CLI.
 |---|---|
 | `capture_sql_baseline.py` | Compile + execute every governed jaffle metric, write rendered SQL + queried rows to a JSON file. Use before refactoring SQL lowering or rendering. |
 | `diff_sql_baseline.py` | Diff a fresh baseline against a golden snapshot. Set-equivalent with FP tolerance (DuckDB row order is non-deterministic; ULP-level FP results vary). Fails on row diffs and on metrics that no longer compile or run; lists metrics whose SQL changed: a SQL-quality refactor changes SQL, a pure code move must not. |
-| `capture_dialect_sql.py` | Compile (without running) the same queries once per supported dialect and write each statement's SQL and result-column mapping to a JSON file; it exits 1 if any statement fails to compile, except the documented refusals listed in its `EXPECTED_REFUSALS` (each keyed by dialect, query and error code), and also if a listed refusal no longer occurs. `--compare GOLDEN AFTER` lists every statement that changed and fails on any such failure. A pure code move must leave all of them byte-identical. |
+| `compile_corpus.py` | Compile (without running) every committed query (package examples and tests with the answers ledger, comparison queries, `examples/*.json`, the blind-agent corpus calls, the rendered-SQL snapshot inputs, the baseline payloads) once per supported dialect at a pinned `now`, and record each result's rendered SQL, output columns and warning codes, or its refusal's code and path. `compare GOLDEN AFTER` names every changed query, dialect and field and exits 1 on any. A pure code move must leave the record byte-identical. |
 | `function_lengths.py` | List functions over `--min` lines (default 150), longest first, with totals over 150 and 300 lines. Report-only; `make complexity` runs it with ruff's complexity rules. To check that no function a change touches got longer, diff `--by-name --min 0` output from before and after. For per-function complexity scores, run `uv run ruff check semantic_rails --select C901,PLR0912,PLR0915 --exit-zero --output-format concise`. |
 | `regen_snapshot_cases.py` | Regenerate `SNAPSHOT_CASES` inside `tests/semantic_rails/test_rendered_sql_snapshots.py` after a deliberate renderer/compiler change. |
 
@@ -15,7 +15,7 @@ Utility scripts used during refactors. Not part of the user-facing CLI.
 ```bash
 # Before changing anything
 uv run python scripts/dev/capture_sql_baseline.py /tmp/sql_baseline_golden.json
-uv run python scripts/dev/capture_dialect_sql.py /tmp/dialect_sql_golden.json
+uv run python scripts/dev/compile_corpus.py record /tmp/corpus_golden.json
 uv run python scripts/dev/function_lengths.py --by-name --min 0 > /tmp/functions_before.txt
 
 # Make refactor commits
@@ -23,8 +23,8 @@ uv run python scripts/dev/function_lengths.py --by-name --min 0 > /tmp/functions
 # After
 uv run python scripts/dev/capture_sql_baseline.py /tmp/sql_baseline_after.json
 uv run python scripts/dev/diff_sql_baseline.py /tmp/sql_baseline_golden.json /tmp/sql_baseline_after.json
-uv run python scripts/dev/capture_dialect_sql.py /tmp/dialect_sql_after.json
-uv run python scripts/dev/capture_dialect_sql.py --compare /tmp/dialect_sql_golden.json /tmp/dialect_sql_after.json
+uv run python scripts/dev/compile_corpus.py record /tmp/corpus_after.json
+uv run python scripts/dev/compile_corpus.py compare /tmp/corpus_golden.json /tmp/corpus_after.json
 uv run python scripts/dev/function_lengths.py --by-name --min 0 > /tmp/functions_after.txt
 diff /tmp/functions_before.txt /tmp/functions_after.txt
 

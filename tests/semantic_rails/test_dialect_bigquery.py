@@ -38,7 +38,7 @@ from semantic_rails.sql_ast import (
     SqlSelect,
     SqlTableRef,
 )
-from semantic_rails.sql_preparation import _bigquery_compat_sql, _safe_field_name
+from semantic_rails.sql_preparation import _safe_field_name, bigquery_compat_sql
 
 DIALECT = BigQueryDialect()
 
@@ -174,11 +174,12 @@ def test_date_add_supports_month_unit():
 def _exact_percentile_sql(column: str, p: str) -> str:
     """The exact linear-interpolation form percentile_cont lowers to:
     v[FLOOR(h)] + (h - FLOOR(h)) * (v[CEIL(h)] - v[FLOOR(h)]) with
-    h = p * (COUNT(x) - 1) over ARRAY_AGG(x ORDER BY x ASC)."""
+    h = p * (COUNT(x) - 1) over ARRAY_AGG(x IGNORE NULLS ORDER BY x ASC); NULLs are left
+    out, and a group without a value reads NULL (SAFE_OFFSET of a negative position)."""
     h = f"{p} * (COUNT({column}) - 1)"
-    arr = f"(ARRAY_AGG({column} ORDER BY {column} ASC))"
-    lo = f"{arr}[OFFSET(CAST(FLOOR({h}) AS BIGINT))]"
-    hi = f"{arr}[OFFSET(CAST(CEIL({h}) AS BIGINT))]"
+    arr = f"(ARRAY_AGG({column} IGNORE NULLS ORDER BY {column} ASC))"
+    lo = f"{arr}[SAFE_OFFSET(CAST(FLOOR({h}) AS BIGINT))]"
+    hi = f"{arr}[SAFE_OFFSET(CAST(CEIL({h}) AS BIGINT))]"
     return f"{lo} + ({h} - FLOOR({h})) * ({hi} - {lo})"
 
 
@@ -202,14 +203,14 @@ def test_median_is_percentile_50():
     assert sql == render_expr(DIALECT.percentile_cont(_col("x"), 0.5))
 
 
-def test_first_value_uses_array_agg_order_limit_offset():
+def test_first_value_is_the_first_non_null_value():
     sql = render_expr(DIALECT.first_value(_col("x"), _col("o")))
-    assert sql == "(ARRAY_AGG(x ORDER BY o ASC LIMIT 1))[OFFSET(0)]"
+    assert sql == "(ARRAY_AGG(x IGNORE NULLS ORDER BY o ASC LIMIT 1))[SAFE_OFFSET(0)]"
 
 
 def test_last_value_orders_descending():
     sql = render_expr(DIALECT.last_value(_col("x"), _col("o")))
-    assert sql == "(ARRAY_AGG(x ORDER BY o DESC LIMIT 1))[OFFSET(0)]"
+    assert sql == "(ARRAY_AGG(x IGNORE NULLS ORDER BY o DESC LIMIT 1))[SAFE_OFFSET(0)]"
 
 
 def test_null_safe_eq_pairs_joinable_equality_with_exact_predicate():
@@ -264,13 +265,13 @@ def test_capabilities_flag_exact_percentiles_and_array_agg_nulls():
 
 # ---------------------------------------------------------------------------
 # (b) GoogleSQL compatibility pass — backtick re-quoting + field-name
-# legalization (BigQuery rejected both live; see _bigquery_compat_sql).
+# legalization (BigQuery rejected both live; see bigquery_compat_sql).
 # ---------------------------------------------------------------------------
 
 
 def test_compat_sql_requotes_identifiers_with_backticks():
     sql = 'SELECT t.x AS "plain_alias" FROM "jaffle_order" AS t'
-    rewritten, alias_map = _bigquery_compat_sql(sql)
+    rewritten, alias_map = bigquery_compat_sql(sql)
     assert rewritten == "SELECT t.x AS `plain_alias` FROM `jaffle_order` AS t"
     assert alias_map == {}  # legal names need no row-key mapping
 
@@ -283,7 +284,7 @@ def test_compat_sql_legalizes_dotted_aliases_consistently():
         'SELECT t.name AS "dimension.jaffle_store_name" FROM jaffle_store AS t '
         'ORDER BY "dimension.jaffle_store_name" ASC'
     )
-    rewritten, alias_map = _bigquery_compat_sql(sql)
+    rewritten, alias_map = bigquery_compat_sql(sql)
     assert '"' not in rewritten
     assert "dimension.jaffle_store_name" not in rewritten
     assert len(alias_map) == 1
@@ -295,7 +296,7 @@ def test_compat_sql_legalizes_dotted_aliases_consistently():
 
 def test_compat_sql_keeps_distinct_illegal_names_distinct():
     sql = 'SELECT 1 AS "measure.a", 2 AS "measure.b"'
-    _, alias_map = _bigquery_compat_sql(sql)
+    _, alias_map = bigquery_compat_sql(sql)
     assert sorted(alias_map.values()) == ["measure.a", "measure.b"]
     assert len(set(alias_map)) == 2
     assert _safe_field_name("measure.a") != _safe_field_name("measure.b")
@@ -303,7 +304,7 @@ def test_compat_sql_keeps_distinct_illegal_names_distinct():
 
 def test_compat_sql_never_touches_string_literals():
     sql = "SELECT 'keep \"this\" verbatim', 'it''s \"fine\"' AS \"metric.x\""
-    rewritten, _ = _bigquery_compat_sql(sql)
+    rewritten, _ = bigquery_compat_sql(sql)
     assert "'keep \"this\" verbatim'" in rewritten
     assert "'it''s \"fine\"'" in rewritten
 
@@ -643,7 +644,7 @@ def test_jaffle_battery_compiles_for_bigquery():
     assert "DATETIME_ADD(" in combined
     # Exact percentile lowering (ARRAY_AGG interpolation) is exercised
     # by the percentile battery cases.
-    assert "ORDER BY" in combined and "[OFFSET(CAST(FLOOR(" in combined
+    assert "IGNORE NULLS ORDER BY" in combined and "[SAFE_OFFSET(CAST(FLOOR(" in combined
 
 
 @pytest.mark.parametrize(
@@ -658,14 +659,16 @@ def test_jaffle_battery_compiles_for_bigquery():
 def test_bigquery_server_deadline_and_long_request_wait(
     monkeypatch, prepared, timeout_ms, expected_wait, expected_server
 ):
-    from semantic_rails.sql_preparation import prepare_query
+    from semantic_rails.dialects import dialect_for_warehouse
 
     log = {}
     _install_fake_bigquery(monkeypatch, log)
     adapter = BigQueryNativeAdapter()
     limits = {} if timeout_ms is None else {"statement_timeout_ms": timeout_ms}
     if prepared:
-        adapter.query_prepared(prepare_query("select 1", "bigquery"), limits=limits)
+        adapter.query_prepared(
+            dialect_for_warehouse("bigquery").prepare_query("select 1"), limits=limits
+        )
     else:
         adapter.query("select 1", limits=limits)
     assert log["result_timeout"] == expected_wait

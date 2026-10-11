@@ -85,7 +85,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "ARRAY_AGG",
         # Implicit-calendar day series (dialects.SqlDialect.day_series):
         # Snowflake, BigQuery, Trino/Athena and Databricks spellings. Engine-only:
-        # expressions.accepted_call_names keeps them out of `call` expressions.
+        # the dialects' call_names keep them out of `call` expressions.
         "ARRAY_GENERATE_RANGE",
         "AVG",
         "CEIL",
@@ -138,7 +138,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "MIN_BY",
         # The current time and a value's physical type, for base time coverage on DuckDB
         # and Postgres (dialects.SqlDialect.now and utc_timestamp). Engine-only:
-        # expressions.accepted_call_names keeps them out of `call` expressions.
+        # the dialects' call_names keep them out of `call` expressions.
         "NOW",
         "NULLIF",
         # Spark SQL exact percentile aggregate.
@@ -297,6 +297,9 @@ class SqlIdentifier:
 @dataclass(frozen=True)
 class SqlLiteral:
     value: Any
+    # Date or timestamp text compared with a clock or date column, which a warehouse whose
+    # comparisons don't coerce text spells with its type (``SqlDialect.temporal_literal``).
+    temporal: bool = False
 
 
 @dataclass(frozen=True)
@@ -447,22 +450,23 @@ class SqlWithinGroup:
 @dataclass(frozen=True)
 class SqlCallWithOrder:
     """Aggregate call with function-internal ORDER BY (and optional LIMIT):
-    ``name(args ORDER BY … [LIMIT n])``. Used by dialects without
+    ``name(args [IGNORE NULLS] ORDER BY … [LIMIT n])``. Used by dialects without
     MIN_BY/ARG_MIN — Postgres ``array_agg(x ORDER BY y)``, BigQuery
-    ``ARRAY_AGG(x ORDER BY y LIMIT 1)``."""
+    ``ARRAY_AGG(x IGNORE NULLS ORDER BY y LIMIT 1)``."""
 
     call: SqlCall
     order_by: list[SqlOrderTerm] = field(default_factory=list)
     limit: int | None = None
+    ignore_nulls: bool = False
 
 
-_INDEX_WRAPPERS = frozenset({"", "OFFSET", "ORDINAL"})
+_INDEX_WRAPPERS = frozenset({"", "OFFSET", "ORDINAL", "SAFE_OFFSET"})
 
 
 @dataclass(frozen=True)
 class SqlIndexAccess:
-    """Array subscript: ``expr[index]``, or BigQuery's
-    ``expr[OFFSET(index)]`` / ``expr[ORDINAL(index)]``."""
+    """Array subscript: ``expr[index]``, or BigQuery's ``expr[OFFSET(index)]`` /
+    ``expr[ORDINAL(index)]`` / ``expr[SAFE_OFFSET(index)]`` (NULL out of bounds)."""
 
     expr: SqlExpr
     index: SqlExpr
@@ -628,13 +632,21 @@ def filter_rejects_null(op: Any, value: Any) -> bool:
     return operators.rejects_unknown(word, value)
 
 
-def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "where") -> SqlExpr:
+def build_filter_condition(
+    expr: SqlExpr, op: Any, value: Any, *, path: str = "where", temporal: bool = False
+) -> SqlExpr:
     """The SQL condition for a ``{field, op, value}`` filter, read from the operator table.
 
     The single home for the op/value → condition mapping used by every filter lowering
     site. ``not`` keeps rows whose value is unknown: ``(x <> v OR x IS NULL)``, the
     portable form on every dialect. ``contains`` is a case-insensitive literal match.
+    ``temporal`` says the field is a date or timestamp, so its text values are temporal
+    literals.
     """
+
+    def literal(item: Any) -> SqlLiteral:
+        return SqlLiteral(item, temporal=temporal and isinstance(item, str))
+
     word, value = operators.normalize_condition(op, value, path=path, internal=True)
     if word == "missing":
         return SqlIsNull(expr=expr) if value else SqlBinary(expr, "IS NOT", SqlLiteral(None))
@@ -643,17 +655,19 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
         if not values:
             # Membership in no values: vacuously false (is) or true (not).
             return SqlLiteral(word == "not")
-        literal: list[SqlExpr] = [SqlLiteral(item) for item in values]
+        literals: list[SqlExpr] = [literal(item) for item in values]
         if word == "is":
-            return SqlBinary(expr, "=", literal[0]) if len(literal) == 1 else SqlIn(expr, literal)
+            return (
+                SqlBinary(expr, "=", literals[0]) if len(literals) == 1 else SqlIn(expr, literals)
+            )
         differs = (
-            SqlBinary(expr, "<>", literal[0])
-            if len(literal) == 1
-            else SqlIn(expr, literal, negated=True)
+            SqlBinary(expr, "<>", literals[0])
+            if len(literals) == 1
+            else SqlIn(expr, literals, negated=True)
         )
         return SqlBinary(differs, "OR", SqlIsNull(expr=expr))
     if word in operators.RANGE_WORDS:
-        return SqlBinary(expr, operators.COMPARISON_SQL[word], SqlLiteral(value))
+        return SqlBinary(expr, operators.COMPARISON_SQL[word], literal(value))
     return SqlLike(SqlCall("LOWER", [expr]), operators.contains_pattern(str(value)))
 
 

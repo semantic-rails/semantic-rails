@@ -174,6 +174,18 @@ def _with_rules(monkeypatch, rules: tuple[Rule, ...]) -> None:
     monkeypatch.setattr("semantic_rails.architect_mcp.upgrade_project_service", upgrade)
 
 
+def _version_two(files):
+    for file, path, query in files.queries():
+        if path and path[-1] == "query" and str(query.get("version")) == "2":
+            edit = Edit(file, "replace", (*path, "version"), value=1)
+            line = files.line(file, edit.path)
+            yield Finding("query-version", file, line, path, "version: 2 becomes 1", (edit,))
+
+
+# A query rewrite that keeps every answer: a call ignores its version.
+QUERY_VERSION = Rule("query-version", "9.9", "same_meaning", "Write version: 1", _version_two)
+
+
 @pytest.mark.parametrize("surface", ["cli", "architect"])
 def test_package_from_an_earlier_release_upgrades_in_one_certified_change(
     tmp_path, monkeypatch, capsys, surface
@@ -343,6 +355,7 @@ def test_unflagged_same_meaning_rule_is_proven_after_the_baseline(tmp_path):
 
 @pytest.mark.parametrize("surface", ["cli", "architect"])
 def test_rule_cannot_certify_an_unrelated_query_failure(tmp_path, monkeypatch, capsys, surface):
+    _with_rules(monkeypatch, (*RULES, QUERY_VERSION))
     files = {
         **UPGRADED,
         "examples/core.yml": UPGRADED["examples/core.yml"]
@@ -373,7 +386,7 @@ def test_rule_cannot_certify_an_unrelated_query_failure(tmp_path, monkeypatch, c
     details = report["error"]["details"]
     assert (details["conflict_kind"], details["rule"]) == (
         "upgrade_not_equivalent",
-        "query-ir-version",
+        "query-version",
     )
     assert _contents(project) == files
 
@@ -409,34 +422,6 @@ def test_cli_write_uses_a_fresh_receipt_after_restoring_legacy_files(tmp_path, m
     assert second["status"] == "upgraded"
     assert second["idempotency_key"] != first["idempotency_key"]
     assert _contents(project) == UPGRADED
-
-
-@pytest.mark.parametrize("version", [2, "2"])
-def test_upgraded_query_version_compiles(tmp_path, monkeypatch, capsys, version):
-    files = {
-        **UPGRADED,
-        "examples/core.yml": UPGRADED["examples/core.yml"].replace(
-            "version: 1", f"version: {version!r}"
-        ),
-    }
-    project = _package(tmp_path, files)
-
-    code, text = _cli(
-        monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
-    )
-
-    assert code == 0, text
-    report = json.loads(text)
-    assert report["status"] == "upgraded"
-    # A call ignores its version: the rewrite is proven on the example's answer.
-    assert report["rules"][0]["tier"] == "proven"
-    assert _contents(project) == UPGRADED
-    runtime = Runtime.from_snapshot(load_package_snapshot(project))
-    try:
-        _, _, query = next(PackageFiles(project).queries())
-        assert runtime.compile(dict(query))["rendered_sql"]
-    finally:
-        runtime.close()
 
 
 @pytest.mark.parametrize(
@@ -516,9 +501,8 @@ PRIMITIVE_KIND = Rule(
 
 @pytest.mark.parametrize("retired", [False, True])
 @pytest.mark.parametrize("choice", [False, True])
-@pytest.mark.parametrize("query_version", [1, 2])
 def test_refused_same_meaning_rule_forms_a_certified_baseline(
-    tmp_path, monkeypatch, capsys, retired, choice, query_version
+    tmp_path, monkeypatch, capsys, retired, choice
 ):
     current = LEGACY if retired else UPGRADED
     files = {
@@ -527,9 +511,6 @@ def test_refused_same_meaning_rule_forms_a_certified_baseline(
             "kind: aggregate", "primitive: aggregate"
         ),
         "metrics/core.yml": current["metrics/core.yml"].replace(*AS_FORM, 1),
-        "examples/core.yml": current["examples/core.yml"].replace(
-            "version: 1", f"version: {query_version}"
-        ),
     }
     project = _package(tmp_path, files)
     rules = (METRIC_AS, *RULES, PRIMITIVE_KIND, *((RELABEL,) if choice else ()))
@@ -541,8 +522,6 @@ def test_refused_same_meaning_rule_forms_a_certified_baseline(
     assert tiers == {
         "metric-as": "proven",
         "primitive-kind": "certified",
-        # A call ignores its version, so rewriting it changes no answer.
-        **({"query-ir-version": "proven"} if query_version == 2 else {}),
         **({"null-behavior": "certified", "measure-parent-rollup": "certified"} if retired else {}),
         **({"relabel": "choice"} if choice else {}),
     }
@@ -1155,6 +1134,7 @@ def _default_version(files):
 def test_query_rewrites_are_isolated_after_all_retired_forms(
     tmp_path, monkeypatch, capsys, surface, version, retired_key, legacy_line
 ):
+    _with_rules(monkeypatch, (*RULES, QUERY_VERSION))
     files = {
         **UPGRADED,
         "examples/core.yml": UPGRADED["examples/core.yml"].replace(
@@ -1181,7 +1161,7 @@ def test_query_rewrites_are_isolated_after_all_retired_forms(
     assert report["status"] == "upgraded", report
     assert {row["id"]: row["tier"] for row in report["rules"]} == {
         retired_key: "certified",
-        "query-ir-version": "certified",
+        "query-version": "certified",
     }
     assert _contents(project) == UPGRADED
     runtime = Runtime.from_snapshot(load_package_snapshot(project))

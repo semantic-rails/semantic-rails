@@ -734,10 +734,6 @@ def _normalize_query_limits(raw: Any, time_zone: str = "") -> dict[str, Any]:
     return normalized
 
 
-# Warehouses whose adapters run each query in the zone `_time_zone` picks.
-_SESSION_ZONE_WAREHOUSES = frozenset({"duckdb", "motherduck", "ducklake", "postgres"})
-
-
 def _time_zone(config: Any, compiled: dict[str, Any]) -> str:
     """The zone a query runs in: its time role's, else UTC ("" if the name isn't a zone).
 
@@ -761,8 +757,11 @@ def _time_zone_warnings(config: Any, compiled: dict[str, Any]) -> list[dict[str,
     """Name the measures bucketed on a time role whose zone the query doesn't run in."""
     plan = compiled["logical_plan"]
     zone = _time_zone(config, compiled)
-    warehouse = str(config.package.warehouse or "duckdb").lower()
-    if not zone or not plan.time or warehouse not in _SESSION_ZONE_WAREHOUSES:
+    if (
+        not zone
+        or not plan.time
+        or not dialect_for_warehouse(config.package.warehouse).session_zone
+    ):
         return []
     query = normalize_query(plan.query)
     zones = {role.id: str(role.timezone or "UTC").strip() for role in config.temporal_roles}
