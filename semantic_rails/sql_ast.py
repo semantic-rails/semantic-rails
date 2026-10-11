@@ -85,7 +85,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "ARRAY_AGG",
         # Implicit-calendar day series (dialects.SqlDialect.day_series):
         # Snowflake, BigQuery, Trino/Athena and Databricks spellings. Engine-only:
-        # expressions.accepted_call_names keeps them out of `call` expressions.
+        # the dialects' call_names keep them out of `call` expressions.
         "ARRAY_GENERATE_RANGE",
         "AVG",
         "CEIL",
@@ -138,7 +138,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "MIN_BY",
         # The current time and a value's physical type, for base time coverage on DuckDB
         # and Postgres (dialects.SqlDialect.now and utc_timestamp). Engine-only:
-        # expressions.accepted_call_names keeps them out of `call` expressions.
+        # the dialects' call_names keep them out of `call` expressions.
         "NOW",
         "NULLIF",
         # Spark SQL exact percentile aggregate.

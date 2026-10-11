@@ -10,10 +10,16 @@ and compiler call. Also owns the connection-option schema used by
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from .errors import SemanticLayerError
-from .expressions import call_cast_type, call_date_diff_unit, validate_call_name
+from .expressions import (
+    CONVERSION_WINDOW_UNITS,
+    PORTABLE_CALL_NAMES,
+    call_cast_type,
+    call_date_diff_unit,
+    validate_call_name,
+)
 from .sql_ast import (
     SqlBinary,
     SqlCall,
@@ -25,6 +31,7 @@ from .sql_ast import (
     SqlIdentifier,
     SqlInterval,
     SqlJoin,
+    SqlJsonExtract,
     SqlLiteral,
     SqlNamedArg,
     SqlOrderTerm,
@@ -33,7 +40,14 @@ from .sql_ast import (
     SqlTableRef,
     SqlWithinGroup,
 )
-from .sql_preparation import PreparedQuery, prepare_query
+from .sql_preparation import (
+    PreparedQuery,
+    athena_compat_sql,
+    bigquery_compat_sql,
+    float_nullif_divisions,
+    postgres_compat_sql,
+    rewrite_double_quoted_identifiers,
+)
 
 
 def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) -> Any:
@@ -96,10 +110,26 @@ class SqlDialect:
     # Whether LIKE needs an explicit ``ESCAPE '\\'`` (BigQuery and ClickHouse escape with a
     # backslash by default and have no ESCAPE clause).
     like_escape_clause = True
+    # The type a NULL boolean casts to.
+    null_boolean_type = "BOOLEAN"
+    # Whether the adapter runs each query in the zone of its time role (the runtime's
+    # ``_time_zone``), so zone-aware values bucket and compare in that zone.
+    session_zone = False
+    # Whether a filter across a one-to-many hop may run as a correlated EXISTS. Without it, a
+    # de-duplicated parent leaf (one row per key before aggregating) answers the filter.
+    correlated_exists = True
+    # How a refusal that only this warehouse makes names it.
+    label: ClassVar[str] = "This warehouse"
+    # The scalar calls a package or query expression may name (``scalar_call``).
+    call_names: ClassVar[frozenset[str]] = frozenset()
+    # The DATE_DIFF units whose boundary count matches the portable meaning.
+    date_diff_units: ClassVar[tuple[str, ...]] = CONVERSION_WINDOW_UNITS
+    # Whether a CAST call can enforce DECIMAL(p,s).
+    decimal_cast = True
 
     def scalar_call(self, name: str, args: list[Any], *, distinct: bool = False) -> Any:
         """Central lowering guard for every query, package and relation call."""
-        name = validate_call_name(name, self.name)
+        name = validate_call_name(name, self.call_names)
         if distinct:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
@@ -109,43 +139,28 @@ class SqlDialect:
                 args[0].value if args and isinstance(args[0], SqlLiteral) else None,
                 arg_count=len(args),
                 warehouse=self.name,
+                units=self.date_diff_units,
             )
-            start, end = args[1], args[2]
-            if self.name == "bigquery":
-                # Force calendar boundaries in UTC, including TIMESTAMP endpoints;
-                # unwrapped TIMESTAMPs select BigQuery's elapsed-duration overload.
-                start, end = SqlCast(start, "DATETIME"), SqlCast(end, "DATETIME")
-            return self.date_diff(unit, start, end)
+            return self.call_date_diff(unit, args[1], args[2])
         if name != "CAST":
             return SqlCall(name, args)
         value = args[1].value if len(args) == 2 and isinstance(args[1], SqlLiteral) else None
-        logical_type = call_cast_type(value, self.name)
+        logical_type = call_cast_type(value, decimal=self.decimal_cast, warehouse=self.name)
+        return SqlCast(args[0], self.cast_type_name(logical_type))
+
+    def call_date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
+        """An authored ``DATE_DIFF`` call: boundaries counted on the values' own calendar."""
+        return self.date_diff(unit, start_expr, end_expr)
+
+    def cast_type_name(self, logical_type: str) -> str:
+        """The warehouse's spelling of a CAST call's logical type (``CALL_CAST_FORMS``)."""
         base = logical_type.split("(")[0]
-        type_name = "BIGINT" if base in {"INTEGER", "BIGINT"} else logical_type
-        if self.name == "postgres" and base == "DOUBLE":
-            type_name = "FLOAT8"
-        elif self.name == "bigquery":
-            type_name = {
-                "DOUBLE": "FLOAT64",
-                "INTEGER": "INT64",
-                "BIGINT": "INT64",
-                "VARCHAR": "STRING",
-            }[base]
-        elif self.name == "databricks" and base == "VARCHAR":
-            type_name = "STRING"
-        elif self.name == "clickhouse":
-            type_name = {
-                "DOUBLE": "Float64",
-                "INTEGER": "Int64",
-                "BIGINT": "Int64",
-                "VARCHAR": "String",
-            }.get(base, logical_type)
-            type_name = f"Nullable({type_name})"
-        return SqlCast(args[0], type_name)
+        return "BIGINT" if base in {"INTEGER", "BIGINT"} else logical_type
 
     def prepare_query(self, sql: str) -> PreparedQuery:
-        """Finalize the executable statement and result-column mapping."""
-        return prepare_query(sql, self.name)
+        """Finalize the executable statement and result-column mapping, once, before
+        execution: the warehouse's last syntax and precision rules."""
+        return PreparedQuery(sql)
 
     def quote_string_literal(self, value: str) -> str:
         """Render ``value`` as a single-quoted SQL string literal.
@@ -303,6 +318,21 @@ class SqlDialect:
         )
         return SqlCall(aggregation.upper(), [case_expr])
 
+    def json_extract(self, expr: Any, path: list[str], *, as_text: bool) -> Any:
+        """The JSON value at the object keys ``path`` inside ``expr``; text when ``as_text``."""
+        function = "JSON_EXTRACT_STRING" if as_text else "JSON_EXTRACT"
+        return SqlCall(function, [expr, SqlLiteral("$." + ".".join(path))])
+
+    def explode(
+        self, expr: Any, delimiter: str, *, alias: str, column: str
+    ) -> tuple[SqlTableFunction, Any]:
+        """A table function named ``alias`` with one row per element of the list ``expr`` (split
+        on ``delimiter`` when one is given), and the expression that reads the element."""
+        if delimiter:
+            expr = SqlCall("STRING_SPLIT", [expr, SqlLiteral(delimiter)])
+        table = SqlTableFunction("UNNEST", args=[expr], alias=alias, columns=[column])
+        return table, SqlIdentifier(parts=[alias, column])
+
     def capabilities(self) -> dict[str, Any]:
         return {
             "date_trunc": True,
@@ -348,6 +378,11 @@ class _NestedTimezone:
 @dataclass(frozen=True)
 class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     name: str = "snowflake"
+    call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
+    date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        return PreparedQuery(float_nullif_divisions(sql))
 
     def quote_string_literal(self, value: str) -> str:
         return backslash_escaped_string_literal(value)
@@ -383,6 +418,19 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     def null_safe_eq(self, left: Any, right: Any) -> Any:
         return SqlCall("EQUAL_NULL", [left, right])
 
+    def json_extract(self, expr: Any, path: list[str], *, as_text: bool) -> Any:
+        return SqlJsonExtract(expr, path=path, as_text=as_text)
+
+    def explode(
+        self, expr: Any, delimiter: str, *, alias: str, column: str
+    ) -> tuple[SqlTableFunction, Any]:
+        if delimiter:
+            expr = SqlCall("SPLIT", [expr, SqlLiteral(delimiter)])
+        table = SqlTableFunction(
+            "FLATTEN", named_args=[SqlNamedArg("INPUT", expr)], alias=alias, lateral=True
+        )
+        return table, SqlIdentifier(parts=[alias, "VALUE"])
+
     def conditional_aggregate(self, aggregation: str, condition: Any, value: Any | None) -> Any:
         agg = aggregation.lower()
         if agg == "count" and value is None:
@@ -408,6 +456,18 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
 @dataclass(frozen=True)
 class DuckDbDialect(_NestedTimezone, SqlDialect):
     name: str = "duckdb"
+    session_zone = True
+    call_names = PORTABLE_CALL_NAMES | {
+        "DATE_PART",
+        "DATE_TRUNC",
+        "LEFT",
+        "RIGHT",
+        "JSON_EXTRACT",
+        "JSON_EXTRACT_STRING",
+        "SPLIT",
+        "STRING_SPLIT",
+        "STR_SPLIT",
+    }
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # GENERATE_SERIES includes its end; over DATEs it yields midnight TIMESTAMPs.
@@ -447,6 +507,8 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     """
 
     name: str = "postgres"
+    session_zone = True
+    call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"}
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # Integer day offsets (DATE - DATE is an integer, DATE + integer a DATE), since
@@ -477,6 +539,13 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     }
 
     _MONTHS_PER_UNIT = {"month": 1, "quarter": 3, "year": 12}
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        sql, alias_map = postgres_compat_sql(sql)
+        return PreparedQuery(sql, tuple(alias_map.items()))
+
+    def cast_type_name(self, logical_type: str) -> str:
+        return "FLOAT8" if logical_type == "DOUBLE" else super().cast_type_name(logical_type)
 
     def median(self, expr: Any) -> Any:
         # PG has no MEDIAN; PERCENTILE_CONT(0.5) is the exact equivalent.
@@ -693,6 +762,9 @@ class BigQueryDialect(SqlDialect):
     """
 
     like_escape_clause = False
+    call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
+    date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
+    decimal_cast = False
 
     name: str = "bigquery"
 
@@ -712,6 +784,22 @@ class BigQueryDialect(SqlDialect):
             "DATETIME",
             [SqlCall("TIMESTAMP", [ts_expr, SqlLiteral(source_tz)]), SqlLiteral(target_tz)],
         )
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        sql, alias_map = bigquery_compat_sql(sql)
+        return PreparedQuery(sql, tuple(alias_map.items()))
+
+    def call_date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
+        # Force calendar boundaries in UTC, including TIMESTAMP endpoints; unwrapped
+        # TIMESTAMPs select BigQuery's elapsed-duration overload.
+        return self.date_diff(unit, SqlCast(start_expr, "DATETIME"), SqlCast(end_expr, "DATETIME"))
+
+    def cast_type_name(self, logical_type: str) -> str:
+        # DECIMAL never reaches here: decimal_cast is False.
+        base = logical_type.split("(")[0]
+        return {"DOUBLE": "FLOAT64", "INTEGER": "INT64", "BIGINT": "INT64", "VARCHAR": "STRING"}[
+            base
+        ]
 
     def quote_string_literal(self, value: str) -> str:
         return backslash_escaped_string_literal(value)
@@ -888,10 +976,17 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     """
 
     name: str = "databricks"
+    call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day by default.
         return _day_rows(SqlCall("EXPLODE", [SqlCall("SEQUENCE", [start, end])]), source)
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        return PreparedQuery(float_nullif_divisions(rewrite_double_quoted_identifiers(sql)))
+
+    def cast_type_name(self, logical_type: str) -> str:
+        return "STRING" if logical_type == "VARCHAR" else super().cast_type_name(logical_type)
 
     def quote_string_literal(self, value: str) -> str:
         return backslash_escaped_string_literal(value)
@@ -982,6 +1077,8 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
+    call_names = PORTABLE_CALL_NAMES | {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"}
+    date_diff_units = ()  # its native date_diff counts complete elapsed units
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day. Trino caps one
@@ -993,6 +1090,9 @@ class AthenaDialect(SqlDialect):
             columns=["series_day"],
         )
         return _day_rows(SqlIdentifier(parts=["day_series", "series_day"]), source, series)
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        return PreparedQuery(athena_compat_sql(sql))
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # Trino: with_timezone(naive_ts, tz) attaches a zone;
@@ -1125,8 +1225,23 @@ class ClickHouseDialect(SqlDialect):
     """
 
     like_escape_clause = False
+    null_boolean_type = "Nullable(Bool)"
+    correlated_exists = False  # 24.8 has none
+    label = "ClickHouse"
+    call_names = PORTABLE_CALL_NAMES - {"TRIM"}
+    date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
 
     name: str = "clickhouse"
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        # An unmatched outer-join field reads its type's default (0 or '') unless the join
+        # yields NULLs, and a group a leaf has no row for must read NULL, not a made-up 0.
+        return PreparedQuery(f"{sql}\nSETTINGS join_use_nulls = 1")
+
+    def cast_type_name(self, logical_type: str) -> str:
+        base = logical_type.split("(")[0]
+        native = {"DOUBLE": "Float64", "INTEGER": "Int64", "BIGINT": "Int64", "VARCHAR": "String"}
+        return f"Nullable({native.get(base, logical_type)})"
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         # DateTime64 preserves pre-1970 dates; Nullable preserves NULL even with

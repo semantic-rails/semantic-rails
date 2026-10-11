@@ -697,7 +697,7 @@ def test_snowflake_server_timeout_is_opt_in(monkeypatch, timeout):
 def test_snowflake_named_profile_refuses_authored_tag_before_connect(monkeypatch, tag, entry_point):
     from unittest.mock import Mock
 
-    from semantic_rails.sql_preparation import prepare_query
+    from semantic_rails.dialects import dialect_for_warehouse
 
     connection = Mock()
     connect = Mock(return_value=connection)
@@ -716,7 +716,7 @@ def test_snowflake_named_profile_refuses_authored_tag_before_connect(monkeypatch
         elif entry_point == "query":
             adapter.query("select 1")
         else:
-            adapter.query_prepared(prepare_query("select 1", "snowflake"))
+            adapter.query_prepared(dialect_for_warehouse("snowflake").prepare_query("select 1"))
     assert exc.value.code == "INVALID_CONFIG"
     assert "named profile" in str(exc.value)
     assert tag not in str(exc.value)
@@ -870,7 +870,7 @@ def test_snowflake_drops_named_profile_connection_if_timeout_setup_fails(
 
 @pytest.mark.parametrize("prepared", [False, True])
 def test_snowflake_long_request_wait_and_inherited_timeout_restored(prepared):
-    from semantic_rails.sql_preparation import prepare_query
+    from semantic_rails.dialects import dialect_for_warehouse
 
     connection = SimpleNamespace(_network_timeout=65, _socket_timeout=65)
     statements = []
@@ -897,7 +897,8 @@ def test_snowflake_long_request_wait_and_inherited_timeout_restored(prepared):
     adapter._conn = connection
     if prepared:
         rows = adapter.query_prepared(
-            prepare_query("select 1", "snowflake"), limits={"statement_timeout_ms": 120000}
+            dialect_for_warehouse("snowflake").prepare_query("select 1"),
+            limits={"statement_timeout_ms": 120000},
         )
     else:
         rows = adapter.query("select 1", limits={"statement_timeout_ms": 120000})

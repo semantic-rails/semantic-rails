@@ -156,26 +156,6 @@ def check_snowflake_parameters(prepared: PreparedQuery) -> None:
         raise parameters_denied("parameter_placeholder_mismatch")
 
 
-def prepare_query(sql: str, warehouse: str) -> PreparedQuery:
-    """Apply a warehouse's final syntax/precision rules once, before execution."""
-    alias_map: dict[str, str] = {}
-    if warehouse == "postgres":
-        sql, alias_map = _postgres_compat_sql(sql)
-    elif warehouse == "bigquery":
-        sql, alias_map = _bigquery_compat_sql(sql)
-    elif warehouse == "databricks":
-        sql = float_nullif_divisions(rewrite_double_quoted_identifiers(sql))
-    elif warehouse == "athena":
-        sql = _athena_compat_sql(sql)
-    elif warehouse == "snowflake":
-        sql = float_nullif_divisions(sql)
-    elif warehouse == "clickhouse":
-        # An unmatched outer-join field reads its type's default (0 or '') unless the join
-        # yields NULLs, and a group a leaf has no row for must read NULL, not a made-up 0.
-        sql = f"{sql}\nSETTINGS join_use_nulls = 1"
-    return PreparedQuery(sql, tuple(alias_map.items()))
-
-
 def map_double_quoted_identifiers(sql: str, replace: Callable[[str], str]) -> str:
     """Quote-aware scanning core for identifier-re-quoting compat passes.
 
@@ -367,7 +347,7 @@ def _shorten_long_identifiers(sql: str, alias_map: dict[str, str]) -> str:
     return _SQL_TOKEN_RE.sub(_replace, sql)
 
 
-def _postgres_compat_sql(sql: str) -> tuple[str, dict[str, str]]:
+def postgres_compat_sql(sql: str) -> tuple[str, dict[str, str]]:
     # PostgreSQL integer division truncates (1 / 4 = 0) while DuckDB's
     # `/` is always float division; the shared pass casts the compiler's
     # NULLIF guard to PG's float type, DOUBLE PRECISION.
@@ -394,7 +374,7 @@ def _safe_field_name(name: str) -> str:
     return f"{sanitized[:keep]}_{digest}"
 
 
-def _bigquery_compat_sql(sql: str) -> tuple[str, dict[str, str]]:
+def bigquery_compat_sql(sql: str) -> tuple[str, dict[str, str]]:
     """Backtick-requote identifiers and legalize illegal field names.
 
     Returns ``(rewritten_sql, alias_map)`` where ``alias_map`` maps each
@@ -452,5 +432,5 @@ def _typed_temporal_comparison_literals(sql: str) -> str:
     return _COMPARE_TEMPORAL_RE.sub(_replace, sql)
 
 
-def _athena_compat_sql(sql: str) -> str:
+def athena_compat_sql(sql: str) -> str:
     return float_nullif_divisions(_typed_temporal_comparison_literals(sql), cast_type="DOUBLE")

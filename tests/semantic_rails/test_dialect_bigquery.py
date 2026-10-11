@@ -38,7 +38,7 @@ from semantic_rails.sql_ast import (
     SqlSelect,
     SqlTableRef,
 )
-from semantic_rails.sql_preparation import _bigquery_compat_sql, _safe_field_name
+from semantic_rails.sql_preparation import _safe_field_name, bigquery_compat_sql
 
 DIALECT = BigQueryDialect()
 
@@ -264,13 +264,13 @@ def test_capabilities_flag_exact_percentiles_and_array_agg_nulls():
 
 # ---------------------------------------------------------------------------
 # (b) GoogleSQL compatibility pass — backtick re-quoting + field-name
-# legalization (BigQuery rejected both live; see _bigquery_compat_sql).
+# legalization (BigQuery rejected both live; see bigquery_compat_sql).
 # ---------------------------------------------------------------------------
 
 
 def test_compat_sql_requotes_identifiers_with_backticks():
     sql = 'SELECT t.x AS "plain_alias" FROM "jaffle_order" AS t'
-    rewritten, alias_map = _bigquery_compat_sql(sql)
+    rewritten, alias_map = bigquery_compat_sql(sql)
     assert rewritten == "SELECT t.x AS `plain_alias` FROM `jaffle_order` AS t"
     assert alias_map == {}  # legal names need no row-key mapping
 
@@ -283,7 +283,7 @@ def test_compat_sql_legalizes_dotted_aliases_consistently():
         'SELECT t.name AS "dimension.jaffle_store_name" FROM jaffle_store AS t '
         'ORDER BY "dimension.jaffle_store_name" ASC'
     )
-    rewritten, alias_map = _bigquery_compat_sql(sql)
+    rewritten, alias_map = bigquery_compat_sql(sql)
     assert '"' not in rewritten
     assert "dimension.jaffle_store_name" not in rewritten
     assert len(alias_map) == 1
@@ -295,7 +295,7 @@ def test_compat_sql_legalizes_dotted_aliases_consistently():
 
 def test_compat_sql_keeps_distinct_illegal_names_distinct():
     sql = 'SELECT 1 AS "measure.a", 2 AS "measure.b"'
-    _, alias_map = _bigquery_compat_sql(sql)
+    _, alias_map = bigquery_compat_sql(sql)
     assert sorted(alias_map.values()) == ["measure.a", "measure.b"]
     assert len(set(alias_map)) == 2
     assert _safe_field_name("measure.a") != _safe_field_name("measure.b")
@@ -303,7 +303,7 @@ def test_compat_sql_keeps_distinct_illegal_names_distinct():
 
 def test_compat_sql_never_touches_string_literals():
     sql = "SELECT 'keep \"this\" verbatim', 'it''s \"fine\"' AS \"metric.x\""
-    rewritten, _ = _bigquery_compat_sql(sql)
+    rewritten, _ = bigquery_compat_sql(sql)
     assert "'keep \"this\" verbatim'" in rewritten
     assert "'it''s \"fine\"'" in rewritten
 
@@ -658,14 +658,16 @@ def test_jaffle_battery_compiles_for_bigquery():
 def test_bigquery_server_deadline_and_long_request_wait(
     monkeypatch, prepared, timeout_ms, expected_wait, expected_server
 ):
-    from semantic_rails.sql_preparation import prepare_query
+    from semantic_rails.dialects import dialect_for_warehouse
 
     log = {}
     _install_fake_bigquery(monkeypatch, log)
     adapter = BigQueryNativeAdapter()
     limits = {} if timeout_ms is None else {"statement_timeout_ms": timeout_ms}
     if prepared:
-        adapter.query_prepared(prepare_query("select 1", "bigquery"), limits=limits)
+        adapter.query_prepared(
+            dialect_for_warehouse("bigquery").prepare_query("select 1"), limits=limits
+        )
     else:
         adapter.query("select 1", limits=limits)
     assert log["result_timeout"] == expected_wait

@@ -27,8 +27,9 @@ if TYPE_CHECKING:
 CALL_CAST_FORMS = ("DOUBLE", "DECIMAL(p,s)", "INTEGER", "BIGINT", "VARCHAR")
 
 
-def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
-    """Validate the authored logical type before it can become a SQL token."""
+def call_cast_type(value: Any, *, decimal: bool = True, warehouse: str = "") -> str:
+    """Validate the authored logical type before it can become a SQL token; ``decimal`` says
+    whether the warehouse's CAST can enforce ``DECIMAL(p,s)``."""
     if isinstance(value, str):
         normalized = value.strip().upper()
         normalized = re.sub(r"\s*([(),])\s*", r"\1", normalized)
@@ -44,11 +45,12 @@ def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
                 and 0 <= int(scale) <= int(precision) <= 38
                 and int(precision) > 0
             ):
-                if warehouse == "bigquery":
+                if not decimal:
                     raise SemanticLayerError(
                         "INVALID_EXPRESSION_AST",
-                        "BigQuery CAST cannot enforce DECIMAL precision and scale; "
-                        "use DOUBLE or a warehouse column with a parameterized decimal type.",
+                        f"CAST on warehouse '{warehouse}' cannot enforce DECIMAL precision and "
+                        "scale; use DOUBLE or a warehouse column with a parameterized decimal "
+                        "type.",
                         details={"warehouse": warehouse, "target_type": normalized},
                     )
                 return f"DECIMAL({int(precision)},{int(scale)})"
@@ -59,62 +61,38 @@ def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
     )
 
 
-def accepted_call_names(warehouse: str = "duckdb") -> frozenset[str]:
-    """Scalar spellings valid as plain calls, independently of engine SQL tokens."""
-    common = frozenset(
-        {
-            "ABS",
-            "CAST",
-            "CEIL",
-            "CEILING",
-            "COALESCE",
-            "CONCAT",
-            "DATE_DIFF",
-            "EXP",
-            "FLOOR",
-            "LENGTH",
-            "LN",
-            "LOG",
-            "LOWER",
-            "NULLIF",
-            "POWER",
-            "REPLACE",
-            "ROUND",
-            "SQRT",
-            "SUBSTR",
-            "SUBSTRING",
-            "TRIM",
-            "UPPER",
-        }
-    )
-    extras = {
-        "duckdb": {
-            "DATE_PART",
-            "DATE_TRUNC",
-            "LEFT",
-            "RIGHT",
-            "JSON_EXTRACT",
-            "JSON_EXTRACT_STRING",
-            "SPLIT",
-            "STRING_SPLIT",
-            "STR_SPLIT",
-        },
-        "postgres": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"},
-        "snowflake": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
-        "bigquery": {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"},
-        "databricks": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
-        "athena": {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"},
-        "clickhouse": set(),
+# Scalar spellings valid as plain calls on every warehouse, independently of engine SQL tokens;
+# each dialect's ``call_names`` adds its own or drops one.
+PORTABLE_CALL_NAMES = frozenset(
+    {
+        "ABS",
+        "CAST",
+        "CEIL",
+        "CEILING",
+        "COALESCE",
+        "CONCAT",
+        "DATE_DIFF",
+        "EXP",
+        "FLOOR",
+        "LENGTH",
+        "LN",
+        "LOG",
+        "LOWER",
+        "NULLIF",
+        "POWER",
+        "REPLACE",
+        "ROUND",
+        "SQRT",
+        "SUBSTR",
+        "SUBSTRING",
+        "TRIM",
+        "UPPER",
     }
-    warehouse = {"motherduck": "duckdb", "ducklake": "duckdb"}.get(warehouse, warehouse)
-    if warehouse == "clickhouse":
-        return common - {"TRIM"}
-    return common | frozenset(extras[warehouse]) if warehouse in extras else frozenset()
+)
 
 
-def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
+def validate_call_name(name: str, allowed: frozenset[str]) -> str:
     normalized = name.strip().upper()
-    allowed = accepted_call_names(warehouse)
     if normalized not in allowed:
         raise SemanticLayerError(
             "INVALID_EXPRESSION_AST",
@@ -130,14 +108,15 @@ def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
     return normalized
 
 
-def call_date_diff_unit(value: Any, *, arg_count: int, warehouse: str) -> str:
-    """Refuse invalid shapes and nonportable units before dialect lowering."""
+def call_date_diff_unit(
+    value: Any, *, arg_count: int, warehouse: str, units: Iterable[str] = ()
+) -> str:
+    """Refuse invalid shapes and nonportable units before dialect lowering; ``units`` are those
+    whose boundary count on the warehouse matches the portable meaning."""
     if arg_count == 3 and isinstance(value, str):
         unit = value.strip().lower()
         if unit in CONVERSION_WINDOW_UNITS:
-            if warehouse == "athena" or (
-                unit == "week" and warehouse in {"snowflake", "bigquery", "clickhouse"}
-            ):
+            if unit not in units:
                 raise SemanticLayerError(
                     "INVALID_EXPRESSION_AST",
                     f"Unsupported DATE_DIFF for warehouse '{warehouse}' and unit '{unit}': "
@@ -531,15 +510,16 @@ def validate_expression_shapes(value: Any, *, path: str = "expression") -> None:
             validate_expression_shapes(child, path=f"{path}[{index}]")
 
 
-def validate_expression_calls(value: Any, config: PackageConfig) -> None:
-    """Validate call names and portable shapes; argument types belong to the warehouse.
+def validate_expression_calls(value: Any, dialect: Any) -> None:
+    """Validate call names and portable shapes against the warehouse's ``dialect``; argument
+    types belong to the warehouse.
 
     Literal data, metadata and parameters remain opaque.
     """
     if isinstance(value, LiteralExpr):
         return
     if isinstance(value, CallExpr):
-        name = validate_call_name(value.name, config.package.warehouse)
+        name = validate_call_name(value.name, dialect.call_names)
         if value.distinct:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
@@ -549,7 +529,8 @@ def validate_expression_calls(value: Any, config: PackageConfig) -> None:
                 value.args[1].value
                 if len(value.args) == 2 and isinstance(value.args[1], LiteralExpr)
                 else None,
-                config.package.warehouse,
+                decimal=dialect.decimal_cast,
+                warehouse=dialect.name,
             )
         elif name == "DATE_DIFF":
             call_date_diff_unit(
@@ -557,15 +538,16 @@ def validate_expression_calls(value: Any, config: PackageConfig) -> None:
                 if value.args and isinstance(value.args[0], LiteralExpr)
                 else None,
                 arg_count=len(value.args),
-                warehouse=config.package.warehouse,
+                warehouse=dialect.name,
+                units=dialect.date_diff_units,
             )
     if is_dataclass(value) and not isinstance(value, type):
         for item in fields(value):
             if item.name not in {"meta", "parameters"}:
-                validate_expression_calls(getattr(value, item.name), config)
+                validate_expression_calls(getattr(value, item.name), dialect)
     elif isinstance(value, (list, tuple)):
         for child in value:
-            validate_expression_calls(child, config)
+            validate_expression_calls(child, dialect)
 
 
 def is_constant_expression(expr: SemanticExpr | None) -> bool:

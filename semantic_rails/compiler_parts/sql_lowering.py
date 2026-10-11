@@ -2748,7 +2748,8 @@ def _nested_exists(child_joins: list[SqlJoin], conditions: list[Any]) -> list[An
 def _distinct_parent_group_conditions(
     plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig, measure: Any
 ) -> list[Any]:
-    """A child group's conditions in the de-duplicated parent leaf, ClickHouse's semi-join.
+    """A child group's conditions in the de-duplicated parent leaf, the semi-join of a
+    warehouse without correlated EXISTS.
 
     The leaf joins the group's route once, INNER, so its conditions hold on one child row
     together: ``match: any``. A second group, a ``none`` group, a lookup from the child (an
@@ -2764,7 +2765,7 @@ def _distinct_parent_group_conditions(
     _, lookups = child_group_route(config, query, measure, group)
     crossing = [row for row in measure_plan.path_selections if row.analysis.get("status") != "ok"]
     if (
-        config.package.warehouse != "clickhouse"
+        _dialect(config).correlated_exists
         or len(groups) > 1
         or group.match != "any"
         or any(lookups)
@@ -2777,7 +2778,7 @@ def _distinct_parent_group_conditions(
                 "child": group.child,
                 "match": group.match,
                 "why_invalid": (
-                    "ClickHouse's de-duplicated parent leaf answers one 'any' child group on the "
+                    "The de-duplicated parent leaf answers one 'any' child group on the "
                     "child's own columns, as the leaf's only condition across a one-to-many hop."
                 ),
             },
@@ -3162,10 +3163,10 @@ def _measure_leaf_select(
         for row in measure_plan.path_selections
         if row.analysis.get("status") != "ok"
     }
-    # ClickHouse 24.8 has no correlated EXISTS; its existing DISTINCT-parent leaf
-    # implements the same semi-join without requiring a newer server.
+    # Without correlated EXISTS (ClickHouse 24.8), the DISTINCT-parent leaf implements the same
+    # semi-join.
     semijoin = (
-        config.package.warehouse != "clickhouse"
+        _dialect(config).correlated_exists
         and measure_plan.rewrite_strategy == "fanout_dedup"
         and all(
             purpose in {"where", "metric_filter", "child_group"} for _, purpose in crossing_filters

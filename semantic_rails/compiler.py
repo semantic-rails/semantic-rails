@@ -943,24 +943,23 @@ def _fanout_dedup_refusal(
             grouped[0],
         )
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    correlated_exists = dialect.correlated_exists
     for row in selections:
-        # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
-        # leaf beside lookups. A broader EXISTS path is the route the resolver chose for
-        # the pair (a recorded decision, the only route, or one narrowed by the rows),
-        # never one picked by hop count, so it can say which children are meant.
+        # Preserve existing descent shapes, including the DISTINCT-parent leaf beside lookups
+        # of a warehouse without correlated EXISTS. A broader EXISTS path is the route the
+        # resolver chose for the pair (a recorded decision, the only route, or one narrowed by
+        # the rows), never one picked by hop count, so it can say which children are meant.
         if one_to_many_descent(row.analysis, keys):
             continue
-        if (
-            not grouped
-            and config.package.warehouse != "clickhouse"
-            and filter_only_semijoin(row.analysis)
-        ):
+        if not grouped and correlated_exists and filter_only_semijoin(row.analysis):
             continue
         return (
             (
-                "ClickHouse requires a key-based descent before any lookup. "
-                if config.package.warehouse == "clickhouse"
-                else ""
+                ""
+                if correlated_exists
+                else f"{dialect.label} has no correlated EXISTS, so it needs a key-based descent "
+                "before any lookup. "
             )
             + f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
             "lookup before the one-to-many hop, an M:N or time-bounded relationship, or a "
@@ -990,20 +989,21 @@ def _fanout_dedup_refusal(
             "or a measure whose rows are finer than its entity's key).",
             (grouped or selections)[0],
         )
-    # ClickHouse keeps one row per key before it aggregates. An aggregate_if's rows are one per
-    # key only when a measure of its model says so; without one, rows sharing a key could
-    # merge, which only a distinct count, a minimum or a maximum ignores.
+    # Without correlated EXISTS, the leaf keeps one row per key before it aggregates. An
+    # aggregate_if's rows are one per key only when a measure of its model says so; without
+    # one, rows sharing a key could merge, which only a distinct count, a minimum or a maximum
+    # ignores.
     if (
         is_conditional_aggregate(measure)
         and not measure.row_grain
-        and config.package.warehouse == "clickhouse"
+        and not correlated_exists
         and aggregation not in {"count_distinct", "min", "max"}
     ):
         return (
-            f"ClickHouse keeps one row per '{measure.entity}' key here, and no measure of its "
-            f"model declares the grain of its rows, so '{aggregation}' of {subject} could merge "
-            "rows that share a key. Use count_distinct, min or max, or declare a measure on "
-            "that model.",
+            f"{dialect.label} keeps one row per '{measure.entity}' key here, and no "
+            f"measure of its model declares the grain of its rows, so '{aggregation}' of "
+            f"{subject} could merge rows that share a key. Use count_distinct, min or max, or "
+            "declare a measure on that model.",
             (grouped or selections)[0],
         )
     roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
@@ -1045,8 +1045,8 @@ def _fanout_dedup_refusal(
                 "values to keep instead.",
                 hop,
             )
-    if groups and config.package.warehouse == "clickhouse":
-        return _clickhouse_child_group_refusal(measure, selections, config, query)
+    if groups and not correlated_exists:
+        return _deduplicated_child_group_refusal(measure, selections, config, query)
     return None
 
 
@@ -1075,25 +1075,26 @@ def _second_child_scope(
     )
 
 
-def _clickhouse_child_group_refusal(
+def _deduplicated_child_group_refusal(
     measure: MeasureConfig,
     selections: list[PathSelection],
     config: PackageConfig,
     query: NormalizedQuery,
 ) -> tuple[str, PathSelection] | None:
-    reason = _clickhouse_child_group_reason(measure, config, query)
+    reason = _deduplicated_child_group_reason(measure, config, query)
     if not reason:
         return None
     route = next(row for row in selections if row.purpose == "child_group")
-    return (f"ClickHouse cannot answer this child group: {reason}.", route)
+    label = dialect_for_warehouse(config.package.warehouse).label
+    return (f"{label} cannot answer this child group: {reason}.", route)
 
 
-def _clickhouse_child_group_reason(
+def _deduplicated_child_group_reason(
     measure: MeasureConfig, config: PackageConfig, query: NormalizedQuery
 ) -> str:
-    """ClickHouse answers one ``any`` group on the child's own columns with its de-duplicated
-    parent leaf. A ``none`` group would need an anti-join whose NULL handling is unproven
-    there."""
+    """A warehouse without correlated EXISTS answers one ``any`` group on the child's own
+    columns with its de-duplicated parent leaf. A ``none`` group would need an anti-join whose
+    NULL handling is unproven there."""
     groups = child_groups(query.where)
     if any(group.match == "none" for group in groups):
         return "a 'none' child group needs a NULL-safe anti-join, which is unproven there"
@@ -4633,7 +4634,7 @@ def _plan_query(
     collapse_window: bool,
     top_level: bool = False,
 ) -> LogicalPlan:
-    validate_expression_calls(raw_query, config)
+    validate_expression_calls(raw_query, dialect_for_warehouse(config.package.warehouse))
     if (
         top_level
         and raw_query.select
