@@ -31,7 +31,7 @@ LAYERS = [
     "db db_parts seed_provenance",
     "config config_parts package_snapshot yaml_loader operational meta_contract"
     " config_parts.aggregate_rows config_parts.loader_chain config_parts.measure_rows"
-    " config_parts.metric_rows config_parts.model_rows config_parts.policy_rows"
+    " config_parts.metric_rows config_parts.model_rows config_parts.package_rows config_parts.policy_rows"
     " config_parts.row_values config_parts.temporal_rows",
     "dialects sql_preparation sql_ast sql_identifiers row_filters",
     "ast expressions schema errors issues request_payload catalog_format catalog_search scope"
