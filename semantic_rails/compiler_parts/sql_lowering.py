@@ -5663,14 +5663,22 @@ def _source_time_window(
         for key, operator in (("start", ">="), ("end", "<"))
         if time.get(key) is not None
     ]
+    if time.get("end") is None or not (time.get("this") or time.get("to_now")):
+        return bounds
+    # The end is now. Wall time repeats an hour each autumn, so the cutoff is an instant;
+    # wall time only buckets periods and starts them.
     zones = _role_conversion(role)
-    if zones and time.get("end") is not None and (time.get("this") or time.get("to_now")):
-        # The end is now. Converted wall time repeats an hour each autumn, so the cutoff
-        # reads the stored instant; wall time only buckets periods and starts them.
+    if zones:
+        # A converted clock compares its stored value with now in the storage zone.
         stored = _stored_time(column, zones, config)
         if stored is not None:
             cutoff = request_now().astimezone(ZoneInfo(zones[0])).replace(tzinfo=None)
             bounds[-1] = SqlBinary(stored, "<", SqlLiteral(cutoff.isoformat(), temporal=True))
+    elif _dialect(config).session_zone and str(role.timezone or "UTC") != "UTC":
+        # The query runs in the clock's zone: a zone-aware column compares instants with now,
+        # and a plain one reads as wall time in that zone.
+        instant = SqlLiteral(request_now().astimezone(UTC).isoformat(sep=" "))
+        bounds[-1] = SqlBinary(column, "<", SqlCast(instant, "TIMESTAMPTZ"))
     return bounds
 
 

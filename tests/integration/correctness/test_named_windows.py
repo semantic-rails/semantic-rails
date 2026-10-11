@@ -8,6 +8,7 @@ closing day); these tests check what the answer says about them.
 from dataclasses import replace
 
 import pytest
+import yaml
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.dialects import DuckDbDialect
@@ -293,11 +294,19 @@ def test_this_keeps_the_request_instant_to_the_microsecond(shop: Runtime) -> Non
     assert result["window"]["end"] == "2024-07-01T03:30:00.500000Z"
 
 
-@pytest.fixture
-def fall_back(tmp_path) -> Runtime:
-    """The New York order clock with two orders in the hour New York repeats on 2024-11-03:
-    05:15 UTC (01:15 EDT) and 06:15 UTC (01:15 EST)."""
-    package = _write_variant(tmp_path, "ny_authored")
+@pytest.fixture(params=["converted", "aware"])
+def fall_back(tmp_path, request) -> Runtime:
+    """A New York order clock with two orders in the hour New York repeats on 2024-11-03:
+    05:15 UTC (01:15 EDT) and 06:15 UTC (01:15 EST). The clock converts the stored UTC
+    timestamp, or reads the zone-aware column in New York."""
+    package = _write_variant(
+        tmp_path, "ny_authored" if request.param == "converted" else "tz_authored"
+    )
+    if request.param == "aware":
+        orders = package / "models" / "orders.yml"
+        model = yaml.safe_load(orders.read_text(encoding="utf-8"))
+        model["model"]["times"]["ordered_at"]["timezone"] = "America/New_York"
+        orders.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     seed = package / "data" / "seed.sql"
     last = "(11, 108, 'a', TIMESTAMP '2024-08-01 02:00:00', DATE '2024-08-01', 2.00)"
     text = seed.read_text(encoding="utf-8")
@@ -320,15 +329,17 @@ def fall_back(tmp_path) -> Runtime:
 
 
 @pytest.mark.parametrize("now", ["2024-11-03T05:30:00Z", "2024-11-03T06:30:00Z"])
-@pytest.mark.parametrize("grain", ["day", None])
-def test_this_cuts_at_now_in_the_repeated_hour(fall_back: Runtime, now: str, grain) -> None:
+@pytest.mark.parametrize(
+    "time",
+    [{"this": "day", "grain": "day"}, {"this": "day"}, {"start": "2024-11-03", "grain": "day"}],
+)
+def test_now_cuts_at_its_instant_in_the_repeated_hour(fall_back: Runtime, now: str, time) -> None:
     # Both orders read 01:15 in New York; only those before now in UTC count.
     reference = _rows(
         fall_back,
         "SELECT COUNT(order_id) FROM orders WHERE ordered_at >= TIMESTAMP '2024-11-03 04:00:00' "
         f"AND ordered_at < TIMESTAMP '{now[:-1].replace('T', ' ')}'",
     )
-    time = {"this": "day", **({"grain": grain} if grain else {})}
     rows = fall_back.query({"select": [ORDERS], "time": time}, now=now)["rows"]
     assert [row["order_count"] for row in rows] == [reference[0][0]]
     assert reference[0][0] == (1 if now.startswith("2024-11-03T05") else 2)

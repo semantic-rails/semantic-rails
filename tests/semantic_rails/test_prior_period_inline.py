@@ -32,9 +32,9 @@ import yaml
 
 from semantic_rails.ast import OffsetWindowExpr
 from semantic_rails.expressions import parse_semantic_expression
-from semantic_rails.runtime import (
+from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts.answer_warnings import (
     _KIND_PRESERVING_EXPRESSION_KINDS,
-    Runtime,
     _expression_normalized_away_warnings,
 )
 from tests.semantic_rails.conftest import copy_package_config, opened
