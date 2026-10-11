@@ -189,8 +189,54 @@ def test_brooklyns_share_of_revenue_matches_reference_sql(runtime: Runtime) -> N
                 }
             ]
         },
+        {
+            "select": [
+                {
+                    "expression": {"kind": "ratio", "numerator": REVENUE, "denominator": ORDERS},
+                    "as": "aov",
+                }
+            ]
+        },
+        {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "distribution",
+                        "function": "avg",
+                        "over": {
+                            "kind": "entity_value",
+                            "entity": "entity.jaffle_customer",
+                            "input": ORDERS,
+                        },
+                    },
+                    "as": "orders_per_customer",
+                }
+            ]
+        },
+        {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "case",
+                        "whens": [
+                            {
+                                "when": {
+                                    "kind": "comparison",
+                                    "op": ">",
+                                    "left": ORDERS,
+                                    "right": {"kind": "literal", "value": 0},
+                                },
+                                "then": {"kind": "literal", "value": 1},
+                            }
+                        ],
+                        "else": {"kind": "literal", "value": 0},
+                    },
+                    "as": "any_orders",
+                }
+            ]
+        },
     ],
-    ids=["having", "entity-filter", "scoped-predicate"],
+    ids=["having", "entity-filter", "scoped-predicate", "ratio", "distribution", "case"],
 )
 def test_no_threshold_reads_a_raw_measure_a_hidden_metric_governs(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch, call: dict[str, Any]
@@ -212,3 +258,19 @@ def test_no_threshold_reads_a_raw_measure_a_hidden_metric_governs(
         assert runtime.validate(
             {"select": [GOVERNORS[1]], "group_by": [STORE]}, context={"audience": "external"}
         )["ok"]
+
+
+def test_a_literal_that_looks_like_a_reference_is_data(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = SemanticPolicyConfig(
+        id="policy.hide_high_value",
+        kind="object_visibility",
+        object_ids=[GOVERNORS[0]],
+        action="hidden",
+        audiences=["external"],
+    )
+    monkeypatch.setattr(runtime, "_config", replace(runtime._config, semantic_policies=[policy]))
+    constant = {"kind": "literal", "value": {"measure": ORDERS}}
+    call = {"select": [REVENUE, {"expression": constant, "as": "constant"}]}
+    assert runtime.validate(call, context={"audience": "external"})["ok"]

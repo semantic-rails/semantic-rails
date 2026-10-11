@@ -15,6 +15,7 @@ from ..compiler_parts.paths import display_key, keyed_entity
 from ..config_parts.measure_governance import governed_out_of_view, governing_metrics
 from ..db_parts.base import QueryRows
 from ..errors import SemanticLayerError
+from ..expressions import _opaque_expression_data
 from ..schema import PackageConfig, base_of
 
 
@@ -99,7 +100,7 @@ def _nodes(node: Any) -> Iterable[dict[str, Any]]:
 
 def _measure_ids(node: Any) -> Iterable[str]:
     """Every measure id a caller's expressions name, at any depth; a metric's own definition is
-    the package's and is never expanded."""
+    the package's and is never expanded, and literal or parameter values are data."""
     if isinstance(node, list):
         for item in node:
             yield from _measure_ids(item)
@@ -107,8 +108,9 @@ def _measure_ids(node: Any) -> Iterable[str]:
         measure = node.get("measure")
         if isinstance(measure, str) and measure.startswith("measure."):
             yield measure
-        for value in node.values():
-            yield from _measure_ids(value)
+        for key, value in node.items():
+            if not _opaque_expression_data(node, key):
+                yield from _measure_ids(value)
 
 
 def refuse_hidden_governors(config: PackageConfig, query: dict[str, Any]) -> None:
