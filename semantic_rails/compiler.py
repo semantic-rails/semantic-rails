@@ -1928,8 +1928,14 @@ def _path_selection(
 
 
 def _predicate_where_condition(op: str, value: Any) -> Any:
+    """An entity's aggregate meets the threshold. An unknown (NULL) aggregate meets none, so a
+    ``not``, which keeps unknown rows of a row or result filter, keeps no unknown entity here."""
     alias_ref = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
-    return build_filter_condition(alias_ref, op, value, path="metric_predicate")
+    condition = build_filter_condition(alias_ref, op, value, path="metric_predicate")
+    word, value = operators.normalize_condition(op, value, path="metric_predicate", internal=True)
+    if operators.rejects_unknown(word, value):
+        return condition
+    return SqlBinary(condition, "AND", SqlBinary(alias_ref, "IS NOT", SqlLiteral(None)))
 
 
 # A distinct count of a population is 0 over no rows too; it stays out of the empty-group
