@@ -1223,7 +1223,7 @@ def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
     if not role_id:
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"Metric recipe '{recipe.id}' requires query.time but has no compatible temporal role",
+            f"Metric recipe '{recipe.id}' needs a time block in the call but has no compatible temporal role",
             details={"metric": recipe.id},
         )
     coarsest_unit = _metric_min_window_unit(recipe.expression)

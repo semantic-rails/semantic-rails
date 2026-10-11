@@ -7212,3 +7212,52 @@ tests:
       SELECT TIMESTAMP '2024-01-01', SUM(a.seats) FROM account_days AS a
       WHERE a.snapshot_day = (SELECT MAX(snapshot_day) FROM account_days
         WHERE snapshot_day >= DATE '2024-01-01' AND snapshot_day < DATE '2024-02-01')
+  shop/a-running-total-over-a-window-without-a-grain-asks-for-one:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: WINDOW_TOTAL_UNSUPPORTED
+    why: Without a grain a window answers one total, and a running total has none; the call names the grain to add, never one row per order time.
+    cites: [docs/QUERY_CALL.md#time, docs/QUERY_CALL.md#inline-expression-kinds, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue]
+    tags: [time-window, refusal]
+    query:
+      select:
+        - {as: running, expression: {kind: cumulative, input: measure.shop.revenue}}
+      time: {end: '2024-01-01'}
+  shop/stores-over-a-window-without-a-grain-are-listed-once:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Without a grain a window is one total: the stores with orders from November to December 2023 are listed once each (a and b), not once per order time (three orders).'
+    cites: [docs/QUERY_CALL.md#time, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id]
+    tags: [time-window]
+    query:
+      group_by: [dimension.shop_order_store_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2024-01-01'}
+    expected_rows:
+      - {dimension.shop_order_store_id: a}
+      - {dimension.shop_order_store_id: b}
+    reference_sql: |
+      SELECT DISTINCT o.store_id FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2023-11-01' AND o.ordered_at < TIMESTAMP '2024-01-01'
+  shop/a-balance-after-its-last-snapshot-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Seats are snapshotted through January 15, 2024: January closes on that day (220), and February and March, after the data, read NULL, never a carried-forward or zero balance.'
+    cites: [tests/integration/correctness/shop/models/account_days.yml#model.measures.seats, tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.seats]
+      time: {start: '2024-01-01', end: '2024-04-01', grain: month}
+    now: '2024-03-10T12:00:00Z'
+    expected_rows:
+      - {period: '2024-01-01', seats: 220}
+      - {period: '2024-02-01', seats: null}
+      - {period: '2024-03-01', seats: null}
+    reference_sql: |
+      SELECT m.period, SUM(a.seats) FROM (
+        SELECT TIMESTAMP '2024-01-01' AS period UNION ALL SELECT TIMESTAMP '2024-02-01'
+        UNION ALL SELECT TIMESTAMP '2024-03-01'
+      ) AS m LEFT JOIN account_days AS a
+        ON a.snapshot_day = (SELECT MAX(snapshot_day) FROM account_days
+          WHERE snapshot_day >= CAST(m.period AS DATE)
+            AND snapshot_day < CAST(m.period + INTERVAL '1' MONTH AS DATE))
+      GROUP BY m.period

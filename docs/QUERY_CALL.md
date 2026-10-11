@@ -373,7 +373,11 @@ A result threshold filters result rows; to filter which entities count toward a 
   Bounds are ISO dates or date-times; a date-time bound may cut inside a day.
 - `grain` gives one row per period in a `period` column, an ISO date (the period's first day).
   Without `grain` the answer is one total per group over the window, with no time column; the
-  answer says so in `assumptions` (`WINDOW_TOTAL`).
+  answer says so in `assumptions` (`WINDOW_TOTAL`). A call with only `group_by` lists each
+  group with rows in the window once. A select that is read per period (`cumulative`,
+  `prior_period`, `rolling`, `period_to_date`, a conversion, a distribution) has no one total,
+  so beside a window without a grain it is refused with `WINDOW_TOTAL_UNSUPPORTED` at
+  `time.grain`; the hint is the call's time block with a grain it answers at.
 - One window spelling per call. `time` with only `temporal_role` is refused ("say a grain or
   a window").
 - A relative phrase is `last` or `this`; a dated phrase is `start`/`end` ("in Q3" is
@@ -685,7 +689,7 @@ unknown.
           {"period": "2016-11-01", "period_partial": false, "revenue_usd": 27916.819999999992, "month_before": 21923.949999999997}]}
 ```
 
-`prior_period`, `rolling` and `period_to_date` need `time.grain`. They read periods before the
+`prior_period`, `rolling`, `period_to_date` and `cumulative` need `time.grain`. They read periods before the
 ones they return, so a window that cuts their lookback is refused
 ([details](#windows-that-read-earlier-periods)); beside a named window a comparison is refused
 with `WINDOWED_TIME_FILTER_UNSUPPORTED` ("ask for a series with a grain and read the periods

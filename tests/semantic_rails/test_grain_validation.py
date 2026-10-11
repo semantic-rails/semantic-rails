@@ -23,9 +23,8 @@ def _select_revenue() -> list[dict[str, object]]:
 def _grain_refusal(error: dict) -> None:
     """A grain outside the call's words is refused at ``time.grain`` with the one hint."""
     assert error["code"] == "INVALID_QUERY"
-    details = error.get("details") or {}
-    assert details.get("path") == "time.grain"
-    (hint,) = details["recovery_hints"]
+    assert (error.get("details") or {}).get("path") == "time.grain"
+    (hint,) = error["recovery_hints"]
     assert hint["code"] == "FIX_QUERY_CALL"
     assert "day, week, month, quarter or year" in hint["message"]
 

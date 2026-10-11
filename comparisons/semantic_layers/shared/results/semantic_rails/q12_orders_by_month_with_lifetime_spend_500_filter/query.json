@@ -1,37 +1,31 @@
 {
-  "metric_filters": [
-    {
-      "expression": {
-        "entity": "entity.jaffle_customer",
-        "input": {
-          "metric": "metric.jaffle.lifetime_spend"
-        },
-        "kind": "metric_predicate",
-        "op": ">=",
-        "scope_mode": "entity_only",
-        "value": 500
-      },
-      "op": "=",
-      "value": true
-    }
-  ],
   "order_by": [
     {
-      "direction": "ASC",
-      "field": "temporal_role.jaffle_order_time__month"
+      "direction": "asc",
+      "field": "period"
     }
   ],
   "select": [
     {
       "as": "filtered_orders",
-      "expression": {
-        "metric": "metric.jaffle.orders"
-      }
+      "expression": "metric.jaffle.orders"
     }
   ],
   "time": {
     "grain": "month",
     "temporal_role": "temporal_role.jaffle_order_time"
   },
-  "version": 1
+  "where": [
+    {
+      "entity": "entity.jaffle_customer",
+      "having": [
+        {
+          "field": "metric.jaffle.lifetime_spend",
+          "op": "gte",
+          "value": 500
+        }
+      ],
+      "over": "all_time"
+    }
+  ]
 }

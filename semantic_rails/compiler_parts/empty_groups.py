@@ -16,7 +16,7 @@ check gates or that has no time bucket; matching rows with NULL amounts stay NUL
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, fields, is_dataclass, replace
@@ -241,6 +241,7 @@ def guard_empty_groups(
     observed_buckets: Collection[str] = (),
     bucketed: bool = True,
     keep: Iterable[str] = (),
+    names: Mapping[str, Sequence[str]] | None = None,
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -264,6 +265,7 @@ def guard_empty_groups(
     (including 0) proves that specific bucket was observed; the sum's matching-row count
     still prevents filling unknown amounts. Ungated, a retained leaf gets no such proof.
     ``keep`` names source columns passed through unchanged.
+    ``names`` gives each measure alias's output names, which a refusal states.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
@@ -272,7 +274,8 @@ def guard_empty_groups(
     observed = observed or {}
     dataset = observes_dataset()
     if dataset and (unobserved := [a for a in measures if a in zero and a not in observed]):
-        raise _unobserved_error(unobserved)
+        named = (names or {}).get
+        raise _unobserved_error(list(dict.fromkeys(n for a in unobserved for n in named(a, [a]))))
     fields_ = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
@@ -523,14 +526,14 @@ def refuse_shared_names(row_counts: Iterable[str], taken: Collection[str]) -> No
         raise _unsettled_error({"row_counts_named_like": shared})
 
 
-def _unobserved_error(aliases: list[str]) -> SemanticLayerError:
+def _unobserved_error(outputs: list[str]) -> SemanticLayerError:
     return SemanticLayerError(
         "EMPTY_GROUPS_UNSETTLED",
-        f"Can't tell whether {', '.join(aliases)} has data outside this query's where filters "
-        "(a metric predicate or an authored condition the probe can't read, or a query shape "
+        f"Can't tell whether {', '.join(outputs)} has data outside this query's where filters "
+        "(an entity filter or an authored condition the probe can't read, or a query shape "
         "that settles its groups apart), so its empty groups can't read 0 or NULL. Resend "
         "with observation_scope 'query' to judge them inside the filters.",
-        details={"measures": aliases, "observation_scope": "dataset"},
+        details={"outputs": outputs, "observation_scope": "dataset"},
     )
 
 
@@ -562,6 +565,48 @@ def base_reads(expr: Any) -> set[str]:
         for node in sql_nodes(expr)
         if isinstance(node, SqlIdentifier) and len(node.parts) == 2 and node.parts[0] == "base"
     }
+
+
+_balance_edges: ContextVar[dict[str, Any] | None] = ContextVar("balance_edges", default=None)
+
+
+@contextmanager
+def recording_balance_edges() -> Iterator[dict[str, Any]]:
+    """Record each balance output's loaded coverage: CTEs of their own, apart from the query,
+    read only to say where the balance's data ends (``NO_DATA_YET``). A balance reads NULL
+    in a period without a snapshot either way, so its coverage never changes a value."""
+    edges: dict[str, Any] = {"ctes": {}, "leaves": {}, "outputs": []}
+    token = _balance_edges.set(edges)
+    try:
+        yield edges
+    finally:
+        _balance_edges.reset(token)
+
+
+def record_balance_scope(alias: str, scope: LeafScope, dialect: Any) -> None:
+    edges = _balance_edges.get()
+    if edges is None or not plan_is_root():
+        return
+    query = coverage_select(scope, dialect)
+    name = next((cte.name for cte in edges["ctes"].values() if cte.query == query), None)
+    if name is None:
+        name = f"balance_coverage_{len(edges['ctes']) + 1}"
+        edges["ctes"][name] = SqlCte(name=name, query=query)
+    edges["leaves"][alias] = name
+
+
+def record_balance_output(output: str, reads: set[str], measure_ids: Iterable[str]) -> None:
+    """An output that reads only balances, with the coverage of each."""
+    edges = _balance_edges.get()
+    if edges is None or not reads or not reads <= edges["leaves"].keys():
+        return
+    edges["outputs"].append(
+        {
+            "output": output,
+            "measures": sorted(set(measure_ids)),
+            "probes": sorted({edges["leaves"][alias] for alias in reads}),
+        }
+    )
 
 
 _zero_outputs: ContextVar[list[dict[str, Any]] | None] = ContextVar("zero_outputs", default=None)

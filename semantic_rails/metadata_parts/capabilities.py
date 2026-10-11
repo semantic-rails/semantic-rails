@@ -161,7 +161,7 @@ _EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
     {
         "name": "cumulative",
         "description": (
-            "running total. grain comes from the outer query.time.grain — "
+            "running total. grain comes from the call's time.grain — "
             "cumulative itself takes only input + optional partition_by/window_scope."
         ),
         "example": {"kind": "cumulative", "input": "measure.<id>"},

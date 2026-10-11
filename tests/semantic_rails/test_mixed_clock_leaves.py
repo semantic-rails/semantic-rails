@@ -87,7 +87,7 @@ def test_a_measure_with_several_clocks_none_the_querys_is_refused(
     assert exc.value.code == "INCOMPATIBLE_TEMPORAL_ROLE"
     assert exc.value.details["measure"] == measure_id
     assert exc.value.details["compatible"] == clocks
-    assert "temporal_role_overrides" in str(exc.value)
+    assert '"temporal_role": <clock>' in str(exc.value)  # pinned inline on the measure
     # With one clock, the measure is aligned to it, as before.
     single = _with_clocks(config, clocks[:1], measure_id)
     assert compile_query(single, Registry(single), query)["sql"]

@@ -71,7 +71,7 @@ def _gold(runtime: Runtime, sql: str) -> list[dict[str, Any]]:
 
 
 def _warnings(response: dict[str, Any], code: str = "NO_DATA_IN_SCOPE") -> list[dict[str, Any]]:
-    return [item for item in response["warnings"] if item.get("code") == code]
+    return [item for item in response.get("warnings", []) if item.get("code") == code]
 
 
 # -- the predicate -------------------------------------------------------------------------

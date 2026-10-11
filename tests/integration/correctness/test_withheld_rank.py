@@ -118,9 +118,9 @@ def test_null_withheld_value_has_no_data_diagnostic(
         assert '"hidden_value": null' not in serialized
         assert "reads NULL rather than 0" not in serialized
         if measure == REVENUE:
-            assert any(row["code"] == "NO_DATA_IN_SCOPE" for row in unrestricted["warnings"]) is (
-                observation_scope == "query"
-            )
+            assert any(
+                row["code"] == "NO_DATA_IN_SCOPE" for row in unrestricted.get("warnings", [])
+            ) is (observation_scope == "query")
     finally:
         runtime._config.semantic_policies.remove(policy)
 

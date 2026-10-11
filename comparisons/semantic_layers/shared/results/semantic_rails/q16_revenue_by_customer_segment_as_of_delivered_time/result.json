@@ -1,5 +1,5 @@
 {
-  "assumptions": [],
+  "clock": "temporal_role.jaffle_lifecycle_delivered_at",
   "column_types": {
     "delivered_revenue": {
       "type": "float"
@@ -7,13 +7,14 @@
     "dimension.jaffle_customer_history_segment": {
       "type": "string"
     },
-    "temporal_role.jaffle_lifecycle_delivered_at__month": {
-      "timezone": "naive",
-      "type": "timestamp"
+    "period": {
+      "type": "date"
+    },
+    "period_partial": {
+      "type": "boolean"
     }
   },
   "dialect": "duckdb",
-  "errors": [],
   "explain": {
     "alias_resolution": {
       "group_by": [
@@ -111,8 +112,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.994,
-      "compile_ms": 0.273,
+      "cache_lookup_ms": 1.04,
+      "compile_ms": 0.454,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -283,7 +284,7 @@
       "leaf_grains": {
         "measure.jaffle.delivered_revenue_usd": [
           "dimension.jaffle_customer_history_segment",
-          "temporal_role.jaffle_lifecycle_delivered_at__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -291,12 +292,14 @@
       ],
       "root_entity": "entity.jaffle_order_lifecycle",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+        "this": ""
       }
     },
     "logical_plan": {
@@ -539,7 +542,7 @@
         "leaf_grains": {
           "measure.jaffle.delivered_revenue_usd": [
             "dimension.jaffle_customer_history_segment",
-            "temporal_role.jaffle_lifecycle_delivered_at__month"
+            "period"
           ]
         },
         "measure_entities": [
@@ -547,12 +550,14 @@
         ],
         "root_entity": "entity.jaffle_order_lifecycle",
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+          "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+          "this": ""
         }
       },
       "group_by": [
@@ -574,7 +579,7 @@
           "cte_name": "leaf_1",
           "grain_keys": [
             "dimension.jaffle_customer_history_segment",
-            "temporal_role.jaffle_lifecycle_delivered_at__month"
+            "period"
           ],
           "path_selections": [
             {
@@ -702,8 +707,6 @@
       },
       "query": {
         "debug": false,
-        "explain": false,
-        "export": false,
         "group_by": [
           "dimension.jaffle_customer_history_segment"
         ],
@@ -712,7 +715,7 @@
         "order_by": [
           {
             "direction": "ASC",
-            "field": "temporal_role.jaffle_lifecycle_delivered_at__month"
+            "field": "period"
           },
           {
             "direction": "ASC",
@@ -730,12 +733,14 @@
         ],
         "temporal_role_overrides": {},
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+          "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+          "this": ""
         },
         "version": 1,
         "where": []
@@ -812,19 +817,19 @@
       },
       "synthetic_measures": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+        "this": ""
       },
       "version": 2
     },
     "normalized_query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [
         "dimension.jaffle_customer_history_segment"
       ],
@@ -833,7 +838,7 @@
       "order_by": [
         {
           "direction": "ASC",
-          "field": "temporal_role.jaffle_lifecycle_delivered_at__month"
+          "field": "period"
         },
         {
           "direction": "ASC",
@@ -851,12 +856,14 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+        "this": ""
       },
       "version": 1,
       "where": []
@@ -876,12 +883,14 @@
           "relation": "comparison_order_lifecycle",
           "scan_id": "leaf_1_scan",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "fill": false,
             "grain": "month",
+            "last_unit": "",
+            "last_value": 0,
             "start": null,
-            "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+            "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+            "this": ""
           }
         }
       ],
@@ -1051,7 +1060,7 @@
       "pre_aggregation_grain": {
         "leaf_1": [
           "dimension.jaffle_customer_history_segment",
-          "temporal_role.jaffle_lifecycle_delivered_at__month"
+          "period"
         ]
       },
       "raw_fact_count": 1,
@@ -1091,12 +1100,14 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "fill": false,
               "grain": "month",
+              "last_unit": "",
+              "last_value": 0,
               "start": null,
-              "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+              "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+              "this": ""
             }
           },
           "id": "leaf_1_filter",
@@ -1248,7 +1259,7 @@
             "folded_measure_count": 1,
             "grain": [
               "dimension.jaffle_customer_history_segment",
-              "temporal_role.jaffle_lifecycle_delivered_at__month"
+              "period"
             ],
             "measures": [
               {
@@ -1269,7 +1280,7 @@
           "details": {
             "key_aliases": [
               "dimension.jaffle_customer_history_segment",
-              "temporal_role.jaffle_lifecycle_delivered_at__month"
+              "period"
             ],
             "outputs": [
               "delivered_revenue"
@@ -1303,7 +1314,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nLEFT JOIN comparison_customer_history ON comparison_order_lifecycle.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_order_lifecycle.delivered_at AND (comparison_customer_history.valid_to > comparison_order_lifecycle.delivered_at OR (comparison_customer_history.valid_to IS NULL))\nGROUP BY\n  comparison_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM guarded_base AS base\nORDER BY\n  t ASC,\n  g1 ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nLEFT JOIN comparison_customer_history ON comparison_order_lifecycle.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_order_lifecycle.delivered_at AND (comparison_customer_history.valid_to > comparison_order_lifecycle.delivered_at OR (comparison_customer_history.valid_to IS NULL))\nGROUP BY\n  comparison_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"period\",\n  base.m1 AS \"delivered_revenue\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST,\n  g1 ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1668,7 +1679,7 @@
               "t"
             ]
           },
-          "nulls_last": false
+          "nulls_last": true
         },
         {
           "direction": "ASC",
@@ -1677,7 +1688,7 @@
               "g1"
             ]
           },
-          "nulls_last": false
+          "nulls_last": true
         }
       ],
       "qualify": [],
@@ -1692,7 +1703,7 @@
           }
         },
         {
-          "alias": "temporal_role.jaffle_lifecycle_delivered_at__month",
+          "alias": "period",
           "expression": {
             "parts": [
               "base",
@@ -1713,8 +1724,6 @@
       "where": []
     }
   },
-  "freshness_as_of": "",
-  "freshness_by_leaf": [],
   "hop_profile": {
     "hop_limit": 4,
     "long_hop_targets": [],
@@ -1982,7 +1991,7 @@
       "leaf_grains": {
         "measure.jaffle.delivered_revenue_usd": [
           "dimension.jaffle_customer_history_segment",
-          "temporal_role.jaffle_lifecycle_delivered_at__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -1990,12 +1999,14 @@
       ],
       "root_entity": "entity.jaffle_order_lifecycle",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+        "this": ""
       }
     },
     "group_by": [
@@ -2017,7 +2028,7 @@
         "cte_name": "leaf_1",
         "grain_keys": [
           "dimension.jaffle_customer_history_segment",
-          "temporal_role.jaffle_lifecycle_delivered_at__month"
+          "period"
         ],
         "path_selections": [
           {
@@ -2145,8 +2156,6 @@
     },
     "query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [
         "dimension.jaffle_customer_history_segment"
       ],
@@ -2155,7 +2164,7 @@
       "order_by": [
         {
           "direction": "ASC",
-          "field": "temporal_role.jaffle_lifecycle_delivered_at__month"
+          "field": "period"
         },
         {
           "direction": "ASC",
@@ -2173,12 +2182,14 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+        "this": ""
       },
       "version": 1,
       "where": []
@@ -2255,56 +2266,40 @@
     },
     "synthetic_measures": {},
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+      "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+      "this": ""
     },
     "version": 2
   },
-  "methodology_hints": [],
   "normalized_query": {
-    "debug": false,
-    "explain": false,
-    "export": false,
     "group_by": [
       "dimension.jaffle_customer_history_segment"
     ],
-    "limit": null,
-    "metric_filters": [],
     "order_by": [
       {
-        "direction": "ASC",
-        "field": "temporal_role.jaffle_lifecycle_delivered_at__month"
+        "direction": "asc",
+        "field": "period"
       },
       {
-        "direction": "ASC",
+        "direction": "asc",
         "field": "dimension.jaffle_customer_history_segment"
       }
     ],
     "select": [
-      {
-        "as": "delivered_revenue",
-        "expression": {
-          "kind": "metric",
-          "metric": "metric.jaffle.delivered_revenue"
-        }
-      }
+      "metric.jaffle.delivered_revenue"
     ],
-    "temporal_role_overrides": {},
     "time": {
-      "calendar_id": "default",
-      "end": null,
-      "fill": false,
       "grain": "month",
-      "start": null,
       "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
-    },
-    "version": 1,
-    "where": []
+    }
   },
+  "observation_scope": "dataset",
   "ok": true,
   "output_columns": [
     {
@@ -2316,10 +2311,18 @@
     },
     {
       "display_label": "Lifecycle delivered at",
-      "field": "temporal_role.jaffle_lifecycle_delivered_at__month",
+      "field": "period",
+      "grain": "month",
       "semantic_id": "temporal_role.jaffle_lifecycle_delivered_at",
-      "sql_alias": "temporal_role.jaffle_lifecycle_delivered_at__month",
+      "sql_alias": "period",
       "type": "time"
+    },
+    {
+      "display_label": "Partial period",
+      "field": "period_partial",
+      "semantic_id": "temporal_role.jaffle_lifecycle_delivered_at",
+      "sql_alias": "period_partial",
+      "type": "boolean"
     },
     {
       "display_label": "Delivered revenue (USD)",
@@ -2329,7 +2332,6 @@
       "type": "currency"
     }
   ],
-  "policy_effects": [],
   "provenance_summary": {
     "policy_effects": [],
     "rewrite_status": "direct",
@@ -2356,12 +2358,14 @@
       }
     ],
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
+      "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+      "this": ""
     }
   },
   "query": {
@@ -2370,195 +2374,324 @@
     ],
     "order_by": [
       {
-        "direction": "ASC",
-        "field": "temporal_role.jaffle_lifecycle_delivered_at__month"
+        "direction": "asc",
+        "field": "period"
       },
       {
-        "direction": "ASC",
+        "direction": "asc",
         "field": "dimension.jaffle_customer_history_segment"
       }
     ],
     "select": [
-      {
-        "as": "delivered_revenue",
-        "expression": {
-          "metric": "metric.jaffle.delivered_revenue"
-        }
-      }
+      "metric.jaffle.delivered_revenue"
     ],
     "time": {
       "grain": "month",
       "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at"
-    },
-    "version": 1
+    }
   },
-  "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nLEFT JOIN comparison_customer_history ON comparison_order_lifecycle.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_order_lifecycle.delivered_at AND (comparison_customer_history.valid_to > comparison_order_lifecycle.delivered_at OR (comparison_customer_history.valid_to IS NULL))\nGROUP BY\n  comparison_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"temporal_role.jaffle_lifecycle_delivered_at__month\",\n  base.m1 AS delivered_revenue\nFROM guarded_base AS base\nORDER BY\n  t ASC,\n  g1 ASC",
-  "request_context": {},
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_customer_history.customer_segment AS g1,\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nLEFT JOIN comparison_customer_history ON comparison_order_lifecycle.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_order_lifecycle.delivered_at AND (comparison_customer_history.valid_to > comparison_order_lifecycle.delivered_at OR (comparison_customer_history.valid_to IS NULL))\nGROUP BY\n  comparison_customer_history.customer_segment,\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_history_segment\",\n  base.t AS \"period\",\n  base.m1 AS \"delivered_revenue\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST,\n  g1 ASC NULLS LAST",
+  "routes": [
+    {
+      "alternatives": [
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_customer",
+            "relationship.customer_history_customer"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_order",
+            "relationship.order_to_customer_history"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_customer",
+            "relationship.orders_customer",
+            "relationship.order_to_customer_history"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_order",
+            "relationship.orders_customer",
+            "relationship.customer_history_customer"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_store",
+            "relationship.orders_store",
+            "relationship.order_to_customer_history"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_customer",
+            "relationship.storefront_sessions_customer",
+            "relationship.storefront_sessions_order",
+            "relationship.order_to_customer_history"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_order",
+            "relationship.storefront_sessions_order",
+            "relationship.storefront_sessions_customer",
+            "relationship.customer_history_customer"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_store",
+            "relationship.orders_store",
+            "relationship.orders_customer",
+            "relationship.customer_history_customer"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_store",
+            "relationship.storefront_sessions_store",
+            "relationship.storefront_sessions_customer",
+            "relationship.customer_history_customer"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_store",
+            "relationship.storefront_sessions_store",
+            "relationship.storefront_sessions_order",
+            "relationship.order_to_customer_history"
+          ],
+          "source_entity": "entity.jaffle_order_lifecycle",
+          "target_entity": "entity.jaffle_customer_history"
+        }
+      ],
+      "basis": "own_key",
+      "from": "entity.jaffle_order_lifecycle",
+      "to": "entity.jaffle_customer_history",
+      "via": [
+        "relationship.order_lifecycle_to_customer_history"
+      ]
+    }
+  ],
   "row_count": 32,
   "rows": [
     {
       "delivered_revenue": 575.58,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-09-01T00:00:00"
+      "period": "2016-09-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 17477.69999999999,
+      "delivered_revenue": 17477.699999999983,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-09-01T00:00:00"
+      "period": "2016-09-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 646.5900000000003,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-10-01T00:00:00"
+      "period": "2016-10-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 21277.360000000015,
+      "delivered_revenue": 21277.36000000003,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-10-01T00:00:00"
+      "period": "2016-10-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 488.64000000000027,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-11-01T00:00:00"
+      "period": "2016-11-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 27428.179999999975,
+      "delivered_revenue": 27428.180000000015,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-11-01T00:00:00"
+      "period": "2016-11-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 724.9900000000002,
+      "delivered_revenue": 724.9900000000004,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-12-01T00:00:00"
+      "period": "2016-12-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 34952.61,
+      "delivered_revenue": 34952.61000000003,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-12-01T00:00:00"
+      "period": "2016-12-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 294.67000000000013,
+      "delivered_revenue": 294.6700000000002,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01T00:00:00"
+      "period": "2017-01-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 218.35,
       "dimension.jaffle_customer_history_segment": "repeat",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01T00:00:00"
+      "period": "2017-01-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 44504.92999999988,
+      "delivered_revenue": 44504.92999999987,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01T00:00:00"
+      "period": "2017-01-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 376.29000000000013,
+      "delivered_revenue": 376.29000000000025,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01T00:00:00"
+      "period": "2017-02-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 147.32999999999998,
       "dimension.jaffle_customer_history_segment": "repeat",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01T00:00:00"
+      "period": "2017-02-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 42834.49999999987,
+      "delivered_revenue": 42834.4999999999,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01T00:00:00"
+      "period": "2017-02-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 414.4300000000003,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-03-01T00:00:00"
+      "period": "2017-03-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 214.11999999999998,
       "dimension.jaffle_customer_history_segment": "repeat",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-03-01T00:00:00"
+      "period": "2017-03-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 73321.77000000034,
+      "delivered_revenue": 73321.77000000038,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-03-01T00:00:00"
+      "period": "2017-03-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 362.5000000000002,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-04-01T00:00:00"
+      "period": "2017-04-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 272.42,
       "dimension.jaffle_customer_history_segment": "repeat",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-04-01T00:00:00"
+      "period": "2017-04-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 82682.07000000126,
+      "delivered_revenue": 82682.0700000014,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-04-01T00:00:00"
+      "period": "2017-04-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 396.4000000000003,
+      "delivered_revenue": 396.4000000000002,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01T00:00:00"
+      "period": "2017-05-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 278.78000000000003,
       "dimension.jaffle_customer_history_segment": "repeat",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01T00:00:00"
+      "period": "2017-05-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 95395.17000000329,
+      "delivered_revenue": 95395.17000000314,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01T00:00:00"
+      "period": "2017-05-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 348.73000000000025,
+      "delivered_revenue": 348.7300000000003,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01T00:00:00"
+      "period": "2017-06-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 302.07,
       "dimension.jaffle_customer_history_segment": "repeat",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01T00:00:00"
+      "period": "2017-06-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 97728.0700000034,
+      "delivered_revenue": 97728.07000000338,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01T00:00:00"
+      "period": "2017-06-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 374.1500000000002,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-07-01T00:00:00"
+      "period": "2017-07-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 377.34999999999997,
       "dimension.jaffle_customer_history_segment": "repeat",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-07-01T00:00:00"
+      "period": "2017-07-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 94105.69000000255,
+      "delivered_revenue": 94105.69000000325,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-07-01T00:00:00"
+      "period": "2017-07-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 348.7200000000003,
+      "delivered_revenue": 348.7200000000001,
       "dimension.jaffle_customer_history_segment": "new",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01T00:00:00"
+      "period": "2017-08-01",
+      "period_partial": false
     },
     {
       "delivered_revenue": 171.72,
       "dimension.jaffle_customer_history_segment": "repeat",
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01T00:00:00"
+      "period": "2017-08-01",
+      "period_partial": false
     },
     {
-      "delivered_revenue": 106851.15000000411,
+      "delivered_revenue": 106851.15000000487,
       "dimension.jaffle_customer_history_segment": null,
-      "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01T00:00:00"
+      "period": "2017-08-01",
+      "period_partial": false
     }
   ],
-  "semantic_fingerprint": "sha256:4580d1a69a70b25078c207bc3aad9ec478730725a4e300dd72a23a23ec266478",
+  "semantic_fingerprint": "sha256:0b2bdff03f9ce6864d6238146f155ac9732eda29857b050cab1f99de882b2da3",
   "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
   "sql_plan": {
     "ctes": [
@@ -2873,7 +3006,7 @@
             "t"
           ]
         },
-        "nulls_last": false
+        "nulls_last": true
       },
       {
         "direction": "ASC",
@@ -2882,7 +3015,7 @@
             "g1"
           ]
         },
-        "nulls_last": false
+        "nulls_last": true
       }
     ],
     "qualify": [],
@@ -2897,7 +3030,7 @@
         }
       },
       {
-        "alias": "temporal_role.jaffle_lifecycle_delivered_at__month",
+        "alias": "period",
         "expression": {
           "parts": [
             "base",
@@ -2983,122 +3116,12 @@
       "object_ids": [
         "dimension.jaffle_customer_history_segment"
       ],
-      "path": "",
-      "recovery_hints": [],
       "severity": "warning",
       "stage": "planning"
-    },
-    {
-      "code": "ROUTE_COLOCATED_KEY",
-      "details": {
-        "alternatives": [
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_customer",
-              "relationship.orders_customer",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.orders_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_store",
-              "relationship.orders_store",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_customer",
-              "relationship.storefront_sessions_customer",
-              "relationship.storefront_sessions_order",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_store",
-              "relationship.orders_store",
-              "relationship.orders_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_order",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          }
-        ],
-        "route": [
-          "relationship.order_lifecycle_to_customer_history"
-        ]
-      },
-      "message": "the Order lifecycle's Customer history valid at the time (own key)",
-      "object_ids": [
-        "entity.jaffle_order_lifecycle",
-        "entity.jaffle_customer_history"
-      ],
-      "path": "",
-      "recovery_hints": [],
-      "severity": "info",
-      "stage": "planning"
     }
-  ]
+  ],
+  "window": {
+    "now": "2026-10-11T20:14:31.038896Z",
+    "partial": false
+  }
 }

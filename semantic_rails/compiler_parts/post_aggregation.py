@@ -240,12 +240,10 @@ def _compile_offset_window_expr(
     table_alias: str,
 ) -> SqlExpr:
     if not time_alias:
-        raise SemanticLayerError(
-            "INVALID_TEMPORAL_ROLE", f"{expr.kind} expressions require query.time"
-        )
+        raise SemanticLayerError("INVALID_TEMPORAL_ROLE", f"{expr.kind} expressions need time")
     if expr.kind in {"rolling", "prior_period", "period_to_date"} and not query_grain:
         raise SemanticLayerError(
-            "INVALID_TEMPORAL_ROLE", f"{expr.kind} expressions require query.time with grain"
+            "INVALID_TEMPORAL_ROLE", f"{expr.kind} expressions need time.grain"
         )
 
     def compile_input(input_expr: SemanticExpr) -> SqlExpr:
