@@ -1136,9 +1136,11 @@ class AthenaDialect(SqlDialect):
 
     def temporal_literal(self, value: str) -> str:
         # Trino refuses a timestamp compared with text (TYPE_MISMATCH) where DuckDB coerces the
-        # text; a typed literal compares the same way, and a DATE operand coerces to it.
-        quoted = self.quote_string_literal(value)
-        return f"TIMESTAMP {quoted}" if _ISO_TEMPORAL.fullmatch(value) else quoted
+        # text; a typed literal compares the same way, and a DATE operand coerces to it. Its
+        # TIMESTAMP literal separates the date and the time with a space, never ISO's ``T``.
+        if not _ISO_TEMPORAL.fullmatch(value):
+            return self.quote_string_literal(value)
+        return f"TIMESTAMP {self.quote_string_literal(value.replace('T', ' '))}"
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # Trino: with_timezone(naive_ts, tz) attaches a zone;

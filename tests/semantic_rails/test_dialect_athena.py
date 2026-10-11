@@ -512,12 +512,21 @@ def test_athena_prepare_leaves_literals_alone():
 
 
 @pytest.mark.parametrize("op", ["=", "<", ">", "<=", ">="])
-@pytest.mark.parametrize("value", ["2016-09-01", "2016-09-01 12:30:00.123", "2016-09-01T12:30:00"])
-def test_athena_types_temporal_literals(op, value):
+@pytest.mark.parametrize(
+    ("value", "literal"),
+    [
+        ("2016-09-01", "TIMESTAMP '2016-09-01'"),
+        ("2016-09-01 12:30:00.123", "TIMESTAMP '2016-09-01 12:30:00.123'"),
+        # Trino's TIMESTAMP literal takes a space between date and time, never ISO's T.
+        ("2016-09-01T12:30:00", "TIMESTAMP '2016-09-01 12:30:00'"),
+        ("2016-09-01T12:30:00.123456", "TIMESTAMP '2016-09-01 12:30:00.123456'"),
+    ],
+)
+def test_athena_types_temporal_literals(op, value, literal):
     temporal = SqlBinary(_ident("t", "ts"), op, SqlLiteral(value, temporal=True))
     text = SqlBinary(_ident("t", "dt"), op, SqlLiteral(value))
     with use_dialect(DIALECT):
-        assert render_expr(temporal) == f"t.ts {op} TIMESTAMP '{value}'"
+        assert render_expr(temporal) == f"t.ts {op} {literal}"
         assert render_expr(text) == f"t.dt {op} '{value}'"
 
 
@@ -770,3 +779,23 @@ def test_athena_compiles_entire_battery_to_non_empty_sql():
             assert forbidden not in sql, f"{case.name}: forbidden {forbidden} in SQL"
         # Trino rejects the portable INTERVAL date_add form.
         assert "INTERVAL (" not in sql, f"{case.name}: INTERVAL form leaked into SQL"
+
+
+def test_athena_window_end_at_now_is_a_trino_timestamp_literal():
+    # A `this` window ends at `now`, an instant with a time of day.
+    from semantic_rails.config import load_package_config
+    from tests.integration.harness import PACKAGE_DIR
+
+    config = load_package_config(str(PACKAGE_DIR))
+    runtime = Runtime.from_config(
+        _athena_config(config), source_path=str(PACKAGE_DIR), package_id="jaffle_shop"
+    )
+    try:
+        sql = runtime.compile(
+            {"select": ["measure.jaffle.order_count"], "time": {"this": "month", "grain": "day"}},
+            now="2017-08-03T12:30:00Z",
+        )["rendered_sql"]
+    finally:
+        runtime.close()
+    assert "< TIMESTAMP '2017-08-03 12:30:00'" in sql
+    assert "TIMESTAMP '2017-08-03T" not in sql
