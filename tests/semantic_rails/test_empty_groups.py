@@ -1313,8 +1313,8 @@ FROM agent_branch_1__leaf_1 AS base
 agent_branch_1 AS (
 SELECT
   base.g1 AS "dimension.shop_order_store_id",
-  base.t AS period,
-  base.m1 + base.m2 AS total
+  base.t AS "period",
+  base.m1 + base.m2 AS "total"
 FROM agent_branch_1__guarded_base AS base
 ),
 agent_branch_2__median__entity_values__leaf_1 AS (
@@ -1335,53 +1335,53 @@ agent_branch_2__median__entity_values AS (
 SELECT
   base.g1 AS "dimension.shop_order_store_id",
   base.g2 AS "dimension.shop_order_id",
-  base.t AS period,
+  base.t AS "period",
   base.m1 AS __entity_value
 FROM agent_branch_2__median__entity_values__leaf_1 AS base
 ),
 agent_branch_2 AS (
 SELECT
   agent_branch_2__median__entity_values."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  agent_branch_2__median__entity_values.period AS period,
-  MEDIAN(agent_branch_2__median__entity_values.__entity_value) AS median
+  agent_branch_2__median__entity_values."period" AS "period",
+  MEDIAN(agent_branch_2__median__entity_values.__entity_value) AS "median"
 FROM agent_branch_2__median__entity_values
 GROUP BY
   agent_branch_2__median__entity_values."dimension.shop_order_store_id",
-  agent_branch_2__median__entity_values.period
+  agent_branch_2__median__entity_values."period"
 ),
 agent_combined_2 AS (
 SELECT
   COALESCE(left_side."dimension.shop_order_store_id", right_side."dimension.shop_order_store_id") AS "dimension.shop_order_store_id",
-  COALESCE(CAST(left_side.period AS TIMESTAMP), CAST(right_side.period AS TIMESTAMP)) AS period,
-  left_side.total AS total,
-  right_side.median AS median
+  COALESCE(CAST(left_side."period" AS TIMESTAMP), CAST(right_side."period" AS TIMESTAMP)) AS "period",
+  left_side."total" AS "total",
+  right_side."median" AS "median"
 FROM agent_branch_1 AS left_side
-FULL OUTER JOIN agent_branch_2 AS right_side ON left_side."dimension.shop_order_store_id" IS NOT DISTINCT FROM right_side."dimension.shop_order_store_id" AND CAST(left_side.period AS TIMESTAMP) IS NOT DISTINCT FROM CAST(right_side.period AS TIMESTAMP)
+FULL OUTER JOIN agent_branch_2 AS right_side ON left_side."dimension.shop_order_store_id" IS NOT DISTINCT FROM right_side."dimension.shop_order_store_id" AND CAST(left_side."period" AS TIMESTAMP) IS NOT DISTINCT FROM CAST(right_side."period" AS TIMESTAMP)
 ),
 guarded_base AS (
 SELECT
   base."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  base.period AS period,
-  CASE WHEN COUNT(base.total) OVER () > 0 THEN COALESCE(base.total, 0) END AS total,
-  base.median AS median
+  base."period" AS "period",
+  CASE WHEN COUNT(base."total") OVER () > 0 THEN COALESCE(base."total", 0) END AS "total",
+  base."median" AS "median"
 FROM agent_combined_2 AS base
 ),
 agent_projected AS (
 SELECT
   base."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  base.period AS period,
-  base.total AS total,
-  base.median AS median
+  base."period" AS "period",
+  base."total" AS "total",
+  base."median" AS "median"
 FROM guarded_base AS base
 )
 SELECT
   agent_projected."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  agent_projected.period AS period,
-  agent_projected.total AS total,
-  agent_projected.median AS median
+  agent_projected."period" AS "period",
+  agent_projected."total" AS "total",
+  agent_projected."median" AS "median"
 FROM agent_projected
 ORDER BY
-  period ASC,
+  "period" ASC,
   "dimension.shop_order_store_id" ASC"""
 
 

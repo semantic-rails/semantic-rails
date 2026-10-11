@@ -1781,7 +1781,7 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.m1 AS revenue
+  base.m1 AS "revenue"
 FROM guarded_base AS base""",
     "grouped": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
@@ -1807,7 +1807,7 @@ FROM leaf_1 AS base
 )
 SELECT
   base.g1 AS "dimension.hop_item_product_type",
-  base.m1 AS orders
+  base.m1 AS "orders"
 FROM guarded_base AS base""",
     "monthly": """WITH leaf_1 AS (
 SELECT
@@ -1834,14 +1834,16 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.t AS period,
-  base.m1 AS revenue
+  base.t AS "period",
+  base.m1 AS "revenue"
 FROM guarded_base AS base
 ORDER BY
-  period ASC""",
+  "period" ASC""",
+    # A median overrides the revenue sum, so the answer counts the rows it read.
     "median": """WITH leaf_1 AS (
 SELECT
-  {median} AS m1
+  {median} AS m1,
+  COUNT(1) AS "m1_rows"
 FROM orders
 WHERE
   EXISTS (
@@ -1854,7 +1856,8 @@ WHERE
 )
 )
 SELECT
-  base.m1 AS median_revenue
+  base.m1 AS "median_revenue",
+  base."m1_rows" AS "m1_rows"
 FROM leaf_1 AS base""",
 }
 
@@ -1882,7 +1885,7 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.m1 AS revenue
+  base.m1 AS "revenue"
 FROM guarded_base AS base""",
     "monthly": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
@@ -1911,15 +1914,16 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.t AS period,
-  base.m1 AS revenue
+  base.t AS "period",
+  base.m1 AS "revenue"
 FROM guarded_base AS base
 ORDER BY
-  period ASC""",
+  "period" ASC""",
     "median": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
-  orders.total AS __entity_value
+  orders.total AS __entity_value,
+  1 AS __entity_rows
 FROM orders
 INNER JOIN order_items ON orders.order_id = order_items.order_id
 WHERE
@@ -1927,11 +1931,13 @@ WHERE
 ),
 leaf_1 AS (
 SELECT
-  {median} AS m1
+  {median} AS m1,
+  COUNT(leaf_1__leaf_1_entity_rows.__entity_rows) AS "m1_rows"
 FROM leaf_1__leaf_1_entity_rows
 )
 SELECT
-  base.m1 AS median_revenue
+  base.m1 AS "median_revenue",
+  base."m1_rows" AS "m1_rows"
 FROM leaf_1 AS base""",
 }
 
@@ -1963,4 +1969,5 @@ def test_remote_dialects_render_the_filter_as_correlated_exists(
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     query = {"version": 1, "observation_scope": "query", **FILTERED_SUM}  # as in _run
     sql = compile_query(config, Registry(config), query)["sql"]
-    assert sql == DIALECT_SQL["filtered"]
+    quote = "`" if warehouse in {"bigquery", "databricks"} else '"'
+    assert sql == DIALECT_SQL["filtered"].replace('"', quote)

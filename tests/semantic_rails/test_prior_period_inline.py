@@ -290,8 +290,8 @@ def test_inline_yoy_validates_and_compiles(runtime: Runtime) -> None:
     sql = str(compile_out.get("rendered_sql", ""))
     # Both projections must be distinct in the rendered SQL — a LAG
     # window appears for the prior-period column, not a bare alias.
-    assert " AS revenue_usd" in sql
-    assert " AS revenue_prior_year" in sql
+    assert ' AS "revenue_usd"' in sql
+    assert ' AS "revenue_prior_year"' in sql
     assert "LAG(" in sql.upper()
 
 

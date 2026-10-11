@@ -33,6 +33,7 @@ import pytest
 import yaml
 from mcp.shared.memory import create_connected_server_and_client_session
 
+from semantic_rails.answer import routes_taken
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.compiler import compile_query
@@ -42,7 +43,7 @@ from semantic_rails.db import DuckDBAdapter
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import MeasureRefExpr
-from semantic_rails.fanout import query_route_decisions, route_reading
+from semantic_rails.fanout import query_route_decisions
 from semantic_rails.interop.package_writer import package_documents, write_package
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import build_options_payload, valid_values_payload
@@ -50,7 +51,7 @@ from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
-from semantic_rails.runtime import Runtime, _route_notes
+from semantic_rails.runtime import Runtime
 from semantic_rails.schema import (
     EntityConfig,
     MetricConfig,
@@ -279,7 +280,37 @@ def _refusal(pkg: Path, query: dict[str, Any]) -> SemanticLayerError:
 
 
 def _chosen_by_query(out: dict[str, Any]) -> list[dict[str, Any]]:
-    return [w["details"] for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
+    """Each route the call chose (a compact or full answer's ``routes``): its row, the package's
+    basis it replaced, and its one-step switches."""
+    return [
+        {
+            "row": {
+                "source_entity": route["from"],
+                "target_entity": route["to"],
+                "relationship_path": route["via"],
+            },
+            **{
+                key: route[key]
+                for key in ("replaced", "other_routes", "more_routes")
+                if key in route
+            },
+        }
+        for route in out.get("routes", [])
+        if route.get("basis") == "routes"
+    ]
+
+
+def _switches(row: dict[str, Any], options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The other options of a refusal as routes, ready to send."""
+    return [
+        {
+            "from": row["source_entity"],
+            "to": row["target_entity"],
+            "via": option["relationship_path"],
+        }
+        for option in options
+        if option["relationship_path"] != row["relationship_path"]
+    ]
 
 
 BALANCE_BY_DISTRICT = _query("measure.bank.balance", group_by=["dimension.bank_district_name"])
@@ -566,17 +597,8 @@ def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis):
         selected = next(
             option for option in options if option["relationship_path"] == row["relationship_path"]
         )
-        expected.update(
-            meaning=selected["meaning"],
-            route_alternatives=[option["decision"] for option in options if option != selected],
-        )
+        expected["other_routes"] = _switches(selected["decision"], options)
     assert chosen == expected
-    if basis != "undecided":
-        (warning,) = [w for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
-        assert (
-            warning["message"]
-            == f"{route_reading(runtime._config, row['source_entity'], row['relationship_path'])} (chosen by this query)"
-        )
     runtime.close()
 
 
@@ -735,23 +757,17 @@ def test_query_route_switches_are_disclosed_without_another_execution(
     assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(
         BY_BRANCH if option_index == 0 else BY_OWNER
     )
-    (warning,) = [w for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
-    assert warning["details"] == {
-        "row": {
-            key: chosen["decision"][key]
-            for key in ("source_entity", "target_entity", "relationship_path")
-        },
-        "replaced": "undecided",
-        "meaning": chosen["meaning"],
-        "route_alternatives": [other["decision"]],
+    (route,) = out["routes"]
+    decision = chosen["decision"]
+    assert {key: route[key] for key in ("from", "to", "via", "other_routes")} == {
+        "from": decision["source_entity"],
+        "to": decision["target_entity"],
+        "via": decision["relationship_path"],
+        # The other option, ready to send as the call's routes.
+        "other_routes": _switches(decision, [other]),
     }
-    assert chosen["meaning"] in warning["message"]
-    assert other["meaning"] in warning["message"]
-    assert "one-step switch" in warning["message"]
-    assert warning["message"].count("package default") == 1
-    assert not warning.get("recovery_hints") and not out.get("recovery_hints")
-    # A switch is its ready row, with its meaning only in label.
-    assert len(json.dumps(warning)) < 1500
+    assert ("basis" in route) is (verbosity != "minimal")
+    assert "warnings" not in out and not out.get("recovery_hints")
 
 
 @pytest.mark.parametrize("selected_index", [0, 1, 2])
@@ -799,10 +815,8 @@ def test_query_switches_use_only_the_options_the_package_refusal_offered(tmp_pat
         "replaced": "undecided",
     }
     if selected_index < 2:
-        expected.update(
-            meaning=options[selected_index]["meaning"],
-            route_alternatives=[options[1 - selected_index]["decision"]],
-        )
+        # A route the refusal never offered gets no switches.
+        expected["other_routes"] = _switches(selected, options[:2])
     assert details == expected
     assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(
         BY_OWNER if selected_index == 1 else BY_BRANCH
@@ -824,9 +838,9 @@ def test_route_switch_notes_reuse_the_cached_refusal_without_enumerating(tmp_pat
 
     monkeypatch.setattr("semantic_rails.fanout.enumerate_paths", rebuild)
     monkeypatch.setattr("semantic_rails.fanout.route_clarification", rebuild)
-    (note,) = _route_notes(config, compiled, query)
-    assert note["details"]["meaning"] == options[0]["meaning"]
-    assert note["details"]["route_alternatives"] == [options[1]["decision"]]
+    (route,) = routes_taken(config, compiled)
+    assert route["via"] == options[0]["relationship_path"]
+    assert route["other_routes"] == _switches(options[0]["decision"], options)
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
@@ -882,9 +896,8 @@ def test_query_route_switches_never_disclose_hidden_waypoints(
     text = json.dumps(out)
     assert "Private Owner" not in text and OWNER not in text
     assert all(relationship not in text for relationship in OWNER_ROUTE)
-    (details,) = _chosen_by_query(out)
-    assert details["route_alternatives"] == []
-    assert "more_alternatives" not in details
+    (route,) = out["routes"]
+    assert "other_routes" not in route and "more_routes" not in route
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
@@ -914,11 +927,14 @@ def test_own_key_route_notes_never_offer_hidden_waypoints(tmp_path, monkeypatch,
         runtime.close()
     assert execute.call_count == 1
     assert _rows(out, [resolution.REGION_NAME, "v"]) == resolution._gold(resolution.BY_BRANCH)
-    assert hidden not in json.dumps(out["warnings"])
-    notes = [w for w in out["warnings"] if w["code"] == "ROUTE_COLOCATED_KEY"]
+    assert hidden not in json.dumps(out)
+    notes = out.get("routes", [])
     # Without the owner the pair has one route, as in the package without it: nothing chosen.
-    assert len(notes) == (0 if verbosity == "minimal" or hidden == resolution.OWNER else 1)
-    if notes:
+    assert len(notes) == (0 if hidden == resolution.OWNER else 1)
+    route = {"from": resolution.ACCOUNT, "to": resolution.REGION, "via": resolution.BRANCH}
+    if notes and verbosity == "minimal":
+        assert notes == [route]
+    elif notes:
         alternatives = (
             []
             if hidden == resolution.OWNER
@@ -934,7 +950,7 @@ def test_own_key_route_notes_never_offer_hidden_waypoints(tmp_path, monkeypatch,
                 }
             ]
         )
-        assert notes[0]["details"] == {"route": resolution.BRANCH, "alternatives": alternatives}
+        assert notes == [{**route, "basis": "own_key", "alternatives": alternatives}]
 
 
 def _many_route_config(tmp_path):
@@ -1039,20 +1055,15 @@ def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
                 "JOIN b0 USING (id) JOIN c0 USING (id) JOIN district d USING (id) GROUP BY d.name"
             ).fetchall()
         )
-        (warning,) = [w for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
-        alternatives = warning["details"]["route_alternatives"]
+        (route,) = out["routes"]
         visible_options = [o for o in options if "A4" not in o["meaning"]] if hidden else options
         assert len(visible_options) == (100 if hidden else 125)
-        assert 1 <= len(alternatives) <= 3
-        assert alternatives == [o["decision"] for o in visible_options[1 : 1 + len(alternatives)]]
-        assert warning["details"]["more_alternatives"] == len(visible_options) - 1 - len(
-            alternatives
-        )
+        # Three switches, ready to send; the rest only counted. No alternative runs.
+        assert route["other_routes"] == _switches(options[0]["decision"], visible_options[:4])
+        assert route["more_routes"] == len(visible_options) - 1 - 3
         if hidden:
             assert "A4" not in json.dumps(out)
-        assert len(json.dumps(warning)) < 1500
-        assert "without routes" in warning["message"]
-        assert "no warehouse query" in warning["message"]
+        assert len(json.dumps(route)) < 1500
         if hidden is None:
             # The warning's continuation returns every refusal option without another execution.
             assert (
@@ -1113,16 +1124,11 @@ def test_many_route_compact_execute_keeps_rows_with_an_oversized_chosen_label(
             ).fetchall()
             == [("North", 100)]
         )
-        (warning,) = [w for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
-        assert warning["details"] == {
-            "row": {
-                key: chosen[key] for key in ("source_entity", "target_entity", "relationship_path")
-            },
-            "replaced": "undecided",
-        }
-        assert warning["message"] == (
-            f"{route_reading(config, ACCOUNT, chosen['relationship_path'])} (chosen by this query)"
-        )
+        # Routes carry ids, never labels: an oversized label leaves the switches whole.
+        (route,) = out["routes"]
+        assert route["via"] == chosen["relationship_path"]
+        assert len(route["other_routes"]) == 3 and route["more_routes"] == 125 - 1 - 3
+        assert "X" * 100 not in json.dumps(route)
     finally:
         adapter.close()
         runtime.close()
@@ -1148,8 +1154,8 @@ def test_package_route_decisions_have_no_query_switches(tmp_path, monkeypatch, o
         BY_BRANCH if option_index == 0 else BY_OWNER
     )
     assert _chosen_by_query(out) == []
-    assert any(w["code"] == "ROUTE_RECORDED" for w in out["warnings"])
-    assert all("route_alternatives" not in w.get("details", {}) for w in out["warnings"])
+    (route,) = out["routes"]
+    assert route["basis"] == "recorded" and "other_routes" not in route
 
 
 # --- record_route_decision ---------------------------------------------------------------
@@ -1355,7 +1361,15 @@ def test_the_query_mcp_keeps_the_clarification_and_discloses_the_query_row(tmp_p
         decision = expected["options"][1]["decision"]
         answered = adapter.call_tool("execute", {"query": _routed(BALANCE_BY_DISTRICT, decision)})
         assert not answered.get("errors"), answered
-        assert [w["code"] for w in answered["warnings"]] == ["ROUTE_CHOSEN_BY_QUERY"]
+        assert "warnings" not in answered
+        assert answered["routes"] == [
+            {
+                "from": decision["source_entity"],
+                "to": decision["target_entity"],
+                "via": decision["relationship_path"],
+                "other_routes": _switches(decision, expected["options"]),
+            }
+        ]
     finally:
         adapter.close()
 

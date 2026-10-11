@@ -1,11 +1,28 @@
-"""Correctness settings shared by every engine-owned DuckDB connection."""
+"""The one way the engine opens a DuckDB connection, and the settings every one gets."""
 
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Mapping
 from typing import Any
 
+import duckdb
+
 from ..errors import SemanticLayerError
+
+
+def connect_duckdb(
+    database: str = ":memory:",
+    *,
+    read_only: bool = False,
+    config: Mapping[str, Any] | None = None,
+) -> Any:
+    """Open a DuckDB connection with the engine's correctness settings. Every connection the
+    engine opens (local files, MotherDuck, DuckLake, introspection, seeds) comes from here, so
+    none can miss a setting; a cursor of it shares them."""
+    return configure_duckdb_connection(
+        duckdb.connect(database, read_only=read_only, config=dict(config or {}))
+    )
 
 
 def configure_duckdb_connection(connection: Any) -> Any:

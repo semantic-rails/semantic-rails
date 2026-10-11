@@ -34,6 +34,7 @@ from ..expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     expr_kind,
     expr_to_dict,
 )
@@ -215,7 +216,15 @@ def _expr_compatible_temporal_roles(
             role_sets.append(_expr_compatible_temporal_roles(expr.else_expr, config, query))
         return _combine_temporal_roles(role_sets)
     if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
+        expr,
+        (
+            CumulativeExpr,
+            RollingExpr,
+            PriorPeriodExpr,
+            PeriodToDateExpr,
+            OffsetWindowExpr,
+            ShareExpr,
+        ),
     ):
         return _expr_compatible_temporal_roles(expr.input, config, query)
     if isinstance(expr, MetricPredicateExpr):
@@ -361,7 +370,15 @@ def _expr_leaf_temporal_role_sets(
             case_out.extend(visit(expr.else_expr))
         return case_out
     if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
+        expr,
+        (
+            CumulativeExpr,
+            RollingExpr,
+            PriorPeriodExpr,
+            PeriodToDateExpr,
+            OffsetWindowExpr,
+            ShareExpr,
+        ),
     ):
         return visit(expr.input)
     if isinstance(expr, ConversionExpr):
@@ -529,6 +546,7 @@ def _collect_conversion_bindings(
             PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
+            ShareExpr,
         ),
     ):
         _collect_conversion_bindings(expr.input, config, out, recipe_id=recipe_id)

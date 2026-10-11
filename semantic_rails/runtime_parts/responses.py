@@ -3,24 +3,16 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from ..answer import MINIMAL_ROUTE_KEYS
 from ..ast import PERIOD_PARTIAL, is_child_group, time_output_alias
 from ..dialects import dialect_for_warehouse
 from ..expressions import collect_object_references, expr_to_dict
-
-# Said when a time window with no grain was aggregated as one total.
-WINDOW_TOTAL_ASSUMPTION = (
-    "The time window had no grain, so it was aggregated as one total over the window with no "
-    "time column. Set time.grain to get one row per period."
-)
-
-# The ``time_shape`` a response carries when the window was aggregated as one total.
-TIME_SHAPE_WINDOW_TOTAL = "window_total"
 
 _VALID_VERBOSITIES: tuple[str, ...] = ("minimal", "compact", "full")
 _VALID_SQL_PROFILES: tuple[str, ...] = ("audit", "compact", "debug", "off")
 
 # Keys preserved on validate/explain responses when verbosity="minimal".
-_MINIMAL_KEYS_NONEXECUTE: frozenset[str] = frozenset({"ok", "errors", "warnings"})
+_MINIMAL_KEYS_NONEXECUTE: frozenset[str] = frozenset({"ok", "status", "errors", "warnings"})
 
 # Keys preserved on compile responses when verbosity="minimal" — same as
 # validate but plus `rendered_sql` so callers asking for the cheapest
@@ -28,11 +20,23 @@ _MINIMAL_KEYS_NONEXECUTE: frozenset[str] = frozenset({"ok", "errors", "warnings"
 # agent benchmark caught that the previous minimal compile output had
 # everything stripped EXCEPT the SQL — making "minimal" useless for the
 # tool whose product is SQL.
-_MINIMAL_KEYS_COMPILE: frozenset[str] = frozenset({"ok", "errors", "warnings", "rendered_sql"})
+_MINIMAL_KEYS_COMPILE: frozenset[str] = frozenset(
+    {"ok", "status", "errors", "warnings", "rendered_sql"}
+)
 
 # Keys preserved on execute responses when verbosity="minimal".
 _MINIMAL_KEYS_EXECUTE: frozenset[str] = frozenset(
-    {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
+    {"ok", "status", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
+)
+# What the answer means survives the cheapest response (``answer.py``): verbosity never
+# removes a warning, an assumption or a route.
+_ANSWER_KEYS: tuple[str, ...] = (
+    "window",
+    "clock",
+    "observation_scope",
+    "routes",
+    "assumptions",
+    "withheld",
 )
 
 # Heavy keys dropped at the top-level response when verbosity="compact".
@@ -111,18 +115,12 @@ def apply_response_verbosity(
             allowed = _MINIMAL_KEYS_COMPILE
         else:
             allowed = _MINIMAL_KEYS_NONEXECUTE
-        out = {key: value for key, value in out.items() if key in allowed}
-        # What changes what the numbers mean survives the cheapest response.
-        for key in (
-            "assumptions",
-            "time_shape",
-            "window",
-            "clock",
-            "observation_scope",
-            "withheld",
-        ):
-            if response.get(key):
-                out[key] = response[key]
+        out = {key: value for key, value in out.items() if key in allowed or key in _ANSWER_KEYS}
+        if out.get("routes"):
+            out["routes"] = [
+                {key: route[key] for key in MINIMAL_ROUTE_KEYS if key in route}
+                for route in out["routes"]
+            ]
     elif verbosity == "compact":
         for key in _COMPACT_DROP_KEYS:
             out.pop(key, None)
@@ -221,6 +219,8 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
                 )
                 if source_measure is not None:
                     value_type = source_measure.value_type
+        if expr.get("kind") == "share":
+            value_type = "fraction"  # of its input's total, whatever the input's unit
         columns.append(
             {
                 "field": alias,

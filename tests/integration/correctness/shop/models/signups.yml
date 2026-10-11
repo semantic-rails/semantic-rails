@@ -8,6 +8,7 @@ model:
       supported_grains: [day, week, month, quarter, year], default: true}
   dimensions:
     channel: {label: Signup channel, kind: categorical, domain: [web, store]}
+    name: {label: Customer name, kind: categorical}
   measures:
     signup_count: {label: Signups, kind: entity_count, entity_key: customer_id,
       accumulation: {kind: flow}}

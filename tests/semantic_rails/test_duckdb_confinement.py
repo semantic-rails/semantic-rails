@@ -269,7 +269,7 @@ def test_catalog_probe_refuses_before_binding_when_confinement_fails(
         ),
     )
 
-    def connect(path: str, *, read_only: bool) -> Any:
+    def connect(path: str, *, read_only: bool, config: Any) -> Any:
         assert path == str(paths.db)
         assert read_only is True
         return conn

@@ -86,21 +86,8 @@ def caveat_warnings(
             row.caveat.id,
         )
     )
-    cap = {"minimal": 3, "compact": 5}.get(verbosity, len(matches))
-    selected = matches[:cap]
-    warnings = [_warning_for_match(match, verbosity=verbosity) for match in selected]
-    omitted = len(matches) - len(selected)
-    if omitted > 0:
-        warnings.append(
-            semantic_issue(
-                code="SEMANTIC_CAVEATS_TRUNCATED",
-                message="Additional semantic caveats matched but were omitted at this verbosity.",
-                severity="info",
-                stage="planning",
-                details={"omitted_count": omitted, "matched_count": len(matches)},
-            )
-        )
-    return warnings
+    # Every matching caveat is stated; verbosity trims only each one's details.
+    return [_warning_for_match(match, verbosity=verbosity) for match in matches]
 
 
 def _warning_for_match(match: _Match, *, verbosity: str) -> dict[str, Any]:

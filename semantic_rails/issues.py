@@ -1,7 +1,8 @@
 """Every code a caller can read, and what kind of code it is: one table.
 
 A ``refusal`` ends a call (``errors``); a ``warning`` or a ``note`` rides on an answer
-(``warnings``); a ``hold`` is why a plan did not draft a ready call; a ``hint`` is the
+(``warnings``); an ``assumption`` is what an answer took as meant (``assumptions``, at every
+verbosity; ``answer.finish`` moves one written as a warning there); a ``hold`` is why a plan did not draft a ready call; a ``hint`` is the
 ready-to-send fix a refusal carries (``recovery_hints``); a ``check`` is a finding of a
 package report (examples, tests, drift, promotion). ``errors.ERROR_CODES`` and
 ``WARNING_CODES`` come from this table; ``test_error_codes_contract.py`` checks that every code
@@ -10,11 +11,13 @@ the engine writes is listed here and that every listed code is written somewhere
 
 from __future__ import annotations
 
-REFUSAL, WARNING, NOTE, HOLD, HINT, CHECK = "refusal", "warning", "note", "hold", "hint", "check"
+REFUSAL, WARNING, NOTE, ASSUMPTION = "refusal", "warning", "note", "assumption"
+HOLD, HINT, CHECK = "hold", "hint", "check"
 SEVERITY = {
     REFUSAL: "error",
     WARNING: "warning",
     NOTE: "info",
+    ASSUMPTION: "info",
     HOLD: "warning",
     HINT: "",
     CHECK: "error",
@@ -68,10 +71,14 @@ CODES: dict[str, str] = {
         UNKNOWN_ROWS_KEPT VALID_VALUES_NO_DOMAIN VALID_VALUES_UNKNOWN_ARG
         """,
     ),
+    **_codes(NOTE, "VALUES_WITHHELD"),
+    # One entry per disclosure an answer states under ``assumptions``.
     **_codes(
-        NOTE,
-        "ENTITY_FILTER_OVER PARTIAL_PERIOD ROUTE_CHOSEN_BY_QUERY SEMANTIC_CAVEATS_TRUNCATED"
-        " VALUES_WITHHELD",
+        ASSUMPTION,
+        """
+        AGGREGATION_OVERRIDE ENTITY_FILTER_OVER GOVERNED_METRIC_EXISTS GROUPED_BY_KEY
+        PARTIAL_PERIOD SHARE_OF_TOTAL SHOWN_BY_KEY WINDOW_TOTAL
+        """,
     ),
     **_codes(
         HOLD,

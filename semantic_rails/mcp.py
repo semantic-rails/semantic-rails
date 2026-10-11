@@ -58,7 +58,7 @@ from .request_payload import (
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
 from .runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
-from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
+from .runtime_parts.responses import resolve_verbosity
 from .schema import PackageConfig
 
 __all__ = [
@@ -1176,7 +1176,7 @@ def _uses_own_clock(expression: Any) -> bool:
 def _collapsed_window(result: Mapping[str, Any]) -> bool:
     """Whether the runtime aggregated a grainless time window as one total."""
 
-    return result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL
+    return any(row.get("code") == "WINDOW_TOTAL" for row in result.get("assumptions") or [])
 
 
 def _narrowing_advice(query: Mapping[str, Any], result: Mapping[str, Any]) -> str:
@@ -1398,7 +1398,6 @@ def _bound_response(
         "status": "error",
         "error": {"code": issue["code"]},
         "errors": [issue],
-        "warnings": [],
     }
     if len(json_text(refusal)) > limit:
         issue["message"] = (
@@ -1927,21 +1926,21 @@ class SemanticLayerMCPAdapter:
         out.setdefault("api_version", self.interface)
         out.setdefault("request_id", request_id or uuid.uuid4().hex)
         out.setdefault("package_id", self.package_id)
-        out.setdefault("warnings", [])
         if "errors" not in out:
             error = out.get("error")
             if isinstance(error, dict):
                 out["errors"] = [error]
             elif error:
                 out["errors"] = [_internal_issue(str(error))]
-            else:
-                out["errors"] = []
         verbosity = _verbosity(arguments or {})
+        # Errors and warnings only when there are some; no empty fields.
         for key in ("errors", "warnings"):
-            out[key] = [_lean_issue(issue, verbosity=verbosity) for issue in out[key] or []]
+            issues = [_lean_issue(issue, verbosity=verbosity) for issue in out.pop(key, None) or []]
+            if issues:
+                out[key] = issues
         # Keep the conventional truthy error branch for validate soft-fails,
         # while the complete issues and their hints live only in errors.
-        if out["errors"]:
+        if out.get("errors"):
             first = out["errors"][0]
             hints = [hint for issue in out["errors"] for hint in issue.get("recovery_hints", [])]
             extra = [_lean_issue(hint) for hint in out.pop("recovery_hints", []) or []]

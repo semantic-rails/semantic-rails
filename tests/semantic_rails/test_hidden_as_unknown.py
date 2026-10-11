@@ -172,6 +172,11 @@ POSITIONS: dict[str, tuple[str, str, Callable[[str], dict[str, Any]]]] = {
             "time": {"temporal_role": ORDER_TIME, "grain": "month"},
         },
     ),
+    "select.share.over": (
+        "over",
+        "dimension",
+        lambda x: {**_select({"kind": "share", "input": ORDERS, "over": [x]}), "group_by": [x]},
+    ),
     "select.conversion.constant_properties": (
         "constant_properties",
         "dimension",

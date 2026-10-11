@@ -1309,6 +1309,29 @@
                       "kind",
                       "measure"
                     ]
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "input": {
+                        "$ref": "#/$defs/Ref"
+                      },
+                      "kind": {
+                        "const": "share"
+                      },
+                      "over": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1,
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "input",
+                      "over"
+                    ]
                   }
                 ],
                 "type": "object"

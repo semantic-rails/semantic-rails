@@ -47,7 +47,7 @@ def test_unlimited_or_unordered_queries_keep_their_order(limit, ordered):
         order_by=[SqlOrder(SqlIdentifier(["score"]), "DESC")] if ordered else [],
         limit=limit,
     )
-    final, _ = limit_order(query)
+    final, _ = limit_order(query, ["name"])
     if limit is None or not ordered:
         assert final is query
         assert "NULLS LAST" not in render_select(final)
@@ -55,19 +55,29 @@ def test_unlimited_or_unordered_queries_keep_their_order(limit, ordered):
         assert final.limit == 0
 
 
-def test_tiebreaks_follow_output_order_and_skip_requested_columns():
+def test_tiebreaks_follow_the_group_columns_and_skip_requested_ones():
+    # Columns b and a are group_by columns (in that order), then the period; m is a measure.
     query = SqlSelect(
-        select=[SqlField(SqlLiteral(index), name) for index, name in enumerate(["b", "c", "a"])],
+        select=[
+            SqlField(SqlLiteral(index), name)
+            for index, name in enumerate(["m", "b", "c", "a", "period"])
+        ],
         order_by=[SqlOrder(SqlIdentifier(["c"]), "DESC"), SqlOrder(SqlIdentifier(["b"]), "ASC")],
         limit=1,
     )
-    final, keys = limit_order(query)
+    groups = ["b", "a", "period"]
+    final, keys = limit_order(query, groups)
     assert keys == ("c", "b")
     assert final.order_by[:2] == query.order_by
-    assert final.order_by[2:] == [SqlOrder(SqlIdentifier(["a"]), "ASC", nulls_last=True)]
-    final, keys = limit_order(replace(query, order_by=query.order_by[:1]))
+    assert final.order_by[2:] == [
+        SqlOrder(SqlIdentifier([name]), "ASC", nulls_last=True) for name in ["a", "period"]
+    ]
+    final, keys = limit_order(replace(query, order_by=query.order_by[:1]), groups)
     assert keys == ("c",)
-    assert [term.expression.parts for term in final.order_by[1:]] == [["b"], ["a"]]
+    assert [term.expression.parts for term in final.order_by[1:]] == [["b"], ["a"], ["period"]]
+    # A group that is not an output (a collapsed window's clock) breaks no tie.
+    final, _ = limit_order(replace(query, order_by=query.order_by[:1]), ["b", "missing"])
+    assert [term.expression.parts for term in final.order_by[1:]] == [["b"]]
 
 
 def test_unprojected_order_cannot_bypass_the_limited_order_guard():
@@ -77,7 +87,8 @@ def test_unprojected_order_cannot_bypass_the_limited_order_guard():
                 select=[SqlField(SqlLiteral(1), "score")],
                 order_by=[SqlOrder(SqlIdentifier(["hidden"]), "ASC")],
                 limit=2,
-            )
+            ),
+            [],
         )
     assert error.value.code == "INVALID_ORDER_BY"
 
@@ -101,11 +112,7 @@ def test_boundary_warning_counts_only_observed_ties(values, limit, count):
         assert warnings == []
     else:
         assert warnings[0]["code"] == "TIES_AT_LIMIT"
-        assert warnings[0]["details"] == {
-            "limit": limit,
-            "tie_count": count,
-            "tie_count_is_lower_bound": True,
-        }
+        assert warnings[0]["details"] == {"at": limit, "tied": count}
 
 
 @pytest.mark.parametrize("keys", [("a", "b"), ("A", "B")])
@@ -191,11 +198,7 @@ def test_runtime_cutoff_uses_warehouse_result_key_casing(
     warnings = [warning for warning in result["warnings"] if warning["code"] == "TIES_AT_LIMIT"]
     if tied:
         assert len(warnings) == 1
-        assert warnings[0]["details"] == {
-            "limit": 2,
-            "tie_count": 2,
-            "tie_count_is_lower_bound": True,
-        }
+        assert warnings[0]["details"] == {"at": 2, "tied": 2}
     else:
         assert not warnings
 

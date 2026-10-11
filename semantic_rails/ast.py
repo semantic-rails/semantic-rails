@@ -38,6 +38,7 @@ from .expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     _closest_key_matches,
     expr_to_dict,
     expression_field,
@@ -388,7 +389,15 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
             _validate_query_expr(expr.else_expr)
         return
     if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
+        expr,
+        (
+            CumulativeExpr,
+            RollingExpr,
+            PriorPeriodExpr,
+            PeriodToDateExpr,
+            OffsetWindowExpr,
+            ShareExpr,
+        ),
     ):
         _validate_query_expr(expr.input)
         return

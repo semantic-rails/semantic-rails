@@ -114,11 +114,11 @@ def test_names_that_are_not_plain_identifiers_never_reach_the_warehouse(
             "duckdb",
             "analytics.orders",
             "ordered_at",
-            "SELECT\n  MIN(ordered_at) AS min_t,\n  MAX(ordered_at) AS max_t\nFROM analytics.orders",
+            'SELECT\n  MIN(ordered_at) AS "min_t",\n  MAX(ordered_at) AS "max_t"\nFROM analytics.orders',
         ),
         # A reserved word is quoted, as the compiled query quotes it.
-        ("duckdb", "orders", "order", 'MIN("order") AS min_t'),
-        ("bigquery", "shop.orders", "order", "MIN(`order`) AS min_t"),
+        ("duckdb", "orders", "order", 'MIN("order") AS "min_t"'),
+        ("bigquery", "shop.orders", "order", "MIN(`order`) AS `min_t`"),
         ("snowflake", "DB.SHOP.ORDERS", "ORDERED_AT", "FROM DB.SHOP.ORDERS"),
     ],
 )
@@ -136,5 +136,5 @@ def test_plain_names_report_the_data_coverage() -> None:
 
     assert _probe(adapter, "orders", "ordered_at") == {"min": "2016-09-01", "max": "2017-08-31"}
     assert adapter.sql == [
-        "SELECT\n  MIN(ordered_at) AS min_t,\n  MAX(ordered_at) AS max_t\nFROM orders"
+        'SELECT\n  MIN(ordered_at) AS "min_t",\n  MAX(ordered_at) AS "max_t"\nFROM orders'
     ]

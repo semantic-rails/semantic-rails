@@ -12,6 +12,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import fields, is_dataclass
 from typing import TYPE_CHECKING
 
 from .operators import LIKE_ESCAPE
@@ -141,6 +142,56 @@ def _quote_ident(value: str) -> str:
     return '"' + raw.replace('"', '""') + '"'
 
 
+# The answer's own column names (the outermost SELECT's aliases), and the names that qualify a
+# derived relation (a CTE, or an alias of one). An output alias is always quoted where it is
+# defined and wherever it is referenced (unqualified, or through a derived relation), so a
+# keyword such as end, user or order is a name on every warehouse; a physical column keeps
+# the selective quoting above, since Snowflake folds an unquoted name to upper case.
+_OUTPUT_ALIASES: ContextVar[frozenset[str]] = ContextVar("output_aliases", default=frozenset())
+_DERIVED: ContextVar[frozenset[str]] = ContextVar("derived_relations", default=frozenset())
+
+
+def _quoted(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _alias_name(value: str) -> str:
+    return _quoted(value) if value in _OUTPUT_ALIASES.get() else _quote_ident(value)
+
+
+def _derived_relations(query: SqlSelect) -> frozenset[str]:
+    """Every CTE name in ``query``, and every alias a FROM or JOIN gives one."""
+    ctes: set[str] = set()
+    refs: list[SqlTableRef] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, SqlCte):
+            ctes.add(node.name)
+        if isinstance(node, SqlTableRef):
+            refs.append(node)
+        if isinstance(node, (list, tuple)):
+            for item in node:
+                walk(item)
+        elif is_dataclass(node) and not isinstance(node, type):
+            for item in fields(node):
+                walk(getattr(node, item.name))
+
+    walk(query)
+    return frozenset(ctes | {ref.alias for ref in refs if ref.name in ctes and ref.alias})
+
+
+@contextmanager
+def quoting_output_aliases(query: SqlSelect) -> Iterator[None]:
+    """Quote ``query``'s output aliases, and every reference to them, for one render."""
+    aliases = _OUTPUT_ALIASES.set(frozenset(field.alias for field in query.select))
+    derived = _DERIVED.set(_derived_relations(query))
+    try:
+        yield
+    finally:
+        _DERIVED.reset(derived)
+        _OUTPUT_ALIASES.reset(aliases)
+
+
 # Operator precedence used to elide redundant parens around SqlBinary
 # expressions. Higher number = binds tighter. Operators not listed
 # render with parens (preserves existing behavior for any obscure op).
@@ -187,7 +238,13 @@ def _render_conjunct(expr: SqlExpr) -> str:
 
 def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlIdentifier):
-        return ".".join(_quote_ident(part) for part in expr.parts)
+        names = [_quote_ident(part) for part in expr.parts]
+        *qualifier, column = expr.parts or [""]
+        if column in _OUTPUT_ALIASES.get() and (
+            not qualifier or (len(qualifier) == 1 and qualifier[0] in _DERIVED.get())
+        ):
+            names[-1] = _quoted(column)
+        return ".".join(names)
     if isinstance(expr, SqlStar):
         if expr.qualifier:
             return f"{_quote_ident(expr.qualifier)}.*"
@@ -415,7 +472,7 @@ def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
             )
         chunks.append("WITH " + ",\n".join(ctes))
     select_sql = ",\n  ".join(
-        f"{render_expr(field.expression)} AS {_quote_ident(field.alias)}" for field in query.select
+        f"{render_expr(field.expression)} AS {_alias_name(field.alias)}" for field in query.select
     )
     select_keyword = "SELECT DISTINCT" if getattr(query, "distinct", False) else "SELECT"
     chunks.append(f"{select_keyword}\n  {select_sql}")
@@ -475,7 +532,7 @@ def render_select_for_profile(
     render; callers compiling for a real warehouse must pass it. The compiler
     then calls ``dialect.prepare_query`` to finalize executable SQL and aliases.
     """
-    with use_dialect(dialect):
+    with use_dialect(dialect), quoting_output_aliases(query):
         normalized = str(profile or "audit").strip().lower()
         if normalized == "debug":
             return render_select(query, flatten_ctes=False)

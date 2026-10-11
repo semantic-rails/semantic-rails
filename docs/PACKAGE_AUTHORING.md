@@ -1159,6 +1159,12 @@ whose own name names it ("Store name" for "store"), if exactly one does; otherwi
 alone, with an assumption line saying so. A caller who can't see the display dimension gets
 the same answer as a package without `display:`; the entity itself stays visible.
 
+A call that groups by the `display` dimension itself groups by the entity's one-column key
+too, just before the name, so two customers named Ann stay two rows; the answer carries the
+key column and the assumption `GROUPED_BY_KEY {dimension, key}`. When the caller can't see
+the key, the call groups by the name alone. A call grouped by an entity's key, when the entity
+declares no `display:`, carries `SHOWN_BY_KEY {entity, dimension}`: its rows show only the key.
+
 ### `disallowed_names:` — explicit anti-pattern guard
 
 Author the names that should NEVER appear as a column, dimension, or measure on
@@ -1984,7 +1990,7 @@ paths, because most pairs have one route (see [the route rule](#the-route-rule))
 - "items per customer" when the items table also carries `customer_id`: the direct
   relationship and `order_item → order → customer` are two routes that can name
   different customers. The item's own `customer_id` is its one direct key, so the
-  planner uses it and the response notes it (`ROUTE_COLOCATED_KEY`); a
+  planner uses it and the answer's `routes` names it (`basis: own_key`); a
   `graph.path_preferences` row records the other route when that is the meaning.
 - "customers per store" in a package where a customer reaches a store through the
   stores they ordered at and through a preferred store: neither is the customer's own
@@ -2253,30 +2259,27 @@ for a pair with one route is allowed: it records a definition.
 
 Four guard rails back this up:
 
-- **Route notes** — where the engine chose one of two or more routes for a pair
-  the compiled query reads (root, leaf, predicate and conversion paths, and the
-  direct read of a key), compact and full responses carry one `info` note, with
-  the chosen route's relationship ids in `details.route` and its readable
-  meaning in the message:
-  - `ROUTE_COLOCATED_KEY` (rule 2, `Order → Store (own key)`):
-    `details.alternatives` holds, for each other route whose row would load
-    beside the package's rows, the `graph.path_preferences` row that would make
-    it the default, and `details.conflicts_with` lists any other route with the
-    rows its row would disagree with;
-  - `ROUTE_RECORDED` (rule 1, `(recorded route)`, or rule 3,
-    `(recorded for Account → District)`, with the rows it follows in
-    `details.rows`).
+- **Routes in the answer** — where the engine chose one of two or more routes
+  for a pair the compiled query reads (root, leaf, predicate and conversion
+  paths, and the direct read of a key), the answer's `routes` names it as
+  `{from, to, via}`, at every verbosity. Compact and full responses add how
+  (`basis`):
+  - `own_key` (rule 2): `alternatives` holds, for each other route whose row
+    would load beside the package's rows, the `graph.path_preferences` row that
+    would make it the default, and `conflicts_with` lists any other route with
+    the rows its row would disagree with;
+  - `recorded` (rule 1, or rule 3 with the pairs whose rows it follows in
+    `recorded_for`).
 
-  A pair with one route gets none, and the minimal response (the MCP default)
-  leaves the notes out. So adding a route never changes an answer silently: a
-  pair whose one route is its own key keeps its answer and now notes it, and
-  any other pair is refused until a row records it. A note names only a route
-  the SQL reads, and only when the pair's resolution chose that route, so the
-  same query gets the same notes whatever ran before it; a count read from a
-  child's rows along the counted entity's route is noted once, for that route.
-  For a recorded route, notes check whether multiple routes fit `max_hops`
-  using bounded reachability scans, without enumerating alternatives or caching
-  a route refusal just to produce a note.
+  A pair with one route is not listed. So adding a route never changes an
+  answer silently: a pair whose one route is its own key keeps its answer and
+  now names it, and any other pair is refused until a row records it. `routes`
+  names only a route the SQL reads, and only when the pair's resolution chose
+  that route, so the same query names the same routes whatever ran before it; a
+  count read from a child's rows along the counted entity's route names it once.
+  For a recorded route, the check whether multiple routes fit `max_hops` uses
+  bounded reachability scans, without enumerating alternatives or caching a
+  route refusal.
 - **`AMBIGUOUS_PATH` error** — rule 5 above. A `graph.relationships:` entry
   never replaces a foreign key on other columns: the model keeps both, so an
   origin and a destination key into one `airport` entity are two routes. Any

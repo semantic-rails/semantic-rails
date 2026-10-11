@@ -528,7 +528,7 @@ def test_an_exclusion_is_answered_with_the_null_keeping_not(shop):
 
 def test_an_exclusion_keeps_rows_with_no_recorded_value(tmp_path):
     seed = (
-        "\nDELETE FROM signups;\nINSERT INTO signups VALUES "
+        "\nDELETE FROM signups;\nINSERT INTO signups (customer_id, signed_up_at, channel) VALUES "
         + ", ".join(
             f"({number}, TIMESTAMP '2024-05-0{number % 9 + 1} 09:00:00', {channel})"
             for number, channel in enumerate(

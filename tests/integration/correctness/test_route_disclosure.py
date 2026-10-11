@@ -207,7 +207,7 @@ def teams(request: pytest.FixtureRequest, packages: dict[str, Path]) -> Iterator
 
 
 def _codes(out: dict[str, Any], code: str) -> list[dict[str, Any]]:
-    return [warning for warning in out["warnings"] if warning["code"] == code]
+    return [warning for warning in out.get("warnings", []) if warning["code"] == code]
 
 
 def _pass_through(out: dict[str, Any]) -> dict[str, Any]:
@@ -326,7 +326,7 @@ def test_plan_drafts_disclose_the_routes_they_validate(teams, detail, surface):
         assert all(
             any(
                 all(actual[key] == warning[key] for key in ("code", "message", "details"))
-                for actual in out["warnings"]
+                for actual in out.get("warnings", [])
             )
             for warning in expected
         )
@@ -397,13 +397,12 @@ def test_an_authored_bridge_is_kept_on_the_entity_and_in_the_fingerprint(package
     assert base.semantic_fingerprint != bridged.semantic_fingerprint
 
 
-def test_a_query_that_decides_the_route_gets_only_its_own_note(teams):
+def test_a_query_that_decides_the_route_gets_only_its_own_route(teams):
     route = {"from": MEMBER, "to": TEAM, "via": THROUGH_EVENTS}
     out = teams.runtimes["base"].query({**MEMBERS_BY_TIER, "routes": [route]}, verbosity="full")
     assert _values(out) == teams.reference("members_by_tier")
     assert not _codes(out, "ROUTE_PASS_THROUGH")
-    (note,) = _codes(out, "ROUTE_CHOSEN_BY_QUERY")
-    assert note["details"]["replaced"] == "only_route"
+    assert out["routes"] == [{**route, "basis": "routes", "replaced": "only_route"}]
 
 
 def test_a_caller_who_cannot_see_the_link_table_reads_nothing_naming_it(packages):
@@ -448,7 +447,7 @@ def test_a_withheld_rank_never_discloses_its_values_in_history_warnings(packages
         (warning,) = _history(out)
         assert warning["message"] == STATIC
         assert "measures" not in warning["details"]
-        assert "2 of 2" not in json.dumps(out["warnings"])
+        assert "2 of 2" not in json.dumps(out.get("warnings", []))
     finally:
         runtime.close()
 
@@ -459,7 +458,7 @@ def test_complete_redacted_rows_use_only_visible_outputs_for_history_totals(team
     compiled = compile_query(runtime.config, None, runtime.engine_payload(query))
     # The complete-result diagnostic consumes the same rows the caller sees.
     visible_rows = [{PLAN_NAME: None}]
-    warnings = runtime.validate(query)["warnings"]
+    warnings = runtime.validate(query).get("warnings", [])
     (warning,) = _history(
         {"warnings": _history_result_warnings(runtime.config, compiled, visible_rows, warnings)}
     )
@@ -497,7 +496,7 @@ def test_an_incomplete_empty_history_group_keeps_the_static_warning(teams, incom
         rows = QueryRows([{PLAN_NAME: None, "new_teams": 2}], truncated=True)
         out = {
             "warnings": _history_result_warnings(
-                runtime.config, compiled, rows, runtime.validate(query)["warnings"]
+                runtime.config, compiled, rows, runtime.validate(query).get("warnings", [])
             )
         }
     else:
@@ -547,7 +546,7 @@ def test_a_null_accepting_history_filter_never_says_it_leaves_rows_out(teams, op
     assert _values(out) == _rows(runtime, reference) == [(2,)]
     for response in (out, runtime.validate(query), runtime.compile(query)):
         assert not _history(response)
-        assert "left out" not in json.dumps(response["warnings"])
+        assert "left out" not in json.dumps(response.get("warnings", []))
 
 
 def test_null_rejecting_history_filters_warn_once_per_dimension(teams):
