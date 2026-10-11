@@ -1311,7 +1311,7 @@ def test_mcp_plan_reports_what_it_could_not_honor(
 ) -> None:
     clean = adapter.call_tool("plan", {"intent": "total revenue in 2017"})
     assert clean["status"] == "ok"
-    assert clean["warnings"] == []
+    assert clean.get("warnings", []) == []
     weather = adapter.call_tool("plan", {"intent": "what's the weather in Philadelphia tomorrow"})
     expanded = adapter.call_tool("plan", {"intent": "what is the weather in Philadelphia tomorrow"})
     # The contraction must not leave a stray "s" that passes catalog relevance.
@@ -1822,7 +1822,9 @@ def test_a_named_order_date_is_the_order_clock(
     assert plan["status"] == "ok"
     # "At <unit> grain" names no catalog object, so the plan reports "grain" as unmatched.
     grain_only = [{"code": "PLAN_UNMATCHED_TERMS", "terms": ["grain"]}] if "grain" in intent else []
-    warnings = [{"code": w["code"], "terms": w["details"]["terms"]} for w in plan["warnings"]]
+    warnings = [
+        {"code": w["code"], "terms": w["details"]["terms"]} for w in plan.get("warnings", [])
+    ]
     assert warnings == grain_only
     assert query.get("group_by", []) == group_by
     assert query["time"] == {"temporal_role": ORDER_TIME, **time}

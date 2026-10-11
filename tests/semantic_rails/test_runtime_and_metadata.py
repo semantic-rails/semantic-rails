@@ -354,7 +354,7 @@ def test_validate_compile_and_query_happy_path_on_jaffle_shop(runtime_factory):
         assert validated["logical_plan"]["root_entity"] == "entity.jaffle_order"
         # `projected` passthrough CTE is inlined when there are no metric filters.
         assert "projected AS (" not in compiled["rendered_sql"]
-        assert "AS aov_usd" in compiled["rendered_sql"]
+        assert 'AS "aov_usd"' in compiled["rendered_sql"]
         assert compiled["physical_plan"]["nodes"]
         assert compiled["query"] == query
         assert result["row_count"] > 0

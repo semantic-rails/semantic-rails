@@ -72,7 +72,8 @@ def test_planner_explain_shape_and_sql_rendering(package_config_factory):
     # `projected` passthrough CTE is now inlined when there are no metric
     # filters; ORDER BY references the output alias directly.
     assert "COUNT(DISTINCT jaffle_order.order_id)" in rendered
-    assert "orders DESC" in rendered
+    # The answer's column names are always quoted.
+    assert '"orders" DESC' in rendered
     assert compiled["explain"].physical_plan["nodes"]
     assert compiled["explain"].performance_plan["semantic_equivalence"] == "exact_primitives"
     assert compiled["explain"].performance_plan["risk_level"] == "low"
@@ -350,8 +351,9 @@ def test_relative_time_range_expansion(runtime_factory):
             now="2026-05-04",
         )
         assert report["ok"] is True
-        assert report["normalized_query"]["time"]["start"] == "2026-02-01"
-        assert report["normalized_query"]["time"]["end"] == "2026-05-01"
+        # The call keeps its relative spelling; the answer's window names the dates it reads.
+        assert report["normalized_query"]["time"]["last"] == {"unit": "month", "value": 3}
+        assert (report["window"]["start"], report["window"]["end"]) == ("2026-02-01", "2026-05-01")
         rendered = report["explain"]["rendered_sql"]
         assert "2026-02-01" in rendered
         assert "2026-05-01" in rendered
@@ -819,11 +821,11 @@ def test_alias_tiering_uses_short_internal_columns_and_preserves_final_names(
     assert " AS m1" in leaf_sql
     assert " AS m2" in leaf_sql
     assert '"dimension.jaffle_store_name"' not in leaf_sql
-    assert " AS period" not in leaf_sql
+    assert ' AS "period"' not in leaf_sql
     assert 'base.g1 AS "dimension.jaffle_store_name"' in final_sql
-    assert "base.t AS period" in final_sql
-    assert "base.m1 AS revenue" in final_sql
-    assert "base.m2 AS orders" in final_sql
+    assert 'base.t AS "period"' in final_sql
+    assert 'base.m1 AS "revenue"' in final_sql
+    assert 'base.m2 AS "orders"' in final_sql
 
 
 def test_bounded_time_filters_are_pushed_into_source_scan(package_config_factory):
@@ -1175,7 +1177,7 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_fac
     rendered = compiled["sql"]
 
     assert "predicate_jaffle_store_set_1 AS (" in rendered
-    assert "base.t AS period" in rendered or "anchor.t AS period" in rendered
+    assert 'base.t AS "period"' in rendered or 'anchor.t AS "period"' in rendered
     assert "LEFT JOIN predicate_jaffle_store_set_1" in rendered
     assert "FULL OUTER JOIN" not in rendered
     assert rendered.count("FROM jaffle_store_inventory_snapshot") == 1
@@ -1594,7 +1596,7 @@ def test_contextual_metric_predicates_inherit_time_and_minimal_context_entities(
 
     assert '"dimension.jaffle_customer_id"' in store_sql
     assert '"dimension.jaffle_store_id"' in store_sql
-    assert "base.t AS period" in store_sql
+    assert 'base.t AS "period"' in store_sql
     assert (
         'jaffle_store.store_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id"'
         in store_sql
