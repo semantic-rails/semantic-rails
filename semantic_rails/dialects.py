@@ -129,6 +129,11 @@ class SqlDialect:
     # Whether a filter across a one-to-many hop may run as a correlated EXISTS. Without it, a
     # de-duplicated parent leaf (one row per key before aggregating) answers the filter.
     correlated_exists = True
+    # Whether loaded coverage runs here (:meth:`utc_timestamp`), so a named window under a grain
+    # answers every period it holds: 0 inside the data, NULL after its edge.
+    reads_coverage = False
+    # Whether an EXISTS subquery may sit in a select expression, not only in WHERE.
+    exists_in_select = False
     # How a refusal that only this warehouse makes names it.
     label: ClassVar[str] = "This warehouse"
     # The scalar calls a package or query expression may name (``scalar_call``).
@@ -222,30 +227,27 @@ class SqlDialect:
 
     @property
     def has_time_coverage(self) -> bool:
-        """Whether an empty time bucket reads 0 only inside the base's loaded range.
+        """Whether every series' empty time bucket reads 0 only inside the base's loaded range.
 
         That coverage compares stored instants with the request's ``now`` through
-        :meth:`utc_timestamp`, spelled here for DuckDB (and MotherDuck and DuckLake, which run
-        it) and Postgres, the warehouses whose execution is tested. The others keep the
-        in-window observation test.
+        :meth:`utc_timestamp`. DuckDB (and MotherDuck and DuckLake, which run it) and Postgres,
+        the warehouses whose execution is tested, read it for every series; the others keep the
+        in-window observation test, and read coverage only for a named window
+        (:attr:`reads_coverage`).
         """
         return isinstance(self, DuckDbDialect | PostgresDialect)
 
     def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
-        """UTC wall time for an instant, or for naive storage in its declared zone.
+        """UTC wall time for naive storage in its declared zone (``column_timezone``).
 
-        Package timestamp metadata does not distinguish these physical SQL types.
-        Both CASE arms return naive UTC, so session coercion cannot change the cutoff.
-        Only used where :attr:`has_time_coverage` holds.
+        On a warehouse without session-zone queries a package stores naive timestamps and
+        declares their zone, so the stored value converts from that zone. Only used where
+        :attr:`reads_coverage` holds.
         """
-        aware = SqlBinary(
-            SqlCast(SqlCall("PG_TYPEOF", [expr]), "VARCHAR"),
-            "=",
-            SqlLiteral("timestamp with time zone"),
-        )
-        instant = SqlCall("TIMEZONE", [SqlLiteral("UTC"), SqlCast(expr, "TIMESTAMPTZ")])
-        naive = self.convert_timezone(storage_zone, "UTC", self.timestamp_cast(expr))
-        return SqlCase([SqlCaseWhen(aware, instant)], naive)
+        stored = self.timestamp_cast(expr)
+        if storage_zone == "UTC":
+            return stored
+        return self.convert_timezone(storage_zone, "UTC", stored)
 
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         return SqlCall("DATE_TRUNC", [SqlLiteral(grain), self.timestamp_cast(ts_expr)])
@@ -380,6 +382,24 @@ class _ConvertTimezone:
 
 
 class _NestedTimezone:
+    reads_coverage = True
+    exists_in_select = True
+
+    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
+        """UTC wall time for an instant, or for naive storage in its declared zone.
+
+        Package timestamp metadata does not distinguish these physical SQL types.
+        Both CASE arms return naive UTC, so session coercion cannot change the cutoff.
+        """
+        aware = SqlBinary(
+            SqlCast(SqlCall("PG_TYPEOF", [expr]), "VARCHAR"),
+            "=",
+            SqlLiteral("timestamp with time zone"),
+        )
+        instant = SqlCall("TIMEZONE", [SqlLiteral("UTC"), SqlCast(expr, "TIMESTAMPTZ")])
+        naive = self.convert_timezone(storage_zone, "UTC", self.timestamp_cast(expr))  # type: ignore[attr-defined]
+        return SqlCase([SqlCaseWhen(aware, instant)], naive)
+
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
         # `tz` and yields an instant; `timezone(tz, instant)` renders an
@@ -395,6 +415,7 @@ class _NestedTimezone:
 @dataclass(frozen=True)
 class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     name: str = "snowflake"
+    reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
     date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
 
@@ -779,6 +800,7 @@ class BigQueryDialect(SqlDialect):
     """
 
     like_escape_clause = False
+    reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
     date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
     decimal_cast = False
@@ -991,6 +1013,7 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     """
 
     name: str = "databricks"
+    reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
@@ -1093,6 +1116,7 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
+    reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"}
     date_diff_units = ()  # its native date_diff counts complete elapsed units
 
@@ -1123,6 +1147,12 @@ class AthenaDialect(SqlDialect):
             "at_timezone",
             [SqlCall("with_timezone", [ts_expr, SqlLiteral(source_tz)]), SqlLiteral(target_tz)],
         )
+
+    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
+        # at_timezone returns a zoned value; casting drops the zone and keeps its UTC wall
+        # time, so it compares with the naive ``now`` without the session zone.
+        converted = super().utc_timestamp(expr, storage_zone)
+        return converted if storage_zone == "UTC" else self.timestamp_cast(converted)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         # Trino has no exact percentile aggregate (APPROX_PERCENTILE is

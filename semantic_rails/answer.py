@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from .ast import PERIOD_PARTIAL, TIME_AXIS, normalize_query
 from .clock import describe_window, engine_window, format_now, local_date, period_is_partial
-from .compiler import observed_only_groups, read_routes
+from .compiler import observed_only_groups, observed_periods_reason, read_routes
 from .compiler_parts.empty_groups import observation_scope
 from .errors import SemanticLayerError
 from .fanout import offered_rows, package_route, route_note
@@ -109,7 +109,8 @@ def answer_fields(
         if "this" in window.spec:
             text = describe_window(window, now=now, timezone=zone)
             assumptions.append({"code": "PARTIAL_PERIOD", "message": text})
-        if held := observed_only_groups(normalize_query(plan.query, config=config), config):
+        query = normalize_query(plan.query, config=config)
+        if held := observed_only_groups(query, config):
             assumptions.append(
                 {
                     "code": "OBSERVED_PERIODS_ONLY",
@@ -118,6 +119,17 @@ def answer_fields(
                         "window's empty periods are not filled: only rows with data are shown."
                     ),
                     "group_by": held,
+                }
+            )
+        elif reason := observed_periods_reason(query, config):
+            assumptions.append(
+                {
+                    "code": "OBSERVED_PERIODS_ONLY",
+                    "message": (
+                        f"The window's empty periods are not filled because {reason}: only "
+                        "periods with data are shown."
+                    ),
+                    "reason": reason,
                 }
             )
     clocks = (
