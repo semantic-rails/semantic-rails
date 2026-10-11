@@ -153,6 +153,7 @@ KIND_REQUIRED: dict[str, tuple[str, ...]] = {
     "metric_predicate": ("entity", "input", "op", "value", "over"),
     "aggregate_if": ("aggregation", "condition"),
     "ratio": ("numerator", "denominator"),
+    "share": ("input", "over"),
     "entity_value": ("entity", "input"),
     "distribution": ("function", "over"),
     "conversion": ("base", "converted", "entity", "window", "matching_mode"),
@@ -221,6 +222,10 @@ class CallContext:
     default_clock: Callable[[str], str] | None = None
     partial: bool = False
     notes: list[dict[str, Any]] = field(default_factory=list)
+    # The call's group_by ids (dimensions lifted from select join it) and whether its time
+    # has a grain: the columns a share may take its total over.
+    group_by: list[str] = field(default_factory=list)
+    timed: bool = False
 
 
 def read_call(
@@ -239,11 +244,18 @@ def read_call(
             fix=V2_POINTER,
             received=type(payload).__name__,
         )
-    context = CallContext(
-        config=config, now=parse_now(now), default_clock=default_clock, partial=partial
-    )
     _check_top_level(payload)
     group_by = _group_by(payload.get("group_by"))
+    raw_time = payload.get("time")
+    timed = isinstance(raw_time, Mapping) and bool(raw_time.get("grain"))
+    context = CallContext(
+        config=config,
+        now=parse_now(now),
+        default_clock=default_clock,
+        partial=partial,
+        group_by=group_by,
+        timed=timed,
+    )
     select = _select(payload.get("select"), group_by, context)
     internal: dict[str, Any] = {"select": select, "group_by": group_by}
     where, entity_having = _where(payload.get("where"), context, payload)
@@ -341,6 +353,7 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
     if not isinstance(raw, list):
         raise refusal("select", "is a list", fix='Write ["metric.<id>", ...].')
     out: list[dict[str, Any]] = []
+    sources: list[tuple[str, Any]] = []
     for index, item in enumerate(raw):
         path = f"select[{index}]"
         if isinstance(item, str) and item.strip().startswith("dimension."):
@@ -360,6 +373,7 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
         if isinstance(item, str):
             expression = _reference(item, path)
             out.append({"expression": expression, "as": item.strip().split(".")[-1]})
+            sources.append((path, item))
             continue
         if not isinstance(item, Mapping):
             raise refusal(path, "is an id string or {expression, as}", fix='Write "metric.<id>".')
@@ -384,23 +398,50 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
         alias = item.get("as")
         if alias is not None and (not isinstance(alias, str) or not alias.strip()):
             raise refusal(f"{path}.as", "is a non-empty string", fix="Name the output column.")
-        if alias is None:
-            alias = (
-                str(item["expression"]).strip().split(".")[-1]
-                if isinstance(item["expression"], str)
-                else (
-                    str(expression["measure"]).split(".")[-1]
-                    if expression.get("kind") == "measure"
-                    else ""
-                )
-            )
+        if alias is None and isinstance(item["expression"], str):
+            alias = str(item["expression"]).strip().split(".")[-1]
+        # A kind expression without ``as`` gets the engine's generated name.
         row: dict[str, Any] = {"expression": expression}
         if alias:
             row["as"] = alias.strip()
         out.append(row)
+        sources.append((path, item))
     for index, row in enumerate(out):
         row.setdefault("as", f"expr_{index + 1}")
+    _refuse_duplicate_columns(out, sources, group_by, context.timed)
     return out
+
+
+def _refuse_duplicate_columns(
+    select: list[dict[str, Any]], sources: list[tuple[str, Any]], group_by: list[str], timed: bool
+) -> None:
+    """Every answer column is named once: a select item that repeats a name gets its own ``as``."""
+    taken = {TIME_AXIS: "time", f"{TIME_AXIS}_partial": "time"} if timed else {}
+    for index, dimension in enumerate(group_by):
+        if dimension in taken:
+            raise refusal(
+                f"group_by[{index}]",
+                f"repeats '{dimension}'",
+                fix=f"Remove group_by[{index}].",
+                code="DUPLICATE_OUTPUT_ALIAS",
+                alias=dimension,
+            )
+        taken[dimension] = f"group_by[{index}]"
+    for row, (path, item) in zip(select, sources, strict=True):
+        alias = row["as"]
+        if alias in taken:
+            expression = item if isinstance(item, str) else item.get("expression")
+            unique = next(
+                f"{alias}_{n}" for n in range(2, len(taken) + 3) if f"{alias}_{n}" not in taken
+            )
+            raise refusal(
+                path,
+                f"its column '{alias}' is already named by {taken[alias]}",
+                fix=f'Name it with "as": {json.dumps({"expression": expression, "as": unique})}.',
+                code="DUPLICATE_OUTPUT_ALIAS",
+                alias=alias,
+            )
+        taken[alias] = path
 
 
 _KINDLESS_FIX = 'A reference is the id string itself, e.g. "metric.<id>" or "measure.<id>".'
@@ -459,6 +500,8 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
         )
     if not (kind == "prior_period" and "measure" in raw):
         _check_keys(raw, tuple(dict.fromkeys(("kind", *kinds[kind]))), path)
+    if kind == "share":
+        _check_share(raw, path, context)
     node: dict[str, Any] = {}
     for key, value in raw.items():
         child = f"{path}.{key}"
@@ -487,6 +530,8 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             node[key] = _operand(value, child, context)
         else:
             node[key] = value
+    if node.get("aggregation") and "measure" in node:
+        _check_aggregation(node, path, context)
     if kind in {"metric_predicate"}:
         node = _predicate(node, path)
     if kind == "scoped_aggregate":
@@ -516,6 +561,63 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             for key, value in dict(node["filter"]).items()
         }
     return node
+
+
+def _check_share(raw: Mapping[str, Any], path: str, context: CallContext) -> None:
+    """A share reads a measure or metric id, and takes its total over group_by ids or period."""
+    columns = [*context.group_by, *([TIME_AXIS] if context.timed else [])]
+    if not isinstance(raw.get("input"), str) or not raw["input"].startswith(REFERENCE_PREFIXES):
+        raise refusal(
+            f"{path}.input",
+            "a share's input is a measure or metric id",
+            fix='Write "input": "measure.<id>" or "metric.<id>".',
+        )
+    over = raw.get("over")
+    if not isinstance(over, list) or not over:
+        raise refusal(
+            f"{path}.over",
+            "lists the columns the total is taken over",
+            fix=f'Write "over": {json.dumps(columns[:1] or [TIME_AXIS])}.',
+        )
+    for index, column in enumerate(over):
+        if column not in columns or column in over[:index]:
+            raise refusal(
+                f"{path}.over[{index}]",
+                f"'{column}' is not a group_by id or the period of this call, once each",
+                fix=(
+                    f"Use one of {columns}."
+                    if columns
+                    else "Add the dimension to group_by, or set time.grain to share over period."
+                ),
+                over_allowed=columns,
+            )
+
+
+_TIME_ORDERED = frozenset({"first_value", "last_value"})
+
+
+def _check_aggregation(node: dict[str, Any], path: str, context: CallContext) -> None:
+    """An ``aggregation`` override names one of the measure's allowed aggregations."""
+    measures = context.config.measures if context.config is not None else []
+    measure = next((row for row in measures if row.id == node["measure"]), None)
+    aggregation = str(node["aggregation"]).strip()
+    # A time-ordered statistic is allowed by a clock: the engine's clock rule says so.
+    if measure is None or aggregation in {*measure.allowed_aggregations, *_TIME_ORDERED}:
+        return
+    allowed = list(measure.allowed_aggregations)
+    raise refusal(
+        f"{path}.aggregation",
+        f"'{aggregation}' is not an aggregation of '{measure.id}'; it allows {allowed}",
+        fix=(
+            f"Use one of {allowed}, or omit aggregation for the default "
+            f"({measure.default_aggregation})."
+        ),
+        code="UNSUPPORTED_AGGREGATION",
+        measure=measure.id,
+        aggregation=aggregation,
+        allowed=allowed,
+        default_aggregation=measure.default_aggregation,
+    )
 
 
 def _inline_condition(item: Any, path: str, context: CallContext) -> Any:

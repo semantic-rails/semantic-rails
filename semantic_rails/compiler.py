@@ -100,6 +100,7 @@ from .compiler_parts.paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
+    display_key,
     inner_lookups,
     unknown_as_null,
 )
@@ -167,6 +168,7 @@ from .expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     expr_kind,
     expr_to_dict,
     is_constant_expression,
@@ -607,6 +609,18 @@ def _validate_non_additive_sums(
             if recipe is not None:
                 validate_window(recipe.expression)
             return
+        if isinstance(expr, ShareExpr) and (
+            len(_summing_window_parts(expr.input, config, construct="share")) != 1
+        ):
+            raise SemanticLayerError(
+                "ROLLUP_UNSAFE",
+                "A share's input must add up across the rows it shares; a ratio does not. "
+                "Share its numerator, or ask for the ratio by group.",
+                details={
+                    "unsupported_construct": "non_additive_window_input",
+                    "construct": "share",
+                },
+            )
         window = _as_offset_window_expr(expr)
         if window is not None and window.aggregate == "sum":
             _summing_window_parts(window.input, config, construct=window.kind)
@@ -4951,7 +4965,12 @@ def _compile_query_sql_ast(
         select = attach_relation_ctes(
             config, lower_to_sql(plan, config, guard_empty=guard_empty, default_order=False)
         )
-        return limit_order(select)[0]
+        return limit_order(select, _tie_breakers(plan))[0]
+
+
+def _tie_breakers(plan: LogicalPlan) -> list[str]:
+    """The columns that break ties at a ``limit``: the group_by columns, then the period."""
+    return [*plan.group_by, *([time_output_alias(plan.time)] if plan.time else [])]
 
 
 def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
@@ -5104,6 +5123,18 @@ def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> f
     return frozenset(references)
 
 
+def _keyed_by_entity(config: PackageConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    """A dimension that names an entity's rows (its ``display``) groups by the entity's key
+    too, just before the name, so same-named entities never merge."""
+    group_by = list(payload.get("group_by") or [])
+    keyed = list(group_by)
+    for dimension in group_by:
+        key = display_key(config, str(dimension))
+        if key and key not in keyed:
+            keyed.insert(keyed.index(dimension), key)
+    return payload if keyed == group_by else {**payload, "group_by": keyed}
+
+
 def bind_query(
     config: PackageConfig,
     registry: Registry | None,
@@ -5139,6 +5170,7 @@ def bind_query(
         finally:
             _source_filter_refusals.reset(token)
 
+    payload = _keyed_by_entity(config, payload)
     try:
         return bind(payload)
     except SemanticLayerError as exc:
@@ -5448,7 +5480,16 @@ def compile_query(
     plan, config = bound.plan, bound.config
     from .top_n import limit_order
 
-    sql_ast, limit_order_keys = limit_order(bound.sql_ast)
+    sql_ast, limit_order_keys = limit_order(bound.sql_ast, _tie_breakers(plan))
+    outputs = {field.alias for field in sql_ast.select}
+    from .compiler_parts.sql_lowering import override_row_counts, share_group_counts
+
+    # The hidden columns the runtime reads and removes: each re-aggregated measure's row count,
+    # and the rows each share's total spans.
+    override_rows, share_groups = (
+        {alias: column for alias, column in names.items() if column in outputs}
+        for names in (override_row_counts(plan, config), share_group_counts(plan, config))
+    )
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,
@@ -5518,6 +5559,8 @@ def compile_query(
         "prepared_query": prepared,
         "limit_probe": limit_probe,
         "limit_order_keys": limit_order_keys,
+        "override_rows": override_rows,
+        "share_groups": share_groups,
         "explain": explain,
         "physical_plan": physical_plan,
         "performance_plan": performance_plan,

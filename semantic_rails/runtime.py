@@ -35,9 +35,8 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
+from .answer import answer_fields, finish, mark_partial_periods
 from .ast import (
-    PERIOD_PARTIAL,
-    TIME_AXIS,
     every_filter,
     is_child_group,
     normalize_query,
@@ -53,14 +52,7 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .clock import (
-    describe_window,
-    engine_window,
-    format_now,
-    local_date,
-    parse_now,
-    period_is_partial,
-)
+from .clock import format_now, local_date, parse_now
 from .compiler import (
     BoundQuery,
     NonAdditiveRefusal,
@@ -118,13 +110,10 @@ from .expressions import collect_object_references, expr_to_dict
 from .fanout import (
     build_hop_profile,
     entity_label,
-    offered_rows,
     package_route,
     pass_through_disclosure,
     query_route_decisions,
     route_hops,
-    route_note,
-    route_reading,
 )
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
@@ -134,7 +123,7 @@ from .policies import (
     row_filters_for_context,
     withheld_rank_order,
 )
-from .query_call import call_from_query, call_where, read_call, route_entry, route_options
+from .query_call import read_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_select_for_profile
@@ -145,11 +134,10 @@ from .request_context import (
     without_trusted_attributes,
 )
 from .result_values import result_rows
+from .runtime_parts.assumptions import call_assumptions, refuse_hidden_governors, split_hidden
 from .runtime_parts.disclosures import mixed_time_role_warnings
 from .runtime_parts.filtered_series import filtered_series_warnings
 from .runtime_parts.responses import (
-    TIME_SHAPE_WINDOW_TOTAL,
-    WINDOW_TOTAL_ASSUMPTION,
     apply_response_verbosity,
     compile_response_metadata,
     output_columns,
@@ -375,9 +363,6 @@ def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
 _LOG = logging.getLogger(__name__)
 
 
-_ROUTE_ROW_KEYS = ("source_entity", "target_entity", "relationship_path")
-
-
 def _hop_profile(config, compiled) -> dict[str, Any]:
     """``build_hop_profile`` under the query's own route rows, so a pair a row decided reports
     ``route_basis: query``."""
@@ -395,141 +380,16 @@ def _hop_profile(config, compiled) -> dict[str, Any]:
         )
 
 
-def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """One short note per entity pair the compiled query reads where the engine chose one of
-    two or more routes (``fanout.route_note``): by the start's own key (ROUTE_COLOCATED_KEY,
-    with the row that would make each other route the default in ``details.alternatives`` when
-    it would load, else the rows it disagrees with in ``details.conflicts_with``),
-    or by ``graph.path_preferences`` rows (ROUTE_RECORDED: the pair's own row, or, with
-    ``details.rows``, the rows of pairs its routes walk through). The note is the code plus
-    the chosen route, its relationship ids and its readable meaning; a single-route pair gets
-    none.
-
-    The pairs come, each with the route the SQL read, from the plan's root and leaf paths and
-    from the paths lowering read (``compiler.read_routes``); a note names only a route its
-    pair's resolution chose, so a pair the SQL read another way gets none. The minimal
-    response leaves the notes out: the route is the package's own meaning for the pair, not a
-    caveat on the numbers, and a pair with no such meaning is refused instead.
-
-    A pair the query decided itself (``route_decisions``) gets ROUTE_CHOSEN_BY_QUERY instead,
-    at every verbosity: the row and the basis it replaced, since the answer may differ from
-    the package's. Only an undecided pair gets switches from its cached refusal: at most
-    three visible decision rows, with the remaining visible count. No alternative runs.
-    """
-    notes: list[dict[str, Any]] = []
-    decided: set[tuple[str, str]] = set()
-    for row in compiled.get("route_decisions") or []:
-        start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
-        decided.add((start, target))
-        details: dict[str, Any] = {
-            "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
-            "replaced": row["replaced"],
-        }
-        message = f"{route_reading(config, start, path)} (chosen by this query)"
-        options = []
-        if row["replaced"] == "undecided":
-            try:
-                package_route(config, start=start, target=target)
-            except SemanticLayerError as exc:
-                if exc.code == "AMBIGUOUS_PATH":
-                    options = list(exc.details.get("clarification", {}).get("options", []))
-        chosen = next((option for option in options if option["relationship_path"] == path), None)
-        others = [option for option in options if option != chosen]
-        alternatives = [route_entry(option["decision"]) for option in others]
-        shown = min(3, len(alternatives))
-        while True:
-            if chosen is not None:
-                details["meaning"] = chosen["meaning"]
-                details["route_alternatives"] = alternatives[:shown]
-                message = f"Chosen meaning: {chosen['meaning']} (chosen by this query). "
-                if shown:
-                    message += (
-                        "Other meanings (one-step switches), in the order of "
-                        "details.route_alternatives: "
-                        + "; ".join(option["meaning"] for option in others[:shown])
-                        + ". Send one in place of this route in routes. "
-                    )
-                if len(alternatives) > shown:
-                    details["more_alternatives"] = len(alternatives) - shown
-                    message += (
-                        "Validate the query without routes for every option; "
-                        "no warehouse query runs. "
-                    )
-                message += "A reviewed package default using details.row would remove the question."
-            note = semantic_issue(
-                code="ROUTE_CHOSEN_BY_QUERY",
-                message=message,
-                severity="info",
-                stage="planning",
-                details=details,
-                object_ids=[start, target],
-            )
-            if chosen is None or shown == 0 or len(json.dumps(note)) < 1500:
-                break
-            shown -= 1
-        if chosen is not None and shown == 0 and len(json.dumps(note)) >= 1500:
-            note["message"] = f"{route_reading(config, start, path)} (chosen by this query)"
-            note["details"] = {
-                "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
-                "replaced": row["replaced"],
-            }
-            if alternatives:
-                note["details"]["more_alternatives"] = len(alternatives)
-                if len(json.dumps(note)) >= 1500:
-                    del note["details"]["more_alternatives"]
-        notes.append(note)
-    notes.extend(_pass_through_notes(config, compiled, decided))
-    if resolve_verbosity(payload) == "minimal":
-        return notes
-    for start, target, path in read_routes(
-        compiled["logical_plan"], compiled.get("route_choices") or []
-    ):
-        resolution = None if (start, target) in decided else route_note(config, start, target, path)
-        if resolution is None:
-            continue
-        route = list(resolution.routes[0])
-        details = {"route": route}
-        if resolution.basis == "colocated_key":
-            code, how = "ROUTE_COLOCATED_KEY", "own key"
-            details["alternatives"], conflicts = offered_rows(
-                config, start, target, resolution.routes[1:]
-            )
-            if conflicts:
-                details["conflicts_with"] = conflicts
-        elif resolution.basis == "inherited":
-            code = "ROUTE_RECORDED"
-            rows = list(resolution.rows)
-            how = (
-                "recorded for "
-                + ", ".join(
-                    f"{entity_label(config, source)} → {entity_label(config, end)}"
-                    for source, end in rows
-                )
-                if rows
-                else "recorded route"
-            )
-            details["rows"] = [
-                {"source_entity": source, "target_entity": end} for source, end in rows
-            ]
-        else:
-            code, how = "ROUTE_RECORDED", "recorded route"
-        notes.append(
-            semantic_issue(
-                code=code,
-                message=f"{route_reading(config, start, route)} ({how})",
-                severity="info",
-                stage="planning",
-                details=details,
-                object_ids=[start, target],
-            )
-        )
-    return notes
-
-
-def _pass_through_notes(config, compiled, decided) -> list[dict[str, Any]]:
-    """ROUTE_PASS_THROUGH, at every verbosity, for each pair the SQL read by the package's only
-    (or inherited) route when it passes through undeclared rows (``fanout.pass_through``)."""
+def _pass_through_notes(config, compiled) -> list[dict[str, Any]]:
+    """ROUTE_PASS_THROUGH for each pair the SQL read by the package's only (or inherited)
+    route when it passes through undeclared rows (``fanout.pass_through``). A pair the call's
+    ``routes`` decided is the caller's own choice and gets none; the answer's ``routes`` names
+    every route chosen among several (``answer.routes_taken``)."""
     plan = compiled["logical_plan"]
+    decided = {
+        (row["source_entity"], row["target_entity"])
+        for row in compiled.get("route_decisions") or []
+    }
     entity_of = {row.id: row.entity for row in config.dimensions}
     notes: list[dict[str, Any]] = []
     for start, target, path in read_routes(plan, compiled.get("route_choices") or []):
@@ -665,13 +525,6 @@ def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
     return collect_object_references(query.to_dict())
 
 
-def _with_call(result: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    """An answer echoes the call it answered in the call's own form, never the engine's."""
-    if "query" in result:
-        result["query"] = call_from_query(payload)
-    return result
-
-
 @contextlib.contextmanager
 def _routes_offered(call: Any) -> Iterator[None]:
     """An ``AMBIGUOUS_PATH`` refusal offers one complete call per route option."""
@@ -713,6 +566,11 @@ def _policy_context(payload: dict[str, Any]) -> dict[str, Any]:
     if context.get("now") not in (None, ""):
         normalized["now"] = context.get("now")
     return normalized
+
+
+def _answer_now(payload: dict[str, Any] | None) -> datetime:
+    """The instant relative windows resolved against for this request."""
+    return parse_now(_policy_context(payload or {}).get("now"))
 
 
 _SQL_OUTLINE_KEYWORDS = (
@@ -1095,7 +953,7 @@ def _compiled_warnings(
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(visible_view.base_of(config), compiled["logical_plan"], config),
         *_stock_key_gap_warnings(compiled),
-        *_route_notes(config, compiled, payload),
+        *_pass_through_notes(config, compiled),
         *_time_zone_warnings(config, compiled),
         *mixed_time_role_warnings(config, compiled["logical_plan"]),
     ]
@@ -1106,96 +964,6 @@ def _compiled_warnings(
         warnings.extend(_expression_normalized_away_warnings(canonical, compiled))
         warnings.extend(_shorthand_normalized_warnings(notes))
     return warnings
-
-
-_OVER_MEANING = {
-    "all_time": "over all of its rows, ignoring the query window",
-    "window": "over its rows inside the query window",
-    "period": "per output period",
-}
-
-
-def _entity_filter_assumptions(query: dict[str, Any]) -> list[dict[str, Any]]:
-    """Each entity filter's ``over``: how each entity's aggregate was taken."""
-    return [
-        {
-            "code": "ENTITY_FILTER_OVER",
-            "entity": row["entity"],
-            "over": row["over"],
-            "message": f"Each {row['entity']}'s aggregate was taken {_OVER_MEANING[row['over']]}.",
-        }
-        for row in call_where([], query.get("metric_filters"))
-    ]
-
-
-def _mark_partial_periods(rows, config, compiled, payload) -> None:
-    """``period_partial`` on each row of a grain series, right after ``period``: whether the
-    row's period ends after ``now`` in the clock's zone."""
-    grain = (compiled["logical_plan"].time or {}).get("grain")
-    if not grain:
-        return
-    now = parse_now(_policy_context(payload or {}).get("now"))
-    zone = _time_zone(config, compiled) or "UTC"
-    for row in rows:
-        period = row.get(TIME_AXIS)
-        if isinstance(period, datetime) and period.utcoffset() is not None:
-            period = period.astimezone(ZoneInfo(zone))
-        marked: dict[str, Any] = {}
-        for key, value in row.items():
-            if key != PERIOD_PARTIAL:
-                marked[key] = value
-            if key == TIME_AXIS:
-                marked[PERIOD_PARTIAL] = period_is_partial(period, grain, now, zone)
-        row.clear()
-        row.update(marked)
-
-
-def _answer_time_fields(config, compiled, payload, *, coverage=None, rows=None) -> dict[str, Any]:
-    """What an answer's time means, said on every response: its ``window``, ``clock``,
-    ``observation_scope`` and ``assumptions``.
-
-    ``window`` ({start, end, now, partial, data_through}, only the keys that apply) whenever a
-    window or a grain series was resolved; ``data_through`` is the date, in the clock's zone, of
-    the last row at or before ``now`` that the answer's coverage read (``coverage``), so it
-    is known only once the query ran on a warehouse with loaded coverage. ``clock`` whenever
-    a time-bearing measure was read; ``observation_scope`` always, since it decides 0 or NULL.
-    A ``this`` window is assumed partial ("October 2026 so far (8 of 31 days)").
-    """
-    plan = compiled["logical_plan"]
-    time = plan.time or {}
-    now = parse_now(_policy_context(payload or {}).get("now"))
-    zone = _time_zone(config, compiled) or "UTC"
-    out: dict[str, Any] = {"assumptions": _entity_filter_assumptions(plan.query)}
-    if time.get("window_total"):
-        out["assumptions"].insert(0, WINDOW_TOTAL_ASSUMPTION)
-        out["time_shape"] = TIME_SHAPE_WINDOW_TOTAL
-    if time.get("grain") or time.get("start") is not None or time.get("end") is not None:
-        window = engine_window(time, now=now, timezone=zone)
-        shown = {"start": window.start, "end": window.end, "now": format_now(now)}
-        out["window"] = {key: value for key, value in shown.items() if value is not None}
-        if window.start is not None or window.end is not None:
-            out["window"]["partial"] = window.partial
-        elif rows:
-            out["window"]["partial"] = any(row.get(PERIOD_PARTIAL) for row in rows)
-        edges = [
-            value
-            for key, value in (coverage or {}).items()
-            if key.endswith("__data_through") and isinstance(value, datetime)
-        ]
-        if edges:
-            out["window"]["data_through"] = local_date(min(edges), zone)
-        if "this" in window.spec:
-            text = describe_window(window, now=now, timezone=zone)
-            out["assumptions"].append({"code": "PARTIAL_PERIOD", "message": text})
-    clocks = (
-        {time["temporal_role"]}
-        if time.get("temporal_role")
-        else {row.temporal_role for row in plan.bound_measures if row.temporal_role}
-    )
-    if len(clocks) == 1:
-        out["clock"] = clocks.pop()
-    out["observation_scope"] = observation_scope(plan.query, config)
-    return out
 
 
 def _withheld_columns(policy_effects: list[dict[str, Any]]) -> set[str]:
@@ -2811,6 +2579,9 @@ class Runtime:
         binding: BoundQuery | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
+        if binding is not None:
+            # After the policy gate, so a policy that refuses the call outright speaks first.
+            refuse_hidden_governors(self._config, binding.plan.query)
         normalized = (
             binding.plan.query
             if binding is not None
@@ -2945,12 +2716,18 @@ class Runtime:
             payload = self.engine_payload(query, now=now, context=context, **options)
         except SemanticLayerError as exc:
             issue = exception_issue(exc, stage="validate")
-            return {"ok": False, "status": "error", "errors": [issue], "warnings": []}
+            hints = list(issue.get("recovery_hints") or [])
+            return {
+                "ok": False,
+                "status": "error",
+                "errors": [issue],
+                **({"recovery_hints": hints} if hints else {}),
+            }
         result = self.validate_internal(payload)
         for error in result.get("errors") or []:
             if error.get("code") == "AMBIGUOUS_PATH":
                 route_options(query, error["details"])
-        return _with_call(result, payload)
+        return result
 
     def compile(
         self, query: Any, *, now: Any = None, context: Any = None, **options: Any
@@ -2958,7 +2735,7 @@ class Runtime:
         """The SQL and plan a call compiles to."""
         payload = self.engine_payload(query, now=now, context=context, **options)
         with _routes_offered(query):
-            return _with_call(self.compile_internal(payload), payload)
+            return self.compile_internal(payload)
 
     def query(
         self, query: Any, *, now: Any = None, context: Any = None, **options: Any
@@ -2966,7 +2743,7 @@ class Runtime:
         """Answer a call."""
         payload = self.engine_payload(query, now=now, context=context, **options)
         with _routes_offered(query):
-            return _with_call(self.query_internal(payload), payload)
+            return self.query_internal(payload)
 
     @runtime_request_scope
     def validate_internal(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3003,10 +2780,9 @@ class Runtime:
             out["status"] = "ok"
             out["warnings"] = _compiled_warnings(self._config, compiled, payload)
             out["errors"] = []
-            out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
-            out.update(_answer_time_fields(self._config, compiled, payload))
+            out.update(self._answer_fields(compiled, payload))
             out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
             out["freshness_by_leaf"] = freshness_rows
             out["freshness_as_of"] = _freshness_as_of(freshness_rows)
@@ -3036,7 +2812,10 @@ class Runtime:
                 out["performance_plan"] = asdict(compiled["performance_plan"])
             out["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return apply_response_verbosity(
-                out, verbosity=verbosity, sql_profile=sql_profile, kind="validate"
+                finish(out, payload=payload, compiled=compiled),
+                verbosity=verbosity,
+                sql_profile=sql_profile,
+                kind="validate",
             )
         except SemanticLayerError as exc:
             exc = _enrich_runtime_error(exc, self._config)
@@ -3049,17 +2828,11 @@ class Runtime:
             )
             out = asdict(report)
             out["status"] = "error"
-            out["query"] = without_trusted_attributes(payload)
-            out["warnings"] = []
             out["recovery_hints"] = list(issue.get("recovery_hints", []))
             out["authoring_hints"] = list(exc.details.get("authoring_hints", []) or [])
             out["query_ir_hints"] = list(
                 exc.details.get("query_ir_hints", list(issue.get("recovery_hints", [])) or [])
             )
-            out["assumptions"] = []
-            out["methodology_hints"] = []
-            out["freshness_by_leaf"] = []
-            out["freshness_as_of"] = ""
             out["policy_effects"] = list(exc.details.get("policy_effects", []) or [])
             out["request_context"] = request_context_payload(policy_context)
             out["provenance_summary"] = {
@@ -3071,7 +2844,10 @@ class Runtime:
             }
             out["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return apply_response_verbosity(
-                out, verbosity=verbosity, sql_profile=sql_profile, kind="validate"
+                finish(out, payload=payload),
+                verbosity=verbosity,
+                sql_profile=sql_profile,
+                kind="validate",
             )
 
     @runtime_request_scope
@@ -3107,7 +2883,7 @@ class Runtime:
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
-            **_answer_time_fields(self._config, compiled, payload),
+            **self._answer_fields(compiled, payload),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -3117,7 +2893,6 @@ class Runtime:
                 self._config, compiled["logical_plan"], policy_effects=public_effects
             ),
             "hop_profile": _hop_profile(self._config, compiled),
-            "query": without_trusted_attributes(payload),
             "normalized_query": compiled["explain"].normalized_query,
             "logical_plan": asdict(compiled["logical_plan"]),
             "sql_plan": asdict(compiled["sql_ast"]),
@@ -3126,7 +2901,10 @@ class Runtime:
         }
         _withhold_values(out, policy_effects, self.package_config)
         return apply_response_verbosity(
-            out, verbosity=verbosity, sql_profile=sql_profile, kind="compile"
+            finish(out, payload=payload, compiled=compiled),
+            verbosity=verbosity,
+            sql_profile=sql_profile,
+            kind="compile",
         )
 
     @runtime_request_scope
@@ -3212,6 +2990,7 @@ class Runtime:
                 from .top_n import limit_rows
 
                 rows, tie_warnings = limit_rows(rows, limit, compiled["limit_order_keys"])
+            rows, hidden = split_hidden(rows, compiled)
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -3225,7 +3004,12 @@ class Runtime:
                     seed_warnings=self._seed_warnings,
                 ),
             ) from exc
-        _mark_partial_periods(rows, self._config, compiled, payload)
+        mark_partial_periods(
+            rows,
+            compiled,
+            now=_answer_now(payload),
+            zone=_time_zone(self._config, compiled) or "UTC",
+        )
         coverage = _coverage_read(self, compiled, payload) if compiled["logical_plan"].time else {}
         coverage_warnings = _no_data_yet_warnings(
             compiled,
@@ -3271,7 +3055,7 @@ class Runtime:
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            **_answer_time_fields(self._config, compiled, payload, coverage=coverage, rows=rows),
+            **self._answer_fields(compiled, payload, coverage=coverage, rows=rows, hidden=hidden),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -3281,7 +3065,6 @@ class Runtime:
                 self._config, compiled["logical_plan"], policy_effects=public_effects
             ),
             "hop_profile": _hop_profile(self._config, compiled),
-            "query": without_trusted_attributes(payload),
             "normalized_query": compiled["explain"].normalized_query,
         }
         metadata = compile_response_metadata(self, payload, compiled)
@@ -3405,8 +3188,25 @@ class Runtime:
             out["performance_plan"] = asdict(compiled["performance_plan"])
             out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
         return apply_response_verbosity(
-            out, verbosity=verbosity, sql_profile=sql_profile, kind="execute"
+            finish(out, payload=payload, compiled=compiled),
+            verbosity=verbosity,
+            sql_profile=sql_profile,
+            kind="execute",
         )
+
+    def _answer_fields(
+        self, compiled, payload, *, coverage=None, rows=None, hidden=None
+    ) -> dict[str, Any]:
+        out = answer_fields(
+            self._config,
+            compiled,
+            now=_answer_now(payload),
+            zone=_time_zone(self._config, compiled) or "UTC",
+            coverage=coverage,
+            rows=rows,
+        )
+        out["assumptions"].extend(call_assumptions(self._config, compiled, payload or {}, hidden))
+        return out
 
     def _bind(self, payload: dict[str, Any], policy_context: dict[str, Any]) -> BoundQuery:
         """Bind the caller's query on their view; row filters and policies read the base."""

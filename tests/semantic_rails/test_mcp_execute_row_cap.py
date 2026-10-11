@@ -93,7 +93,7 @@ def test_a_window_without_a_grain_lists_each_group_once(adapter: SemanticLayerMC
     assert response["ok"], response["errors"]
     assert sorted(row[STORE] for row in response["rows"]) == ["Brooklyn", "Philadelphia"]
     assert response["truncated"] is False
-    assert response["time_shape"] == "window_total"
+    assert response["assumptions"][0]["code"] == "WINDOW_TOTAL"
 
 
 def test_max_rows_raises_the_cap(adapter: SemanticLayerMCPAdapter) -> None:

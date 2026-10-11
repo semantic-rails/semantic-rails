@@ -30,6 +30,7 @@ from ..expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     expr_to_dict,
     validate_boolean_argument_count,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "_expr_requires_dense_series",
     "_namespace_sql_select",
     "_summing_window_parts",
+    "share_partition",
     "_window_partition_exprs",
 ]
 
@@ -342,6 +344,14 @@ def _compile_offset_window_expr(
     return sums[0]
 
 
+def share_partition(
+    expr: ShareExpr, table_alias: str, group_aliases: list[str], time_alias: str
+) -> list[SqlExpr]:
+    """The columns a share's total is taken within: every key the share is not ``over``."""
+    keys = [*group_aliases, *([time_alias] if time_alias and "period" not in expr.over else [])]
+    return _window_partition_exprs(table_alias, [key for key in keys if key not in expr.over])
+
+
 def _compile_post_expr(
     expr: SemanticExpr,
     config: PackageConfig,
@@ -593,6 +603,21 @@ def _compile_post_expr(
             query_grain=query_grain,
             table_alias=table_alias,
         )
+    if isinstance(expr, ShareExpr):
+        # The total is a window over the rows the query keeps, before limit and having.
+        value = _compile_post_expr(
+            expr.input,
+            config,
+            time_alias=time_alias,
+            group_aliases=group_aliases,
+            query_grain=query_grain,
+            table_alias=table_alias,
+        )
+        total = SqlWindow(
+            function=SqlCall("SUM", [value]),
+            partition_by=share_partition(expr, table_alias, group_aliases, time_alias),
+        )
+        return SqlBinary(value, "/", SqlCall("NULLIF", [total, SqlLiteral(0)]))
     if isinstance(expr, MetricPredicateExpr):
         raise SemanticLayerError(
             "INVALID_METRIC_PREDICATE",

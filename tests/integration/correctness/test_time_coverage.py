@@ -397,7 +397,8 @@ def test_a_secondary_zone_aware_role_keeps_its_populated_value(changed_runtime):
     rt = changed_runtime(
         insert="ALTER TABLE signups ALTER COLUMN signed_up_at TYPE TIMESTAMPTZ "
         "USING signed_up_at AT TIME ZONE 'UTC'; "
-        "INSERT INTO signups VALUES (999, TIMESTAMPTZ '2024-03-01 02:00:00+00', 'web')",
+        "INSERT INTO signups (customer_id, signed_up_at, channel) "
+        "VALUES (999, TIMESTAMPTZ '2024-03-01 02:00:00+00', 'web')",
         zones={SIGNUP_ROLE: "America/New_York"},
     )
     result = rt.query(

@@ -26,6 +26,7 @@ from semantic_rails.package_tools import check_package_report
 from semantic_rails.relation_pipelines import _semantic_expr_to_sql
 from semantic_rails.renderer import render_expr
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts.assumptions import hidden_columns
 from semantic_rails.sql_ast import SqlCast, SqlIdentifier, SqlLiteral
 
 WAREHOUSES = ["duckdb", "postgres", "snowflake", "bigquery", "databricks", "clickhouse", "athena"]
@@ -90,7 +91,8 @@ def package(tmp_path):
 
 
 def execute(config, expression):
-    sql = compile_query(config, None, query(expression))["sql"]
+    compiled = compile_query(config, None, query(expression))
+    sql, hidden = compiled["sql"], set(hidden_columns(compiled))
     with duckdb.connect() as conn:
         conn.execute(
             "CREATE TABLE numbers(id INTEGER, text_value VARCHAR, amount DOUBLE, unknown_value VARCHAR)"
@@ -98,7 +100,10 @@ def execute(config, expression):
         conn.execute(
             "INSERT INTO numbers VALUES (1, '9.5', 9.5, 'bad'), (2, '120.25', 120.25, 'bad'), (3, '64.0', 64.0, 'bad'), (4, NULL, NULL, 'bad')"
         )
-        return conn.execute(sql).fetchall()
+        cursor = conn.execute(sql)
+        # An override's source-row count is the runtime's, never an answer column.
+        keep = [i for i, column in enumerate(cursor.description) if column[0] not in hidden]
+        return [tuple(row[i] for i in keep) for row in cursor.fetchall()]
 
 
 def test_numeric_cast_max_and_post_aggregation_subtraction(package):

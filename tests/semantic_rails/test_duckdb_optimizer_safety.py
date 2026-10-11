@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 from decimal import Decimal
@@ -12,9 +13,10 @@ from unittest.mock import Mock
 import duckdb
 import pytest
 
+import semantic_rails
 from semantic_rails import db, seed_provenance
 from semantic_rails.architect_introspection import open_duckdb
-from semantic_rails.db_parts import ducklake, motherduck
+from semantic_rails.db_parts import duckdb_setup, ducklake, motherduck
 from semantic_rails.db_parts.duckdb_setup import configure_duckdb_connection
 from semantic_rails.embedding import DuckDBAdapter
 from semantic_rails.runtime import Runtime
@@ -137,27 +139,27 @@ def test_remote_factories_configure_real_duckdb_before_bootstrap(monkeypatch, tm
         calls.append((args, kwargs))
         return Connection()
 
-    driver = SimpleNamespace(connect=fake_connect)
+    monkeypatch.setattr(duckdb_setup, "duckdb", SimpleNamespace(connect=fake_connect))
     if factory == "ducklake":
-        monkeypatch.setattr(ducklake, "import_driver", lambda *args, **kwargs: driver)
         adapter = ducklake.DuckLakeAdapter({"catalog_path": str(tmp_path / "catalog.ducklake")})
         connection = adapter._create_connection()  # noqa: SLF001
         raw = connection._conn.raw  # noqa: SLF001
+        assert calls == [((":memory:",), {"read_only": False, "config": {}})]
     elif factory == "motherduck":
-        monkeypatch.setattr(motherduck, "duckdb", driver)
         monkeypatch.setenv("TEST_MOTHERDUCK_TOKEN", "test-token")
         adapter = motherduck.MotherDuckAdapter(
             {"database": "analytics", "token_env": "TEST_MOTHERDUCK_TOKEN"}
         )
         connection = adapter._create_connection()  # noqa: SLF001
         raw = connection.raw
-        assert calls == [(("md:",), {"config": {"motherduck_token": "test-token"}})]
+        assert calls == [
+            (("md:",), {"read_only": False, "config": {"motherduck_token": "test-token"}})
+        ]
     else:
-        monkeypatch.setattr(db, "duckdb", driver)
         database = db.Database.connect("md:analytics")
         connection = database.conn
         raw = connection.raw
-        assert calls == [(("md:analytics",), {"read_only": False})]
+        assert calls == [(("md:analytics",), {"read_only": False, "config": {}})]
     try:
         assert _disabled(raw) == {"filter_pushdown", "common_subplan"}
         with connection.cursor() as cursor:
@@ -173,12 +175,12 @@ def test_seed_connection_factories_read_back_exclusion(monkeypatch, tmp_path, ca
         connection.execute("CREATE TABLE amt(id INT)")
     settings = []
 
-    def checked_configure(connection):
-        configured = configure_duckdb_connection(connection)
+    def checked_connect(*args, **kwargs):
+        configured = duckdb_setup.connect_duckdb(*args, **kwargs)
         settings.append(_disabled(configured))
         return configured
 
-    monkeypatch.setattr(seed_provenance, "configure_duckdb_connection", checked_configure)
+    monkeypatch.setattr(seed_provenance, "connect_duckdb", checked_connect)
     if factory == "record":
         seed_provenance.record_seed_provenance(path, "subtypes")
     else:
@@ -248,3 +250,27 @@ model:
         ]
     finally:
         runtime.close()
+
+
+def test_every_engine_duckdb_connection_comes_from_the_factory():
+    """Only ``connect_duckdb`` opens a DuckDB connection, so none misses the setup."""
+    root = Path(semantic_rails.__file__).parent
+    opened = []
+    for path in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "duckdb"
+            ) or (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "import_driver"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "duckdb"
+            ):
+                opened.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert [site.split(":")[0] for site in opened] == ["db_parts/duckdb_setup.py"], opened

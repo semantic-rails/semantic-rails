@@ -31,7 +31,7 @@ from .common import (
     require_missing_env,
     secret_value,
 )
-from .duckdb_setup import configure_duckdb_connection
+from .duckdb_setup import connect_duckdb
 
 # Database/schema names are interpolated into CREATE DATABASE / USE
 # statements, so they must be plain identifiers. The check never echoes
@@ -142,9 +142,7 @@ class MotherDuckAdapter(DuckDbApiAdapter):
         # Connect to the bare `md:` workspace first so the configured
         # database can be created lazily, then make it (and the optional
         # schema) the session default — unqualified table names resolve.
-        conn = configure_duckdb_connection(
-            duckdb.connect("md:", config={"motherduck_token": token})
-        )
+        conn = connect_duckdb("md:", config={"motherduck_token": token})
         try:
             conn.execute(f'CREATE DATABASE IF NOT EXISTS "{database}"')
             conn.execute(f'USE "{database}"')

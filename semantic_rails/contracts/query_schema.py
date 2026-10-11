@@ -12,6 +12,12 @@ def _kind_property(kind: str, key: str) -> dict[str, Any]:
     from semantic_rails.query_call import EXPRESSION_KEYS, EXPRESSION_LISTS, OVER
 
     expression = {"$ref": "#/$defs/Expression"}
+    if kind == "share":
+        # A share reads one id, over group_by ids or "period" (a parser rule checks which).
+        if key == "input":
+            return {"$ref": "#/$defs/Ref"}
+        if key == "over":
+            return {"type": "array", "items": {"type": "string"}, "minItems": 1}
     if key in EXPRESSION_KEYS or key == "else" or (key == "over" and kind == "distribution"):
         return expression
     if key == "value" and kind in {"aggregate_if", "nullif", "date_add"}:

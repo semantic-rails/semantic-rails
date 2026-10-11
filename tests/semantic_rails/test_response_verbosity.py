@@ -42,8 +42,11 @@ _COMPACT_DROPPED_KEYS = (
 )
 
 
-# What the answer's time means (window, clock, observation scope) survives minimal too.
-_TIME_MEANING_KEYS = frozenset({"window", "clock", "observation_scope"})
+# What the answer means (its status, window, clock, observation scope, routes and
+# assumptions, such as a governed metric filtering order_count) survives minimal too.
+_TIME_MEANING_KEYS = frozenset(
+    {"status", "window", "clock", "observation_scope", "routes", "assumptions"}
+)
 _MINIMAL_NONEXECUTE_KEYS = frozenset({"ok", "errors", "warnings", *_TIME_MEANING_KEYS})
 _MINIMAL_COMPILE_KEYS = frozenset({"ok", "errors", "warnings", "rendered_sql", *_TIME_MEANING_KEYS})
 _MINIMAL_EXECUTE_KEYS = frozenset(
@@ -67,8 +70,8 @@ def test_validate_minimal_keeps_only_ok_errors_warnings(runtime_factory):
             f"unexpected keys in minimal validate response: {sorted(set(result) - _MINIMAL_NONEXECUTE_KEYS)}"
         )
         assert result["ok"] is True
-        assert result["errors"] == []
-        assert isinstance(result["warnings"], list)
+        assert "errors" not in result
+        assert isinstance(result.get("warnings", []), list)
 
         # Minimal responses are tiny.
         assert len(json.dumps(result, default=str)) < 2_000
@@ -393,8 +396,8 @@ def test_mcp_execute_columns_row_format_preserves_values_and_counts(runtime_fact
     assert columns["ok"] is True
     assert columns["row_format"] == "columns"
     assert columns["row_count"] == records["row_count"]
-    assert columns["warnings"] == records["warnings"]
-    assert columns["errors"] == records["errors"]
+    assert columns.get("warnings") == records.get("warnings")
+    assert columns.get("errors") == records.get("errors")
     assert columns["columns"] == list(records["rows"][0].keys())
     assert columns["rows"] == [
         [record.get(column) for column in columns["columns"]] for record in records["rows"]

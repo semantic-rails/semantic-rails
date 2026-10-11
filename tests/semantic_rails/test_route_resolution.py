@@ -7,8 +7,8 @@ reaches at most one row (its own key); the rows of pairs its routes walk through
 route. Anything else is refused as AMBIGUOUS_PATH, whatever the routes' lengths, naming each
 route, its meaning and the row that would record it (test_route_precedence.py covers the rows
 a route inherits). So adding a route never changes an answer silently. Where the engine chose
-one of two or more routes, the response carries a short note (ROUTE_RECORDED or
-ROUTE_COLOCATED_KEY) with the chosen route, except at minimal verbosity.
+one of two or more routes, the answer's ``routes`` names the chosen route, and how it was
+chosen except at minimal verbosity.
 
 Fixture: accounts, their owners, regions, memberships and invoices, on DuckDB. The routes
 disagree on the data, so an answer shows which route it took:
@@ -38,6 +38,7 @@ import pytest
 import yaml
 
 import semantic_rails.fanout as fanout_module
+from semantic_rails.answer import routes_taken
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.indexes import _PACKAGE_ANALYSIS_CACHE, get_package_analysis
 from semantic_rails.compiler_parts.paths import _direct_entity_key_source_expr
@@ -51,7 +52,6 @@ from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.route_census import census_pairs, resolve_pairs
 from semantic_rails.runtime import Runtime
-from semantic_rails.runtime import _route_notes as compiled_route_notes
 from semantic_rails.schema import (
     DimensionConfig,
     EntityConfig,
@@ -300,11 +300,10 @@ def _query(select: str, **parts: Any) -> dict[str, Any]:
 
 
 def _route_notes(out: dict[str, Any]) -> dict[tuple[str, str], tuple[str, list[str]]]:
-    """Each route note in a response, by its (start, target): its code and the chosen route."""
+    """Each route the answer names, by its (start, target): how it was chosen, and the route."""
     return {
-        (w["object_ids"][0], w["object_ids"][1]): (w["code"], w["details"]["route"])
-        for w in out["warnings"]
-        if w["code"] in {"ROUTE_COLOCATED_KEY", "ROUTE_RECORDED"}
+        (route["from"], route["to"]): (route.get("basis", ""), route["via"])
+        for route in out.get("routes", [])
     }
 
 
@@ -350,57 +349,66 @@ INVOICE_HOME = [*INVOICE_ACCOUNT, *HOME]
 INVOICE_BRANCH = [*INVOICE_ACCOUNT, *BRANCH]
 
 
-def test_the_direct_key_and_a_recorded_route_each_answer_with_a_short_note(tmp_path):
+def test_the_direct_key_and_a_recorded_route_each_answer_naming_the_route(tmp_path):
     """Account to region: the account's own branch key, or its owner's home region. The direct
     key answers; with the owner route recorded, the owner's answer comes back. Either way the
-    response names the chosen route in one short note, and nothing more."""
+    answer's routes names the chosen route and how it was chosen, and nothing more."""
     query = _query(BALANCE, group_by=[REGION_NAME])
     direct = _write_package(tmp_path / "direct")
     out = Runtime.from_path(str(direct)).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
-    assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_COLOCATED_KEY", BRANCH)}
-    (note,) = [w for w in out["warnings"] if w["code"] == "ROUTE_COLOCATED_KEY"]
-    assert (note["severity"], note["message"]) == ("info", "the Account's Region (own key)")
+    assert _route_notes(out) == {(ACCOUNT, REGION): ("own_key", BRANCH)}
+    assert "warnings" not in out
     # Each other route comes with the row that would make it the default.
     _, routes = resolve_path(load_package_config(str(direct)), start=ACCOUNT, target=REGION)
-    assert note["details"] == {
-        "route": BRANCH,
-        "alternatives": [_pin(ACCOUNT, REGION, path) for path in routes[1:]],
-    }
-    assert _pin(ACCOUNT, REGION, HOME) in note["details"]["alternatives"]
+    assert out["routes"] == [
+        {
+            "from": ACCOUNT,
+            "to": REGION,
+            "via": BRANCH,
+            "basis": "own_key",
+            "alternatives": [_pin(ACCOUNT, REGION, path) for path in routes[1:]],
+        }
+    ]
+    assert _pin(ACCOUNT, REGION, HOME) in out["routes"][0]["alternatives"]
 
     pinned = _write_package(tmp_path / "home", pins=[_pin("account", "region", HOME)])
     out = Runtime.from_path(str(pinned)).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_HOME)
-    assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_RECORDED", HOME)}
-    (note,) = [w for w in out["warnings"] if w["code"] == "ROUTE_RECORDED"]
-    assert note["message"] == "the Region of the Account's Owner (recorded route)"
+    assert out["routes"] == [{"from": ACCOUNT, "to": REGION, "via": HOME, "basis": "recorded"}]
     assert _gold(BY_BRANCH) != _gold(BY_HOME)
 
 
 @pytest.mark.parametrize(
-    ("relationships", "pins", "verbosity"),
+    ("relationships", "pins", "verbosity", "routes"),
     [
-        pytest.param(DIAMOND, None, "minimal", id="minimal-response"),
-        pytest.param(("accounts_branch_region",), None, "compact", id="one-route"),
+        pytest.param(
+            DIAMOND,
+            None,
+            "minimal",
+            [{"from": ACCOUNT, "to": REGION, "via": BRANCH}],
+            id="minimal-response",
+        ),
+        pytest.param(("accounts_branch_region",), None, "compact", None, id="one-route"),
         pytest.param(
             ("accounts_branch_region",),
             [_pin("account", "region", BRANCH)],
             "compact",
+            None,
             id="one-route-recorded",
         ),
     ],
 )
-def test_no_route_note_where_nothing_was_chosen_or_in_the_minimal_response(
-    tmp_path, relationships, pins, verbosity
+def test_no_route_where_nothing_was_chosen_and_the_minimal_response_names_only_the_route(
+    tmp_path, relationships, pins, verbosity, routes
 ):
-    """A pair with one route had nothing to choose, recorded or not; and the minimal response
-    (the MCP default) carries no route note at all."""
+    """A pair with one route had nothing to choose, recorded or not; the minimal response (the
+    MCP default) names a chosen route as {from, to, via} alone."""
     pkg = _write_package(tmp_path, relationships=relationships, pins=pins)
     query = _query(BALANCE, group_by=[REGION_NAME])
     out = Runtime.from_path(str(pkg)).query(query, verbosity=verbosity)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
-    assert _route_notes(out) == {}
+    assert out.get("routes") == routes
 
 
 def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkeypatch):
@@ -468,16 +476,14 @@ def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkey
     call = _query("measure.e10_count", group_by=["dimension.e0_id"])
     query = {**read_call(call, config=config)[0], "verbosity": "compact"}
     compiled = compile_query(config, Registry(config), query)
-    notes = compiled_route_notes(config, compiled, query)
-    assert [(note["code"], note["details"]) for note in notes] == [
-        ("ROUTE_RECORDED", {"route": ["r0_10"]})
-    ]
+    notes = routes_taken(config, compiled)
+    assert notes == [{"from": "e10", "to": "e0", "via": ["r0_10"], "basis": "recorded"}]
     assert work["enumerations"] == 0
     assert 0 < work["edges"] <= (config.path_policy.max_hops + 1) * 2 * len(relationships)
     assert analysis.path_cache == {}
     assert analysis.route_note_cache == {("e10", "e0"): True}
     first_work = dict(work)
-    assert compiled_route_notes(config, compiled, query) == notes
+    assert routes_taken(config, compiled) == notes
     assert work == first_work
 
 
@@ -586,7 +592,7 @@ def test_routes_without_one_direct_key_are_refused_and_each_pin_answers_its_gold
         pinned = _write_package(tmp_path / f"pin{index}", relationships=relationships, pins=[pin])
         out = Runtime.from_path(str(pinned)).query(query)
         assert _rows(out, columns) == _gold(golds[tuple(path)])
-        assert _route_notes(out)[(start, target)] == ("ROUTE_RECORDED", path)
+        assert _route_notes(out)[(start, target)] == ("recorded", path)
     assert len({tuple(_gold(sql)) for sql in golds.values()}) == len(golds)
 
 
@@ -663,7 +669,7 @@ def test_adding_a_route_never_changes_an_answer_silently(
     assert _rows(out, columns) == _gold(gold)
     out = Runtime.from_path(str(after)).query(query)
     assert _rows(out, columns) == _gold(gold)
-    assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_COLOCATED_KEY", BRANCH)}
+    assert _route_notes(out) == {(ACCOUNT, REGION): ("own_key", BRANCH)}
 
 
 # Regions holding at least 500 in balance, over every account of the region.

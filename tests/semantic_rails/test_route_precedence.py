@@ -336,10 +336,11 @@ def _query(select: str, **parts: Any) -> dict[str, Any]:
 
 
 def _notes(out: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    """The routes the package chose for the answer, by pair (``routes``, not the call's own)."""
     return {
-        (w["object_ids"][0], w["object_ids"][1]): w
-        for w in out["warnings"]
-        if w["code"] in {"ROUTE_COLOCATED_KEY", "ROUTE_RECORDED"}
+        (route["from"], route["to"]): route
+        for route in out.get("routes", [])
+        if route["basis"] in {"own_key", "recorded"}
     }
 
 
@@ -407,11 +408,10 @@ def test_a_decision_holds_wherever_a_route_walks_its_pair(tmp_path, case):
     assert _rows(out, [dimension, "v"]) == gold
     assert gold != _gold(_by_account_route(start, "branch", region=region))
     (note,) = _notes(out).values()
-    assert note["code"] == "ROUTE_RECORDED"
+    assert note["basis"] == "recorded"
     if start != "account" or region:
-        # Inherited: the note names the row it follows.
-        assert note["details"]["rows"] == [{"source_entity": ACCOUNT, "target_entity": DISTRICT}]
-        assert note["message"].endswith("(recorded for Account → District)")
+        # Inherited: the route names the row it follows.
+        assert note["recorded_for"] == [{"from": ACCOUNT, "to": DISTRICT}]
 
 
 def test_hop_profile_reports_how_each_route_was_chosen(tmp_path):
@@ -679,8 +679,13 @@ def test_a_rewrite_notes_only_the_route_its_sql_reads(tmp_path):
     assert _chain_gold("name", "store") != _chain_gold("name", "own")
     notes = _notes(out)
     assert list(notes) == [(CHAIN_CUSTOMER, CHAIN_DISTRICT)]
-    assert notes[(CHAIN_CUSTOMER, CHAIN_DISTRICT)]["details"] == {"route": BY_STORE}
-    assert all(_sql_joins(sql, note["details"]["route"]) for note in notes.values())
+    assert notes[(CHAIN_CUSTOMER, CHAIN_DISTRICT)] == {
+        "from": CHAIN_CUSTOMER,
+        "to": CHAIN_DISTRICT,
+        "via": BY_STORE,
+        "basis": "recorded",
+    }
+    assert all(_sql_joins(sql, note["via"]) for note in notes.values())
 
 
 def test_a_querys_route_notes_do_not_depend_on_what_ran_before(tmp_path):
@@ -711,7 +716,7 @@ def test_the_anchors_own_key_never_answers_for_the_roots_route(tmp_path):
     assert "orders.district_id" not in sql
     assert _rows(out, ["dimension.chain_district_id", "v"]) == _chain_gold("id", "store")
     assert _chain_gold("id", "store") != _chain_gold("id", "own")
-    assert [note["details"]["route"] for note in _notes(out).values()] == [BY_STORE]
+    assert [note["via"] for note in _notes(out).values()] == [BY_STORE]
 
 
 OWN_KEY_GOLD = (
@@ -750,8 +755,7 @@ def test_the_starts_own_key_answers_and_lists_each_other_route_with_its_row(tmp_
         out = Runtime.from_path(str(pkg)).query(query)
         assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(OWN_KEY_GOLD)
         note = _notes(out)[(LOAN, DISTRICT)]
-        assert (note["code"], note["severity"]) == ("ROUTE_COLOCATED_KEY", "info")
-        assert note["details"] == {"route": OWN_KEY, **details}
+        assert note == {"from": LOAN, "to": DISTRICT, "via": OWN_KEY, "basis": "own_key", **details}
     assert _gold(OWN_KEY_GOLD) != _gold(_by_account_route("loan", "owner"))
     cards = Runtime.from_path(str(pkg)).query(_query(CARD_COUNT, group_by=[DISTRICT_NAME]))
     assert _rows(cards, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("card", "owner"))
@@ -765,7 +769,7 @@ def test_a_row_for_the_exact_pair_beats_the_starts_own_key(tmp_path):
     out = Runtime.from_path(str(pkg)).query(_query(LOAN_AMOUNT, group_by=[DISTRICT_NAME]))
     assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("loan", "owner"))
     note = _notes(out)[(LOAN, DISTRICT)]
-    assert (note["code"], note["details"]) == ("ROUTE_RECORDED", {"route": loan_owner})
+    assert (note["basis"], note["via"]) == ("recorded", loan_owner) and "recorded_for" not in note
 
 
 def test_two_own_keys_are_not_one_and_an_inherited_row_decides(tmp_path):
@@ -881,8 +885,8 @@ def test_every_suggested_row_loads_and_answers_by_its_route(tmp_path, case):
     query = _query(measure, group_by=[DISTRICT_NAME])
     pkg = _write_package(tmp_path / "package", relationships=relationships, rows=rows)
     if start == LOAN:
-        details = _notes(Runtime.from_path(str(pkg)).query(query))[(LOAN, DISTRICT)]["details"]
-        suggested, routes = details["alternatives"], [LOAN_BRANCH, LOAN_OWNER]
+        details = _notes(Runtime.from_path(str(pkg)).query(query))[(LOAN, DISTRICT)]
+        suggested, routes = details.get("alternatives", []), [LOAN_BRANCH, LOAN_OWNER]
     else:
         options = _refusal(pkg, query).details["clarification"]["options"]
         suggested = [
@@ -1024,7 +1028,7 @@ def test_every_entry_point_follows_an_inherited_row(tmp_path, entry):
         out = runtime.query(query)
         assert _rows(out, columns) == _gold(_entry_gold(entry, "owner"))
         assert _gold(_entry_gold(entry, "owner")) != _gold(_entry_gold(entry, "own"))
-        assert _notes(out)[(LOAN, DISTRICT)]["details"]["route"] == [*LOAN_ACCOUNT, *OWNER]
+        assert _notes(out)[(LOAN, DISTRICT)]["via"] == [*LOAN_ACCOUNT, *OWNER]
     sql = runtime.compile(query)["explain"]["rendered_sql"]
     assert "clients" in sql and "branches" not in sql
 
@@ -1039,7 +1043,7 @@ def test_every_entry_point_reads_the_starts_own_key_over_an_inherited_row(tmp_pa
     out = runtime.query(query)
     if columns is not None:
         assert _rows(out, columns) == _gold(_entry_gold(entry, "own"))
-    assert _notes(out)[(LOAN, DISTRICT)]["code"] == "ROUTE_COLOCATED_KEY"
+    assert _notes(out)[(LOAN, DISTRICT)]["basis"] == "own_key"
     sql = runtime.compile(query)["explain"]["rendered_sql"]
     assert "clients" not in sql and "branches" not in sql
 

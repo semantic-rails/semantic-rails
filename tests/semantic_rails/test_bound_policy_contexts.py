@@ -1706,7 +1706,7 @@ def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested
         expected_roles.add("temporal_role.jaffle_order_time")
     sql = compiler.compile_query(config, None, query)["sql"]
     if placement == "outer_time":
-        assert " AS period" in sql
+        assert ' AS "period"' in sql
     else:
         assert "jaffle_order_lifecycle.prepared_at" in sql
     # The query axis has its own constraint check; it must not become a recipe dependency.

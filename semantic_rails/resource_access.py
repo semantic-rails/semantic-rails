@@ -583,7 +583,6 @@ def _run_in_view(
                     "sql_profile",
                     # Fixed engine strings that name no objects.
                     "assumptions",
-                    "time_shape",
                     "window",
                     "observation_scope",
                     "withheld",
@@ -599,7 +598,11 @@ def _run_in_view(
                 response["withheld"] = [
                     object_id for object_id in result["withheld"] if object_id in permitted
                 ]
-            response["warnings"] = _granted_warnings(result.get("warnings", []), permitted)
+            warnings = _granted_warnings(result.get("warnings", []), permitted)
+            if warnings:
+                response["warnings"] = warnings
+            else:
+                response.pop("warnings", None)
             if resolve_verbosity(payload) == "minimal":
                 response = apply_response_verbosity(
                     response,

@@ -19,10 +19,10 @@ INVENTORY = {
 # term, and the query parts that take that path. The anchored path orders by its time key,
 # a column its anchor source projects.
 SHAPES = {
-    "inlined": ("ranked", "ranked", {"select": [{"expression": ORDERS, "as": "ranked"}]}),
+    "inlined": ("ranked", '"ranked"', {"select": [{"expression": ORDERS, "as": "ranked"}]}),
     "metric-filter": (
         "ranked",
-        "projected.ranked",
+        'projected."ranked"',
         {
             "select": [{"expression": ORDERS, "as": "ranked"}],
             "metric_filters": [{"expression": ORDERS, "op": ">", "value": 0}],
@@ -58,7 +58,7 @@ SHAPES = {
     ),
     "distribution": (
         "ranked",
-        "agent_projected.ranked",
+        'agent_projected."ranked"',
         {
             "select": [
                 {
@@ -103,7 +103,9 @@ def test_requested_term_renders_nulls_last(package_config_factory, warehouse, di
         (direction, True)
     ]
     order_sql = compiled["sql"].rsplit("\nORDER BY\n", 1)[1].split("\n", 1)[0]
-    assert order_sql == f"  {SHAPES[shape][1]} {direction} NULLS LAST"
+    # An output alias is quoted, in the warehouse's identifier quotes.
+    term = SHAPES[shape][1].replace('"', "`" if warehouse in {"bigquery", "databricks"} else '"')
+    assert order_sql == f"  {term} {direction} NULLS LAST"
 
 
 @pytest.mark.parametrize("shape", list(SHAPES))

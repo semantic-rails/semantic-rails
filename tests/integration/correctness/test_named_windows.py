@@ -37,7 +37,7 @@ def test_days_after_the_last_order_say_no_data_yet(shop: Runtime) -> None:
     ]
     assert result["window"] == {
         "start": "2024-08-01",
-        "end": "2024-08-03T12:00:00",
+        "end": "2024-08-03T12:00:00Z",
         "now": "2024-08-03T12:00:00Z",
         "partial": True,
         "data_through": "2024-08-01",
@@ -62,7 +62,7 @@ def test_a_quiet_week_inside_the_data_reads_zero_without_a_warning(shop: Runtime
     assert result["rows"] == [{"order_count": 0}]
     assert result["window"]["data_through"] == "2024-05-06"
     assert result["window"]["partial"] is False
-    assert not [w for w in result["warnings"] if w["code"].startswith("NO_DATA")]
+    assert not [w for w in result.get("warnings", []) if w["code"].startswith("NO_DATA")]
 
 
 def test_validate_and_compile_state_the_window_without_running(shop: Runtime) -> None:
