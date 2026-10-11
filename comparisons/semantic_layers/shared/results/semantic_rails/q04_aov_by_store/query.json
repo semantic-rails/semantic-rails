@@ -4,17 +4,11 @@
   ],
   "order_by": [
     {
-      "direction": "DESC",
+      "direction": "desc",
       "field": "aov_usd"
     }
   ],
   "select": [
-    {
-      "as": "aov_usd",
-      "expression": {
-        "metric": "metric.jaffle.aov_usd"
-      }
-    }
-  ],
-  "version": 1
+    "metric.jaffle.aov_usd"
+  ]
 }

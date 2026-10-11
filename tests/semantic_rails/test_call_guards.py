@@ -95,8 +95,8 @@ def test_a_raw_measure_names_the_governed_metrics_that_filter_it(runtime: Runtim
     ]
     # A metric the call selects is already in the answer.
     both = runtime.query({"select": [ORDERS, GOVERNORS[1]]})
-    assert [entry["metric"] for entry in both["assumptions"]] == GOVERNORS[:1]
-    assert runtime.query({"select": [GOVERNORS[0]]})["assumptions"] == []
+    assert [entry["metric"] for entry in both.get("assumptions", [])] == GOVERNORS[:1]
+    assert runtime.query({"select": [GOVERNORS[0]]}).get("assumptions", []) == []
 
 
 def test_a_governor_hidden_from_the_caller_withholds_the_raw_number(

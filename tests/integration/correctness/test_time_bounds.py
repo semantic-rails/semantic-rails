@@ -50,7 +50,8 @@ def test_relative_bounds_use_one_local_date(request, backend_name, clock, calend
         time["grain"] = unit
     for instant in INSTANTS:
         result = runtime.query({"select": [_item(REVENUE, "v")], "time": time}, now=instant)
-        resolved = result["normalized_query"]["time"]
+        # The answer states the window it resolved; the echoed call keeps the caller's `last`.
+        resolved = result["window"]
         assert (resolved["start"], resolved["end"]) == (start, end)
         _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], instant)
 

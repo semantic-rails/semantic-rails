@@ -25,7 +25,7 @@ def _reference(request, backend_name, sql):
 
 
 def _warnings(result, code):
-    return [row for row in result["warnings"] if row["code"] == code]
+    return [row for row in result.get("warnings", []) if row["code"] == code]
 
 
 @pytest.mark.parametrize("backend_name", BACKENDS)

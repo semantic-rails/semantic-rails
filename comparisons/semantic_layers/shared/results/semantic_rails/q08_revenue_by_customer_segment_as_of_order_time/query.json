@@ -4,21 +4,15 @@
   ],
   "order_by": [
     {
-      "direction": "DESC",
+      "direction": "desc",
       "field": "revenue_usd"
     }
   ],
   "select": [
-    {
-      "as": "revenue_usd",
-      "expression": {
-        "metric": "metric.jaffle.revenue_usd"
-      }
-    }
+    "metric.jaffle.revenue_usd"
   ],
   "time": {
     "grain": "month",
     "temporal_role": "temporal_role.jaffle_order_time"
-  },
-  "version": 1
+  }
 }
