@@ -672,6 +672,7 @@ def test_incompatible_temporal_role_is_reported_for_measure_and_metric(runtime_f
                             "measure": "measure.jaffle.item_revenue_usd",
                             "aggregation": "sum",
                         },
+                        "as": "item_revenue_usd",
                     }
                 ],
                 "time": {"temporal_role": "temporal_role.jaffle_store_opened_at", "grain": "month"},
