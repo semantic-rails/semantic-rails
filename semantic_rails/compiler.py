@@ -202,7 +202,7 @@ from .ir import (
 )
 from .naming import semantic_token as _semantic_token
 from .naming import slug as _slug
-from .query_call import call_where, engine_where
+from .query_call import call_where, engine_where, refusal
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
 from .renderer import render_select_for_profile
@@ -5163,10 +5163,19 @@ def _keyed_by_entity(config: PackageConfig, payload: dict[str, Any]) -> dict[str
     """A dimension that names an entity's rows (its ``display``) groups by the entity's key
     too, just before the name, so same-named entities never merge."""
     group_by = list(payload.get("group_by") or [])
+    named = {row.get("as"): index for index, row in enumerate(payload.get("select") or [])}
     keyed = list(group_by)
     for dimension in group_by:
         key = display_key(config, str(dimension))
         if key and key not in keyed:
+            if key in named:
+                raise refusal(
+                    f"select[{named[key]}]",
+                    f"its column '{key}' is the key the answer carries beside '{dimension}'",
+                    fix='Give it another name with "as".',
+                    code="DUPLICATE_OUTPUT_ALIAS",
+                    alias=key,
+                )
             keyed.insert(keyed.index(dimension), key)
     return payload if keyed == group_by else {**payload, "group_by": keyed}
 

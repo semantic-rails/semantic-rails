@@ -6181,7 +6181,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             assert isinstance(share, ShareExpr)
             spanned = SqlWindow(
                 function=SqlCall("COUNT", [SqlLiteral(1)]),
-                partition_by=share_partition(share, "base", group_aliases, time_alias),
+                partition_by=share_partition(share, "base", group_aliases, time_alias, config),
             )
             hidden.append(SqlField(spanned, shares[alias]))
         # Only an output that follows the rule (a sum, count or difference of them): a
