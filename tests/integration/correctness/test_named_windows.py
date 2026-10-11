@@ -200,3 +200,31 @@ def test_a_comparison_beside_a_named_window_asks_for_the_series(shop: Runtime, w
     series = {**call, "time": hint["patch"]["replace"]["time"]}
     assert series["time"] == {"temporal_role": ORDER_CLOCK, "grain": "week"}
     assert shop.validate(series, now="2024-05-10T00:00:00Z")["ok"] is True
+
+
+ORDER_TIME = "dimension.shop_order_ordered_at"
+
+
+def test_a_window_grouped_by_the_order_time_keeps_only_its_observed_rows(shop: Runtime) -> None:
+    # Rows are frozen in the ledger; here the answer says why the empty months are absent.
+    call = {
+        "select": [ORDERS],
+        "group_by": [ORDER_TIME],
+        "time": {"start": "2024-01-01", "end": "2024-04-01", "grain": "month"},
+    }
+    result = shop.query(call, now="2024-07-05T06:00:00Z")
+    assert result["row_count"] == 3
+    (held,) = [a for a in result["assumptions"] if a["code"] == "OBSERVED_PERIODS_ONLY"]
+    assert held["group_by"] == [ORDER_TIME]
+    # Grouped by a dimension that does not move with time, every month is still answered.
+    by_status = {**call, "group_by": ["dimension.shop_customer_channel"]}
+    answer = shop.query(by_status, now="2024-07-05T06:00:00Z")
+    assert not [a for a in answer.get("assumptions", []) if a["code"] == "OBSERVED_PERIODS_ONLY"]
+    assert {row["period"] for row in answer["rows"]} == {"2024-01-01", "2024-02-01", "2024-03-01"}
+
+
+def test_filling_a_series_grouped_by_the_order_time_is_refused(shop: Runtime) -> None:
+    call = {"select": [ORDERS], "group_by": [ORDER_TIME], "time": {"grain": "month", "fill": True}}
+    (error,) = shop.validate(call, now="2024-07-05T06:00:00Z")["errors"]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "time.fill"

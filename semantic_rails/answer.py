@@ -17,9 +17,9 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .ast import PERIOD_PARTIAL, TIME_AXIS
+from .ast import PERIOD_PARTIAL, TIME_AXIS, normalize_query
 from .clock import describe_window, engine_window, format_now, local_date, period_is_partial
-from .compiler import read_routes
+from .compiler import observed_only_groups, read_routes
 from .compiler_parts.empty_groups import observation_scope
 from .errors import SemanticLayerError
 from .fanout import offered_rows, package_route, route_note
@@ -109,6 +109,17 @@ def answer_fields(
         if "this" in window.spec:
             text = describe_window(window, now=now, timezone=zone)
             assumptions.append({"code": "PARTIAL_PERIOD", "message": text})
+        if held := observed_only_groups(normalize_query(plan.query, config=config), config):
+            assumptions.append(
+                {
+                    "code": "OBSERVED_PERIODS_ONLY",
+                    "message": (
+                        f"The rows are grouped by a date or time dimension ({held[0]}), so the "
+                        "window's empty periods are not filled: only rows with data are shown."
+                    ),
+                    "group_by": held,
+                }
+            )
     clocks = (
         {time["temporal_role"]}
         if time.get("temporal_role")
