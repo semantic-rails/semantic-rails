@@ -735,10 +735,12 @@ def test_grant_responses_omit_every_caveat(granted_runtime, request, operation, 
 @pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
 @pytest.mark.parametrize("verbosity", ["minimal", "full"])
 def test_grant_responses_drop_unlisted_warnings(granted_runtime, monkeypatch, operation, verbosity):
-    import semantic_rails.runtime as runtime_module
+    import semantic_rails.runtime_parts.answer_warnings as answer_warnings_module
 
     unknown = {"code": "UNLISTED_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
-    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args, **kwargs: [unknown])
+    monkeypatch.setattr(
+        answer_warnings_module, "_compiled_warnings", lambda *args, **kwargs: [unknown]
+    )
     result = _granted_response(granted_runtime, operation, verbosity)
     assert "warnings" not in result
     assert [row["semantic_id"] for row in result["output_columns"]] == [CUSTOMERS]
@@ -749,7 +751,7 @@ def test_grant_responses_drop_unlisted_warnings(granted_runtime, monkeypatch, op
 def test_grant_responses_project_listed_warnings(
     granted_runtime, monkeypatch, operation, object_ids
 ):
-    import semantic_rails.runtime as runtime_module
+    import semantic_rails.runtime_parts.answer_warnings as answer_warnings_module
 
     listed = {
         "code": "NO_DATA_IN_SCOPE",
@@ -760,7 +762,7 @@ def test_grant_responses_project_listed_warnings(
         "details": {"outputs": ["value"]},
     }
     monkeypatch.setattr(
-        runtime_module,
+        answer_warnings_module,
         "_compiled_warnings",
         lambda *args, **kwargs: [
             {**listed, "future_metadata": {"object_id": "ungranted_metadata"}}
@@ -775,7 +777,7 @@ def test_grant_responses_project_listed_warnings(
 def test_grant_responses_project_filter_guard_warnings(
     granted_runtime, monkeypatch, code, object_ids
 ):
-    import semantic_rails.runtime as runtime_module
+    import semantic_rails.runtime_parts.answer_warnings as answer_warnings_module
 
     listed = {
         "code": code,
@@ -789,7 +791,7 @@ def test_grant_responses_project_filter_guard_warnings(
         listed["message"] = "Filter value 'busines' was not found; did you mean 'business'?"
         listed["details"]["filters"][0]["suggestion"] = "business"
     monkeypatch.setattr(
-        runtime_module,
+        answer_warnings_module,
         "_compiled_warnings",
         lambda *args, **kwargs: [{**listed, "future_metadata": {"object_id": SECRET_DIMENSION}}],
     )

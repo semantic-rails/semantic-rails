@@ -51,7 +51,7 @@ PINS: dict[str, dict[str, int]] = {
         "query_call.py": 5,
         "renderer.py": 9,
         "repl/authoring.py": 1,
-        "runtime.py": 1,
+        "runtime_parts/answer_warnings.py": 1,
     },
     "identity rebuilt outside ingress": {
         "cache.py": 1,
@@ -59,7 +59,8 @@ PINS: dict[str, dict[str, int]] = {
         "metadata_parts/valid_values.py": 1,
         "policies.py": 1,
         "resource_access.py": 1,
-        "runtime.py": 6,
+        "answer.py": 1,
+        "runtime.py": 5,
         "visible_view.py": 2,
     },
     "wall clock read outside clock.py": {
