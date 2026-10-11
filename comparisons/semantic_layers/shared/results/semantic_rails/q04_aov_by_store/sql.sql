@@ -18,7 +18,7 @@ FROM leaf_1 AS base
 )
 SELECT
   base.g1 AS "dimension.jaffle_store_name",
-  base.m1 / NULLIF(base.m2, 0) AS aov_usd
+  base.m1 / NULLIF(base.m2, 0) AS "aov_usd"
 FROM guarded_base AS base
 ORDER BY
-  aov_usd DESC
+  "aov_usd" DESC NULLS LAST

@@ -1,17 +1,12 @@
 {
   "order_by": [
     {
-      "direction": "ASC",
-      "field": "temporal_role.jaffle_order_time__month"
+      "direction": "asc",
+      "field": "period"
     }
   ],
   "select": [
-    {
-      "as": "revenue_usd",
-      "expression": {
-        "measure": "measure.jaffle.revenue_usd"
-      }
-    },
+    "measure.jaffle.revenue_usd",
     {
       "as": "large_order_revenue_usd",
       "expression": {
@@ -22,7 +17,8 @@
           {
             "entity": "entity.jaffle_order",
             "measure": "measure.jaffle.revenue_usd",
-            "op": ">=",
+            "op": "gte",
+            "over": "period",
             "value": 50
           }
         ]
@@ -32,6 +28,5 @@
   "time": {
     "grain": "month",
     "temporal_role": "temporal_role.jaffle_order_time"
-  },
-  "version": 1
+  }
 }
