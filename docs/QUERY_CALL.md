@@ -364,7 +364,7 @@ A result threshold filters result rows; to filter which entities count toward a 
   Bounds are ISO dates or date-times; a date-time bound may cut inside a day.
 - `grain` gives one row per period in a `period` column, an ISO date (the period's first day).
   Without `grain` the answer is one total per group over the window, with no time column; the
-  answer says so in `assumptions` and sets `time_shape: "window_total"`.
+  answer says so in `assumptions` (`WINDOW_TOTAL`).
 - One window spelling per call. `time` with only `temporal_role` is refused ("say a grain or
   a window").
 - A relative phrase is `last` or `this`; a dated phrase is `start`/`end` ("in Q3" is
@@ -483,7 +483,7 @@ is partial by definition and says how much of the period it covers:
 {"rows": [{"period": "2017-08-28", "period_partial": false, "order_count": 379},
           {"period": "2017-08-29", "period_partial": false, "order_count": 364},
           {"period": "2017-08-30", "period_partial": true, "order_count": 328}],
- "window": {"start": "2017-08-28", "end": "2017-08-30T15:00:00", "now": "2017-08-30T15:00:00Z", "partial": true, "data_through": "2017-08-30"},
+ "window": {"start": "2017-08-28", "end": "2017-08-30T15:00:00Z", "now": "2017-08-30T15:00:00Z", "partial": true, "data_through": "2017-08-30"},
  "assumptions": [{"code": "PARTIAL_PERIOD", "message": "the week of 2017-08-28 so far (3 of 7 days)"}]}
 ```
 
@@ -588,8 +588,12 @@ option's route in `routes`.
 {"rows": [{"dimension.jaffle_customer_history_segment": "new", "period": "2016-01-01", "period_partial": false, "customer_count": 4},
           {"dimension.jaffle_customer_history_segment": null, "period": "2016-01-01", "period_partial": false, "customer_count": 273},
           {"dimension.jaffle_customer_history_segment": null, "period": "2017-01-01", "period_partial": true, "customer_count": 662}],
- "warnings": [{"code": "ROUTE_CHOSEN_BY_QUERY",
-   "message": "Chosen meaning: the Customer history valid at the time of any of the Customer's Orders (chosen by this query). Other meanings (one-step switches): the Customer history valid at the time of the Order of any of the Customer's Storefront sessions. Send one as routes: [{from, to, via}]. A reviewed package default using details.row would remove the question."}]}
+ "routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
+             "via": ["relationship.orders_customer", "relationship.order_to_customer_history"],
+             "other_routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
+                               "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order",
+                                       "relationship.order_to_customer_history"]}]},
+            {"from": "entity.jaffle_order", "to": "entity.jaffle_customer", "via": ["relationship.orders_customer"]}]}
 ```
 
 - One route per entity pair, for this call only; it overrides the package's own row for the
@@ -599,9 +603,13 @@ option's route in `routes`.
   (`details.reason`: `route_not_offered`, `invalid_route_decision`, `route_decision_unused`).
   Under a row filter that reads an entity on any of the pair's routes, a call route is refused
   with `POLICY_DENIED` (`route_override_under_row_policy`).
-- The answer discloses every call route as `ROUTE_CHOSEN_BY_QUERY`, at every verbosity, with
-  the other meanings as one-step switches. No alternative is executed: a different route is a
-  different question.
+- The answer's `routes` names every route chosen among several, the call's and the package's
+  (above, an order reaches its customer by its own key), at every verbosity. A call route the
+  refusal offered lists up to three of the other options in `other_routes`, each ready to send
+  as `routes`, with `more_routes` counting the rest: one-step switches. No alternative is
+  executed: a different route is a different question. A compact or full answer adds how each
+  route was chosen (`basis`: `routes` with the package basis it `replaced`, `own_key` with the
+  rows that would make another route the default, or `recorded`).
 
 ## `observation_scope`
 
@@ -702,20 +710,30 @@ per-entity aggregation.
  "window": {"start", "end", "now", "partial", "data_through"},  // whenever a window or a grain series was resolved
  "clock": "temporal_role.<id>",                       // whenever a time-bearing measure was read
  "observation_scope": "dataset",                      // always
- "assumptions": [...],                                // what the answer assumed: a window total, a partial period, an entity filter's over
- "warnings": [...]}                                   // codes the reader must know: NO_DATA_YET, UNKNOWN_ROWS_KEPT, TIES_AT_LIMIT, ...
+ "routes": [{"from", "to", "via"}],                   // only when a route was chosen among several
+ "assumptions": [...],                                // only when the answer assumed something: WINDOW_TOTAL, PARTIAL_PERIOD, ENTITY_FILTER_OVER
+ "warnings": [...]}                                   // only when there are some: NO_DATA_YET, UNKNOWN_ROWS_KEPT, TIES_AT_LIMIT, ...
 ```
 
 - Columns: a `group_by` dimension keeps its full id; a measure or metric is its id's last
   segment; `as` wins; the time axis is `period` (an ISO date), followed by `period_partial`.
-- `window` holds only the keys that apply: `start`/`end` as resolved (`last` and `this`
-  become dates), `now` as used, `partial`, and `data_through` once a warehouse with loaded
-  coverage (DuckDB, MotherDuck, DuckLake, Postgres) has read the edge.
-- `window`, `clock`, `observation_scope`, `assumptions` and `time_shape` survive every
-  verbosity, because they change what the numbers mean.
-- Each warning has a stable `code`, a `message` and `details`. Codes, `status` and the route
-  disclosure are server-authored, so a host can record them per call without the query text,
-  SQL or rows.
+- `window` holds only the keys that apply: `start`/`end` as resolved (`last` becomes dates;
+  `this` starts on a date and ends at `now`, stated with the clock zone's offset), `now` as
+  used, `partial`, and `data_through` once a warehouse with loaded coverage (DuckDB,
+  MotherDuck, DuckLake, Postgres) has read the edge.
+- No field is empty: `routes`, `assumptions`, `warnings` and `errors` appear only when they
+  have entries, and a list, object or string with nothing in it is left out (`rows` stays: an
+  empty result is an answer).
+- Each assumption is `{code, message, ...}`; any code the engine registers as an assumption
+  is stated here, never among the warnings.
+- Verbosity trims only after the answer is built: `window`, `clock`, `observation_scope`,
+  `routes` (each `{from, to, via}`, with a call's `other_routes`), every assumption and every
+  warning survive every verbosity, because they change what the numbers mean.
+- Each warning has a stable `code` and a `message`, with `details` when it has any. Codes,
+  `status` and `routes` are server-authored, so a host can record them per call without the
+  query text, SQL or rows.
+- The echoed `query` and `normalized_query` (compact and full) are the call, never the
+  engine form with its identity or `now`.
 - Value types are in [Result values](#result-values).
 
 ## Refusals
@@ -732,8 +750,8 @@ corrected shape to send:
 // The same call written with "op": "IS NULL" is refused:
 {"code": "INVALID_QUERY",
  "message": "where[0].op must be one of ['is', 'not', 'gt', 'gte', 'lt', 'lte', 'contains', 'missing']; write {\"op\": \"missing\", \"value\": true}",
- "details": {"path": "where[0].op", "received_value": "IS NULL",
-             "recovery_hints": [{"code": "USE_FILTER_WORD", "message": "Write {\"op\": \"missing\", \"value\": true}."}]}}
+ "details": {"path": "where[0].op", "received_value": "IS NULL"},
+ "recovery_hints": [{"code": "USE_FILTER_WORD", "message": "Write {\"op\": \"missing\", \"value\": true}."}]}
 ```
 
 A clarification (`AMBIGUOUS_PATH`, `AMBIGUOUS_CHILD_SCOPE`, `MIXED_TIME_ROLES`,

@@ -326,21 +326,22 @@ class SemanticHTTPService:
         out.setdefault("api_version", API_VERSION)
         out.setdefault("request_id", request_id)
         out.setdefault("package_id", self.package_id)
-        out.setdefault("warnings", [])
         if "errors" not in out:
             error = out.get("error")
             if isinstance(error, dict):
                 out["errors"] = [error]
             elif error:
                 out["errors"] = [issue(str(error).upper(), str(error))]
-            else:
-                out["errors"] = []
         if "recovery_hints" not in out:
             recovery_hints: list[Any] = []
             for error in list(out.get("errors", []) or []):
                 if isinstance(error, dict):
                     recovery_hints.extend(list(error.get("recovery_hints", []) or []))
             out["recovery_hints"] = recovery_hints
+        # Errors, warnings and hints only when there are some; no empty fields.
+        for key in ("errors", "warnings", "recovery_hints"):
+            if not out.get(key):
+                out.pop(key, None)
         if started is not None:
             out.setdefault("timing_ms", round((time.perf_counter() - started) * 1000, 3))
         if request_context is not None:
