@@ -3,6 +3,7 @@
 import json
 
 from scripts.dev import compile_corpus
+from semantic_rails.dialects import supported_warehouses
 
 LEDGER = "tests/integration/correctness/shop/tests::"
 SAMPLE = [
@@ -65,3 +66,10 @@ def test_record_is_byte_identical_and_compare_names_query_dialect_and_field(tmp_
     assert compile_corpus.compare(str(golden), str(golden)) == 0
     assert compile_corpus.compare(str(golden), str(after), brief=True) == 1
     assert f"CHANGED {SAMPLE[0]} [bigquery] warnings" in capsys.readouterr().out
+
+
+def test_record_covers_every_supported_dialect_by_default():
+    record = compile_corpus.record(only=[SAMPLE[0]], jobs=1)
+
+    assert record["dialects"] == sorted(supported_warehouses())
+    assert record["summary"]["compiled"] == len(supported_warehouses())
