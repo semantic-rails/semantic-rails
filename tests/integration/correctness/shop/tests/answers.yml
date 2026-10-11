@@ -288,6 +288,26 @@ tests:
       GROUP BY o.customer_id, s.name
       ORDER BY revenue DESC NULLS LAST, o.customer_id ASC NULLS LAST, s.name ASC NULLS LAST
       LIMIT 2
+  shop/share-over-a-name-spans-every-namesake:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The name groups by the customer key too, and a share over the name takes its total over every customer of that name, so customers 101 and 103 (both Ann, 23 each) hold half each.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.dimensions.name, docs/QUERY_CALL.md#inline-expression-kinds]
+    query:
+      select: [{expression: {kind: share, input: measure.shop.revenue, over: [dimension.shop_customer_name]}, as: share}]
+      group_by: [dimension.shop_customer_name]
+      where: [{field: dimension.shop_customer_name, op: is, value: Ann}]
+    expected_rows:
+      - {dimension.shop_customer_id: 101, dimension.shop_customer_name: Ann, share: 0.5}
+      - {dimension.shop_customer_id: 103, dimension.shop_customer_name: Ann, share: 0.5}
+    reference_sql: |
+      SELECT customer_id, name, revenue / CAST(SUM(revenue) OVER () AS DOUBLE PRECISION) AS share
+      FROM (
+        SELECT o.customer_id, s.name, SUM(o.amount) AS revenue
+        FROM orders o JOIN signups s ON o.customer_id = s.customer_id
+        WHERE s.name = 'Ann'
+        GROUP BY o.customer_id, s.name
+      ) q
   shop/top-orders-by-revenue-rank-a-null-revenue-last:
     kind: query_matches_snapshot
     expect: answer
