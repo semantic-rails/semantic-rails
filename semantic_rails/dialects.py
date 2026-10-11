@@ -83,16 +83,23 @@ def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) ->
 def backslash_escaped_string_literal(value: str) -> str:
     """Quote ``value`` for dialects where ``\\`` escapes inside string literals.
 
-    Snowflake, BigQuery, ClickHouse and Databricks/Spark all treat a
-    backslash as introducing an escape sequence inside a single-quoted
-    literal. Doubling only the quote is therefore not enough: a value
-    ending in a backslash escapes the *closing* quote, so everything the
-    caller supplied after it is parsed as SQL rather than as data.
+    Snowflake and ClickHouse treat a backslash as introducing an escape
+    sequence inside a single-quoted literal. Doubling only the quote is
+    therefore not enough: a value ending in a backslash escapes the
+    *closing* quote, so everything the caller supplied after it is parsed
+    as SQL rather than as data.
 
     Backslashes are doubled before quotes so the doubling cannot be
     applied to a quote-escape this function introduced itself.
     """
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def backslash_quoted_string_literal(value: str) -> str:
+    """Quote ``value`` where only a backslash escapes a quote: BigQuery reads ``''`` inside
+    a literal as two literals (an error) and Spark as two concatenated ones (the quote is
+    lost), so the quote is ``\\'`` and a backslash ``\\\\``."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 # An ISO date or naive timestamp, the text a TIMESTAMP literal reads.
@@ -175,7 +182,8 @@ class SqlDialect:
         Postgres (``standard_conforming_strings=on``, the default since
         9.1) and Trino/Athena. Dialects that also honour backslash
         escapes override this with
-        :func:`backslash_escaped_string_literal` — doubling backslashes
+        :func:`backslash_escaped_string_literal` or
+        :func:`backslash_quoted_string_literal` — doubling backslashes
         *here* would corrupt the value on these warehouses instead.
         """
         return "'" + value.replace("'", "''") + "'"
@@ -811,7 +819,7 @@ class BigQueryDialect(SqlDialect):
         ]
 
     def quote_string_literal(self, value: str) -> str:
-        return backslash_escaped_string_literal(value)
+        return backslash_quoted_string_literal(value)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         """EXACT linear-interpolation percentile (DuckDB QUANTILE_CONT
@@ -990,13 +998,14 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
         return _day_rows(SqlCall("EXPLODE", [SqlCall("SEQUENCE", [start, end])]), source)
 
     def prepare_query(self, sql: str) -> PreparedQuery:
-        return PreparedQuery(float_nullif_divisions(rewrite_double_quoted_identifiers(sql)))
+        sql = rewrite_double_quoted_identifiers(sql, backslash=True)
+        return PreparedQuery(float_nullif_divisions(sql, backslash=True))
 
     def cast_type_name(self, logical_type: str) -> str:
         return "STRING" if logical_type == "VARCHAR" else super().cast_type_name(logical_type)
 
     def quote_string_literal(self, value: str) -> str:
-        return backslash_escaped_string_literal(value)
+        return backslash_quoted_string_literal(value)
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
         return SqlCall("MIN_BY", [expr, order_expr])

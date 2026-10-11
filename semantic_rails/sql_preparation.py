@@ -156,28 +156,51 @@ def check_snowflake_parameters(prepared: PreparedQuery) -> None:
         raise parameters_denied("parameter_placeholder_mismatch")
 
 
-def map_double_quoted_identifiers(sql: str, replace: Callable[[str], str]) -> str:
+def literal_end(sql: str, start: int, *, backslash: bool = False) -> int:
+    """The index just past the single-quoted literal that opens at ``start``.
+
+    Inside a literal ``''`` is an escaped quote, or, where ``backslash`` (BigQuery, Spark),
+    ``\\`` escapes the next character and a quote always closes the literal: those
+    dialects render a quote as ``\\'`` (see
+    :meth:`semantic_rails.dialects.SqlDialect.quote_string_literal`). An unterminated
+    literal runs to the end.
+    """
+    j = start + 1
+    while j < len(sql):
+        if backslash and sql[j] == "\\":
+            j += 2
+        elif sql[j] != "'":
+            j += 1
+        elif not backslash and sql[j + 1 : j + 2] == "'":
+            j += 2
+        else:
+            return j + 1
+    return len(sql)
+
+
+def literal_spans(sql: str, *, backslash: bool = False) -> list[tuple[int, int]]:
+    """Spans of single-quoted string literals (see :func:`literal_end`)."""
+    spans: list[tuple[int, int]] = []
+    start = sql.find("'")
+    while start != -1:
+        end = literal_end(sql, start, backslash=backslash)
+        spans.append((start, end))
+        start = sql.find("'", end)
+    return spans
+
+
+def map_double_quoted_identifiers(
+    sql: str, replace: Callable[[str], str], *, backslash: bool = False
+) -> str:
     """Quote-aware scanning core for identifier-re-quoting compat passes.
 
-    The renderer emits ANSI ``"identifier"`` quoting; the compiler
-    renders string LITERALS with single quotes only, so a quote-aware
-    scan (single-quoted spans copied verbatim, including ``''``
-    escapes) can safely rewrite every double-quoted span.
-
-    This scan deliberately does NOT treat ``\\`` as an escape, even
-    though its callers (BigQuery, Spark) are warehouses that do. It
-    stays correct because the renderer always emits backslashes
-    *doubled* on those dialects — see
-    :func:`semantic_rails.dialects.backslash_escaped_string_literal` —
-    so a lone ``\\'`` can never appear and the literal boundaries this
-    scan finds are the same ones the warehouse finds. Teaching it about
-    backslash escapes would instead break the ANSI-conforming callers,
-    where ``\\`` is an ordinary character. Each
-    identifier's inner text (with ``""`` escapes collapsed) is passed
-    to ``replace``; its return value is emitted verbatim in place of
-    the original quoted span. Callers own the target quoting/escaping
-    (see :func:`rewrite_double_quoted_identifiers` and the BigQuery
-    adapter's alias-legalizing variant).
+    The renderer emits ANSI ``"identifier"`` quoting; string literals are single-quoted, so
+    a quote-aware scan (single-quoted spans copied verbatim, see :func:`literal_end` for
+    ``backslash``) can safely rewrite every double-quoted span. Each identifier's inner text
+    (with ``""`` escapes collapsed) is passed to ``replace``; its return value is emitted
+    verbatim in place of the original quoted span. Callers own the target quoting/escaping
+    (see :func:`rewrite_double_quoted_identifiers` and the BigQuery adapter's
+    alias-legalizing variant).
     """
     out: list[str] = []
     i = 0
@@ -185,16 +208,9 @@ def map_double_quoted_identifiers(sql: str, replace: Callable[[str], str]) -> st
     while i < n:
         ch = sql[i]
         if ch == "'":
-            j = i + 1
-            while j < n:
-                if sql[j] == "'":
-                    if j + 1 < n and sql[j + 1] == "'":
-                        j += 2
-                        continue
-                    break
-                j += 1
-            out.append(sql[i : j + 1])
-            i = j + 1
+            j = literal_end(sql, i, backslash=backslash)
+            out.append(sql[i:j])
+            i = j
             continue
         if ch == '"':
             j = i + 1
@@ -216,7 +232,9 @@ def map_double_quoted_identifiers(sql: str, replace: Callable[[str], str]) -> st
     return "".join(out)
 
 
-def rewrite_double_quoted_identifiers(sql: str, *, quote: str = "`") -> str:
+def rewrite_double_quoted_identifiers(
+    sql: str, *, quote: str = "`", backslash: bool = False
+) -> str:
     """Re-quote double-quoted identifiers for backtick dialects.
 
     Spark SQL and BigQuery treat double quotes as string literals and
@@ -224,20 +242,14 @@ def rewrite_double_quoted_identifiers(sql: str, *, quote: str = "`") -> str:
     scanning contract.
     """
     return map_double_quoted_identifiers(
-        sql, lambda name: quote + name.replace(quote, quote + quote) + quote
+        sql, lambda name: quote + name.replace(quote, quote + quote) + quote, backslash=backslash
     )
 
 
 _DIVIDE_NULLIF_RE = re.compile(r"/\s*NULLIF\s*\(")
-_SINGLE_QUOTED_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
 
 
-def literal_spans(sql: str) -> list[tuple[int, int]]:
-    """Spans of single-quoted string literals (with ``''`` escapes)."""
-    return [m.span() for m in _SINGLE_QUOTED_LITERAL_RE.finditer(sql)]
-
-
-def float_nullif_divisions(sql: str, *, cast_type: str = "DOUBLE") -> str:
+def float_nullif_divisions(sql: str, *, cast_type: str = "DOUBLE", backslash: bool = False) -> str:
     """Make ``x / NULLIF(y, 0)`` divide as floats, matching DuckDB.
 
     The compiler guards every ratio it emits with exactly this idiom,
@@ -251,11 +263,11 @@ def float_nullif_divisions(sql: str, *, cast_type: str = "DOUBLE") -> str:
     ``cast_type`` is the warehouse's float-ish type — ``DOUBLE``
     (Spark, Trino) or ``DOUBLE PRECISION`` (Postgres).
 
-    Quote-aware paren matching; ``/ NULLIF(`` occurrences inside
-    single-quoted literals are skipped and nested occurrences are
-    rewritten recursively.
+    Quote-aware paren matching (see :func:`literal_end` for ``backslash``);
+    ``/ NULLIF(`` occurrences inside single-quoted literals are skipped and nested
+    occurrences are rewritten recursively.
     """
-    spans = literal_spans(sql)
+    spans = literal_spans(sql, backslash=backslash)
 
     def _inside_literal(position: int) -> bool:
         return any(start <= position < end for start, end in spans)
@@ -273,18 +285,12 @@ def float_nullif_divisions(sql: str, *, cast_type: str = "DOUBLE") -> str:
             continue
         depth = 1
         index = match.end()
-        in_string = False
         while index < len(sql) and depth:
             char = sql[index]
-            if in_string:
-                if char == "'":
-                    if index + 1 < len(sql) and sql[index + 1] == "'":
-                        index += 1  # escaped quote inside the literal
-                    else:
-                        in_string = False
-            elif char == "'":
-                in_string = True
-            elif char == "(":
+            if char == "'":
+                index = literal_end(sql, index, backslash=backslash)
+                continue
+            if char == "(":
                 depth += 1
             elif char == ")":
                 depth -= 1
@@ -294,7 +300,8 @@ def float_nullif_divisions(sql: str, *, cast_type: str = "DOUBLE") -> str:
             return "".join(out)
         out.append(sql[pos : match.start()])
         out.append("/ CAST(NULLIF(")
-        out.append(float_nullif_divisions(sql[match.end() : index - 1], cast_type=cast_type))
+        inner = sql[match.end() : index - 1]
+        out.append(float_nullif_divisions(inner, cast_type=cast_type, backslash=backslash))
         out.append(f") AS {cast_type})")
         pos = index
 
@@ -393,4 +400,4 @@ def bigquery_compat_sql(sql: str) -> tuple[str, dict[str, str]]:
         alias_map[safe] = name
         return "`" + safe + "`"
 
-    return map_double_quoted_identifiers(sql, _requote), alias_map
+    return map_double_quoted_identifiers(sql, _requote, backslash=True), alias_map

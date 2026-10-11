@@ -16,10 +16,13 @@ from semantic_rails.sql_ast import (
 
 TEXT = "50%_Off\\x'y"
 # Standard-conforming literals keep backslashes as they are and need ESCAPE; backslash-escaping
-# literals double them; BigQuery and ClickHouse escape LIKE with a backslash by default.
+# literals double them, and BigQuery and Spark also escape the quote with one (they read ''
+# as two literals); BigQuery and ClickHouse escape LIKE with a backslash by default.
 STANDARD = r"(LOWER(t.name) LIKE '%50\%\_off\\x''y%' ESCAPE '\')"
 BACKSLASH = r"(LOWER(t.name) LIKE '%50\\%\\_off\\\\x''y%' ESCAPE '\\')"
+BACKSLASH_QUOTE = r"(LOWER(t.name) LIKE '%50\\%\\_off\\\\x\'y%' ESCAPE '\\')"
 BACKSLASH_DEFAULT_ESCAPE = r"(LOWER(t.name) LIKE '%50\\%\\_off\\\\x''y%')"
+BACKSLASH_QUOTE_DEFAULT_ESCAPE = r"(LOWER(t.name) LIKE '%50\\%\\_off\\\\x\'y%')"
 EXPECTED = {
     "duckdb": STANDARD,
     "motherduck": STANDARD,
@@ -27,8 +30,8 @@ EXPECTED = {
     "postgres": STANDARD,
     "athena": STANDARD,
     "snowflake": BACKSLASH,
-    "databricks": BACKSLASH,
-    "bigquery": BACKSLASH_DEFAULT_ESCAPE,
+    "databricks": BACKSLASH_QUOTE,
+    "bigquery": BACKSLASH_QUOTE_DEFAULT_ESCAPE,
     "clickhouse": BACKSLASH_DEFAULT_ESCAPE,
 }
 

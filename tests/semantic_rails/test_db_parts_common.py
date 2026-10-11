@@ -319,3 +319,24 @@ def test_option_or_env_falls_back_to_env_and_records_missing(monkeypatch):
     missing = []
     assert option_or_env({}, "host", missing) == ""
     assert missing == []
+
+
+# -- backslash-quoted literals (BigQuery, Spark) -------------------------------
+
+
+@pytest.mark.parametrize("warehouse", ["bigquery", "databricks"])
+def test_backslash_quoted_literal_survives_preparation(warehouse):
+    # BigQuery reads '' inside a literal as two literals and Spark as two concatenated
+    # ones, so a quote is \' there; the passes must not end the literal at it.
+    from semantic_rails.dialects import dialect_for_warehouse
+    from semantic_rails.renderer import render_expr, use_dialect
+    from semantic_rails.sql_ast import SqlBinary, SqlIdentifier, SqlLiteral
+
+    dialect = dialect_for_warehouse(warehouse)
+    value = 'it\'s "b" / NULLIF(c, 0) \\'
+    with use_dialect(dialect):
+        literal = render_expr(SqlBinary(SqlIdentifier(["t", "s"]), "=", SqlLiteral(value)))
+    assert literal == "t.s = 'it\\'s \"b\" / NULLIF(c, 0) \\\\'"
+    sql = f'SELECT a / NULLIF(b, 0) AS "x" FROM t WHERE {literal}'
+    ratio = "CAST(NULLIF(b, 0) AS DOUBLE)" if warehouse == "databricks" else "NULLIF(b, 0)"
+    assert dialect.prepare_query(sql).sql == f"SELECT a / {ratio} AS `x` FROM t WHERE {literal}"
