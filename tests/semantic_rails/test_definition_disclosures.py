@@ -13,9 +13,9 @@ from typing import Any
 import duckdb
 import pytest
 
-from semantic_rails import runtime as runtime_module
 from semantic_rails.db import DuckDBAdapter
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts import answer_warnings
 
 CUSTOMER = "dimension.jaffle_customer_id"
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -322,7 +322,7 @@ def test_the_warning_never_changes_the_answer(runtime, monkeypatch):
     query = _query(ORDERS, SESSIONS)
     before = runtime.query(query)
     assert len(_mixed(before)) == 1
-    monkeypatch.setattr(runtime_module, "mixed_time_role_warnings", lambda *_: [])
+    monkeypatch.setattr(answer_warnings, "mixed_time_role_warnings", lambda *_: [])
 
     after = runtime.query(query)
 
