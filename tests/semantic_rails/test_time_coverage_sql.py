@@ -28,6 +28,17 @@ ITEMS = {"measure": "measure.jaffle.item_count"}
 BOUNDS = {"start": "2017-04-01", "end": "2017-05-01"}
 WAREHOUSES = ("duckdb", "postgres", "snowflake", "bigquery", "databricks", "clickhouse", "athena")
 COVERED = {"duckdb", "postgres"}  # the warehouses whose coverage SQL CI executes
+# Warehouses that read coverage for a named window's every-period series, its probes read
+# through CTEs, and an instant spelled in UTC by converting its declared storage zone.
+NAMED_ONLY = {"snowflake", "bigquery", "databricks", "athena"}
+CUTOFF = {
+    "duckdb": "CAST('2026-10-01 00:00:00' AS TIMESTAMP)",
+    "postgres": "CAST('2026-10-01 00:00:00' AS TIMESTAMP)",
+    "snowflake": "CAST('2026-10-01 00:00:00' AS TIMESTAMP_NTZ)",
+    "bigquery": "'2026-10-01 00:00:00'",
+    "databricks": "CAST('2026-10-01 00:00:00' AS TIMESTAMP)",
+    "athena": "CAST('2026-10-01 00:00:00' AS TIMESTAMP)",
+}
 NOW = "2026-10-01T00:00:00Z"
 
 
@@ -68,9 +79,10 @@ def _cte(compiled, name):
     [((REVENUE,), {**BOUNDS, "fill": True}), ((REVENUE, ITEMS), BOUNDS)],
     ids=["filled", "combined"],
 )
-def test_coverage_renders_only_where_ci_executes_it(
+def test_coverage_renders_where_a_named_window_reads_it(
     package_config_factory, warehouse, zone, storage, expressions, time
 ):
+    # BOUNDS is a named window under a grain: every period it holds, 0 inside the data.
     config = _config(package_config_factory, warehouse, zone, storage)
     if time.get("fill") and not dialect_for_warehouse(warehouse).has_implicit_calendar:
         # Every fill uses the implicit calendar; an authored one takes no part.
@@ -82,10 +94,12 @@ def test_coverage_renders_only_where_ci_executes_it(
     leaf = render_select(_cte(compiled, "leaf_1"))
     assert leaf == render_select(_cte(_compile(config, BOUNDS, (REVENUE,)), "leaf_1"))
     assert "TYPEOF" not in leaf and "NOW(" not in leaf
-    covered = warehouse in COVERED
-    assert any(isinstance(n, SqlExists) for n in sql_nodes(compiled["sql_ast"])) is covered
+    covered = warehouse in COVERED | NAMED_ONLY
+    exists = any(isinstance(n, SqlExists) for n in sql_nodes(compiled["sql_ast"]))
+    assert exists is (warehouse in COVERED)
+    assert ("observed_1_rows" in compiled["sql"]) is (warehouse in NAMED_ONLY)
     assert ("coverage_" in compiled["sql"]) is covered
-    assert ("TYPEOF" in compiled["sql"]) is covered
+    assert ("TYPEOF" in compiled["sql"]) is (warehouse in COVERED)
     guard = _cte(compiled, "guarded_base")
     measures = [f.expression for f in guard.select if f.alias.startswith("m")]
     # The revenue sum keeps its value and fills only a group with no rows:
@@ -106,17 +120,17 @@ def test_coverage_renders_only_where_ci_executes_it(
     # The cutoff is the request's now, never the warehouse clock; the last row's instant
     # under it is the data-through edge.
     condition = render_expr(cutoff.condition)
-    assert "PG_TYPEOF" in condition and "NOW()" not in condition
-    assert "CAST('2026-10-01 00:00:00' AS TIMESTAMP)" in condition
+    assert ("PG_TYPEOF" in condition) is (warehouse in COVERED) and "NOW()" not in condition
+    assert CUTOFF[warehouse] in condition
     assert through.args[0].whens[0].condition == cutoff.condition
     assert all(isinstance(m, SqlCall) and m.name == "COALESCE" for m in measures)
 
 
 def test_a_scope_on_a_warehouse_without_coverage_refuses(package_config_factory, monkeypatch):
-    config = _config(package_config_factory, "snowflake")
+    config = _config(package_config_factory, "clickhouse")
     monkeypatch.setattr(sql_lowering, "_needs_time_scope", lambda plan, config: True)
     with pytest.raises(SemanticLayerError) as caught:
-        _compile(config, {**BOUNDS, "fill": True}, (REVENUE,))
+        _compile(config, {"start": "2017-04-01"}, (REVENUE,))
     assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"
     scope = LeafScope(SqlTableRef("t"), (), (), SqlCall("SUM", [SqlIdentifier(["t", "v"])]))
     for scopes, time_key in (({"m": scope}, ""), ({}, "t")):
@@ -128,7 +142,7 @@ def test_a_scope_on_a_warehouse_without_coverage_refuses(package_config_factory,
                 {"m": "sum"},
                 scopes,
                 time_key=time_key,
-                dialect=dialect_for_warehouse("snowflake"),
+                dialect=dialect_for_warehouse("clickhouse"),
             )
 
 
@@ -187,14 +201,31 @@ def test_coverage_cutoff_compares_instants_in_a_different_session_zone(
         assert (hi is not None) is (hours < 0)
 
 
+UTC_STAMP = {
+    "snowflake": "CONVERT_TIMEZONE('America/New_York', 'UTC', CAST(stamp AS TIMESTAMP_NTZ))",
+    "bigquery": "DATETIME(TIMESTAMP(stamp, 'America/New_York'), 'UTC')",
+    "databricks": "CONVERT_TIMEZONE('America/New_York', 'UTC', CAST(stamp AS TIMESTAMP))",
+    "athena": (
+        "CAST(AT_TIMEZONE(WITH_TIMEZONE(CAST(stamp AS TIMESTAMP), 'America/New_York'), 'UTC') "
+        "AS TIMESTAMP)"
+    ),
+}
+
+
 @pytest.mark.parametrize("warehouse", WAREHOUSES)
 def test_only_duckdb_and_postgres_have_time_coverage(warehouse):
     dialect = dialect_for_warehouse(warehouse)
     assert dialect.has_time_coverage is (warehouse in COVERED)
+    assert dialect.reads_coverage is (warehouse in COVERED | NAMED_ONLY)
+    stamp = SqlIdentifier(["stamp"])
     if dialect.has_time_coverage:
-        sql = render_expr(dialect.utc_timestamp(SqlIdentifier(["stamp"]), "America/New_York"))
+        sql = render_expr(dialect.utc_timestamp(stamp, "America/New_York"))
         assert "PG_TYPEOF(stamp)" in sql and "CAST(stamp AS TIMESTAMPTZ)" in sql
         assert "'UTC'" in sql and "'America/New_York'" in sql
+    elif dialect.reads_coverage:
+        # Naive storage in its declared zone, converted to UTC; UTC storage reads as stored.
+        assert render_expr(dialect.utc_timestamp(stamp, "America/New_York")) == UTC_STAMP[warehouse]
+        assert dialect.utc_timestamp(stamp, "UTC") == dialect.timestamp_cast(stamp)
 
 
 def test_scope_reads_report_unbounded_large_scans(package_config_factory):
@@ -222,3 +253,42 @@ def test_scope_reads_report_unbounded_large_scans(package_config_factory):
     assert performance["large_scan_risk"]["all_raw_scans_bounded"] is False
     assert performance["risk_level"] == "high"
     assert performance["execution_recommendation"] == "needs_acceleration_layer"
+
+
+@pytest.mark.parametrize("warehouse", WAREHOUSES)
+@pytest.mark.parametrize("zone", ["UTC", "Not/AZone"])
+def test_a_named_window_lists_every_period_or_says_it_shows_only_some(
+    package_config_factory, warehouse, zone
+):
+    """Never silently sparse: every period from the day spine bounded by loaded coverage, or the
+    observed periods with an OBSERVED_PERIODS_ONLY assumption naming why."""
+    from semantic_rails.runtime import Runtime
+
+    config, path = package_config_factory("jaffle_shop")
+    config = _config(package_config_factory, warehouse, zone)
+    runtime = Runtime.from_config(config, source_path=str(path), package_id="jaffle_shop")
+    try:
+        call = {"select": ["measure.jaffle.order_count"], "time": {**BOUNDS, "grain": "day"}}
+        compiled = runtime.compile(call, now=NOW, verbosity="full")
+    finally:
+        runtime.close()
+    every = warehouse in COVERED | NAMED_ONLY and zone == "UTC"
+    assert ("implicit_days" in compiled["rendered_sql"]) is every
+    assert ("coverage_1" in compiled["rendered_sql"]) is every
+    observed = [a for a in compiled.get("assumptions", []) if a["code"] == "OBSERVED_PERIODS_ONLY"]
+    if every:
+        assert observed == []
+        return
+    reason = (
+        f"warehouse '{warehouse}' can't list a window's empty periods"
+        if warehouse not in COVERED | NAMED_ONLY
+        else f"the clock's zone '{zone}' is not a known time zone"
+    )
+    assert observed == [
+        {
+            "code": "OBSERVED_PERIODS_ONLY",
+            "message": f"The window's empty periods are not filled because {reason}: only "
+            "periods with data are shown.",
+            "reason": reason,
+        }
+    ]

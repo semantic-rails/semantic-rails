@@ -426,24 +426,35 @@ def _time_axis_kind(expr: Any, config: PackageConfig) -> str:
     return ""
 
 
-def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool:
-    """A named window under a grain answers one row per period it holds, like ``fill``.
+def observed_periods_reason(query: NormalizedQuery, config: PackageConfig) -> str:
+    """Why a named window under a grain answers only the periods that have rows ("" when it
+    answers every period it holds, like ``fill``).
 
-    Only where the warehouse bounds an empty period's 0 by the data's loaded edge, and the
-    clock's zone names its days; elsewhere the series keeps the periods that have rows, so no
-    period after the edge reads 0.
+    Every period needs a day spine and the data's loaded edge, which bounds an empty period's
+    0, on the warehouse, and a clock zone that names its days. Without them the series keeps
+    the periods that have rows, so no period after the edge reads 0, and the answer says so.
     """
     time = query.time
-    if not (
+    if not (time is not None and time.named and time.grain in UNITS and query.select):
+        return ""
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if not (dialect.reads_coverage and dialect.has_implicit_calendar):
+        return f"warehouse '{dialect.name}' can't list a window's empty periods"
+    role = _temporal_role_index(config).get(time.temporal_role)
+    zone = str(getattr(role, "timezone", "") or "UTC")
+    return "" if known_zone(zone) else f"the clock's zone '{zone}' is not a known time zone"
+
+
+def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool:
+    """A named window under a grain answers one row per period it holds, like ``fill``."""
+    time = query.time
+    return bool(
         time is not None
         and time.named
         and time.grain in UNITS
         and query.select
-        and dialect_for_warehouse(config.package.warehouse).has_time_coverage
-    ):
-        return False
-    role = _temporal_role_index(config).get(time.temporal_role)
-    return known_zone(str(getattr(role, "timezone", "") or "UTC"))
+        and not observed_periods_reason(query, config)
+    )
 
 
 def _time_valued_groups(query: NormalizedQuery, config: PackageConfig) -> list[str]:
