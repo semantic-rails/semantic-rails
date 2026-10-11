@@ -28,7 +28,9 @@ def test_top_n_cutoff_ties_match_reference_on_repeated_calls(request, backend, m
         assert comparable(result, ordered=True) == expected
         assert result["row_count"] == 1
         assert not result["truncated"]
-        warnings = [warning for warning in result["warnings"] if warning["code"] == "TIES_AT_LIMIT"]
+        warnings = [
+            warning for warning in result.get("warnings", []) if warning["code"] == "TIES_AT_LIMIT"
+        ]
         assert [warning["details"] for warning in warnings] == [{"at": 1, "tied": 2}]
     # One answer query per call, including cache hits; beside it, the window total's loaded
     # coverage is read once per call for its data-through date.
@@ -68,7 +70,7 @@ def test_no_cutoff_warning_without_a_boundary_tie(duckdb_backend, changes):
         if value is not None
     }
     result = runtime.query(query)
-    assert not any(warning["code"] == "TIES_AT_LIMIT" for warning in result["warnings"])
+    assert not any(warning["code"] == "TIES_AT_LIMIT" for warning in result.get("warnings", []))
     if query.get("limit") is None:
         # Only the requested terms: an unlimited query gets no tie-break columns.
         assert result["rendered_sql"].count("NULLS LAST") == len(query["order_by"])
@@ -84,7 +86,7 @@ def test_ties_break_by_group_by_then_period_never_by_a_measure(duckdb_backend):
     ] == [("a", "2023-11-01", 1), ("a", "2023-12-01", 1), ("a", "2024-01-01", 1)]
     order_by = result["rendered_sql"].rsplit("ORDER BY", 1)[1]
     assert order_by.index("dimension.shop_order_store_id") < order_by.index("period")
-    assert [w["details"] for w in result["warnings"] if w["code"] == "TIES_AT_LIMIT"] == [
+    assert [w["details"] for w in result.get("warnings", []) if w["code"] == "TIES_AT_LIMIT"] == [
         {"at": 3, "tied": 4}
     ]
 
@@ -97,7 +99,7 @@ def test_row_cap_is_preserved(duckdb_backend, cap, expected_count, truncated):
     result = runtime.query({**SPEC["query"], "limit": 2}, limits={"max_rows": cap})
     assert result["row_count"] == expected_count
     assert result["truncated"] is truncated
-    assert not any(warning["code"] == "TIES_AT_LIMIT" for warning in result["warnings"])
+    assert not any(warning["code"] == "TIES_AT_LIMIT" for warning in result.get("warnings", []))
 
 
 @pytest.mark.parametrize("limit", [1, 2, 3])
@@ -131,7 +133,9 @@ def test_larger_tie_group_uses_nulls_last_and_an_observed_count(duckdb_backend, 
     assert [row["dimension.shop_order_store_id"] for row in result["rows"]] == ["a", "b", None][
         :limit
     ]
-    warnings = [warning for warning in result["warnings"] if warning["code"] == "TIES_AT_LIMIT"]
+    warnings = [
+        warning for warning in result.get("warnings", []) if warning["code"] == "TIES_AT_LIMIT"
+    ]
     if limit < 3:
         assert [warning["details"] for warning in warnings] == [{"at": limit, "tied": limit + 1}]
     else:

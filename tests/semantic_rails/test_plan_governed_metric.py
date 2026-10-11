@@ -347,18 +347,20 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
     )
     assert status == 200
     building_block = not runtime._config.measures[0].publish
+    # A metric the caller can't see governs the measure, published or not: the draft holds,
+    # naming nothing, since the engine never answers the raw number for this caller.
     for response in (mcp, http):
         serialized = json.dumps(response)
         assert hidden_id not in serialized
         assert hidden_label not in serialized
         assert _subject(response["best"]["query"]) == MEASURE
-        if building_block:
-            assert response["status"] == "low_confidence", response.get("why")
-            assert "execute" not in response.get("next", {}).get("ready_for", [])
-            assert [gap["expected"]["metrics"] for gap in _gaps(response)] == [[]]
-        else:
-            assert response["status"] == "ok", response.get("why")
-            assert _gaps(response) == []
+        assert response["status"] == "low_confidence", response.get("why")
+        assert "execute" not in response.get("next", {}).get("ready_for", [])
+        assert [gap["expected"] for gap in _gaps(response)] == [{"metrics": [], "narrowed_by": []}]
+        assert [gap["message"] for gap in _gaps(response)] == [HIDDEN_GOVERNOR]
+    [refused] = runtime.validate({"select": [MEASURE]}, now=NOW["now"], context=external)["errors"]
+    assert refused["code"] == "POLICY_DENIED"
+    assert hidden_id not in json.dumps(refused)
     # A building block stays one when its governor is hidden: discover still leaves it out.
     discovered = SemanticLayerMCPAdapter(runtime).call_tool(
         "discover", {"terms": "active stores"}, request_context=external
@@ -939,6 +941,10 @@ def test_a_hidden_governor_is_neither_counted_nor_named(
     )
     monkeypatch.setattr(engine, "_config", replace(engine._config, semantic_policies=[policy]))
     external = {**NOW, "audience": "external"}
+    # In the "same" shape the hidden metric governs the drafted team count itself, so the draft
+    # holds and the raw count is never answered for this caller; in "event" it governs team
+    # events, and the team count answers.
+    held = shape == "same"
     for detail in ("best", "full", "query", "debug"):
         plan = plan_payload(
             engine,
@@ -946,10 +952,21 @@ def test_a_hidden_governor_is_neither_counted_nor_named(
             partial_query={"policy_context": external},
             detail=detail,
         )
-        assert plan["status"] == "ok", (detail, plan.get("why"))
-        assert _gaps(plan) == []
+        if held:
+            assert plan["status"] == "low_confidence", (detail, plan.get("why"))
+            assert "execute" not in plan.get("next", {}).get("ready_for", [])
+            assert [gap["message"] for gap in _gaps(plan)] == [HIDDEN_GOVERNOR]
+        else:
+            assert plan["status"] == "ok", (detail, plan.get("why"))
+            assert _gaps(plan) == []
         serialized = json.dumps(plan)
         assert NEW_TEAMS not in serialized and "New teams" not in serialized
+    if held:
+        context = {"audience": "external"}
+        [refused] = engine.validate({"select": [TEAMS]}, now=NOW["now"], context=context)["errors"]
+        assert refused["code"] == "POLICY_DENIED"
+        assert NEW_TEAMS not in json.dumps(refused)
+    # A caller who sees every governor gets the raw count.
     assert _value(engine, plan["best"]["query"]) == _teams_gold(WEEK) == 4
 
 
@@ -1226,6 +1243,8 @@ def test_a_hidden_joined_governor_is_neither_counted_nor_named(
     )
     monkeypatch.setattr(engine, "_config", replace(engine._config, semantic_policies=[policy]))
     external = {**NOW, "audience": "external"}
+    # The hidden metric governs the team calls through the joined team class: the draft holds,
+    # naming nothing, and the raw sum is never answered for this caller.
     for detail in ("best", "full", "query", "debug"):
         plan = plan_payload(
             engine,
@@ -1233,10 +1252,16 @@ def test_a_hidden_joined_governor_is_neither_counted_nor_named(
             partial_query={"policy_context": external},
             detail=detail,
         )
-        assert plan["status"] == "ok", (detail, plan.get("why"))
-        assert _gaps(plan) == []
+        assert plan["status"] == "low_confidence", (detail, plan.get("why"))
+        assert "execute" not in plan.get("next", {}).get("ready_for", [])
+        assert [gap["message"] for gap in _gaps(plan)] == [HIDDEN_GOVERNOR]
         serialized = json.dumps(plan)
         assert PAYING_CALLS not in serialized and "Calls by paying teams" not in serialized
+    [refused] = engine.validate(
+        {"select": [CALLS]}, now=NOW["now"], context={"audience": "external"}
+    )["errors"]
+    assert refused["code"] == "POLICY_DENIED"
+    # A caller who sees every governor gets the raw sum.
     assert _value(engine, plan["best"]["query"]) == _calls_gold("SUM(calls)") == 155
 
 

@@ -18,6 +18,7 @@ import re
 from typing import Any
 
 from ..config_parts.measure_governance import (
+    governed_out_of_view,
     governing_metrics,
     population_governors,
     published_measure,
@@ -413,6 +414,43 @@ def _ambiguous_grouping_gaps(text: str, query: Call, partial_query: Call) -> lis
     ]
 
 
+_HIDDEN_GOVERNOR = (
+    "A definition you can't see governs this measure, so it can't be answered as a raw number."
+)
+
+
+def hidden_governor_why(config: Any, query: Call) -> dict[str, Any] | None:
+    """A hold for a draft that reads raw a measure a metric hidden from the caller governs.
+
+    The engine never answers that raw number for this caller, whoever named the measure, so
+    the draft holds before validation, generically: it names neither the metric nor what it
+    filters (a hold, never a wrong number).
+    """
+
+    measures = dict.fromkeys(
+        ref for item in query.select for ref in item.references() if ref.startswith("measure.")
+    )
+    gaps = [
+        CoverageGap(
+            kind="governed_metric_unrealized",
+            clause=str(
+                getattr(_object_by_id(config.measures, measure_id), "label", "") or measure_id
+            ),
+            message=_HIDDEN_GOVERNOR,
+            expected={"metrics": [], "narrowed_by": []},
+            actual={"measure": measure_id},
+            recovery_hint={
+                "kind": "ask_admin",
+                "message": "Ask a package admin which metric answers this for you.",
+            },
+        )
+        for measure_id in measures
+        if governed_out_of_view(config, measure_id)
+    ]
+    why = _coverage_why(gaps)
+    return None if why is None else {**why, "message": f"The draft holds: {_HIDDEN_GOVERNOR}"}
+
+
 def _governed_metric_gaps(
     config: Any,
     question: str,
@@ -472,8 +510,7 @@ def _governed_metric_gaps(
                     else "The package's governed metrics leave out some of this measure's rows, "
                     "and the draft counts all of them."
                     if expected.get("metrics")
-                    else "A definition you can't see governs this measure, so it can't be "
-                    "answered as a raw number."
+                    else _HIDDEN_GOVERNOR
                     if "narrowed_by" in expected
                     else "The package doesn't offer this measure."
                 ),

@@ -89,14 +89,14 @@ GOVERNORS = ["metric.sales.high_value_customer_orders", "metric.sales.repeat_cus
 
 def test_a_raw_measure_names_the_governed_metrics_that_filter_it(runtime: Runtime) -> None:
     result = runtime.query({"select": [ORDERS]}, verbosity="minimal")
-    assert result["assumptions"] == [
+    assert result.get("assumptions", []) == [
         {"code": "GOVERNED_METRIC_EXISTS", "measure": ORDERS, "metric": metric}
         for metric in GOVERNORS
     ]
     # A metric the call selects is already in the answer.
     both = runtime.query({"select": [ORDERS, GOVERNORS[1]]})
     assert [entry["metric"] for entry in both["assumptions"]] == GOVERNORS[:1]
-    assert runtime.query({"select": [GOVERNORS[0]]})["assumptions"] == []
+    assert runtime.query({"select": [GOVERNORS[0]]}).get("assumptions", []) == []
 
 
 def test_a_governor_hidden_from_the_caller_withholds_the_raw_number(
@@ -138,7 +138,9 @@ def test_brooklyns_share_of_revenue_matches_reference_sql(runtime: Runtime) -> N
         "Brooklyn": 0.3478,
         "Philadelphia": 0.6522,
     }
-    [stated] = [entry for entry in result["assumptions"] if entry["code"] == "SHARE_OF_TOTAL"]
+    [stated] = [
+        entry for entry in result.get("assumptions", []) if entry["code"] == "SHARE_OF_TOTAL"
+    ]
     assert stated == {
         "code": "SHARE_OF_TOTAL",
         "column": "store_share",

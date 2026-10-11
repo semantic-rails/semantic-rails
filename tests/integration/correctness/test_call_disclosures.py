@@ -18,7 +18,7 @@ def test_a_statistic_override_states_the_rows_it_aggregated(request, backend):
     spec = ENTRIES["shop/largest-order-by-store-overrides-the-revenue-statistic"]
     result = runtime.query(spec["query"])
     [[rows]] = source.reference("SELECT COUNT(*) FROM orders")
-    assert result["assumptions"] == [
+    assert result.get("assumptions", []) == [
         {
             "code": "AGGREGATION_OVERRIDE",
             "measure": "measure.shop.revenue",
@@ -51,7 +51,7 @@ def test_an_override_equal_to_the_default_states_nothing(duckdb_backend):
         ]
     }
     result = runtime.query(call)
-    assert result["assumptions"] == []
+    assert result.get("assumptions", []) == []
     # Only a statistic the call changes carries its row count out of the leaf.
     assert "_rows" not in result["rendered_sql"].rsplit("SELECT", 1)[1]
 
@@ -60,7 +60,7 @@ def test_validate_states_the_override_without_rows(duckdb_backend):
     runtime = duckdb_backend.runtimes["utc_authored"]
     spec = ENTRIES["shop/largest-order-by-store-overrides-the-revenue-statistic"]
     result = runtime.validate(spec["query"], verbosity="minimal")
-    assert result["assumptions"] == [
+    assert result.get("assumptions", []) == [
         {
             "code": "AGGREGATION_OVERRIDE",
             "measure": "measure.shop.revenue",
@@ -108,7 +108,7 @@ def test_a_share_states_its_denominator_and_unit(request, backend):
     spec = ENTRIES["shop/store-share-of-orders-is-a-fraction-of-the-kept-total"]
     [[stores]] = source.reference("SELECT COUNT(DISTINCT COALESCE(store_id, '-')) FROM orders")
     result = runtime.query(spec["query"])
-    assert result["assumptions"] == [
+    assert result.get("assumptions", []) == [
         {
             "code": "SHARE_OF_TOTAL",
             "column": "order_share",
@@ -210,7 +210,7 @@ def test_a_name_groups_by_its_entity_key_and_says_so(request, backend):
     spec = ENTRIES["shop/top-customers-by-name-rank-by-key-so-namesakes-stay-apart"]
     result = runtime.query(spec["query"])
     assert [row[CUSTOMER_NAME] for row in result["rows"]] == ["Ann", "Ann"]
-    assert result["assumptions"] == [
+    assert result.get("assumptions", []) == [
         {"code": "GROUPED_BY_KEY", "dimension": CUSTOMER_NAME, "key": CUSTOMER_ID}
     ]
     # By name alone the namesakes would merge into one row.
@@ -224,7 +224,7 @@ def test_a_name_groups_by_its_entity_key_and_says_so(request, backend):
 def test_a_call_that_groups_by_the_key_and_the_name_states_nothing(duckdb_backend):
     runtime = duckdb_backend.runtimes["utc_authored"]
     call = {"select": ["measure.shop.revenue"], "group_by": [CUSTOMER_ID, CUSTOMER_NAME]}
-    assert runtime.query(call)["assumptions"] == []
+    assert runtime.query(call).get("assumptions", []) == []
 
 
 def test_an_entity_with_no_name_is_shown_by_its_key_and_says_so(duckdb_backend):
@@ -232,7 +232,7 @@ def test_an_entity_with_no_name_is_shown_by_its_key_and_says_so(duckdb_backend):
     result = runtime.query(
         {"select": ["measure.shop.revenue"], "group_by": ["dimension.shop_order_id"]}
     )
-    assert result["assumptions"] == [
+    assert result.get("assumptions", []) == [
         {
             "code": "SHOWN_BY_KEY",
             "entity": "entity.shop_order",
@@ -241,7 +241,9 @@ def test_an_entity_with_no_name_is_shown_by_its_key_and_says_so(duckdb_backend):
     ]
     # A dimension that is not an entity's key says nothing.
     assert (
-        runtime.query({"select": ["measure.shop.revenue"], "group_by": [STORE]})["assumptions"]
+        runtime.query({"select": ["measure.shop.revenue"], "group_by": [STORE]}).get(
+            "assumptions", []
+        )
         == []
     )
 
