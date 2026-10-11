@@ -310,6 +310,104 @@ def test_now_cuts_at_its_instant_in_the_repeated_hour(fall_back: Runtime, now: s
     assert reference[0][0] == (1 if now.startswith("2024-11-03T05") else 2)
 
 
+def _clock_in(tmp_path, variant: str, zone: str, row: str = ""):
+    """The order clock read in ``zone`` (no column_timezone), with one more order at ``row``."""
+    package = _write_variant(tmp_path, variant)
+    orders = package / "models" / "orders.yml"
+    model = yaml.safe_load(orders.read_text(encoding="utf-8"))
+    model["model"]["times"]["ordered_at"]["timezone"] = zone
+    orders.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
+    if row:
+        seed = package / "data" / "seed.sql"
+        last = "(11, 108, 'a', TIMESTAMP '2024-08-01 02:00:00', DATE '2024-08-01', 2.00)"
+        text = seed.read_text(encoding="utf-8")
+        assert text.count(last) == 1
+        extra = f",\n  (12, 101, 'a', TIMESTAMP '{row}', DATE '{row[:10]}', 1.00)"
+        seed.write_text(text.replace(last, last + extra), encoding="utf-8")
+    return package
+
+
+@pytest.mark.parametrize(
+    ("zone", "wall", "now"),
+    [
+        # 01:15 and now (01:30 EDT) both fall in the hour New York repeats.
+        ("America/New_York", "2024-11-03 01:15:00", "2024-11-03T05:30:00Z"),
+        # 02:15 and now (02:30 CEST) both fall in the hour Berlin repeats.
+        ("Europe/Berlin", "2024-10-27 02:15:00", "2024-10-27T00:30:00Z"),
+    ],
+)
+@pytest.mark.parametrize("shape", ["this", "this_by_day", "start_by_day"])
+def test_a_plain_timestamp_keeps_its_wall_time_in_the_repeated_hour(
+    tmp_path, zone, wall, now, shape
+) -> None:
+    # A plain timestamp is wall time in the clock's zone: 01:15 is before 01:30.
+    day = wall[:10]
+    time = {
+        "this": {"this": "day"},
+        "this_by_day": {"this": "day", "grain": "day"},
+        "start_by_day": {"start": day, "grain": "day"},
+    }[shape]
+    runtime = _runtime(_clock_in(tmp_path, "utc_authored", zone, wall))
+    try:
+        _rows(runtime, f"SET GLOBAL TimeZone = '{SESSION_ZONE}'")
+        cutoff = wall[:11] + wall[11:13] + ":30:00"
+        reference = _rows(
+            runtime,
+            f"SELECT COUNT(order_id) FROM orders WHERE ordered_at >= TIMESTAMP '{day}' "
+            f"AND ordered_at < TIMESTAMP '{cutoff}'",
+        )
+        rows = runtime.query({"select": [ORDERS], "time": time}, now=now)["rows"]
+    finally:
+        runtime.close()
+    assert reference == [(1,)]
+    assert [row["order_count"] for row in rows] == [1]
+
+
+NOT_IN_THE_CLOCKS_ZONE = ["snowflake", "bigquery", "clickhouse", "databricks", "athena"]
+
+
+@pytest.mark.parametrize("warehouse", NOT_IN_THE_CLOCKS_ZONE)
+@pytest.mark.parametrize(
+    ("time", "path"),
+    [({"this": "day", "grain": "day"}, "time.this"), ({"start": "2024-07-01"}, "time.start")],
+)
+def test_a_window_to_now_is_refused_where_plain_and_aware_columns_cut_differently(
+    tmp_path, warehouse, time, path
+) -> None:
+    # The query doesn't run in the clock's zone, so its wall-time cutoff would read a
+    # zone-aware column as another zone's instant.
+    runtime = _runtime(_clock_in(tmp_path, "tz_authored", "America/New_York"), warehouse=warehouse)
+    try:
+        now = "2024-07-01T12:00:00Z"
+        (error,) = runtime.validate({"select": [ORDERS], "time": time}, now=now)["errors"]
+        assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
+        (hint,) = error["recovery_hints"]
+        assert "column_timezone" in hint["message"] and "dated window" in hint["message"]
+        # A dated window reads as it did.
+        dated = {"start": "2024-07-01", "end": "2024-07-02", "grain": "day"}
+        assert runtime.validate({"select": [ORDERS], "time": dated}, now=now)["ok"] is True
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("warehouse", NOT_IN_THE_CLOCKS_ZONE)
+def test_a_declared_storage_zone_cuts_at_now_there(tmp_path, warehouse) -> None:
+    package = _clock_in(tmp_path, "utc_authored", "America/New_York")
+    orders = package / "models" / "orders.yml"
+    model = yaml.safe_load(orders.read_text(encoding="utf-8"))
+    model["model"]["times"]["ordered_at"]["column_timezone"] = "UTC"
+    orders.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package, warehouse=warehouse)
+    try:
+        call = {"select": [ORDERS], "time": {"start": "2024-07-01", "grain": "day"}}
+        sql = runtime.compile(call, now="2024-07-01T12:00:00Z")["rendered_sql"]
+    finally:
+        runtime.close()
+    # The stored UTC value is compared with now in UTC.
+    assert "orders.ordered_at < " in sql and "2024-07-01" in sql
+    assert "12:00:00" in sql.split("orders.ordered_at < ", 1)[1].splitlines()[0]
+
+
 def test_a_named_window_answers_the_same_with_its_probe_read_through_ctes(packages, monkeypatch):
     # Snowflake and Spark can't put EXISTS in a select, so their guard reads the
     # outside-the-window probe through plain CTEs. On DuckDB that form answers every frozen
