@@ -23,7 +23,7 @@ LAYERS = [
     " dbt_artifacts package_tools upgrade config_validation semantic_collisions contracts interop",
     "planner",
     "metadata metadata_parts catalog_service",
-    "runtime runtime_parts manifest segments caveats resource_access policies cache"
+    "runtime runtime_parts answer manifest segments caveats resource_access policies cache"
     " request_context api_keys audit visible_view",
     "compiler compiler_parts fanout route_census relation_pipelines renderer ir registry"
     " diagnostics acceleration top_n",
