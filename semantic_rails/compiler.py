@@ -426,6 +426,15 @@ def _time_axis_kind(expr: Any, config: PackageConfig) -> str:
     return ""
 
 
+def _reads_aggregates(query: NormalizedQuery) -> bool:
+    """Whether the query reads an aggregate per period: in its select, or in a result filter
+    (``having``) alone."""
+    return bool(query.select) or any(
+        item.expression is not None and not isinstance(item.expression, MetricPredicateExpr)
+        for item in query.metric_filters
+    )
+
+
 def observed_periods_reason(query: NormalizedQuery, config: PackageConfig) -> str:
     """Why a named window under a grain answers only the periods that have rows ("" when it
     answers every period it holds, like ``fill``).
@@ -435,7 +444,7 @@ def observed_periods_reason(query: NormalizedQuery, config: PackageConfig) -> st
     the periods that have rows, so no period after the edge reads 0, and the answer says so.
     """
     time = query.time
-    if not (time is not None and time.named and time.grain in UNITS and query.select):
+    if not (time is not None and time.named and time.grain in UNITS and _reads_aggregates(query)):
         return ""
     dialect = dialect_for_warehouse(config.package.warehouse)
     if not (dialect.reads_coverage and dialect.has_implicit_calendar):
@@ -452,7 +461,7 @@ def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool
         time is not None
         and time.named
         and time.grain in UNITS
-        and query.select
+        and _reads_aggregates(query)
         and not observed_periods_reason(query, config)
     )
 

@@ -7501,3 +7501,46 @@ tests:
       - {orders: 8}
     reference_sql: |
       SELECT COUNT(*) FROM orders WHERE ordered_at >= TIMESTAMP '2024-01-01'
+  shop/having-alone-keeps-every-quiet-day-of-a-named-window:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'No order falls in February 2024, so each of its 29 days counts 0 orders and passes the filter. A result filter reads the count as a select of it would, so the named window answers every day it holds, not only the days with rows.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#having, docs/QUERY_CALL.md#time]
+    tags: [time-window, null-vs-zero]
+    query:
+      having: [{field: measure.shop.order_count, op: is, value: 0}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-02-01', end: '2024-03-01', grain: day}
+    now: '2024-03-02T00:00:00Z'
+    expected_rows:
+      - {period: '2024-02-01'}
+      - {period: '2024-02-02'}
+      - {period: '2024-02-03'}
+      - {period: '2024-02-04'}
+      - {period: '2024-02-05'}
+      - {period: '2024-02-06'}
+      - {period: '2024-02-07'}
+      - {period: '2024-02-08'}
+      - {period: '2024-02-09'}
+      - {period: '2024-02-10'}
+      - {period: '2024-02-11'}
+      - {period: '2024-02-12'}
+      - {period: '2024-02-13'}
+      - {period: '2024-02-14'}
+      - {period: '2024-02-15'}
+      - {period: '2024-02-16'}
+      - {period: '2024-02-17'}
+      - {period: '2024-02-18'}
+      - {period: '2024-02-19'}
+      - {period: '2024-02-20'}
+      - {period: '2024-02-21'}
+      - {period: '2024-02-22'}
+      - {period: '2024-02-23'}
+      - {period: '2024-02-24'}
+      - {period: '2024-02-25'}
+      - {period: '2024-02-26'}
+      - {period: '2024-02-27'}
+      - {period: '2024-02-28'}
+      - {period: '2024-02-29'}
+    reference_sql: |
+      SELECT g.b FROM generate_series(TIMESTAMP '2024-02-01', TIMESTAMP '2024-02-29', INTERVAL '1 day') AS g(b)
+      WHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.ordered_at >= g.b AND o.ordered_at < g.b + INTERVAL '1 day')
