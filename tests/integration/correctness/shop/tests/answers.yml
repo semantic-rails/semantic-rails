@@ -7501,6 +7501,56 @@ tests:
       - {orders: 8}
     reference_sql: |
       SELECT COUNT(*) FROM orders WHERE ordered_at >= TIMESTAMP '2024-01-01'
+  shop/text-compared-with-a-computed-time-reads-as-its-instant:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Each condition compares a time computed from the order clocks (a day after the order, the close or else the order time, the order time in store a and the close time elsewhere) with date text, and reads the text as that instant: the orders whose computed time is on or after it count.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, docs/QUERY_CALL.md#inline-expression-kinds]
+    tags: [clock]
+    query:
+      select:
+      - expression:
+          kind: aggregate_if
+          aggregation: count
+          value: {kind: column, column: order_id, entity: entity.shop_order}
+          condition:
+            kind: comparison
+            op: '>='
+            left: {kind: date_add, unit: day, value: {kind: literal, value: 1}, date: {kind: column, column: ordered_at, entity: entity.shop_order}}
+            right: {kind: literal, value: '2024-01-02'}
+        as: day_after
+      - expression:
+          kind: aggregate_if
+          aggregation: count
+          value: {kind: column, column: order_id, entity: entity.shop_order}
+          condition:
+            kind: comparison
+            op: '>='
+            left: {kind: call, name: COALESCE, args: [{kind: column, column: closed_at, entity: entity.shop_order}, {kind: column, column: ordered_at, entity: entity.shop_order}]}
+            right: {kind: literal, value: '2024-01-01'}
+        as: closed_or_ordered
+      - expression:
+          kind: aggregate_if
+          aggregation: count
+          value: {kind: column, column: order_id, entity: entity.shop_order}
+          condition:
+            kind: comparison
+            op: '>='
+            left:
+              kind: case
+              whens:
+              - when: {kind: comparison, op: '=', left: {kind: column, column: store_id, entity: entity.shop_order}, right: {kind: literal, value: a}}
+                then: {kind: column, column: ordered_at, entity: entity.shop_order}
+              else: {kind: column, column: closed_at, entity: entity.shop_order}
+            right: {kind: literal, value: '2024-01-01'}
+        as: by_store
+    expected_rows:
+      - {day_after: 8, closed_or_ordered: 8, by_store: 4}
+    reference_sql: |
+      SELECT COUNT(CASE WHEN ordered_at + INTERVAL '1 day' >= TIMESTAMP '2024-01-02' THEN 1 END),
+             COUNT(CASE WHEN COALESCE(closed_at, ordered_at) >= TIMESTAMP '2024-01-01' THEN 1 END),
+             COUNT(CASE WHEN (CASE WHEN store_id = 'a' THEN ordered_at ELSE closed_at END) >= TIMESTAMP '2024-01-01' THEN 1 END)
+      FROM orders
   shop/having-alone-keeps-every-quiet-day-of-a-named-window:
     kind: query_matches_snapshot
     expect: answer

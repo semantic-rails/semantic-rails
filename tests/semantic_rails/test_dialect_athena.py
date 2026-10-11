@@ -566,7 +566,111 @@ def test_athena_filters_type_only_date_and_timestamp_dimensions():
     assert "TIMESTAMP '2026-01-01'" not in sql
 
 
-def test_athena_expressions_type_text_compared_only_with_temporal_columns():
+def _order(column: str) -> dict[str, Any]:
+    return {"kind": "column", "column": column, "entity": "entity.jaffle_order"}
+
+
+def _call(name: str, *args: Any) -> dict[str, Any]:
+    return {"kind": "call", "name": name, "args": list(args)}
+
+
+_TEXT = {"kind": "literal", "value": "2016-09-01"}
+_LATER = {"kind": "date_add", "unit": "day", "value": {"kind": "literal", "value": 1}, "date": _order("ordered_at")}  # fmt: skip
+_IN_STORE_A = {"kind": "comparison", "op": "=", "left": _order("store_id"), "right": {"kind": "literal", "value": "a"}}  # fmt: skip
+
+
+def _compares(left: dict[str, Any], op: str = ">=") -> dict[str, Any]:
+    return {"kind": "comparison", "op": op, "left": left, "right": _TEXT}
+
+
+@pytest.mark.parametrize(
+    ("condition", "rendered"),
+    [
+        (_compares(_order("ordered_at")), "jaffle_order.ordered_at >= TIMESTAMP '2016-09-01'"),
+        (
+            {"kind": "comparison", "op": ">", "left": _TEXT, "right": _order("ordered_at")},
+            "TIMESTAMP '2016-09-01' > jaffle_order.ordered_at",
+        ),
+        (
+            {"kind": "in", "expr": _order("ordered_at"), "values": ["2016-09-01"]},
+            "jaffle_order.ordered_at IN (TIMESTAMP '2016-09-01')",
+        ),
+        (
+            {"kind": "in", "expr": _TEXT, "values": [_order("ordered_at")]},
+            "TIMESTAMP '2016-09-01' IN (jaffle_order.ordered_at)",
+        ),
+        (
+            _compares(_LATER),
+            "DATE_ADD('day', 1, jaffle_order.ordered_at) >= TIMESTAMP '2016-09-01'",
+        ),
+        (
+            _compares(
+                _call("DATE_TRUNC", {"kind": "literal", "value": "month"}, _order("ordered_at"))
+            ),
+            "DATE_TRUNC('month', jaffle_order.ordered_at) >= TIMESTAMP '2016-09-01'",
+        ),
+        (
+            _compares(_call("COALESCE", _order("ordered_at"), _LATER)),
+            ", 1, jaffle_order.ordered_at)) >= TIMESTAMP '2016-09-01'",
+        ),
+        (
+            _compares(_call("NULLIF", _order("ordered_at"), _LATER)),
+            ", 1, jaffle_order.ordered_at)) >= TIMESTAMP '2016-09-01'",
+        ),
+        (
+            _compares(
+                {
+                    "kind": "case",
+                    "whens": [{"when": _IN_STORE_A, "then": _order("ordered_at")}],
+                    "else": _LATER,
+                }
+            ),  # fmt: skip
+            "END >= TIMESTAMP '2016-09-01'",
+        ),
+        # Text compared with text stays text, whatever it looks like.
+        (_compares(_order("store_id"), "="), "jaffle_order.store_id = '2016-09-01'"),
+        (
+            _compares(_call("CAST", _order("ordered_at"), {"kind": "literal", "value": "VARCHAR"})),
+            "CAST(jaffle_order.ordered_at AS VARCHAR) >= '2016-09-01'",
+        ),
+        (
+            _compares(
+                _call("COALESCE", _order("store_id"), {"kind": "literal", "value": "x"}), "="
+            ),
+            "COALESCE(jaffle_order.store_id, 'x') = '2016-09-01'",
+        ),
+        (
+            _compares(
+                {
+                    "kind": "case",
+                    "whens": [{"when": _IN_STORE_A, "then": _order("store_id")}],
+                    "else": _TEXT,
+                },
+                "=",
+            ),  # fmt: skip
+            "END = '2016-09-01'",
+        ),
+    ],
+    ids=[
+        "column",
+        "reversed",
+        "in",
+        "in_text_operand",
+        "date_add",
+        "date_trunc",
+        "coalesce",
+        "nullif",
+        "case_result",
+        "string_column",
+        "cast_varchar",
+        "string_coalesce",
+        "string_case",
+    ],
+)
+def test_athena_expressions_type_text_compared_only_with_temporal_values(condition, rendered):
+    """Text compared with a date or timestamp, a column or an expression whose result is one,
+    is a TIMESTAMP literal (Trino refuses a timestamp compared with varchar); text compared with
+    text stays text."""
     from semantic_rails.config import load_package_config
     from tests.integration.harness import PACKAGE_DIR
 
@@ -574,42 +678,16 @@ def test_athena_expressions_type_text_compared_only_with_temporal_columns():
     runtime = Runtime.from_config(
         _athena_config(config), source_path=str(PACKAGE_DIR), package_id="jaffle_shop"
     )
-
-    def column(name: str) -> dict[str, Any]:
-        return {"kind": "column", "column": name, "entity": "entity.jaffle_order"}
-
-    def count_if(name: str, condition: dict[str, Any]) -> dict[str, Any]:
-        value = column("order_id")
-        aggregate = {"kind": "aggregate_if", "aggregation": "count", "value": value}
-        return {"as": name, "expression": {**aggregate, "condition": condition}}
-
-    text = {"kind": "literal", "value": "2016-09-01"}
-    sql = runtime.compile(
-        {
-            "select": [
-                count_if(
-                    "since",
-                    {"kind": "comparison", "op": ">=", "left": column("ordered_at"), "right": text},
-                ),
-                count_if(
-                    "before",
-                    {"kind": "comparison", "op": ">", "left": text, "right": column("ordered_at")},
-                ),
-                count_if(
-                    "on", {"kind": "in", "expr": column("ordered_at"), "values": ["2016-09-02"]}
-                ),
-                count_if(
-                    "store",
-                    {"kind": "comparison", "op": "=", "left": column("store_id"), "right": text},
-                ),
-            ]
-        },
-        now="2026-10-01T00:00:00Z",
-    )["rendered_sql"]
-    assert "jaffle_order.ordered_at >= TIMESTAMP '2016-09-01'" in sql
-    assert "TIMESTAMP '2016-09-01' > jaffle_order.ordered_at" in sql
-    assert "jaffle_order.ordered_at IN (TIMESTAMP '2016-09-02')" in sql
-    assert "jaffle_order.store_id = '2016-09-01'" in sql
+    aggregate = {"kind": "aggregate_if", "aggregation": "count", "value": _order("order_id")}
+    try:
+        sql = runtime.compile(
+            {"select": [{"as": "n", "expression": {**aggregate, "condition": condition}}]},
+            now="2026-10-01T00:00:00Z",
+        )["rendered_sql"]
+    finally:
+        runtime.close()
+    assert rendered in sql
+    assert ("TIMESTAMP '2016-09-01'" in sql) is ("TIMESTAMP" in rendered)
 
 
 def test_athena_adapter_query_prepares_once(monkeypatch: pytest.MonkeyPatch):
