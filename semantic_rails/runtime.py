@@ -1469,7 +1469,6 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
             details={
                 "outputs": affected,
                 "measures": measures,
-                "matched_time": window,
                 "agent_action": "mention_when_interpreting_results",
             },
             object_ids=sorted({item["id"] for item in measures}),
