@@ -64,7 +64,7 @@ def _query(*selects: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 
 def _mixed(out: dict[str, Any]) -> list[dict[str, Any]]:
-    return [w for w in out["warnings"] if w["code"] == "MIXED_TIME_ROLES"]
+    return [w for w in out.get("warnings", []) if w["code"] == "MIXED_TIME_ROLES"]
 
 
 ORDERS, SESSIONS = _agg("order_count"), _agg("session_starts")
