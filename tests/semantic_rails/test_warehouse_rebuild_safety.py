@@ -200,7 +200,7 @@ def test_failed_query_reports_stale_seed_hint_without_replacing_database(
     assert details["sql_redacted"] is True and "sql" not in details
     assert "database_message" not in details
     if stale:
-        (warning,) = details["warnings"]
+        (warning,) = details.get("warnings", [])
         assert warning["code"] == "STALE_SEED_DATABASE"
         assert warning["details"] == {"default_db": str(db_path), "reason": "seed_files_changed"}
         assert warning["message"].endswith(f"rm {db_path}")
@@ -600,7 +600,9 @@ def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: 
             result = runtime.query(order_count)
         finally:
             runtime.close()
-        return result["rows"][0]["orders"], [warning["code"] for warning in result["warnings"]]
+        return result["rows"][0]["orders"], [
+            warning["code"] for warning in result.get("warnings", [])
+        ]
 
     assert run() == (2, [])
     seed = project / "data" / "shop_csv" / "orders.csv"
@@ -614,10 +616,10 @@ def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: 
     ref = PackageReference(source_path=str(project))
     for mode in ("runtime", "full"):
         report = project_validation_report(ref, mode=mode)
-        assert report["ok"] and [warning["code"] for warning in report["warnings"]] == [
+        assert report["ok"] and [warning["code"] for warning in report.get("warnings", [])] == [
             "STALE_SEED_DATABASE"
         ], mode
-        assert report["warnings"][0]["message"].endswith(f"rm {db_path}")
+        assert report.get("warnings", [])[0]["message"].endswith(f"rm {db_path}")
     assert file_digest(db_path) == before  # reported, never replaced
 
     db_path.unlink()  # the fix the warning names

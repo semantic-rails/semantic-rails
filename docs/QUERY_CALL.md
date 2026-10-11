@@ -423,7 +423,11 @@ A **named** window (`last`, `this`, or `start` with `end`) always answers with i
 one row per period under a grain, one total without. An **open** window (no window, or one
 bound) answers the periods that have rows; `fill: true` on an open window with a grain also
 returns the empty periods between the first and the last period the answer has. `fill` on a
-named window is refused, because a named window already returns every period.
+named window is refused, because a named window already returns every period. The
+exception is a `group_by` on a date or time dimension: each of its values sits in one period,
+so filling would repeat every value in every period. Such an answer keeps the rows that hold
+data and says so in `assumptions` (`OBSERVED_PERIODS_ONLY`), and `fill: true` beside such a
+group is refused at `time.fill`.
 
 What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full rule):
 

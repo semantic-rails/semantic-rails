@@ -340,6 +340,9 @@ def test_first_call_bytes_match_without_a_session(
         preview = adapter.runtime.segment_preview(arguments["segment_id"])
         monkeypatch.setattr(adapter.runtime, "segment_preview", lambda *_a, **_k: deepcopy(preview))
     arguments = {**arguments, "request_id": "first-call"}
+    if tool == "execute":
+        # The answer echoes the instant it resolved against: pin it, so both calls read one.
+        arguments["now"] = "2017-08-15T00:00:00Z"
     without = adapter.call_tool(tool, arguments)
     with_session = adapter.call_tool(tool, arguments, session=MCPQuerySession())
     assert with_session["ok"] is True

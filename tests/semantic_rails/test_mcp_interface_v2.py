@@ -297,7 +297,7 @@ def test_discover_and_inspect_return_slim_cards_by_default(v2: SemanticLayerMCPA
 def test_discover_with_empty_terms_lists_ids(v2: SemanticLayerMCPAdapter) -> None:
     # A page large enough for every kind, whatever the fixture's size.
     listed = v2.call_tool("discover", {"terms": "", "limit": 10_000})
-    assert listed["ok"] is True and listed["warnings"] == []
+    assert listed["ok"] is True and "warnings" not in listed
     index = v2.read_resource("semantic-rails://catalog/index")["payload"]["catalog"]
     assert listed["catalog"] == index
     segments = v2.call_tool("discover", {"terms": " ", "kinds": ["segment"]})["catalog"]
@@ -321,7 +321,7 @@ def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) ->
     rest = {"terms": "", "kinds": ["dimension"], "limit": 60, "offset": 60}
     last = v2.call_tool("discover", rest)
     assert last["catalog"]["dimension_ids"] == whole["dimension_ids"][60:]
-    assert last["warnings"] == [] and "measure_ids" not in last["catalog"]
+    assert "warnings" not in last and "measure_ids" not in last["catalog"]
 
 
 @pytest.mark.parametrize("tool", ["forecast", *sorted(UNAVAILABLE_TOOLS)])
@@ -512,7 +512,9 @@ def test_every_v2_call_works_behind_an_authenticated_transport(
     assert result["isError"] is False and payload["ok"] is True, payload.get("errors")
     assert payload["request_id"] == "trusted"
     assert payload["request_context"]["roles"] == ["analyst"]
-    assert not [w for w in payload["warnings"] if str(w.get("code", "")).endswith("_UNKNOWN_ARG")]
+    assert not [
+        w for w in payload.get("warnings", []) if str(w.get("code", "")).endswith("_UNKNOWN_ARG")
+    ]
     claimed = call({**arguments, "policy_context": {"roles": ["admin"]}})
     assert claimed["isError"] is True
     refusal = claimed["structuredContent"]["errors"][0]
@@ -522,17 +524,9 @@ def test_every_v2_call_works_behind_an_authenticated_transport(
 
 def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
     ok = v2.call_tool("plan", {"intent": "revenue by store"})
-    assert "request_context" not in ok and "recovery_hints" not in ok
-    assert {
-        "ok",
-        "status",
-        "api_version",
-        "request_id",
-        "package_id",
-        "warnings",
-        "errors",
-        "timing_ms",
-    } <= set(ok)
+    # No empty fields: a clean plan carries no errors, warnings or hints.
+    assert not {"request_context", "recovery_hints", "errors", "warnings"} & set(ok)
+    assert {"ok", "status", "api_version", "request_id", "package_id", "timing_ms"} <= set(ok)
     # A select item is an id string or {expression, as}; anything else carries its fix.
     bare = {"select": [{"expression": "metric.sales.aov_usd", "as": "aov"}]}
     assert v2.call_tool("execute", {"query": bare, "mode": "validate"})["ok"]

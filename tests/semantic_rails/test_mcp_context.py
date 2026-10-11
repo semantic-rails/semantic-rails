@@ -133,10 +133,10 @@ def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
     metrics = mcp_context.measure_query_mcp(jaffle_package)
     for metric, maximum in {
         "query.v2.instructions_tokens": 459,
-        # execute embeds the query call's schema (query.v2.json) once.
-        "query.v2.tools_list.model_visible_tokens": 4485,
-        "query.v2.tools_list.wire_tokens": 5386,
-        "query.v2.tools_list.largest_tool_tokens": 3186,
+        # execute embeds the query call's schema (query.v2.json) once, share kind included.
+        "query.v2.tools_list.model_visible_tokens": 4540,
+        "query.v2.tools_list.wire_tokens": 5441,
+        "query.v2.tools_list.largest_tool_tokens": 3242,
     }.items():
         assert metrics[metric] <= maximum, (metric, metrics[metric], maximum)
     checks = mcp_context.check_budgets(metrics, mcp_context.load_budgets(), prefix="query.")

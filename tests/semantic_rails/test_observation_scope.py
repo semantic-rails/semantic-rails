@@ -134,7 +134,7 @@ def _compile(config: Any, query: dict[str, Any]) -> dict[str, Any]:
 
 
 def _codes(response: dict[str, Any]) -> list[str]:
-    return [item["code"] for item in response["warnings"]]
+    return [item["code"] for item in response.get("warnings", [])]
 
 
 def _where(field: str, value: Any, op: str = "=") -> list[dict[str, Any]]:
@@ -226,7 +226,9 @@ def test_a_misspelled_filter_value(runtime: Runtime, scope: str) -> None:
         sql = DATASET_QTY.format(where=where)
     response = _ask(runtime, scope, select=_select(qty=QTY), where=_where(PRODUCT, "appel"))
     assert [tuple(row.values()) for row in response["rows"]] == _gold(sql)
-    typos = [item for item in response["warnings"] if item["code"] == "FILTER_VALUE_NOT_FOUND"]
+    typos = [
+        item for item in response.get("warnings", []) if item["code"] == "FILTER_VALUE_NOT_FOUND"
+    ]
     if scope == "query":
         assert typos == [] and "NO_DATA_IN_SCOPE" in _codes(response)
         return
@@ -245,7 +247,9 @@ def test_a_misspelled_value_in_a_not_is_named(runtime: Runtime) -> None:
     )
     sql = "SELECT SUM(qty) FROM sales WHERE product <> 'appel' OR product IS NULL"
     assert [tuple(row.values()) for row in response["rows"]] == _gold(sql)
-    (typo,) = [item for item in response["warnings"] if item["code"] == "FILTER_VALUE_NOT_FOUND"]
+    (typo,) = [
+        item for item in response.get("warnings", []) if item["code"] == "FILTER_VALUE_NOT_FOUND"
+    ]
     assert typo["details"]["filters"] == [
         {"dimension": PRODUCT, "value": "appel", "suggestion": "apple"}
     ]
@@ -272,7 +276,7 @@ def test_a_granted_metric_keeps_the_unverified_filter_warning(
         == _gold(DATASET_QTY.format(where="product = 'appel'"))
         == [(0,)]
     )
-    (warning,) = response["warnings"]
+    (warning,) = response.get("warnings", [])
     # The dimension-only existence probe remains forbidden by the resource grant.
     assert warning["code"] == "FILTER_VALUE_UNVERIFIED"
     assert "'appel'" in warning["message"]
@@ -296,7 +300,9 @@ def test_a_granted_metric_still_refuses_an_ungranted_filter(runtime: Runtime) ->
 def test_one_warning_names_every_value_that_matched_nothing(runtime: Runtime) -> None:
     where = [*_where(PRODUCT, ["apple", "peer"], "IN"), *_where(STORE, "s9")]
     response = _ask(runtime, None, select=_select(qty=QTY), where=where)
-    (typo,) = [item for item in response["warnings"] if item["code"] == "FILTER_VALUE_NOT_FOUND"]
+    (typo,) = [
+        item for item in response.get("warnings", []) if item["code"] == "FILTER_VALUE_NOT_FOUND"
+    ]
     assert [(row["dimension"], row["value"]) for row in typo["details"]["filters"]] == [
         (PRODUCT, "peer"),
         (STORE, "s9"),
@@ -322,7 +328,7 @@ def test_a_failed_value_probe_never_silences_the_guard(
     response = _ask(runtime, "dataset", select=_select(qty=QTY), where=_where(PRODUCT, "appel"))
     assert response["rows"] == [{"qty": 0}]
     code = "FILTER_VALUE_UNVERIFIED" if failed_execution == 2 else "FILTER_VALUE_NOT_FOUND"
-    (warning,) = [item for item in response["warnings"] if item["code"] == code]
+    (warning,) = [item for item in response.get("warnings", []) if item["code"] == code]
     (value,) = warning["details"]["filters"]
     assert value["dimension"] == PRODUCT and value["value"] == "appel"
     if failed_execution == 2:
@@ -349,7 +355,9 @@ def test_a_filter_only_dimension_reports_unverified_values(package: Path) -> Non
             where=_where(PRODUCT, ["apple", "appel"], "IN"),
         )
         assert response["rows"] == [{"qty": 5}]
-        (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_UNVERIFIED"]
+        (warning,) = [
+            w for w in response.get("warnings", []) if w["code"] == "FILTER_VALUE_UNVERIFIED"
+        ]
         assert [(v["dimension"], v["value"]) for v in warning["details"]["filters"]] == [
             (PRODUCT, "apple"),
             (PRODUCT, "appel"),
@@ -379,7 +387,7 @@ def test_each_literal_uses_warehouse_equality(package: Path, data_type: str) -> 
     finally:
         engine.close()
     assert response["rows"] == [{"qty": 5}]
-    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+    (warning,) = [w for w in response.get("warnings", []) if w["code"] == "FILTER_VALUE_NOT_FOUND"]
     assert warning["details"]["filters"] == [
         {"dimension": PRODUCT, "value": "Apple", "suggestion": "apple"},
     ]
@@ -597,7 +605,7 @@ def test_a_regional_caller_never_observes_a_hidden_region(runtime: Runtime) -> N
         filtered = _ask(
             runtime, None, select=_select(qty=QTY), where=_where(PRODUCT, value), **context
         )
-        (typo,) = [w for w in filtered["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+        (typo,) = [w for w in filtered.get("warnings", []) if w["code"] == "FILTER_VALUE_NOT_FOUND"]
         (miss,) = typo["details"]["filters"]
         assert miss["value"] == value and miss["suggestion"] in {None, "apple", "pear"}
 

@@ -76,8 +76,9 @@ def test_runtime_lifts_a_dimension_in_select_into_group_by_and_reports_it(runtim
         notes = [w for w in shorthand["warnings"] if w["code"] == "QUERY_SHORTHAND_NORMALIZED"]
         assert [w["path"] for w in notes] == ["select[2]"]
         assert notes[0]["details"]["canonical"] == {"group_by": [DIM]}
-        assert not [w for w in canonical["warnings"] if w["code"] == "QUERY_SHORTHAND_NORMALIZED"]
-        assert _without_notices(shorthand["warnings"]) == canonical["warnings"]
+        # An answer leaves out an empty warnings list.
+        assert "warnings" not in canonical
+        assert _without_notices(shorthand["warnings"]) == []
     finally:
         runtime.close()
 

@@ -358,7 +358,7 @@ def test_role_scoped_object_policy_uses_request_roles(tmp_path: Path):
 
         allowed = runtime.validate(base_query, context={"roles": ["csm"]})
         assert allowed["ok"] is True
-        assert allowed["policy_effects"] == []
+        assert "policy_effects" not in allowed
     finally:
         runtime.close()
 

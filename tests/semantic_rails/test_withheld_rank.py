@@ -285,7 +285,7 @@ def test_rank_returns_keys_only_and_flips_with_the_direction(engine):
     assert all(set(row) == {STORE, bucket, PERIOD_PARTIAL} for row in result["rows"])
     assert [row["field"] for row in result["output_columns"]] == [STORE, bucket, PERIOD_PARTIAL]
     assert "revenue" not in result["column_types"]
-    assert [warning["code"] for warning in result["warnings"]].count("VALUES_WITHHELD") == 1
+    assert [warning["code"] for warning in result.get("warnings", [])].count("VALUES_WITHHELD") == 1
     # Ties order by every group key in the rank's direction, so ascending is the exact reverse.
     rows = {
         direction: engine.query(
@@ -305,10 +305,11 @@ def test_rank_returns_keys_only_and_flips_with_the_direction(engine):
     assert rows["asc"] == [
         {STORE: row[STORE], bucket: row[bucket], PERIOD_PARTIAL: False} for row in ranked
     ]
+    # The answer echoes the call as written back: lowercase directions.
     assert engine.compile({**RANK, **window}, context=SALES)["normalized_query"]["order_by"] == [
-        {"field": "revenue", "direction": "DESC"},
-        {"field": STORE, "direction": "DESC"},
-        {"field": bucket, "direction": "DESC"},
+        {"field": "revenue", "direction": "desc"},
+        {"field": STORE, "direction": "desc"},
+        {"field": bucket, "direction": "desc"},
     ]
 
 
@@ -471,7 +472,9 @@ def test_granted_rank_retains_withholding_and_redacted_descriptors(package, verb
         assert [column["field"] for column in result["output_columns"]] == [STORE]
         assert "revenue" not in result.get("column_types", {})
         assert all("revenue" not in row for row in result.get("rows", []))
-        warning = next(row for row in result["warnings"] if row["code"] == "VALUES_WITHHELD")
+        warning = next(
+            row for row in result.get("warnings", []) if row["code"] == "VALUES_WITHHELD"
+        )
         assert warning["object_ids"] == [AOV]
         serialized = json.dumps(result, default=str)
         assert REVENUE not in serialized

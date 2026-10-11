@@ -446,6 +446,24 @@ def _answers_every_period(query: NormalizedQuery, config: PackageConfig) -> bool
     return known_zone(str(getattr(role, "timezone", "") or "UTC"))
 
 
+def _time_valued_groups(query: NormalizedQuery, config: PackageConfig) -> list[str]:
+    dimensions = _dimension_index(config)
+    return [
+        dim_id
+        for dim_id in query.group_by
+        if getattr(dimensions.get(dim_id), "data_type", "") in {"date", "timestamp"}
+    ]
+
+
+def observed_only_groups(query: NormalizedQuery, config: PackageConfig) -> list[str]:
+    """The date and time group_by dimensions that keep a named window to its observed rows.
+
+    Filling the window's periods across such a dimension would pad every observed instant
+    into every period; the answer keeps the rows that hold data and says so.
+    """
+    return _time_valued_groups(query, config) if _answers_every_period(query, config) else []
+
+
 def _window_total(
     query: NormalizedQuery, config: PackageConfig, bound_measures: Iterable[BoundMeasure]
 ) -> bool:
@@ -4684,7 +4702,19 @@ def _plan_query(
     # ``attach_relation_ctes``.
     query, synthetic_measures = lift_conditional_aggregates(raw_query, config)
     config = _extend_config_with_synthetic_measures(config, synthetic_measures)
-    if collapse_window and query.time is not None and _answers_every_period(query, config):
+    if query.time is not None and query.time.fill and (held := _time_valued_groups(query, config)):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"time.fill can't fill a series grouped by a date or time dimension ({held[0]}): "
+            "every observed instant would be padded into every period. Remove 'fill'.",
+            details={"path": "time.fill", "group_by": held},
+        )
+    if (
+        collapse_window
+        and query.time is not None
+        and _answers_every_period(query, config)
+        and not observed_only_groups(query, config)
+    ):
         query = replace(query, time=replace(query.time, fill=True))
 
     measures = _measure_index(config)

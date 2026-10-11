@@ -217,7 +217,7 @@ def test_kinds_filter_accepts_a_list_in_any_encoding(
     adapter: SemanticLayerMCPAdapter, kinds: Any
 ) -> None:
     response = adapter.call_tool("discover", {"terms": "revenue by store", "kinds": kinds})
-    assert not [w for w in response["warnings"] if w["code"] == "DISCOVER_UNKNOWN_KIND"]
+    assert not [w for w in response.get("warnings", []) if w["code"] == "DISCOVER_UNKNOWN_KIND"]
     assert response["measures"] and response["metrics"]
     assert not response["dimensions"] and not response["entities"]
 
