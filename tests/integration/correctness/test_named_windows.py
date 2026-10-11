@@ -9,7 +9,10 @@ from dataclasses import replace
 
 import pytest
 
+from semantic_rails.compiler import compile_query
+from semantic_rails.dialects import DuckDbDialect
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 
@@ -125,6 +128,38 @@ def test_a_balance_after_its_last_snapshot_says_no_data_yet(shop: Runtime) -> No
     assert result["rows"] == [{"seats": 220}]
     assert result["window"]["data_through"] == "2024-01-15"
     assert _no_data_yet(result) == []
+
+
+def test_a_balance_says_where_its_data_ends_where_only_a_named_window_reads_coverage(
+    packages, monkeypatch
+) -> None:
+    """Snowflake, BigQuery, Databricks and Athena read coverage only for a named window's every
+    period; there a balance still records the coverage that says where its data ends."""
+    call = {"select": [SEATS], "time": {"start": "2024-01-01", "end": "2024-04-01", "grain": "month"}}  # fmt: skip
+    now = "2024-03-10T12:00:00Z"
+    base = _runtime(packages["utc_authored"])
+    config = base.config
+    base.close()
+    for warehouse in ("snowflake", "bigquery", "databricks", "athena"):
+        on = replace(config, package=replace(config.package, warehouse=warehouse))
+        runtime = Runtime.from_config(on, source_path=str(packages["utc_authored"]))
+        try:
+            compiled = compile_query(on, Registry(on), runtime.engine_payload(call, now=now))
+        finally:
+            runtime.close()
+        assert [edge["measures"] for edge in compiled["balance_edges"]] == [[SEATS]], warehouse
+    # Run on DuckDB under the same rule: coverage read only for a named window.
+    monkeypatch.setattr(DuckDbDialect, "has_time_coverage", property(lambda self: False))
+    runtime = _runtime(packages["utc_authored"])
+    try:
+        result = runtime.query(call, now=now)
+    finally:
+        runtime.close()
+    assert [row["seats"] for row in result["rows"]] == [220, None, None]
+    assert result["window"]["data_through"] == "2024-01-15"
+    assert _no_data_yet(result) == [
+        [{"id": SEATS, "edge": "2024-01-01", "edge_source": "last_bucket"}]
+    ]
 
 
 @pytest.fixture

@@ -690,7 +690,7 @@ def _record_balance_edge(
     bucket: Any,
 ) -> None:
     """A balance's loaded coverage on its own clock, to say where its data ends."""
-    if not _dialect(config).has_time_coverage:
+    if not _reads_coverage(plan, config):
         return
     role = _temporal_role_index(config)[
         _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
