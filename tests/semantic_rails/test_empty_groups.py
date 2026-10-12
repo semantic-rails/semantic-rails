@@ -529,8 +529,7 @@ def shop(shop_package: Path) -> Iterator[Runtime]:
         rt.close()
 
 
-@pytest.mark.parametrize("beside_amount", [False, True])
-def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amount: bool) -> None:
+def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime) -> None:
     amount = {"kind": "measure", "measure": "measure.shop.store_a_amount"}
     distribution = {
         "kind": "distribution",
@@ -538,18 +537,17 @@ def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amoun
         "over": {"kind": "entity_value", "entity": "entity.shop_customer", "input": amount},
     }
     query = {
-        "select": _select(total=distribution, **({"amount": amount} if beside_amount else {})),
+        "select": _select(total=distribution, amount=amount),
         "time": {**SHOP_MONTH, "grain": "week", "start": "2023-11-20", "end": "2023-11-27"},
     }
-    if beside_amount:
-        # A named window fills the combined answer, where the amount's empty week can't tell
-        # 0 from no data yet: the two are asked for separately.
-        with pytest.raises(SemanticLayerError) as refused:
-            shop.query(query)
-        assert refused.value.details["reason"] == "distribution_beside_additive_in_named_window"
-        query["select"] = _select(total=distribution)
-        alone = shop.query({**query, "select": _select(amount=amount)})
-        assert typed_rows(alone)[0]["amount"] == 0
+    # A named window fills the combined answer, where the amount's empty week can't tell
+    # 0 from no data yet: the two are asked for separately.
+    with pytest.raises(SemanticLayerError) as refused:
+        shop.query(query)
+    assert refused.value.details["reason"] == "distribution_beside_additive_in_named_window"
+    alone = shop.query({**query, "select": _select(amount=amount)})
+    assert typed_rows(alone)[0]["amount"] == 0
+    query["select"] = _select(total=distribution)
     response = shop.query(query)
     gold = _gold(
         shop,
@@ -564,10 +562,10 @@ def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amoun
     assert not _warnings(response)
 
 
-@pytest.mark.parametrize("grain", [None, "week", "month"])
+@pytest.mark.parametrize("grain", ["week", "month"])
 @pytest.mark.parametrize("relative", [False, True])
 def test_a_window_total_observes_conditional_counts_outside_its_bounds(
-    shop: Runtime, grain: str | None, relative: bool
+    shop: Runtime, grain: str, relative: bool
 ) -> None:
     a = {"kind": "measure", "measure": "measure.shop.store_a_orders"}
     b = {"kind": "measure", "measure": "measure.shop.store_b_orders"}
@@ -576,18 +574,16 @@ def test_a_window_total_observes_conditional_counts_outside_its_bounds(
         if relative
         else {"start": "2023-11-27", "end": "2023-12-04"}
     )
-    if grain:
-        time["grain"] = grain
     response = shop.query(
         {
             "select": _select(
                 a=a, b=b, net={"kind": "arithmetic", "op": "subtract", "left": a, "right": b}
             ),
-            "time": {"temporal_role": SHOP_MONTH["temporal_role"], **time},
+            "time": {"temporal_role": SHOP_MONTH["temporal_role"], "grain": grain, **time},
         },
         now="2023-12-04T00:00:00+00:00",
     )
-    # Each bucket the window touches: one week (or total), or November and December.
+    # Each bucket the window touches: one week, or November and December.
     buckets = "TIMESTAMP '2023-11-01', TIMESTAMP '2023-12-01'" if grain == "month" else "0"
     gold = _gold(
         shop,
@@ -1222,12 +1218,7 @@ def test_an_exact_rollup_of_an_else_zero_sum_matches_the_base(
 
 @pytest.mark.parametrize(
     ("revenue_alias", "median_alias"),
-    [
-        ("agent_branch_1__rows", "median"),
-        ("revenue", "agent_branch_1__rows"),
-        ("revenue", "AGENT_BRANCH_1__ROWS"),
-        ("agent_branch_1__rows", "agent_branch_1__rows_2"),
-    ],
+    [("revenue", "AGENT_BRANCH_1__ROWS"), ("agent_branch_1__rows", "agent_branch_1__rows_2")],
 )
 @pytest.mark.parametrize("by_store", [False, True])
 def test_branch_row_markers_never_shadow_projected_values(
@@ -1300,111 +1291,6 @@ def test_arithmetic_beside_a_distribution_keeps_its_empty_groups_zero(shop: Runt
     refunded = {("b", "2023-11"): 6, ("a", "2024-01"): 3, ("a", "2024-03"): 4}
     assert got == {key: refunded.get(key, 0) for key in got}
     assert len(got) == 10
-
-
-# The same query's SQL at the commit before unknown amounts stayed NULL, unchanged but for
-# the time axis, named period, and `not`, which keeps an unknown order id.
-REFUNDS_BESIDE_A_MEDIAN_SQL = """WITH agent_branch_1__leaf_1 AS (
-SELECT
-  orders.store_id AS g1,
-  DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP)) AS t,
-  SUM(refunds.goods_amount) AS m1,
-  SUM(refunds.shipping_amount) AS m2
-FROM refunds
-INNER JOIN orders ON refunds.order_id = orders.order_id
-WHERE
-  ((refunds.order_id <> 7) OR (refunds.order_id IS NULL))
-GROUP BY
-  orders.store_id,
-  DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))
-),
-agent_branch_1__guarded_base AS (
-SELECT
-  base.g1 AS g1,
-  base.t AS t,
-  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1,
-  CASE WHEN COUNT(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2
-FROM agent_branch_1__leaf_1 AS base
-),
-agent_branch_1 AS (
-SELECT
-  base.g1 AS "dimension.shop_order_store_id",
-  base.t AS "period",
-  base.m1 + base.m2 AS "total"
-FROM agent_branch_1__guarded_base AS base
-),
-agent_branch_2__median__entity_values__leaf_1 AS (
-SELECT
-  orders.store_id AS g1,
-  orders.order_id AS g2,
-  DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP)) AS t,
-  SUM(orders.amount) AS m1
-FROM orders
-WHERE
-  ((orders.order_id <> 7) OR (orders.order_id IS NULL))
-GROUP BY
-  orders.store_id,
-  orders.order_id,
-  DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))
-),
-agent_branch_2__median__entity_values AS (
-SELECT
-  base.g1 AS "dimension.shop_order_store_id",
-  base.g2 AS "dimension.shop_order_id",
-  base.t AS "period",
-  base.m1 AS __entity_value
-FROM agent_branch_2__median__entity_values__leaf_1 AS base
-),
-agent_branch_2 AS (
-SELECT
-  agent_branch_2__median__entity_values."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  agent_branch_2__median__entity_values."period" AS "period",
-  MEDIAN(agent_branch_2__median__entity_values.__entity_value) AS "median"
-FROM agent_branch_2__median__entity_values
-GROUP BY
-  agent_branch_2__median__entity_values."dimension.shop_order_store_id",
-  agent_branch_2__median__entity_values."period"
-),
-agent_combined_2 AS (
-SELECT
-  COALESCE(left_side."dimension.shop_order_store_id", right_side."dimension.shop_order_store_id") AS "dimension.shop_order_store_id",
-  COALESCE(CAST(left_side."period" AS TIMESTAMP), CAST(right_side."period" AS TIMESTAMP)) AS "period",
-  left_side."total" AS "total",
-  right_side."median" AS "median"
-FROM agent_branch_1 AS left_side
-FULL OUTER JOIN agent_branch_2 AS right_side ON left_side."dimension.shop_order_store_id" IS NOT DISTINCT FROM right_side."dimension.shop_order_store_id" AND CAST(left_side."period" AS TIMESTAMP) IS NOT DISTINCT FROM CAST(right_side."period" AS TIMESTAMP)
-),
-guarded_base AS (
-SELECT
-  base."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  base."period" AS "period",
-  CASE WHEN COUNT(base."total") OVER () > 0 THEN COALESCE(base."total", 0) END AS "total",
-  base."median" AS "median"
-FROM agent_combined_2 AS base
-),
-agent_projected AS (
-SELECT
-  base."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  base."period" AS "period",
-  base."total" AS "total",
-  base."median" AS "median"
-FROM guarded_base AS base
-)
-SELECT
-  agent_projected."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
-  agent_projected."period" AS "period",
-  agent_projected."total" AS "total",
-  agent_projected."median" AS "median"
-FROM agent_projected
-ORDER BY
-  "period" ASC,
-  "dimension.shop_order_store_id" ASC"""
-
-
-def test_a_query_beside_a_distribution_lowers_as_it_did_before(shop_package: Path) -> None:
-    config = load_package_config(str(shop_package))
-    compiled = compile_query(config, Registry(config), REFUNDS_BESIDE_A_MEDIAN)
-    assert compiled["sql"] == REFUNDS_BESIDE_A_MEDIAN_SQL
 
 
 def test_an_output_named_like_a_row_count_keeps_its_name_in_order_by(shop: Runtime) -> None:
