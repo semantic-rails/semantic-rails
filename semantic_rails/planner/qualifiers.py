@@ -74,10 +74,7 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
             return "gte", {"kind": "percentile", "p": p}
     top_percent_match = re.search(r"top\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", lowered)
     if top_percent_match:
-        try:
-            n = float(top_percent_match.group(1))
-        except ValueError:
-            n = 0.0
+        n = float(top_percent_match.group(1))  # digits, so it parses
         if 0.0 < n < 100.0:
             return "gte", {"kind": "percentile", "p": round((100.0 - n) / 100.0, 4)}
     percentile_match = re.search(
@@ -85,10 +82,7 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
         lowered,
     )
     if percentile_match:
-        try:
-            n = float(percentile_match.group(1))
-        except ValueError:
-            n = 0.0
+        n = float(percentile_match.group(1))
         if 0.0 < n < 100.0:
             return "gt", {"kind": "percentile", "p": round(n / 100.0, 4)}
     percent_patterns = [
@@ -399,18 +393,10 @@ def _top_n_intent(text: str) -> tuple[bool, int]:
     match = _TOP_N_PATTERN.search(lowered)
     if match:
         raw = match.group(1)
-        if not raw:
-            return True, _DEFAULT_TOP_LIMIT
-        try:
-            return True, int(raw)
-        except ValueError:
-            return True, _DEFAULT_TOP_LIMIT
+        return True, int(raw) if raw else _DEFAULT_TOP_LIMIT
     for start, end in spans:
         lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     rank_match = _RANK_PATTERN.search(lowered)
     if rank_match:
-        try:
-            return True, int(rank_match.group(1))
-        except ValueError:
-            return True, _DEFAULT_TOP_LIMIT
+        return True, int(rank_match.group(1))
     return False, _DEFAULT_TOP_LIMIT

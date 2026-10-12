@@ -171,7 +171,6 @@ def _best(
     rows: Iterable[Any],
     terms: Iterable[str],
     *,
-    require_all: bool = False,
     exclude: Iterable[str] = (),
 ) -> Any | None:
     term_list = [term for term in terms if term]
@@ -181,8 +180,6 @@ def _best(
         if getattr(row, "id", "") in excluded:
             continue
         row_score = _score(row, term_list)
-        if require_all and row_score < len(set(term_list)):
-            continue
         if row_score > 0:
             ranked.append((row_score, getattr(row, "label", ""), getattr(row, "id", ""), row))
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
