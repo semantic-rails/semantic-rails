@@ -3278,66 +3278,26 @@ def _metric_min_window_unit(expression: Any) -> str:
     day grain raises REWRITE_NOT_SUPPORTED."""
     if expression is None:
         return ""
-    if isinstance(expression, dict):
-        units: list[str] = []
-        for key in ("offset", "window"):
-            spec = expression.get(key)
-            if isinstance(spec, dict):
-                unit = str(spec.get("unit", "")).strip().lower()
-                if unit:
-                    units.append(unit)
-        for child_key in (
-            "input",
-            "left",
-            "right",
-            "numerator",
-            "denominator",
-            "base",
-            "converted",
-        ):
-            units.append(_metric_min_window_unit(expression.get(child_key)))
-        for arg in expression.get("args", []) or []:
-            units.append(_metric_min_window_unit(arg))
-        order = ["year", "quarter", "month", "week", "day"]
-        coarsest = ""
-        for unit in units:
-            if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
-                coarsest = unit
-        return coarsest
-    # carry `.unit` directly; ``RollingExpr`` also carries `.unit` and
-    # `.value` directly (no `.window` attribute exists on the
-    # dataclass — see ``semantic_rails/expressions.py:RollingExpr``).
-    # The ``window`` branch below only fires for IR payloads that
-    # still carry a raw dict (``offset`` and ``window`` map keys on
-    # parsed but un-typed expressions).
     units = []
     direct_unit = getattr(expression, "unit", "")
     if isinstance(direct_unit, str) and direct_unit:
         units.append(direct_unit.lower())
     for attr in ("offset", "window"):
-        if hasattr(expression, attr):
-            spec = getattr(expression, attr)
-            if isinstance(spec, dict):
-                unit = str(spec.get("unit", "")).strip().lower()
-                if unit:
-                    units.append(unit)
+        spec = getattr(expression, attr, None)
+        if isinstance(spec, dict):
+            unit = str(spec.get("unit", "")).strip().lower()
+            if unit:
+                units.append(unit)
     for attr in ("input", "left", "right", "numerator", "denominator", "base", "converted"):
         if hasattr(expression, attr):
             units.append(_metric_min_window_unit(getattr(expression, attr)))
-    if hasattr(expression, "args"):
-        for arg in expression.args or []:
-            units.append(_metric_min_window_unit(arg))
+    for arg in getattr(expression, "args", None) or []:
+        units.append(_metric_min_window_unit(arg))
     order = ["year", "quarter", "month", "week", "day"]
-    coarsest = ""
-    for unit in units:
-        if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
-            coarsest = unit
-    return coarsest
+    return min((unit for unit in units if unit in order), key=order.index, default="")
 
 
 def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
-    from .temporal_support import require_temporal_support
-
     require_temporal_support(runtime._config)
     role_id = str(recipe.temporal_role or "").strip()
     if not role_id:
