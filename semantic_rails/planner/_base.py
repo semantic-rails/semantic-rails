@@ -51,31 +51,22 @@ class RuntimeCompositionDraft:
     score: float = 1.0
 
 
+# Words read as another word; a word not listed reads as itself.
 _TERM_SYNONYMS = {
     "geography": "geo",
     "geographic": "geo",
     "region": "geo",
     "regions": "geo",
-    "customer": "customer",
     "customers": "customer",
-    "store": "store",
     "stores": "store",
-    "order": "order",
     "orders": "order",
     "purchase": "order",
     "purchases": "order",
     "ordered": "order",
-    "session": "session",
     "sessions": "session",
-    "signup": "signup",
     "signups": "signup",
-    "adoption": "adoption",
     "activation": "adoption",
-    "funnel": "funnel",
     "funnels": "funnel",
-    "menu": "menu",
-    "inventory": "inventory",
-    "snapshot": "snapshot",
     "snapshots": "snapshot",
     "sent": "received",
     "send": "received",
@@ -114,10 +105,7 @@ _NUMBER_WORDS = {
 @lru_cache(maxsize=8192)
 def _cached_tokens(text: str) -> tuple[str, ...]:
     raw = "".join(ch.lower() if ch.isalnum() else " " for ch in str(text or ""))
-    out: list[str] = []
-    for token in raw.split():
-        out.append(_TERM_SYNONYMS.get(token, token))
-    return tuple(out)
+    return tuple(_TERM_SYNONYMS.get(token, token) for token in raw.split())
 
 
 def _tokens(text: str) -> tuple[str, ...]:

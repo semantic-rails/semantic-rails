@@ -19,7 +19,7 @@ from .coverage import (
     _referenced_ids,
     _value_phrases,
 )
-from .exclusions import exclusion_regions
+from .exclusions import _contains_literal, exclusion_regions
 from .time_windows import _time_window
 from .visibility import visible_dimensions
 
@@ -306,12 +306,6 @@ class _FieldConstraints:
         )
 
 
-def _contains_literal(literals: list[Any], canonical: Any) -> bool:
-    """SQL string equality has no catalog-label, case or punctuation rewrite."""
-
-    return any(type(item) is type(canonical) and item == canonical for item in literals)
-
-
 def _field_predicates(query: Call) -> dict[str, _FieldConstraints]:
     """Build query-level AND constraints; nested expression scopes remain unproven."""
 
@@ -344,8 +338,6 @@ def _membership_literals(word: str, raw: Any) -> list[Any] | None:
     """Only ``is`` and ``not`` (one value or a list) prove named-value polarity."""
 
     literals = operators.values_of(word, raw)
-    if not literals:
-        return None
     if not literals or any(
         item is None or isinstance(item, (list, tuple, dict)) for item in literals
     ):

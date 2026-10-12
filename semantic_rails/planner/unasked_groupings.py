@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from .. import operators
+from ..clock import floor_period
 from ._base import _grouped_dimensions, _object_by_id, _singular
 from .call import Call, Time
 from .grouping_checks import _entity_grouping_dimensions, _query_clocks, _reads_grouping
@@ -15,20 +16,6 @@ from .groupings import _listed_grouping_terms, _named_run
 from .ranking_checks import _dimension_nouns, _ranking_request
 from .time_phrases import _TIME_UNITS, _names_time_axis
 from .time_windows import _time_window
-
-
-def _grain_bucket(day: date, grain: str) -> Any:
-    """The calendar bucket of a day at a grain; weeks start on Monday, as the engine's do."""
-
-    if grain == "week":
-        return day - timedelta(days=day.weekday())
-    if grain == "month":
-        return day.year, day.month
-    if grain == "quarter":
-        return day.year, (day.month - 1) // 3
-    if grain == "year":
-        return day.year
-    return day
 
 
 def _grain_splits(time: Time) -> bool:
@@ -55,7 +42,7 @@ def _grain_splits(time: Time) -> bool:
     except ValueError:
         return True
     final = max((end - timedelta(microseconds=1)).date(), start.date())
-    return _grain_bucket(start.date(), grain) != _grain_bucket(final, grain)
+    return floor_period(start.date(), grain) != floor_period(final, grain)
 
 
 def _without_windows(question: str) -> str:
