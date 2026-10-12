@@ -2147,25 +2147,7 @@ class Runtime:
         started = time.perf_counter()
         context = context_from_policy_context(policy_context).to_policy_context()
         try:
-            normalized = normalize_segment(self._config, segment_id)
-            segment_policy_effects = self._segment_policy_effects(normalized.id, context)
-            derived_query = build_segment_query(normalized, include_preview_dimensions=True)
-            if context:
-                derived_query["policy_context"] = context
-            validation = self.validate_internal(derived_query)
-            validation.update(
-                {
-                    "segment": {
-                        "id": normalized.id,
-                        "entity": normalized.entity,
-                        "basis_metric": normalized.basis_metric,
-                    },
-                    "normalized_segment": normalized.to_dict(),
-                    "derived_query": without_trusted_attributes(derived_query),
-                    "segment_policy_effects": segment_policy_effects,
-                    "request_context": request_context_payload(context),
-                }
-            )
+            normalized, validation = self._segment_call(segment_id, context, self.validate_internal)
             # Validation type-checks booleans and numbers only; for text, ids, dates and times only
             # the warehouse can say a value fits its column (text for a BOOLEAN column fails there).
             typed = {"boolean", "integer", "number"}
@@ -2214,13 +2196,23 @@ class Runtime:
         self, segment_id: str, *, policy_context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         context = context_from_policy_context(policy_context).to_policy_context()
+        return self._segment_call(segment_id, context, self.compile_internal)[1]
+
+    def _segment_call(
+        self,
+        segment_id: str,
+        context: dict[str, Any],
+        run: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> tuple[Any, dict[str, Any]]:
+        """Run the segment's query (with its preview dimensions) through ``run``, and say which
+        segment it is and the policies that apply to it."""
         normalized = normalize_segment(self._config, segment_id)
         segment_policy_effects = self._segment_policy_effects(normalized.id, context)
         derived_query = build_segment_query(normalized, include_preview_dimensions=True)
         if context:
             derived_query["policy_context"] = context
-        explained = self.compile_internal(derived_query)
-        explained.update(
+        out = run(derived_query)
+        out.update(
             {
                 "segment": {
                     "id": normalized.id,
@@ -2233,7 +2225,7 @@ class Runtime:
                 "request_context": request_context_payload(context),
             }
         )
-        return explained
+        return normalized, out
 
     @runtime_request_scope
     def segment_preview(
