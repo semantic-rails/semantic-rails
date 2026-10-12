@@ -1451,8 +1451,9 @@ def test_rollup_safe_package_refuses_two_groups_across_a_hop(
         ]
 
 
-# The de-duplicated leaf on the locally testable dialect families: a CTE, SELECT DISTINCT and
-# an aggregate over its columns. Only the time bucket and the median differ by dialect.
+# The de-duplicated leaf on the locally testable dialect families: correlated EXISTS, or (on
+# ClickHouse, and for a group across the hop everywhere) a CTE of SELECT DISTINCT rows and an
+# aggregate over its columns. Only the time bucket and the median differ by dialect.
 _TRUNC = "DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))"
 MONTH = {"duckdb": _TRUNC, "postgres": _TRUNC, "clickhouse": f"CAST({_TRUNC} AS TIMESTAMP)"}
 _VALUE = "orders.total"
@@ -1470,13 +1471,10 @@ SHAPES = {
         "where": [BEVERAGE],
     },
 }
-DIALECT_SQL = {
-    "filtered": """WITH leaf_1 AS (
-SELECT
-  SUM(orders.total) AS m1,
-  COUNT(1) AS m1_rows
-FROM orders
-WHERE
+# Parts both leaf forms share: the beverage test of the EXISTS leaf, the ClickHouse leaf's
+# distinct rows, and a revenue total's guard (which settles empty groups) and outputs.
+SQL_PARTS = {
+    "exists": """WHERE
   EXISTS (
 SELECT
   1 AS match
@@ -1484,9 +1482,18 @@ FROM order_items
 WHERE
   orders.order_id = order_items.order_id
   AND order_items.product_type = 'beverage'
-)
-),
-guarded_base AS (
+)""",
+    "rows": """WITH leaf_1__leaf_1_entity_rows AS (
+SELECT DISTINCT
+  orders.order_id AS __entity_key_1,
+  orders.total AS __entity_value,
+  1 AS __entity_rows
+FROM orders
+INNER JOIN order_items ON orders.order_id = order_items.order_id
+WHERE
+  order_items.product_type = 'beverage'
+),""",
+    "total": """guarded_base AS (
 SELECT
   COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
 FROM leaf_1 AS base
@@ -1494,6 +1501,28 @@ FROM leaf_1 AS base
 SELECT
   base.m1 AS "revenue"
 FROM guarded_base AS base""",
+    "monthly_total": """guarded_base AS (
+SELECT
+  base.t AS t,
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
+FROM leaf_1 AS base
+)
+SELECT
+  base.t AS "period",
+  base.m1 AS "revenue"
+FROM guarded_base AS base
+ORDER BY
+  "period" ASC""",
+}
+DIALECT_SQL = {
+    "filtered": """WITH leaf_1 AS (
+SELECT
+  SUM(orders.total) AS m1,
+  COUNT(1) AS m1_rows
+FROM orders
+{exists}
+),
+{total}""",
     "grouped": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
@@ -1526,45 +1555,18 @@ SELECT
   SUM(orders.total) AS m1,
   COUNT(1) AS m1_rows
 FROM orders
-WHERE
-  EXISTS (
-SELECT
-  1 AS match
-FROM order_items
-WHERE
-  orders.order_id = order_items.order_id
-  AND order_items.product_type = 'beverage'
-)
+{exists}
 GROUP BY
   {month}
 ),
-guarded_base AS (
-SELECT
-  base.t AS t,
-  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
-FROM leaf_1 AS base
-)
-SELECT
-  base.t AS "period",
-  base.m1 AS "revenue"
-FROM guarded_base AS base
-ORDER BY
-  "period" ASC""",
+{monthly_total}""",
     # A median overrides the revenue sum, so the answer counts the rows it read.
     "median": """WITH leaf_1 AS (
 SELECT
   {median} AS m1,
   COUNT(1) AS "m1_rows"
 FROM orders
-WHERE
-  EXISTS (
-SELECT
-  1 AS match
-FROM order_items
-WHERE
-  orders.order_id = order_items.order_id
-  AND order_items.product_type = 'beverage'
-)
+{exists}
 )
 SELECT
   base.m1 AS "median_revenue",
@@ -1574,30 +1576,14 @@ FROM leaf_1 AS base""",
 
 
 CLICKHOUSE_SQL = {
-    "filtered": """WITH leaf_1__leaf_1_entity_rows AS (
-SELECT DISTINCT
-  orders.order_id AS __entity_key_1,
-  orders.total AS __entity_value,
-  1 AS __entity_rows
-FROM orders
-INNER JOIN order_items ON orders.order_id = order_items.order_id
-WHERE
-  order_items.product_type = 'beverage'
-),
+    "filtered": """{rows}
 leaf_1 AS (
 SELECT
   SUM(leaf_1__leaf_1_entity_rows.__entity_value) AS m1,
   COUNT(leaf_1__leaf_1_entity_rows.__entity_rows) AS m1_rows
 FROM leaf_1__leaf_1_entity_rows
 ),
-guarded_base AS (
-SELECT
-  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
-FROM leaf_1 AS base
-)
-SELECT
-  base.m1 AS "revenue"
-FROM guarded_base AS base""",
+{total}""",
     "monthly": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
@@ -1618,28 +1604,8 @@ FROM leaf_1__leaf_1_entity_rows
 GROUP BY
   leaf_1__leaf_1_entity_rows.t
 ),
-guarded_base AS (
-SELECT
-  base.t AS t,
-  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
-FROM leaf_1 AS base
-)
-SELECT
-  base.t AS "period",
-  base.m1 AS "revenue"
-FROM guarded_base AS base
-ORDER BY
-  "period" ASC""",
-    "median": """WITH leaf_1__leaf_1_entity_rows AS (
-SELECT DISTINCT
-  orders.order_id AS __entity_key_1,
-  orders.total AS __entity_value,
-  1 AS __entity_rows
-FROM orders
-INNER JOIN order_items ON orders.order_id = order_items.order_id
-WHERE
-  order_items.product_type = 'beverage'
-),
+{monthly_total}""",
+    "median": """{rows}
 leaf_1 AS (
 SELECT
   {median} AS m1,
@@ -1677,7 +1643,7 @@ def test_each_dialect_renders_the_de_duplicated_leaf(
         "leaf_1__leaf_1_entity_rows.__entity_value" if warehouse == "clickhouse" else "orders.total"
     )
     median = MEDIAN[warehouse].replace("orders.total", value)
-    expected = templates[shape].format(month=MONTH[warehouse], median=median)
+    expected = templates[shape].format(month=MONTH[warehouse], median=median, **SQL_PARTS)
     # ClickHouse reads an unmatched outer-join field as NULL only with this setting.
     assert sql == expected + ("\nSETTINGS join_use_nulls = 1" if warehouse == "clickhouse" else "")
 
@@ -1689,4 +1655,4 @@ def test_remote_dialects_render_the_filter_as_correlated_exists(
     query = {"observation_scope": "query", **FILTERED_SUM}  # as in _run
     sql = _compile(_config(package, warehouse), query)["sql"]
     quote = "`" if warehouse in {"bigquery", "databricks"} else '"'
-    assert sql == DIALECT_SQL["filtered"].replace('"', quote)
+    assert sql == DIALECT_SQL["filtered"].format(**SQL_PARTS).replace('"', quote)
