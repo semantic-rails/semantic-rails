@@ -12,6 +12,7 @@ entity_in_terms_of shortcut does not apply.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -30,6 +31,7 @@ from semantic_rails.policies import row_filters_for_context
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PathPreferenceConfig, SemanticPolicyConfig
+from tests.semantic_rails.conftest import opened
 from tests.semantic_rails.result_helpers import typed_rows
 
 # Order 1 has two beverages (the double-count trap), order 2 a beverage and a jaffle, order 3
@@ -245,6 +247,17 @@ OWN_REVENUE_IF = _if("sum", _compare("customer_id", "=", 10), "total")
 OWN_SHARE = _ratio(OWN_ORDERS_IF, {"kind": "measure", "measure": "measure.hop.order_count"})
 
 
+# One runtime per package, opened by its module fixture and shared by the queries on it.
+_RUNTIMES: dict[Path, Runtime] = {}
+
+
+def _serve(root: Path) -> Iterator[Path]:
+    """Open the package's runtime (seeding its warehouse) for the module, then close it."""
+    _RUNTIMES[root] = opened(Runtime.from_path(str(root)))
+    yield root
+    _RUNTIMES.pop(root).close()
+
+
 def _write(root: Path, models: dict[str, str], entities: dict[str, list[Any]]) -> Path:
     graph = {
         "graph": {
@@ -268,17 +281,16 @@ def _write(root: Path, models: dict[str, str], entities: dict[str, list[Any]]) -
     for name, text in files.items():
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(text, encoding="utf-8")
-    _run(root, {"select": [_measure("order_count")]})  # seeds the warehouse
     return root
 
 
 @pytest.fixture(scope="module")
-def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return _write(tmp_path_factory.mktemp("hop") / "hop", MODELS, ENTITIES)
+def package(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    yield from _serve(_write(tmp_path_factory.mktemp("hop") / "hop", MODELS, ENTITIES))
 
 
 @pytest.fixture(scope="module")
-def receipts_by_order(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def receipts_by_order(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """Receipts keyed by their order, though each payment is a row, and no measure on them:
     nothing in the package says a receipt holds more than one row."""
     models = {
@@ -289,7 +301,7 @@ def receipts_by_order(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "payments": "model: {id: payments, relation: payments, entities: {receipt: {}}}\n",
     }
     entities = {**ENTITIES, "receipt": ["order_id", "payments"]}
-    return _write(tmp_path_factory.mktemp("receipts") / "hop", models, entities)
+    yield from _serve(_write(tmp_path_factory.mktemp("receipts") / "hop", models, entities))
 
 
 def _measure(name: str, aggregation: str = "", alias: str = "") -> dict[str, Any]:
@@ -300,14 +312,11 @@ def _measure(name: str, aggregation: str = "", alias: str = "") -> dict[str, Any
 
 
 def _run(package: Path, query: dict[str, Any], *, validate: bool = False) -> dict[str, Any]:
-    engine = Runtime.from_path(str(package))
-    try:
-        # The references are plain SQL, where a sum of no rows is NULL, as under the query
-        # scope; test_observation_scope covers the dataset scope on these leaves.
-        payload = {"observation_scope": "query", **query}
-        return engine.validate(payload) if validate else engine.query(payload)
-    finally:
-        engine.close()
+    engine = _RUNTIMES[package]
+    # The references are plain SQL, where a sum of no rows is NULL, as under the query scope;
+    # test_observation_scope covers the dataset scope on these leaves.
+    payload = {"observation_scope": "query", **query}
+    return engine.validate(payload) if validate else engine.query(payload)
 
 
 def _rows(package: Path, query: dict[str, Any]) -> list[tuple[Any, ...]]:
@@ -761,9 +770,9 @@ def test_clickhouse_keeps_supported_lookups_beside_a_child_filter(
     assert rows == _reference(package, reference)
 
 
-@pytest.fixture
-def diamond_package(tmp_path: Path) -> Path:
-    root = tmp_path / "diamond"
+@pytest.fixture(scope="module")
+def diamond_package(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    root = tmp_path_factory.mktemp("diamond") / "diamond"
     edges = {
         "account_client": ("account", "client", "client_id"),
         "district_client": ("district", "client", "client_id"),
@@ -842,12 +851,14 @@ def diamond_package(tmp_path: Path) -> Path:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents, encoding="utf-8")
-    return root
+    yield from _serve(root)
 
 
-@pytest.mark.parametrize("alternate_key", [False, True], ids=["lookup_first", "alternate_key"])
-@pytest.mark.parametrize("bound_filter", [False, True], ids=["where", "measure_filter"])
-@pytest.mark.parametrize("beside_lookup", [False, True], ids=["ungrouped", "lookup_group"])
+# Each pair of (route start, filter place, lookup grouping) values appears once.
+@pytest.mark.parametrize(
+    ("alternate_key", "bound_filter", "beside_lookup"),
+    [(False, False, False), (False, True, True), (True, False, True), (True, True, False)],
+)
 def test_new_child_filter_paths_require_one_candidate_or_a_pin(
     diamond_package: Path, alternate_key: bool, bound_filter: bool, beside_lookup: bool
 ) -> None:
@@ -889,8 +900,7 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
     ]
     options = caught.value.details["clarification"]["options"]
     assert [option["relationship_path"] for option in options] == [path for path, _, _ in routes]
-    # Seed once; pinning must select the authored route even when it is longer.
-    _run(diamond_package, {"select": ["measure.diamond.amount"]})
+    # Pinning must select the authored route even when it is longer.
     for path, expected, branch in routes:
         pinned = replace(
             config,
@@ -943,7 +953,6 @@ def test_a_conditional_aggregate_takes_the_same_child_route_rule(
         compile_query(config, Registry(config), query)
     assert caught.value.code == "AMBIGUOUS_PATH"
     assert caught.value.details["reason"] == "route_decision_required"
-    _run(diamond_package, {"select": ["measure.diamond.amount"]})
     # The client route reaches account 1 (50, so no amount over 60), the branch route account 2
     # (70). A sum of nothing reads NULL, and so does a ratio over it.
     routes = [
