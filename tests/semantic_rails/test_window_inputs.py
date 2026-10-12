@@ -43,9 +43,6 @@ CONDITIONAL_COUNT = {
 }
 
 
-KINDS = ["rolling", "cumulative", "period_to_date"]
-
-
 def window(input_expr, kind="rolling"):
     options = {"window": {"unit": "month", "value": 3}} if kind == "rolling" else {}
     if kind == "period_to_date":
@@ -251,15 +248,20 @@ def test_entity_key_cannot_override_the_measure_source_rows(
     assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
 
 
+# Each key source refuses a composite count and a ratio denominator through the public
+# compiler, and a ratio denominator through direct lowering, across the three window kinds.
 @pytest.mark.parametrize(
     ("key_source", "route", "ratio", "kind"),
     [
-        (key_source, route, i % 2 == 1, KINDS[i % 3])
-        for i, (key_source, route) in enumerate(
-            (key, route)
-            for key in ["row_grain", "entity_key", "both"]
-            for route in ["compile", "lower"]
-        )
+        ("row_grain", "compile", False, "rolling"),
+        ("row_grain", "compile", True, "period_to_date"),
+        ("row_grain", "lower", True, "cumulative"),
+        ("entity_key", "compile", False, "period_to_date"),
+        ("entity_key", "compile", True, "cumulative"),
+        ("entity_key", "lower", True, "rolling"),
+        ("both", "compile", False, "cumulative"),
+        ("both", "compile", True, "rolling"),
+        ("both", "lower", True, "period_to_date"),
     ],
 )
 def test_composite_key_components_cannot_feed_a_summing_window(
