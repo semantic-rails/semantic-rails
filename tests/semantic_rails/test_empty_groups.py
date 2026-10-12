@@ -325,7 +325,7 @@ def test_a_clipped_result_is_never_called_empty(truncated: bool) -> None:
     assert bool(_no_data_in_scope_warnings(compiled, rows)) is not truncated
 
 
-# -- one place settles them, and a path that skips it is refused ---------------------------
+# -- one place settles them ----------------------------------------------------------------
 
 DISTRIBUTION = {
     "kind": "distribution",
@@ -419,80 +419,6 @@ def test_every_sum_and_count_a_projection_reads_comes_from_the_guard(
 ) -> None:
     compiled = compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
     assert_settled_in_one_place(compiled, config)
-
-
-@pytest.mark.parametrize(
-    ("patched", "value"), [("_dataset_scope", None), ("observes_dataset", False)]
-)
-def test_a_settle_path_that_skips_the_observation_scope_is_refused(
-    config: Any, monkeypatch: pytest.MonkeyPatch, patched: str, value: Any
-) -> None:
-    """Force the bypass: lowering probes no measure's own rows, or never asks for the scope,
-    while the guard reads it. The filtered query is refused, never judged inside its filters."""
-    query = {"version": 1, **SHAPES["filtered_by_store"]}
-    compile_query(config, Registry(config), {**query, "observation_scope": "query"})
-    monkeypatch.setattr(sql_lowering, patched, lambda *args: value)
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), query)
-    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
-    assert raised.value.details["observation_scope"] == "dataset"
-    assert "observation_scope 'query'" in str(raised.value)
-
-
-@pytest.mark.parametrize(
-    ("shape", "module", "patched"),
-    [
-        ("single_measure", sql_lowering, "zero_aliases"),
-        ("beside_a_distribution", distribution, "zero_outputs"),
-    ],
-)
-def test_a_lowering_path_that_skips_the_guard_is_refused(
-    config: Any, monkeypatch: pytest.MonkeyPatch, shape: str, module: Any, patched: str
-) -> None:
-    """Force the bypass: lowering builds no guard, and the check that works it out again refuses."""
-    monkeypatch.setattr(module, patched, lambda *args: {})
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
-    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
-
-
-@pytest.mark.parametrize(
-    "shape",
-    [
-        "single_measure",
-        "same_source_multi_measure",
-        "filled_series",
-        "window_total",
-        "sum_of_two_measures",
-    ],
-)
-def test_a_leaf_that_skips_the_row_count_is_refused(
-    config: Any, monkeypatch: pytest.MonkeyPatch, shape: str
-) -> None:
-    """Force the bypass: no leaf counts its rows, so the guard can't tell a group with no rows
-    from one whose values are all unknown, and refuses rather than read 0."""
-    for module in (leaves, row_counts):
-        monkeypatch.setattr(module, "_row_markers", lambda *args: [])
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
-    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
-    assert raised.value.details["missing"] == "row_count"
-
-
-@pytest.mark.parametrize("shape", ["predicate_case_count", "predicate_zero_passes"])
-def test_a_predicate_source_that_skips_the_guard_is_refused(
-    config: Any, monkeypatch: pytest.MonkeyPatch, shape: str
-) -> None:
-    """An entity the source doesn't list reads like the ones it does only while the source is
-    settled as a whole, so a source compiled without the guard is refused, not gated."""
-
-    def unguarded(config: Any, payload: dict[str, Any]) -> Any:
-        return compiler._compile_query_sql_ast(config, payload, project_cut=True, guard_empty=False)
-
-    monkeypatch.setattr(compiler, "_compile_predicate_source_ast", unguarded)
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
-    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
 
 
 # -- rows whose values are all unknown are not a group with no rows -------------------------
@@ -599,24 +525,6 @@ def test_a_window_total_observes_conditional_counts_outside_its_bounds(
     assert gold[-1] == {"a": 1, "b": 0, "net": 1}
     assert [{key: row[key] for key in gold[0]} for row in response["rows"]] == gold
     assert not _warnings(response)
-
-
-def test_a_window_total_refuses_a_missing_time_scope(
-    shop: Runtime, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(leaves, "_record_time_scope", lambda *args, **kwargs: None)
-    with pytest.raises(SemanticLayerError) as raised:
-        shop.query(
-            {
-                "select": _select(b={"kind": "measure", "measure": "measure.shop.store_b_orders"}),
-                "time": {
-                    "temporal_role": SHOP_MONTH["temporal_role"],
-                    "start": "2023-12-01",
-                    "end": "2023-12-08",
-                },
-            }
-        )
-    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
 
 
 @pytest.mark.parametrize("grain", [None, "week"])
@@ -1367,22 +1275,6 @@ def test_a_physical_column_named_like_a_row_count_is_read_as_itself(
         rt.close()
 
 
-def test_a_row_count_named_like_another_column_is_refused(
-    config: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Force the bypass: name the row count like the query's output, and the check refuses."""
-    for module in (row_counts, sql_lowering):
-        monkeypatch.setattr(
-            module,
-            "_row_count_names",
-            lambda plan, taken: {row.bound_measure.alias: "Revenue" for row in plan.measure_plans},
-        )
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 1, **SHAPES["single_measure"]})
-    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
-    assert raised.value.details["row_counts_named_like"] == ["revenue"]
-
-
 @pytest.mark.parametrize("else_value", [None, 0, 2])
 @pytest.mark.parametrize("by_store", [False, True])
 def test_case_sum_preserves_explicit_else_contributions(
@@ -1617,30 +1509,6 @@ def test_a_rollup_never_answers_a_case_under_arithmetic(
     (leaf,) = compiled["logical_plan"].measure_plans
     assert leaf.aggregate_relation_id == ""
     assert set(leaf.aggregate_relation_rejections.values()) == {"aggregation_not_reaggregable"}
-
-
-def test_a_nested_case_forced_onto_a_rollup_is_refused(
-    shop_package: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = _case_under_arithmetic_config(shop_package)
-    monkeypatch.setattr(
-        planning,
-        "_select_aggregate_relation",
-        lambda *args, **kwargs: (config.aggregate_relations[0].id, {}),
-    )
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(
-            config,
-            Registry(config),
-            {
-                "version": 1,
-                "select": _select(revenue=SHOP_REVENUE),
-                "group_by": [SHOP_STORE],
-                "time": SHOP_MONTH,
-            },
-        )
-    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
-    assert raised.value.details["measures"] == [SHOP_REVENUE["measure"]]
 
 
 @pytest.mark.parametrize("join_column", ["__source_rows", "m1_rows", "__source_value"])
@@ -2020,20 +1888,6 @@ def test_a_rollup_never_answers_a_conditional_sum(
     assert set(leaf.aggregate_relation_rejections.values()) == {"aggregation_not_reaggregable"}
 
 
-def test_a_rollup_leaf_without_a_row_count_is_refused(
-    shop_package: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Force the bypass on the routed path: its leaf counts no rows, and the guard refuses."""
-    for module in (leaves, lowering_common):
-        monkeypatch.setattr(module, "reads_every_row", lambda measure: False)
-    config = load_package_config(str(shop_package))
-    query = {"select": _select(revenue=SHOP_REVENUE), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 1, **query})
-    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
-    assert raised.value.details["missing"] == "row_count"
-
-
 # -- ClickHouse reads an unmatched outer-join field as NULL only when told to ---------------
 
 
@@ -2045,20 +1899,154 @@ def test_clickhouse_statements_set_join_use_nulls(config: Any, warehouse: str) -
     assert sql.endswith("\nSETTINGS join_use_nulls = 1") is (warehouse == "clickhouse")
 
 
-def test_a_plain_time_leaf_cannot_bypass_scope_recording(config, monkeypatch):
-    monkeypatch.setattr(lowering_common, "record_leaf_scope", lambda *args: None)
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(
-            config,
-            Registry(config),
-            {
-                "select": _select(revenue=REVENUE),
-                "time": {
-                    "temporal_role": ORDER_TIME,
-                    "grain": "month",
-                    "start": "2017-04-01",
-                    "end": "2017-05-01",
-                },
-            },
+# -- a path that skips the guard is refused -------------------------------------------------
+# Each case forces one bypass; the guard refuses rather than read 0 or NULL by accident.
+
+
+def _unguarded_source(config: Any, payload: dict[str, Any]) -> Any:
+    return compiler._compile_query_sql_ast(config, payload, project_cut=True, guard_empty=False)
+
+
+def _row_counts_named_revenue(plan: Any, taken: Any) -> dict[str, str]:
+    return {row.bound_measure.alias: "Revenue" for row in plan.measure_plans}
+
+
+NO_ROW_MARKERS = [(module, "_row_markers", lambda *args: []) for module in (leaves, row_counts)]
+SHOP_REVENUE_BY_STORE = {
+    "select": _select(revenue=SHOP_REVENUE),
+    "group_by": [SHOP_STORE],
+    "time": SHOP_MONTH,
+}
+UNOBSERVED = {"outputs": ["revenue", "orders", "items"], "observation_scope": "dataset"}
+BYPASSES = {
+    # Lowering probes no measure's own rows, or never asks for the scope, while the guard reads
+    # it: the filtered query is refused, never judged inside its filters.
+    "scope_unprobed": (
+        "jaffle",
+        SHAPES["filtered_by_store"],
+        [(sql_lowering, "_dataset_scope", lambda *args: None)],
+        UNOBSERVED,
+    ),
+    "scope_unasked": (
+        "jaffle",
+        SHAPES["filtered_by_store"],
+        [(sql_lowering, "observes_dataset", lambda *args: False)],
+        UNOBSERVED,
+    ),
+    # Lowering builds no guard, and the check that works it out again refuses.
+    "projection_unguarded": (
+        "jaffle",
+        SHAPES["single_measure"],
+        [(sql_lowering, "zero_aliases", lambda *args: {})],
+        {},
+    ),
+    "distribution_unguarded": (
+        "jaffle",
+        SHAPES["beside_a_distribution"],
+        [(distribution, "zero_outputs", lambda *args: {})],
+        {},
+    ),
+    # No leaf counts its rows, so the guard can't tell a group with no rows from one whose
+    # values are all unknown.
+    **{
+        f"no_row_count_{shape}": ("jaffle", SHAPES[shape], NO_ROW_MARKERS, {"missing": "row_count"})
+        for shape in (
+            "single_measure",
+            "same_source_multi_measure",
+            "filled_series",
+            "window_total",
+            "sum_of_two_measures",
         )
-    assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"
+    },
+    # An entity the source doesn't list reads like the ones it does only while the source is
+    # settled as a whole, so a source compiled without the guard is refused, not gated.
+    **{
+        f"unguarded_source_{shape}": (
+            "jaffle",
+            SHAPES[shape],
+            [(compiler, "_compile_predicate_source_ast", _unguarded_source)],
+            {},
+        )
+        for shape in ("predicate_case_count", "predicate_zero_passes")
+    },
+    "row_count_named_like_an_output": (
+        "jaffle",
+        SHAPES["single_measure"],
+        [
+            (module, "_row_count_names", _row_counts_named_revenue)
+            for module in (row_counts, sql_lowering)
+        ],
+        {"row_counts_named_like": ["revenue"]},
+    ),
+    "time_leaf_unscoped": (
+        "jaffle",
+        {
+            "select": _select(revenue=REVENUE),
+            "time": {
+                "temporal_role": ORDER_TIME,
+                "grain": "month",
+                "start": "2017-04-01",
+                "end": "2017-05-01",
+            },
+        },
+        [(lowering_common, "record_leaf_scope", lambda *args: None)],
+        {},
+    ),
+    "window_total_unscoped": (
+        "shop",
+        {
+            "select": _select(b={"kind": "measure", "measure": "measure.shop.store_b_orders"}),
+            "time": {
+                "temporal_role": SHOP_MONTH["temporal_role"],
+                "start": "2023-12-01",
+                "end": "2023-12-08",
+            },
+        },
+        [(leaves, "_record_time_scope", lambda *args, **kwargs: None)],
+        {},
+    ),
+    # The routed path's leaf counts no rows.
+    "rollup_leaf_without_row_count": (
+        "shop",
+        SHOP_REVENUE_BY_STORE,
+        [
+            (module, "reads_every_row", lambda measure: False)
+            for module in (leaves, lowering_common)
+        ],
+        {"missing": "row_count"},
+    ),
+    # A nested CASE forced onto the rollup, whose sum can't tell unknown amounts from no rows.
+    "nested_case_on_a_rollup": (
+        "shop_case_under_arithmetic",
+        SHOP_REVENUE_BY_STORE,
+        [
+            (
+                planning,
+                "_select_aggregate_relation",
+                lambda *args, **kwargs: ("aggregate_relation.orders_monthly", {}),
+            )
+        ],
+        {"measures": [SHOP_REVENUE["measure"]]},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", BYPASSES)
+def test_a_path_that_skips_the_guard_is_refused(
+    config: Any, shop_package: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    package, query, patches, details = BYPASSES[case]
+    if package == "shop":
+        config = load_package_config(str(shop_package))
+    elif package == "shop_case_under_arithmetic":
+        config = _case_under_arithmetic_config(shop_package)
+    query = {"version": 1, **query}
+    if details.get("observation_scope"):
+        # The refusal's fix: judged inside the filters, the same query compiles.
+        compile_query(config, Registry(config), {**query, "observation_scope": "query"})
+    for module, name, replacement in patches:
+        monkeypatch.setattr(module, name, replacement)
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), query)
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert details.items() <= raised.value.details.items()
