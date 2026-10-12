@@ -367,7 +367,7 @@ TOOL_MAX_BYTES = {
     "inspect": 1_123,
     "valid-values": 1_388,
     "plan": 1_887,
-    "execute": 6_154,
+    "execute": 6_192,
     "segment": 1_300,
 }
 
@@ -382,7 +382,7 @@ def test_each_tool_definition_fits_its_byte_budget() -> None:
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
-    assert len(json_text({"tools": list_tool_definitions()})) <= 13_620
+    assert len(json_text({"tools": list_tool_definitions()})) <= 13_660
 
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without

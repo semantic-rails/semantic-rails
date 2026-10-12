@@ -970,6 +970,7 @@
             "type": "object"
           },
           "row_format": {
+            "default": "records",
             "description": "'columns': column names once, rows as arrays.",
             "enum": [
               "records",
@@ -978,6 +979,7 @@
             "type": "string"
           },
           "sql_profile": {
+            "default": "audit",
             "description": "'off' omits rendered_sql and sql_plan.",
             "enum": [
               "audit",

@@ -33,7 +33,7 @@ def test_time_with_only_a_temporal_role_is_refused_with_the_grain_fix(runtime_fa
         assert exc.value.code == "INVALID_QUERY"
         assert exc.value.details["path"] == "time"
         (hint,) = exc.value.details["recovery_hints"]
-        assert '"grain"' in hint["message"]
+        assert "time.grain" in hint["message"]
         patched = {**query, "time": {**query["time"], "grain": "month"}}
         assert runtime.validate(patched)["ok"] is True
     finally:

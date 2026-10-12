@@ -182,12 +182,14 @@ VERBOSITY_SCHEMA: dict[str, Any] = {
 SQL_PROFILE_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["audit", "compact", "debug", "off"],
+    "default": "audit",
     "description": "'off' omits rendered_sql and sql_plan.",
 }
 
 ROW_FORMAT_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["records", "columns"],
+    "default": "records",
     "description": "'columns': column names once, rows as arrays.",
 }
 
