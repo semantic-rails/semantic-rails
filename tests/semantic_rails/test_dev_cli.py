@@ -19,6 +19,10 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+import semantic_rails.repl.shell as repl_shell
+from semantic_rails.config_validation import PackageReference
+from semantic_rails.errors import SemanticLayerError
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -174,7 +178,6 @@ def test_local_profile_can_be_initialized_and_used_as_cli_default(
 
 
 def test_local_profile_rejects_non_package_connection_modes(tmp_path: Path) -> None:
-    from semantic_rails.errors import SemanticLayerError
     from semantic_rails.local_config import load_local_profiles, resolve_local_package_path
 
     profiles_path = tmp_path / "profiles.yml"
@@ -267,7 +270,6 @@ def test_mcp_doctor_lists_six_tools_with_segments_and_names_a_missing_one(
 
 def test_interactive_setup_offers_foreground_serve(tmp_path: Path, monkeypatch, capsys) -> None:
     import semantic_rails.cli.setup_wizard as setup_wizard
-    from semantic_rails.config_validation import PackageReference
 
     prompts: list[str] = []
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
@@ -469,16 +471,29 @@ class _TTYBuffer(io.StringIO):
         return True
 
 
-def _create_repl_split_package(tmp_path: Path, package_id: str) -> Path:
+def _repl_package(tmp_path: Path, package_id: str) -> tuple[Path, PackageReference]:
     import semantic_rails.cli.scaffold as scaffold
 
     report = scaffold.create_project_report(
-        package_id=package_id,
-        workspace_root=str(tmp_path),
-        run_checks=False,
+        package_id=package_id, workspace_root=str(tmp_path), run_checks=False
     )
     assert report["ok"] is True, report
-    return Path(report["project_path"])
+    project_path = Path(report["project_path"])
+    return project_path, PackageReference(source_path=str(project_path))
+
+
+def _answer(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[str]:
+    """Answer an interactive terminal's prompts in order; returns the prompts asked."""
+    prompts: list[str] = []
+    replies = iter(answers)
+
+    def answer(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", answer)
+    return prompts
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:
@@ -497,8 +512,6 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
 def test_repl_tty_keeps_its_layout_and_colors_only_where_allowed(
     monkeypatch: pytest.MonkeyPatch, term: str, no_color: bool, colored: bool
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-
     output = _TTYBuffer()
     prompts: list[str] = []
     answers = iter(["help", "exit"])
@@ -528,8 +541,6 @@ def test_repl_tty_keeps_its_layout_and_colors_only_where_allowed(
 
 
 def test_repl_help_exposes_guided_authoring_undo_and_safe_validation(capsys) -> None:
-    import semantic_rails.repl.shell as repl_shell
-
     repl_shell._print_repl_help()
 
     output = capsys.readouterr().out
@@ -540,13 +551,8 @@ def test_repl_help_exposes_guided_authoring_undo_and_safe_validation(capsys) -> 
 def test_repl_author_refuses_non_tty_without_writing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-    from semantic_rails.config_validation import PackageReference
-    from semantic_rails.errors import SemanticLayerError
-
-    project_path = _create_repl_split_package(tmp_path, "non_tty_core")
+    project_path, ref = _repl_package(tmp_path, "non_tty_core")
     before = _tree_bytes(project_path)
-    ref = PackageReference(source_path=str(project_path))
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: False))
 
     with pytest.raises(SemanticLayerError, match="interactive terminal"):
@@ -558,11 +564,7 @@ def test_repl_author_refuses_non_tty_without_writing(
 def test_repl_validate_parse_is_safe_while_runtime_and_full_default_to_cancel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-    from semantic_rails.config_validation import PackageReference
-
-    project_path = _create_repl_split_package(tmp_path, "validate_core")
-    ref = PackageReference(source_path=str(project_path))
+    _, ref = _repl_package(tmp_path, "validate_core")
     validation_modes: list[str] = []
     confirmations: list[tuple[str, bool]] = []
 
@@ -578,16 +580,12 @@ def test_repl_validate_parse_is_safe_while_runtime_and_full_default_to_cancel(
     monkeypatch.setattr(repl_shell, "_print_project_validation", lambda _report: None)
     monkeypatch.setattr(repl_shell, "_author_confirm", confirm)
 
-    repl_shell._handle_repl_line("validate", ref)
-    repl_shell._handle_repl_line("validate runtime", ref)
-    repl_shell._handle_repl_line("validate full", ref)
+    for line in ("validate", "validate runtime", "validate full"):
+        repl_shell._handle_repl_line(line, ref)
 
     output = capsys.readouterr().out
     assert validation_modes == ["parse"]
-    assert confirmations == [
-        ("Continue with operational validation?", False),
-        ("Continue with operational validation?", False),
-    ]
+    assert confirmations == [("Continue with operational validation?", False)] * 2
     assert "Safe check: parsing package YAML without warehouse queries." in output
     assert output.count("Validation cancelled") == 2
 
@@ -595,39 +593,16 @@ def test_repl_validate_parse_is_safe_while_runtime_and_full_default_to_cancel(
 def test_repl_author_metric_previews_writes_parse_validates_and_undoes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-    from semantic_rails.config_validation import PackageReference
-
-    project_path = _create_repl_split_package(tmp_path, "guided_core")
-    ref = PackageReference(source_path=str(project_path))
+    project_path, ref = _repl_package(tmp_path, "guided_core")
     before = _tree_bytes(project_path)
-    prompts: list[str] = []
-    answers = iter(
-        [
-            "gross_revenue",
-            "",
-            "",
-            "",
-            "2",
-            "",
-            "yes",
-        ]
-    )
-
-    def answer(prompt: str = "") -> str:
-        prompts.append(prompt)
-        return next(answers)
-
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("builtins.input", answer)
+    prompts = _answer(monkeypatch, ["gross_revenue", "", "", "", "2", "", "yes"])
     undo_stack = []
 
     repl_shell._handle_repl_line("author metric", ref, undo_stack=undo_stack)
 
     metric_path = project_path / "metrics" / "core" / "gross_revenue.yml"
-    assert metric_path.is_file()
     metric_doc = yaml.safe_load(metric_path.read_text(encoding="utf-8"))
-    assert metric_doc["metrics"]["gross_revenue"]["measure"] == ("measure.guided_core.total_amount")
+    assert metric_doc["metrics"]["gross_revenue"]["measure"] == "measure.guided_core.total_amount"
     assert len(undo_stack) == 1
     assert undo_stack[0].report["parse"]["ok"] is True
     assert any(prompt.startswith("Create this metric?") for prompt in prompts)
@@ -645,49 +620,20 @@ def test_repl_author_metric_previews_writes_parse_validates_and_undoes(
 def test_repl_author_segment_selects_dimension_and_basis_metric_and_parses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-    from semantic_rails.config_validation import PackageReference
-
-    project_path = _create_repl_split_package(tmp_path, "segment_core")
-    ref = PackageReference(source_path=str(project_path))
-    prompts: list[str] = []
-    answers = iter(
-        [
-            "starter_events",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "starter",
-            "",
-            "yes",
-        ]
-    )
-
-    def answer(prompt: str = "") -> str:
-        prompts.append(prompt)
-        return next(answers)
-
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("builtins.input", answer)
+    project_path, ref = _repl_package(tmp_path, "segment_core")
+    answers = ["starter_events", "", "", "", "", "", "starter", "", "yes"]
+    prompts = _answer(monkeypatch, answers)
     undo_stack = []
 
     repl_shell._handle_repl_line("author segment", ref, undo_stack=undo_stack)
 
-    segment_path = project_path / "segments" / "core.yml"
-    assert segment_path.is_file()
-    segment_doc = yaml.safe_load(segment_path.read_text(encoding="utf-8"))
+    segment_doc = yaml.safe_load((project_path / "segments" / "core.yml").read_text("utf-8"))
     segment = segment_doc["segments"]["starter_events"]
     assert segment["entity"] == "entity.segment_core_event"
     assert segment["basis_metric"] == "metric.segment_core.event_count"
     assert segment["preview_dimensions"] == ["dimension.segment_core_event_event_type"]
     assert segment["membership"]["where"] == [
-        {
-            "field": "dimension.segment_core_event_event_type",
-            "op": "=",
-            "value": "starter",
-        }
+        {"field": "dimension.segment_core_event_event_type", "op": "=", "value": "starter"}
     ]
     assert len(undo_stack) == 1
     assert undo_stack[0].report["parse"]["ok"] is True
@@ -703,28 +649,11 @@ def test_repl_author_measure_adds_governance_meta_without_new_profile_warnings(
 ) -> None:
     import semantic_rails.cli.output as cli_output
     import semantic_rails.cli.reports as reports
-    import semantic_rails.repl.shell as repl_shell
-    from semantic_rails.config_validation import PackageReference
 
-    project_path = _create_repl_split_package(tmp_path, "measure_core")
-    ref = PackageReference(source_path=str(project_path))
+    project_path, ref = _repl_package(tmp_path, "measure_core")
     before_report = reports.project_validation_report(ref, mode="parse")
     before_warnings = set(cli_output._authoring_warning_messages(before_report))
-    answers = iter(
-        [
-            "",
-            "processing_fee",
-            "",
-            "",
-            "",
-            "fee_amount",
-            "",
-            "",
-            "yes",
-        ]
-    )
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    _answer(monkeypatch, ["", "processing_fee", "", "", "", "fee_amount", "", "", "yes"])
     undo_stack = []
 
     repl_shell._handle_repl_line("author measure", ref, undo_stack=undo_stack)
@@ -736,100 +665,49 @@ def test_repl_author_measure_adds_governance_meta_without_new_profile_warnings(
         (project_path / "models" / "core" / "events.yml").read_text(encoding="utf-8")
     )
     measure = model_doc["model"]["measures"]["processing_fee"]
-    assert measure["meta"] == {
-        "owner_team": "analytics",
-        "review_priority": "medium",
-        "change_risk": "medium",
-    }
+    meta = {"owner_team": "analytics", "review_priority": "medium", "change_risk": "medium"}
+    assert measure["meta"] == meta
     after_warnings = set(cli_output._authoring_warning_messages(mutation.report["parse"]))
-    new_warnings = after_warnings - before_warnings
-    governance_fields = ("owner_team", "review_priority", "change_risk")
     assert not [
         warning
-        for warning in new_warnings
-        if "processing_fee" in warning and any(field in warning for field in governance_fields)
+        for warning in after_warnings - before_warnings
+        if "processing_fee" in warning and any(field in warning for field in meta)
     ]
 
 
 def test_repl_manage_preserves_unsurfaced_fields_and_model_label(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-    from semantic_rails.config_validation import PackageReference
-
-    project_path = _create_repl_split_package(tmp_path, "manage_core")
+    project_path, ref = _repl_package(tmp_path, "manage_core")
     events_path = project_path / "models" / "core" / "events.yml"
     starter = yaml.safe_load(events_path.read_text(encoding="utf-8"))
     starter["model"]["dimensions"]["event_type"]["domain"] = ["starter", "follow_up"]
     events_path.write_text(yaml.safe_dump(starter, sort_keys=False), encoding="utf-8")
-    ref = PackageReference(source_path=str(project_path))
     undo_stack = []
-    answers = iter(
-        [
-            "orders",
-            "Commercial Orders",
-            "raw_orders",
-            "order",
-            "order_id",
-            "",
-            "yes",
-            "1",
-            "event_type",
-            "yes",
-            "",
-            "",
-            "",
-            "",
-            "yes",
-        ]
-    )
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    model = ["orders", "Commercial Orders", "raw_orders", "order", "order_id", "", "yes"]
+    _answer(monkeypatch, [*model, "1", "event_type", "yes", "", "", "", "", "yes"])
 
     repl_shell._handle_repl_line("author model", ref, undo_stack=undo_stack)
     repl_shell._handle_repl_line("author dimension", ref, undo_stack=undo_stack)
 
-    orders = yaml.safe_load(
-        (project_path / "models" / "core" / "orders.yml").read_text(encoding="utf-8")
-    )["model"]
-    events = yaml.safe_load(
-        (project_path / "models" / "core" / "events.yml").read_text(encoding="utf-8")
-    )["model"]
-    assert orders["label"] == "Commercial Orders"
-    assert events["dimensions"]["event_type"]["domain"] == ["starter", "follow_up"]
+    orders = yaml.safe_load((project_path / "models" / "core" / "orders.yml").read_text("utf-8"))
+    events = yaml.safe_load(events_path.read_text(encoding="utf-8"))
+    assert orders["model"]["label"] == "Commercial Orders"
+    assert events["model"]["dimensions"]["event_type"]["domain"] == ["starter", "follow_up"]
     assert undo_stack[1].report["changed_files"] == ["models/core/events.yml"]
 
 
 def test_repl_manage_metric_kind_removes_stale_fields_and_preserves_public_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-    from semantic_rails.config_validation import PackageReference
-
-    project_path = _create_repl_split_package(tmp_path, "metric_manage_core")
-    ref = PackageReference(source_path=str(project_path))
-    answers = iter(
-        [
-            "total_amount",
-            "yes",
-            "",
-            "ratio",
-            "",
-            "",
-            "",
-            "",
-            "yes",
-        ]
-    )
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    project_path, ref = _repl_package(tmp_path, "metric_manage_core")
+    _answer(monkeypatch, ["total_amount", "yes", "", "ratio", "", "", "", "", "yes"])
     undo_stack = []
 
     repl_shell._handle_repl_line("author metric", ref, undo_stack=undo_stack)
 
-    metric = yaml.safe_load((project_path / "metrics" / "core.yml").read_text(encoding="utf-8"))[
-        "metrics"
-    ]["total_amount"]
+    metrics = yaml.safe_load((project_path / "metrics" / "core.yml").read_text(encoding="utf-8"))
+    metric = metrics["metrics"]["total_amount"]
     assert len(undo_stack) == 1
     assert metric["kind"] == "ratio"
     assert metric["value_type"] == "ratio"  # an amount per event, not a percent
@@ -842,15 +720,9 @@ def test_repl_manage_metric_kind_removes_stale_fields_and_preserves_public_id(
 def test_repl_exact_metric_key_asks_for_another_key_without_any_file_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-    from semantic_rails.config_validation import PackageReference
-
-    project_path = _create_repl_split_package(tmp_path, "collision_core")
-    ref = PackageReference(source_path=str(project_path))
+    project_path, ref = _repl_package(tmp_path, "collision_core")
     before = _tree_bytes(project_path)
-    answers = iter(["total_amount", "", "cancel"])  # Enter: don't update it
-    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    _answer(monkeypatch, ["total_amount", "", "cancel"])  # Enter: don't update it
     undo_stack = []
 
     repl_shell._handle_repl_line("author metric", ref, undo_stack=undo_stack)
@@ -866,9 +738,7 @@ def test_repl_exact_metric_key_asks_for_another_key_without_any_file_change(
 def test_repl_ctrl_c_cancels_only_the_wizard_and_run_still_dispatches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    import semantic_rails.repl.shell as repl_shell
-
-    project_path = _create_repl_split_package(tmp_path, "interrupt_core")
+    project_path, _ = _repl_package(tmp_path, "interrupt_core")
     before = _tree_bytes(project_path)
     commands = iter(["author metric", "run total amount by event type", "exit"])
     dispatched: list[tuple[str, bool]] = []
