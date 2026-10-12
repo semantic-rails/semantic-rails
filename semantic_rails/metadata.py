@@ -52,7 +52,6 @@ from .expressions import (
     CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
-    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
@@ -193,14 +192,8 @@ def _compatible_temporal_roles_for_expr(config: PackageConfig, expr: SemanticExp
         return _compatible_temporal_roles_for_expr(config, expr.input)
     if isinstance(expr, DistributionExpr):
         return _compatible_temporal_roles_for_expr(config, expr.over)
-    if isinstance(expr, BooleanExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         current: set[str] = set()
-        for index, arg in enumerate(expr.args):
-            roles = set(_compatible_temporal_roles_for_expr(config, arg))
-            current = roles if index == 0 else current & roles
-        return sorted(current)
-    if isinstance(expr, CallExpr):
-        current = set()
         for index, arg in enumerate(expr.args):
             roles = set(_compatible_temporal_roles_for_expr(config, arg))
             current = roles if index == 0 else current & roles
@@ -240,9 +233,7 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         if expr.metric_recipe not in recipes:
             raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric '{expr.metric_recipe}'")
         return _first_root_entity(config, recipes[expr.metric_recipe].expression)
-    if isinstance(expr, ArithmeticExpr):
-        return _first_root_entity(config, expr.left)
-    if isinstance(expr, ComparisonExpr):
+    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _first_root_entity(config, expr.left)
     if isinstance(expr, RatioExpr):
         return _first_root_entity(config, expr.numerator)
@@ -250,13 +241,7 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         return _first_root_entity(config, expr.input)
     if isinstance(expr, DistributionExpr):
         return _first_root_entity(config, expr.over)
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            entity = _first_root_entity(config, arg)
-            if entity:
-                return entity
-        return ""
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             entity = _first_root_entity(config, arg)
             if entity:
@@ -277,8 +262,6 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         return expr.entity
     if isinstance(expr, ConversionExpr):
         return expr.entity or _first_root_entity(config, expr.base)
-    if isinstance(expr, LiteralExpr):
-        return ""
     return ""
 
 
@@ -712,22 +695,16 @@ def _predicate_exprs_from_expr(
             *_predicate_exprs_from_expr(config, expr.left, seen_metric_ids=seen_metric_ids),
             *_predicate_exprs_from_expr(config, expr.right, seen_metric_ids=seen_metric_ids),
         ]
-    if isinstance(expr, BooleanExpr):
-        predicates: list[MetricPredicateExpr] = []
-        for arg in expr.args:
-            predicates.extend(
-                _predicate_exprs_from_expr(config, arg, seen_metric_ids=seen_metric_ids)
+    if isinstance(expr, (BooleanExpr, CallExpr)):
+        return [
+            predicate
+            for arg in expr.args
+            for predicate in _predicate_exprs_from_expr(
+                config, arg, seen_metric_ids=seen_metric_ids
             )
-        return predicates
-    if isinstance(expr, CallExpr):
-        predicates = []
-        for arg in expr.args:
-            predicates.extend(
-                _predicate_exprs_from_expr(config, arg, seen_metric_ids=seen_metric_ids)
-            )
-        return predicates
+        ]
     if isinstance(expr, CaseExpr):
-        predicates = []
+        predicates: list[MetricPredicateExpr] = []
         for item in expr.whens:
             predicates.extend(
                 _predicate_exprs_from_expr(config, item.when, seen_metric_ids=seen_metric_ids)

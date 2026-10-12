@@ -337,9 +337,6 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         _validate_query_expr(expr.numerator)
         _validate_query_expr(expr.denominator)
         return
-    if isinstance(expr, EntityValueExpr):
-        _validate_query_expr(expr.input)
-        return
     if isinstance(expr, DistributionExpr):
         _validate_query_expr(expr.over)
         return
@@ -347,11 +344,7 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         _validate_query_expr(expr.left)
         _validate_query_expr(expr.right)
         return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _validate_query_expr(arg)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _validate_query_expr(arg)
         return
@@ -369,11 +362,10 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
             RollingExpr,
             OffsetWindowExpr,
             ShareExpr,
+            EntityValueExpr,
+            MetricPredicateExpr,
         ),
     ):
-        _validate_query_expr(expr.input)
-        return
-    if isinstance(expr, MetricPredicateExpr):
         _validate_query_expr(expr.input)
         return
     if isinstance(expr, ConversionExpr):

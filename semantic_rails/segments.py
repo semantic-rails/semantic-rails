@@ -23,7 +23,6 @@ from .expressions import (
     ComparisonExpr,
     ConversionExpr,
     CumulativeExpr,
-    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
@@ -80,13 +79,7 @@ def metric_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         return metric_root_entity(config, recipes[expr.metric_recipe].expression)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return metric_root_entity(config, expr.left)
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            entity = metric_root_entity(config, arg)
-            if entity:
-                return entity
-        return ""
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             entity = metric_root_entity(config, arg)
             if entity:
@@ -107,8 +100,6 @@ def metric_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         return expr.entity
     if isinstance(expr, ConversionExpr):
         return expr.entity or metric_root_entity(config, expr.base)
-    if isinstance(expr, LiteralExpr):
-        return ""
     return ""
 
 
