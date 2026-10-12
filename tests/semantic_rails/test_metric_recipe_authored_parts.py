@@ -208,95 +208,22 @@ def test_scoped_aggregate_recipe_resolves_short_measure_and_dimension_keys(
 @pytest.mark.parametrize(
     ("expression", "expected"),
     [
-        pytest.param(
-            {"kind": "windowed_total", "measure": REVENUE},
-            ["Unsupported expression kind"],
-            id="unknown-kind",
-        ),
-        pytest.param(
-            {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum", "where": []},
-            ["kind='aggregate'", "['where']"],
-            id="aggregate-with-where",
-        ),
-        pytest.param(
-            {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum", "anchor": {}},
-            ["kind='aggregate'", "['anchor']"],
-            id="aggregate-with-anchor",
-        ),
-        pytest.param(
-            {"measure": REVENUE, "aggregation": "sum", "anchor": {"temporal_role": "x"}},
-            ["kind='measure'", "['anchor']"],
-            id="bare-measure-with-anchor",
-        ),
-        pytest.param(
-            {"kind": "metric", "metric": "metric.jaffle.x", "window": {"unit": "day"}},
-            ["kind='metric'", "['window']"],
-            id="metric-ref-with-window",
-        ),
-        pytest.param(
-            {"kind": "scoped_aggregate", "measure": REVENUE, "wehre": []},
-            ["kind='scoped_aggregate'", "['wehre']"],
-            id="scoped-aggregate-typo",
-        ),
-        pytest.param(
-            {"kind": "scoped_aggregate", "aggregation": "sum"},
-            ["scoped_aggregate expressions require 'measure'"],
-            id="scoped-aggregate-without-measure",
-        ),
-        pytest.param(
-            {
-                "kind": "binary",
-                "op": "divide",
-                "left": {"kind": "metric", "metric": "metric.jaffle.x"},
-                "right": {"kind": "sliding_total", "measure": REVENUE},
-            },
-            ["Unsupported expression kind"],
-            id="nested-unknown-kind",
-        ),
-        pytest.param(
-            {"kind": "binary", "op": "divide", "left": {"kind": "metric", "metric": "m"}},
-            ["expression must be an object"],
-            id="missing-operand",
-        ),
-        pytest.param(
-            {
-                "kind": "rolling",
-                "input": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"},
-                "window": 7,
-            },
-            ["Rolling expressions require window as an object"],
-            id="scalar-window",
-        ),
-        pytest.param(
-            {
-                "kind": "prior_period",
-                "input": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"},
-                "offset": -1,
-            },
-            ["Prior-period (IR shape) expressions require offset as an object"],
-            id="scalar-offset",
-        ),
-        pytest.param(
-            {
-                **SCOPED,
-                "anchor": "temporal_role.jaffle_customer_first_order_at",
-                "window": {"unit": "day", "value": 90},
-            },
-            ["scoped_aggregate.anchor must be a non-empty object"],
-            id="scoped-aggregate-string-anchor",
-        ),
-        pytest.param(
-            {**SCOPED, "anchor": {"temporal_role": "x"}, "window": 90},
-            ["scoped_aggregate.window must be a non-empty object"],
-            id="scoped-aggregate-scalar-window",
-        ),
-        pytest.param(
-            {**SCOPED, "anchor": {}, "window": {}},
-            ["scoped_aggregate.anchor must be a non-empty object"],
-            id="scoped-aggregate-empty-anchor-and-window",
-        ),
+        pytest.param({"kind": "windowed_total", "measure": REVENUE}, ["Unsupported expression kind"], id="unknown-kind"),
+        pytest.param({"kind": "aggregate", "measure": REVENUE, "aggregation": "sum", "where": []}, ["kind='aggregate'", "['where']"], id="aggregate-with-where"),
+        pytest.param({"kind": "aggregate", "measure": REVENUE, "aggregation": "sum", "anchor": {}}, ["kind='aggregate'", "['anchor']"], id="aggregate-with-anchor"),
+        pytest.param({"measure": REVENUE, "aggregation": "sum", "anchor": {"temporal_role": "x"}}, ["kind='measure'", "['anchor']"], id="bare-measure-with-anchor"),
+        pytest.param({"kind": "metric", "metric": "metric.jaffle.x", "window": {"unit": "day"}}, ["kind='metric'", "['window']"], id="metric-ref-with-window"),
+        pytest.param({"kind": "scoped_aggregate", "measure": REVENUE, "wehre": []}, ["kind='scoped_aggregate'", "['wehre']"], id="scoped-aggregate-typo"),
+        pytest.param({"kind": "scoped_aggregate", "aggregation": "sum"}, ["scoped_aggregate expressions require 'measure'"], id="scoped-aggregate-without-measure"),
+        pytest.param({"kind": "binary", "op": "divide", "left": {"kind": "metric", "metric": "metric.jaffle.x"}, "right": {"kind": "sliding_total", "measure": REVENUE}}, ["Unsupported expression kind"], id="nested-unknown-kind"),
+        pytest.param({"kind": "binary", "op": "divide", "left": {"kind": "metric", "metric": "m"}}, ["expression must be an object"], id="missing-operand"),
+        pytest.param({"kind": "rolling", "input": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"}, "window": 7}, ["Rolling expressions require window as an object"], id="scalar-window"),
+        pytest.param({"kind": "prior_period", "input": {"kind": "aggregate", "measure": REVENUE, "aggregation": "sum"}, "offset": -1}, ["Prior-period (IR shape) expressions require offset as an object"], id="scalar-offset"),
+        pytest.param({**SCOPED, "anchor": "temporal_role.jaffle_customer_first_order_at", "window": {"unit": "day", "value": 90}}, ["scoped_aggregate.anchor must be a non-empty object"], id="scoped-aggregate-string-anchor"),
+        pytest.param({**SCOPED, "anchor": {"temporal_role": "x"}, "window": 90}, ["scoped_aggregate.window must be a non-empty object"], id="scoped-aggregate-scalar-window"),
+        pytest.param({**SCOPED, "anchor": {}, "window": {}}, ["scoped_aggregate.anchor must be a non-empty object"], id="scoped-aggregate-empty-anchor-and-window"),
     ],
-)
+)  # fmt: skip
 def test_unsupported_expression_parts_fail_the_load_naming_metric_and_part(
     tmp_path: Path, expression: dict[str, Any], expected: list[str]
 ) -> None:
@@ -441,33 +368,13 @@ def test_direct_field_partition_by_must_be_grouped_by_and_the_window_runs_per_gr
 @pytest.mark.parametrize(
     ("fields", "loaded"),
     [
-        pytest.param(
-            {"kind": "cumulative", "window_scope": "query_period"},
-            {"kind": "cumulative", "window_scope": "query_period"},
-            id="cumulative-window_scope",
-        ),
-        pytest.param(
-            {"kind": "rolling", "window": WEEK, "partition_by": [PRODUCT_TYPE]},
-            {"kind": "rolling", "partition_by": [PRODUCT_TYPE], "unit": "day", "value": 7},
-            id="rolling-partition_by",
-        ),
-        pytest.param(
-            {"kind": "period_to_date", "period": "month", "partition_by": [PRODUCT_TYPE]},
-            {"kind": "period_to_date", "partition_by": [PRODUCT_TYPE], "period": "month"},
-            id="period_to_date-partition_by",
-        ),
-        pytest.param(
-            {"kind": "cumulative", "partition_by": [PRODUCT_TYPE]},
-            {"kind": "cumulative", "partition_by": [PRODUCT_TYPE]},
-            id="cumulative-partition_by",
-        ),
-        pytest.param(
-            {"kind": "prior_period", "offset": {"unit": "day", "value": 7}},
-            {"kind": "prior_period", "unit": "day", "value": 7},
-            id="prior_period-offset",
-        ),
+        pytest.param({"kind": "cumulative", "window_scope": "query_period"}, {"kind": "cumulative", "window_scope": "query_period"}, id="cumulative-window_scope"),
+        pytest.param({"kind": "rolling", "window": WEEK, "partition_by": [PRODUCT_TYPE]}, {"kind": "rolling", "partition_by": [PRODUCT_TYPE], "unit": "day", "value": 7}, id="rolling-partition_by"),
+        pytest.param({"kind": "period_to_date", "period": "month", "partition_by": [PRODUCT_TYPE]}, {"kind": "period_to_date", "partition_by": [PRODUCT_TYPE], "period": "month"}, id="period_to_date-partition_by"),
+        pytest.param({"kind": "cumulative", "partition_by": [PRODUCT_TYPE]}, {"kind": "cumulative", "partition_by": [PRODUCT_TYPE]}, id="cumulative-partition_by"),
+        pytest.param({"kind": "prior_period", "offset": {"unit": "day", "value": 7}}, {"kind": "prior_period", "unit": "day", "value": 7}, id="prior_period-offset"),
     ],
-)
+)  # fmt: skip
 def test_direct_fields_reach_the_loaded_expression(
     tmp_path: Path, fields: dict[str, Any], loaded: dict[str, Any]
 ) -> None:
@@ -483,39 +390,14 @@ def test_direct_fields_reach_the_loaded_expression(
     [
         pytest.param({"kind": "cumulative", "window": WEEK}, "window", id="cumulative-window"),
         pytest.param({"kind": "cumulative", "order_by": "x"}, "order_by", id="cumulative-order_by"),
-        pytest.param(
-            {"kind": "prior_period", "offset": WEEK, "partition_by": [PRODUCT_TYPE]},
-            "partition_by",
-            id="prior_period-partition_by",
-        ),
-        pytest.param(
-            {"kind": "period_to_date", "period": "month", "window": WEEK},
-            "window",
-            id="period_to_date-window",
-        ),
-        pytest.param(
-            {"kind": "rolling", "window": WEEK, "period": "month"}, "period", id="rolling-period"
-        ),
-        pytest.param(
-            {"kind": "aggregate", "partition_by": [PRODUCT_TYPE]},
-            "partition_by",
-            id="aggregate-partition_by",
-        ),
-        pytest.param(
-            {"kind": "semi_additive", "offset": WEEK}, "offset", id="semi_additive-offset"
-        ),
-        pytest.param(
-            {
-                "kind": "ratio",
-                "numerator": "order_count",
-                "denominator": "order_count",
-                "window": WEEK,
-            },
-            "window",
-            id="ratio-window",
-        ),
+        pytest.param({"kind": "prior_period", "offset": WEEK, "partition_by": [PRODUCT_TYPE]}, "partition_by", id="prior_period-partition_by"),
+        pytest.param({"kind": "period_to_date", "period": "month", "window": WEEK}, "window", id="period_to_date-window"),
+        pytest.param({"kind": "rolling", "window": WEEK, "period": "month"}, "period", id="rolling-period"),
+        pytest.param({"kind": "aggregate", "partition_by": [PRODUCT_TYPE]}, "partition_by", id="aggregate-partition_by"),
+        pytest.param({"kind": "semi_additive", "offset": WEEK}, "offset", id="semi_additive-offset"),
+        pytest.param({"kind": "ratio", "numerator": "order_count", "denominator": "order_count", "window": WEEK}, "window", id="ratio-window"),
     ],
-)
+)  # fmt: skip
 def test_direct_field_its_kind_cannot_keep_fails_the_load_naming_metric_and_field(
     tmp_path: Path, fields: dict[str, Any], field: str
 ) -> None:
@@ -534,11 +416,9 @@ def test_direct_field_its_kind_cannot_keep_fails_the_load_naming_metric_and_fiel
     ("fields", "expected"),
     [
         pytest.param({"kind": "rolling", "window": 7}, "window as an object", id="rolling-window"),
-        pytest.param(
-            {"kind": "prior_period", "offset": -1}, "offset as an object", id="prior_period-offset"
-        ),
+        pytest.param({"kind": "prior_period", "offset": -1}, "offset as an object", id="prior_period-offset"),
     ],
-)
+)  # fmt: skip
 def test_direct_field_scalar_shapes_get_the_parsers_error(
     tmp_path: Path, fields: dict[str, Any], expected: str
 ) -> None:
@@ -553,42 +433,14 @@ def test_direct_field_scalar_shapes_get_the_parsers_error(
 @pytest.mark.parametrize(
     "metric",
     [
-        pytest.param(
-            {"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum", "window": 7},
-            id="aggregate-window-int",
-        ),
-        pytest.param(
-            {
-                "kind": "aggregate",
-                "measure": "item_revenue_usd",
-                "aggregation": "sum",
-                "window": "7d",
-            },
-            id="aggregate-window-string",
-        ),
-        pytest.param(
-            {
-                "kind": "aggregate",
-                "measure": "item_revenue_usd",
-                "aggregation": "sum",
-                "window": True,
-            },
-            id="aggregate-window-bool",
-        ),
-        pytest.param(
-            {"kind": "semi_additive", "measure": "item_revenue_usd", "window": 7},
-            id="semi_additive-window-int",
-        ),
-        pytest.param(
-            {"kind": "derived", "expression": {**AGGREGATE, "parameters": 5}},
-            id="expression-parameters",
-        ),
-        pytest.param(
-            {"kind": "derived", "expression": {**SCOPED, "where": ["x"]}},
-            id="expression-scoped-where",
-        ),
+        pytest.param({"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum", "window": 7}, id="aggregate-window-int"),
+        pytest.param({"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum", "window": "7d"}, id="aggregate-window-string"),
+        pytest.param({"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum", "window": True}, id="aggregate-window-bool"),
+        pytest.param({"kind": "semi_additive", "measure": "item_revenue_usd", "window": 7}, id="semi_additive-window-int"),
+        pytest.param({"kind": "derived", "expression": {**AGGREGATE, "parameters": 5}}, id="expression-parameters"),
+        pytest.param({"kind": "derived", "expression": {**SCOPED, "where": ["x"]}}, id="expression-scoped-where"),
     ],
-)
+)  # fmt: skip
 def test_malformed_scalar_parts_fail_the_load_naming_the_metric(
     tmp_path: Path, metric: dict[str, Any]
 ) -> None:
@@ -715,90 +567,19 @@ def test_partition_by_short_key_resolves_to_the_dimension_id(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("metric", "unknown"),
     [
-        pytest.param(
-            {
-                "kind": "rolling",
-                "measure": "item_revenue_usd",
-                "window": WEEK,
-                "partition_by": ["prodcut_type"],
-            },
-            "prodcut_type",
-            id="direct-typo",
-        ),
-        pytest.param(
-            {
-                "kind": "cumulative",
-                "measure": "item_revenue_usd",
-                "partition_by": [NOT_A_DIMENSION],
-            },
-            NOT_A_DIMENSION,
-            id="direct-unknown-full-id",
-        ),
-        pytest.param(
-            {"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": ["order_count"]},
-            "order_count",
-            id="direct-measure-is-not-a-dimension",
-        ),
-        pytest.param(
-            {
-                "kind": "period_to_date",
-                "measure": "item_revenue_usd",
-                "period": "month",
-                "partition_by": ["is_large_order"],
-            },
-            "is_large_order",
-            id="direct-key-of-another-model",
-        ),
-        pytest.param(
-            {"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": "product_type"},
-            "product_type",
-            id="direct-bare-string",
-        ),
-        pytest.param(
-            {"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": 0},
-            "0",
-            id="direct-zero",
-        ),
-        pytest.param(
-            {"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": False},
-            "False",
-            id="direct-false",
-        ),
+        pytest.param({"kind": "rolling", "measure": "item_revenue_usd", "window": WEEK, "partition_by": ["prodcut_type"]}, "prodcut_type", id="direct-typo"),
+        pytest.param({"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": [NOT_A_DIMENSION]}, NOT_A_DIMENSION, id="direct-unknown-full-id"),
+        pytest.param({"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": ["order_count"]}, "order_count", id="direct-measure-is-not-a-dimension"),
+        pytest.param({"kind": "period_to_date", "measure": "item_revenue_usd", "period": "month", "partition_by": ["is_large_order"]}, "is_large_order", id="direct-key-of-another-model"),
+        pytest.param({"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": "product_type"}, "product_type", id="direct-bare-string"),
+        pytest.param({"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": 0}, "0", id="direct-zero"),
+        pytest.param({"kind": "cumulative", "measure": "item_revenue_usd", "partition_by": False}, "False", id="direct-false"),
         pytest.param(_authored_window("rolling", 0, window=WEEK), "0", id="authored-zero"),
-        pytest.param(
-            _authored_window("rolling", ["prodcut_type"], window=WEEK),
-            "prodcut_type",
-            id="authored-typo",
-        ),
-        pytest.param(
-            {
-                "kind": "derived",
-                "expression": {
-                    "kind": "cumulative",
-                    "input": INPUT_NOT_ONE_MEASURE,
-                    "partition_by": ["product_type"],
-                },
-            },
-            "product_type",
-            id="authored-short-key-without-one-measure",
-        ),
-        pytest.param(
-            {
-                "kind": "derived",
-                "expression": {
-                    "kind": "binary",
-                    "op": "add",
-                    "left": {"kind": "metric", "metric": "metric.jaffle.order_count"},
-                    "right": _authored_window("period_to_date", [NOT_A_DIMENSION], period="month")[
-                        "expression"
-                    ],
-                },
-            },
-            NOT_A_DIMENSION,
-            id="authored-nested-in-another-node",
-        ),
+        pytest.param(_authored_window("rolling", ["prodcut_type"], window=WEEK), "prodcut_type", id="authored-typo"),
+        pytest.param({"kind": "derived", "expression": {"kind": "cumulative", "input": INPUT_NOT_ONE_MEASURE, "partition_by": ["product_type"]}}, "product_type", id="authored-short-key-without-one-measure"),
+        pytest.param({"kind": "derived", "expression": {"kind": "binary", "op": "add", "left": {"kind": "metric", "metric": "metric.jaffle.order_count"}, "right": _authored_window("period_to_date", [NOT_A_DIMENSION], period="month")["expression"]}}, NOT_A_DIMENSION, id="authored-nested-in-another-node"),
     ],
-)
+)  # fmt: skip
 def test_partition_by_entry_that_is_not_a_dimension_refuses_at_load(
     tmp_path: Path, metric: dict[str, Any], unknown: str
 ) -> None:
