@@ -351,7 +351,13 @@ def _lineage(
         }
     # Known limit: a union, an explode, a JSON extract or a state_as_of starts its columns' own
     # lineage, so a filter on them is typed only by the relation's readers' declarations.
-    return {column: carried.get(column) or f"{step_id}.{column}" for column in after.columns}
+    # A name two of the stage's columns share is ambiguous: it gets no lineage, so no type.
+    ambiguous = {column for column in after.columns if after.columns.count(column) > 1}
+    return {
+        column: carried.get(column) or f"{step_id}.{column}"
+        for column in after.columns
+        if column not in ambiguous
+    }
 
 
 def _temporal_lineage(

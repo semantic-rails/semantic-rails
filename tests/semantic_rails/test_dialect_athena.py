@@ -738,6 +738,22 @@ def test_athena_relation_filters_type_a_column_only_where_its_lineage_is_certain
         assert "src.mid = TIMESTAMP '2026-01-01'" in sql, step[0]
 
 
+def test_athena_relation_filters_leave_a_name_two_columns_share_untyped():
+    """A window or an aggregate named like a column the stage already has leaves two columns
+    under one name: the text ``day`` beside ``LAG(dt)`` or ``MIN(dt)`` is never typed by the
+    date ``dt``."""
+    dates = {"raw_events": frozenset({"dt"})}
+    previous = {"function": "lag", "expr": _ref("dt"), "order_by": [{"column": "id"}]}
+    lowest = {"function": "min", "expr": _ref("dt")}
+    keys = {"id": _ref("id"), "day": _ref("day")}
+    for step in (
+        ("window", {"columns": {"day": previous}}),
+        ("group_by", {"dimensions": keys, "aggregates": {"day": lowest}}),
+    ):
+        sql = _relation_sql(["id", "day", "dt"], step, _is_day("day"), tables=dates)
+        assert "src.day = '2026-01-01'" in sql and "TIMESTAMP" not in sql, step[0]
+
+
 def test_athena_relation_filters_leave_types_through_unions_and_other_relations_untyped():
     """Known limits, left untyped (Athena refuses the comparison, never miscounts): a union
     of declared dates, and a type a relation infers for a relation that reads it."""
