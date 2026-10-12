@@ -123,56 +123,14 @@ def _write_synthetic_package(
 # ---------------------------------------------------------------------------
 
 
-def test_entity_id_auto_derives_from_namespace_and_key(tmp_path: Path) -> None:
-    pkg = _write_synthetic_package(tmp_path / "pkg_id_derive")
-    config = load_package_config(str(pkg))
-    widget = next(e for e in config.entities if e.id.endswith("widget"))
-    assert widget.id == "entity.synth_widget"
-    assert widget.name == "synth.Widget"
-
-
-def test_as_escape_hatch_overrides_auto_derived_id(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_as_hatch"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "widget": {
-                "as": "entity.synth.legacy_widget_id",
-                "label": "Widget",
-                "key": ["widget_id"],
-                "model": "widgets",
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    widget = next(e for e in config.entities if "widget" in e.id)
-    assert widget.id == "entity.synth.legacy_widget_id"
-
-
-def test_as_with_wrong_namespace_overrides_auto_derived(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_as_wrong_ns"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "widget": {
-                "as": "entity.othernamespace.widget",
-                "label": "Widget",
-                "key": ["widget_id"],
-                "model": "widgets",
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    widget = next(
-        e for e in config.entities if "widget" in e.id or e.id == "entity.othernamespace.widget"
-    )
-    # `as:` is the escape hatch for preserving public IDs whose prefix
-    # differs from the package's namespace (e.g., a measure named
-    # `sales.revenue_usd` published under `metric.sales.revenue_usd` in a
-    # package whose namespace is `jaffle`). Cross-namespace `as:` overrides
-    # apply within a single package's YAML — the package boundary is
-    # enforced by the loader (it doesn't load metrics from other packages).
-    assert widget.id == "entity.othernamespace.widget"
+@pytest.mark.parametrize(
+    "public_id", ["entity.synth.legacy_widget_id", "entity.othernamespace.widget"]
+)
+def test_as_escape_hatch_overrides_auto_derived_id(tmp_path: Path, public_id: str) -> None:
+    # `as:` keeps a public id, even one outside the package's namespace.
+    widget = {"as": public_id, "label": "Widget", "key": ["widget_id"], "model": "widgets"}
+    pkg = _write_synthetic_package(tmp_path / "pkg_as_hatch", graph_entities={"widget": widget})
+    assert [entity.id for entity in load_package_config(str(pkg)).entities] == [public_id]
 
 
 # ---------------------------------------------------------------------------
@@ -620,187 +578,105 @@ def test_graph_relationships_must_be_a_mapping(tmp_path: Path) -> None:
     assert "graph.relationships must be a mapping" in str(exc.value)
 
 
-def test_model_entities_block_translates_to_legacy_shape(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_entities_block"
-    # Two-entity model: orders (primary) + customer (FK).
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
-            "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
-        },
-        models={
-            "customers": {
-                "id": "customers",
-                "entity": "customer",
-                "relation": "customer",
-                "entities": {"customer": {}},
-                "measures": {
-                    "customer_count": {
-                        "label": "Customer count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["customer_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-            "orders": {
-                "id": "orders",
-                "relation": "orders",
-                "entities": {
-                    "order": {},
-                    "customer": {},
-                },
-                "measures": {
-                    "order_count": {
-                        "label": "Order count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["order_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    # Inferred relationship: orders → customer
-    rel_pairs = {(r.source_entity, r.target_entity) for r in config.relationships}
-    order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
-    customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
-    assert (order_id, customer_id) in rel_pairs
+def _count(entity_key: str, label: str = "Count") -> dict[str, Any]:
+    return {
+        "label": label,
+        "description": "Count.",
+        "kind": "entity_count",
+        "entity_key": [entity_key],
+        "accumulation": {"kind": "event"},
+        "value_type": "count",
+    }
 
 
-def test_model_entities_block_with_expr_renames_column(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_entities_expr"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
-            "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
-        },
-        models={
-            "customers": {
-                "id": "customers",
-                "entity": "customer",
-                "relation": "customer",
-                "entities": {"customer": {}},
-                "measures": {
-                    "customer_count": {
-                        "label": "Customer count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["customer_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-            "orders": {
-                "id": "orders",
-                "relation": "orders",
-                "entities": {
-                    "order": {},
-                    "customer": {"expr": "cust_id"},
-                },
-                "measures": {
-                    "order_count": {
-                        "label": "Order count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["order_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-        },
+def _model(
+    model_id: str, entities: dict[str, Any], measures: dict[str, Any], **extra: Any
+) -> dict[str, Any]:
+    return {"id": model_id, "entities": entities, "measures": measures, **extra}
+
+
+def _order_customer_models(customer_binding: dict[str, Any]) -> dict[str, Any]:
+    """Customers, and orders that declare the customer through the entities block."""
+    return {
+        "customers": _model(
+            "customers",
+            {"customer": {}},
+            {"customer_count": _count("customer_id")},
+            entity="customer",
+            relation="customer",
+        ),
+        "orders": _model(
+            "orders",
+            {"order": {}, "customer": customer_binding},
+            {"order_count": _count("order_id")},
+            relation="orders",
+        ),
+    }
+
+
+_ORDER_CUSTOMER = {
+    "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
+    "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
+}
+
+
+@pytest.mark.parametrize(
+    ("binding", "column"), [({}, "customer_id"), ({"expr": "cust_id"}, "cust_id")]
+)
+def test_model_entities_block_infers_the_relationship_and_key_column(
+    tmp_path: Path, binding: dict[str, Any], column: str
+) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "pkg_entities_block",
+        graph_entities=_ORDER_CUSTOMER,
+        models=_order_customer_models(binding),
     )
-    config = load_package_config(str(pkg_dir))
-    # The orders model's customer FK should bind to `cust_id`, not `customer_id`.
-    orders_entity = next(e for e in config.entities if e.id.endswith("_order"))
-    assert orders_entity.foreign_keys.get("customer") == ["cust_id"]
+    config = load_package_config(str(pkg))
+    pairs = {(r.source_entity, r.target_entity) for r in config.relationships}
+    assert ("entity.synth_order", "entity.synth_customer") in pairs
+    order = next(e for e in config.entities if e.id == "entity.synth_order")
+    assert order.foreign_keys["customer"] == [column]
 
 
 def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_bridge_false"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "user": {"label": "User", "key": ["user_id"], "model": "users"},
-            "account": {"label": "Account", "key": ["account_id"], "model": "accounts"},
-            "user_account_link": {
-                "label": "User account link",
-                "key": ["link_id"],
-                "model": "links",
-            },
-        },
+    graph_entities = {
+        name: {"label": name, "key": [f"{key}_id"], "model": model}
+        for name, key, model in (
+            ("user", "user", "users"),
+            ("account", "account", "accounts"),
+            ("user_account_link", "link", "links"),
+        )
+    }
+    pkg = _write_synthetic_package(
+        tmp_path / "pkg_bridge_false",
+        graph_entities=graph_entities,
         models={
-            "users": {
-                "id": "users",
-                "entity": "user",
-                "relation": "user",
-                "entities": {"user": {}},
-                "measures": {
-                    "user_count": {
-                        "label": "User count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["user_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-            "accounts": {
-                "id": "accounts",
-                "entity": "account",
-                "relation": "account",
-                "entities": {"account": {}},
-                "measures": {
-                    "account_count": {
-                        "label": "Account count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["account_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-            "links": {
-                "id": "links",
-                "relation": "user_account_link",
-                "entities": {
-                    "bridge": False,
-                    "user_account_link": {},
-                    "user": {},
-                    "account": {},
-                },
-                "measures": {
-                    "link_count": {
-                        "label": "Link count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["link_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
+            "users": _model(
+                "users",
+                {"user": {}},
+                {"user_count": _count("user_id")},
+                entity="user",
+                relation="user",
+            ),
+            "accounts": _model(
+                "accounts",
+                {"account": {}},
+                {"account_count": _count("account_id")},
+                entity="account",
+                relation="account",
+            ),
+            "links": _model(
+                "links",
+                {"bridge": False, "user_account_link": {}, "user": {}, "account": {}},
+                {"link_count": _count("link_id")},
+                relation="user_account_link",
+            ),
         },
     )
-    config = load_package_config(str(pkg_dir))
-    # No inferred relationships from links → user / account.
-    rel_pairs = {(r.source_entity, r.target_entity) for r in config.relationships}
-    link_entity_id = next(e.id for e in config.entities if "user_account_link" in e.id)
-    target_entities = [t for s, t in rel_pairs if s == link_entity_id]
-    assert not target_entities, (
-        f"bridge: false should suppress inferred rels, got {target_entities}"
-    )
+    config = load_package_config(str(pkg))
+    assert not [
+        r for r in config.relationships if r.source_entity == "entity.synth_user_account_link"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -808,244 +684,132 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
 # ---------------------------------------------------------------------------
 
 
-def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict[str, Any]) -> None:
-    """Write the shared order/customer package with explicit relationship options."""
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
-            "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
-        },
-        graph_relationships={
-            "customer_order": {
-                "entities": ["order", "customer"],
-                "cardinality": "many_to_one",
-                "safety": "safe",
-                **relationship_extra,
-            },
-        },
-        models={
-            "customers": {
-                "id": "customers",
-                "entity": "customer",
-                "relation": "customer",
-                "entities": {"customer": {}},
-                "measures": {
-                    "customer_count": {
-                        "label": "Count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["customer_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-            "orders": {
-                "id": "orders",
-                "entity": "order",
-                "relation": "orders",
-                "entities": {"order": {}, "customer": {}},
-                "measures": {
-                    "order_count": {
-                        "label": "Count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["order_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-        },
+@pytest.mark.parametrize(
+    ("extra", "attribute", "expected"),
+    [
+        ({}, "cardinality", "N:1"),
+        ({}, "allowed_directions", ["forward", "reverse"]),
+        ({"allowed_directions": ["forward"]}, "allowed_directions", ["forward"]),
+        # Reverse rewrite permissions stay on the authored edge, without a second edge.
+        (
+            {"rollup_safe": {"reverse": ["max", "min"]}},
+            "rollup_safe_aggregations_reverse",
+            ["max", "min"],
+        ),
+    ],
+)
+def test_graph_relationship_options_reach_the_relationship(
+    tmp_path: Path, extra: dict[str, Any], attribute: str, expected: Any
+) -> None:
+    relationship = {
+        "entities": ["order", "customer"],
+        "cardinality": "many_to_one",
+        "safety": "safe",
+    }
+    pkg = _write_synthetic_package(
+        tmp_path / "pkg_graph_rel",
+        graph_entities=_ORDER_CUSTOMER,
+        graph_relationships={"customer_order": {**relationship, **extra}},
+        models=_order_customer_models({}),
     )
-
-
-def test_graph_relationships_block_translates_bidirectional_pair(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_graph_rel"
-    _write_graph_relationship_package(pkg_dir, relationship_extra={})
-    config = load_package_config(str(pkg_dir))
-    order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
-    customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
-    rel = next(
+    edges = [
         r
-        for r in config.relationships
-        if r.source_entity == order_id and r.target_entity == customer_id
-    )
-    assert rel.cardinality == "N:1"
+        for r in load_package_config(str(pkg)).relationships
+        if (r.source_entity, r.target_entity) == ("entity.synth_order", "entity.synth_customer")
+    ]
+    assert [getattr(edge, attribute) for edge in edges] == [expected]
 
 
 # ---------------------------------------------------------------------------
-# Section 4: times: block — `default: true` flag
+# Sections 4-6: times default flag, flat measure fields, direct metric fields
 # ---------------------------------------------------------------------------
 
 
-def test_times_default_flag_replaces_default_time(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_times_default"
-    _write_synthetic_package(
-        pkg_dir,
-        models={
-            "widgets": {
-                "id": "widgets",
-                "entity": "widget",
-                "relation": "widget",
-                "entities": {"widget": {}},
-                "times": {
-                    "created_at": {
-                        "label": "Created at",
-                        "column": "created_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default": True,
-                    },
-                },
-                # No `default_time:` field — `default: true` on the times entry replaces it.
-                "measures": {
-                    "widget_count": {
-                        "label": "Widget count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["widget_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
+def _widget_models(**measures: dict[str, Any]) -> dict[str, Any]:
+    times = {
+        "created_at": {
+            "label": "Created at",
+            "column": "created_at",
+            "kind": "timestamp",
+            "class": "event_time",
+            "default": True,
         },
-    )
-    config = load_package_config(str(pkg_dir))
-    measure = next(m for m in config.measures if "widget_count" in m.id)
-    assert measure.compatible_temporal_roles, (
-        "default: true should populate compatible temporal roles"
-    )
+    }
+    measures = {"widget_count": _count("widget_id"), **measures}
+    return {
+        "widgets": _model(
+            "widgets", {"widget": {}}, measures, entity="widget", relation="widget", times=times
+        )
+    }
 
 
-# ---------------------------------------------------------------------------
-# Section 5: Un-nested measure expression: wrapper
-# ---------------------------------------------------------------------------
+def _metric(kind: str, value_type: str, **fields: Any) -> dict[str, Any]:
+    return {"label": kind, "description": kind, "kind": kind, "value_type": value_type, **fields}
 
 
-def test_measure_unnested_expr_and_default_agg(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_unnest_measure"
-    _write_synthetic_package(
-        pkg_dir,
-        models={
-            "widgets": {
-                "id": "widgets",
-                "entity": "widget",
-                "relation": "widget",
-                "entities": {"widget": {}},
-                "times": {
-                    "created_at": {
-                        "label": "Created at",
-                        "column": "created_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default": True,
-                    },
-                },
-                "measures": {
-                    "revenue_usd": {
-                        "label": "Revenue (USD)",
-                        "description": "Revenue.",
-                        "kind": "aggregate",
-                        # Direct fields, not a nested `expression:` wrapper.
-                        "expr": "amount_usd",
-                        "default_agg": "sum",
-                        "accumulation": {"kind": "flow"},
-                        "value_type": "currency",
-                    },
-                },
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    revenue = next(m for m in config.measures if "revenue_usd" in m.id)
-    assert revenue.default_aggregation == "sum"
-
-
-# ---------------------------------------------------------------------------
-# Section 6: Direct named fields per metric kind
-# ---------------------------------------------------------------------------
-
-
-def test_metric_kind_aggregate_direct_measure_field(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_metric_aggregate"
-    _write_synthetic_package(
-        pkg_dir,
+def test_direct_authoring_fields_resolve_package_relative_ids(tmp_path: Path) -> None:
+    revenue = {
+        "label": "Revenue (USD)",
+        "description": "Revenue.",
+        "kind": "aggregate",
+        # Direct fields, not a nested `expression:` wrapper.
+        "expr": "amount_usd",
+        "default_agg": "sum",
+        "accumulation": {"kind": "flow"},
+        "value_type": "currency",
+    }
+    premium_metric = {"kind": "metric", "metric": "premium_metric"}
+    pkg = _write_synthetic_package(
+        tmp_path / "pkg_direct_fields",
+        models=_widget_models(premium_count=_count("widget_id"), revenue_usd=revenue),
         metrics={
-            "widget_count_metric": {
-                "label": "Widgets",
-                "description": "Widget count metric.",
-                "kind": "aggregate",
-                "measure": "widget_count",
-                "value_type": "count",
-            },
+            "widget_count_metric": _metric("aggregate", "count", measure="widget_count"),
+            "premium_metric": _metric("aggregate", "count", measure="premium_count"),
+            # Both operands name measures; the ratio's own value_type wins over theirs.
+            "premium_share": _metric(
+                "ratio", "percent", numerator="premium_count", denominator="widget_count"
+            ),
+            # A metric numerator over a measure denominator.
+            "premium_share_v2": _metric(
+                "ratio", "percent", numerator="premium_metric", denominator="widget_count"
+            ),
+            "premium_metric_double": _metric(
+                "derived",
+                "count",
+                expression={
+                    "kind": "binary",
+                    "op": "multiply",
+                    "left": premium_metric,
+                    "right": premium_metric,
+                },
+            ),
+            # A bare measure key, no `metric.` prefix.
+            "cumulative_revenue_usd": _metric("cumulative", "currency", measure="revenue_usd"),
         },
     )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "widget_count_metric" in m.id)
-    assert metric.kind == "aggregate"
-
-
-def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_metric_ratio"
-    _write_synthetic_package(
-        pkg_dir,
-        models={
-            "widgets": {
-                "id": "widgets",
-                "entity": "widget",
-                "relation": "widget",
-                "entities": {"widget": {}},
-                "times": {
-                    "created_at": {
-                        "label": "Created at",
-                        "column": "created_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default": True,
-                    },
-                },
-                "measures": {
-                    "widget_count": {
-                        "label": "Widget count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["widget_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                    "premium_count": {
-                        "label": "Premium count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["widget_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-        },
-        metrics={
-            "premium_share": {
-                "label": "Premium share",
-                "description": "Share of widgets that are premium.",
-                "kind": "ratio",
-                "numerator": "premium_count",
-                "denominator": "widget_count",
-                "value_type": "percent",
-            },
-        },
+    config = load_package_config(str(pkg))
+    (widget,) = config.entities
+    assert (widget.id, widget.name) == ("entity.synth_widget", "synth.Widget")
+    measures = {m.id: m for m in config.measures}
+    # `default: true` on the times entry replaces the model's `default_time:`.
+    assert measures["measure.synth.widget_count"].compatible_temporal_roles
+    assert measures["measure.synth.revenue_usd"].default_aggregation == "sum"
+    metrics = {m.id: m for m in config.metric_recipes}
+    assert metrics["metric.synth.widget_count_metric"].kind == "aggregate"
+    share = metrics["metric.synth.premium_share"]
+    assert (share.kind, share.value_type, share.expression.op) == ("ratio", "percent", "divide")
+    assert (share.expression.left.measure, share.expression.right.measure) == (
+        "measure.synth.premium_count",
+        "measure.synth.widget_count",
     )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "premium_share" in m.id)
-    assert metric.kind == "ratio"
-    # AST translation: ratio → arithmetic divide
-    expr = metric.expression
-    # The compiled AST is a SemanticExpr; getattr won't fail because the
-    # tree shape matters for SQL — confirm it parsed.
-    assert expr is not None
+    mixed = metrics["metric.synth.premium_share_v2"].expression
+    assert mixed.left.metric_recipe == "metric.synth.premium_metric"
+    assert mixed.right.measure == "measure.synth.widget_count"
+    double = metrics["metric.synth.premium_metric_double"].expression
+    assert double.left.metric_recipe == double.right.metric_recipe == "metric.synth.premium_metric"
+    cumulative = metrics["metric.synth.cumulative_revenue_usd"]
+    assert cumulative.kind == "cumulative"
+    assert cumulative.expression.input.measure == "measure.synth.revenue_usd"
 
 
 # ---------------------------------------------------------------------------
@@ -1057,165 +821,186 @@ _MEASURE = (*_MODEL, "measures", "widget_count")
 _DELETE = object()
 
 
+_LEGACY_FORMS = [
+    pytest.param(
+        "package.yml",
+        ("package", "schema_strict"),
+        True,
+        ("package block has unknown key 'schema_strict'", "strict is the only profile"),
+        id="schema-strict-true",
+    ),
+    pytest.param(
+        "package.yml",
+        ("package", "schema_strict"),
+        False,
+        ("package block has unknown key 'schema_strict'", "strict is the only profile"),
+        id="schema-strict-false",
+    ),
+    pytest.param(
+        "graph.yml",
+        ("graph", "entities", "widget", "id"),
+        "entity.synth_widget",
+        ("graph entity 'widget' has unknown key 'id'", "write `as:`"),
+        id="graph-entity-id",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MODEL, "dimensions"),
+        {
+            "color": {
+                "id": "dimension.synth_widget_color",
+                "column": "color",
+                "kind": "categorical",
+            }
+        },
+        ("model 'widgets' dimension 'color' has unknown key 'id'", "write `as:`"),
+        id="dimension-id",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MEASURE, "id"),
+        "measure.synth.widget_count",
+        ("model 'widgets' measure 'widget_count' has unknown key 'id'", "write `as:`"),
+        id="measure-id",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MODEL, "grain"),
+        ["widget_id"],
+        ("model 'widgets' has unknown key 'grain'", "the entity's key keys the model's rows"),
+        id="model-grain",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MODEL, "joins"),
+        {"other": {"to": "other", "cardinality": "N:1"}},
+        ("model 'widgets' has unknown key 'joins'", "`graph.relationships` row"),
+        id="model-joins",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MODEL, "keys"),
+        {"primary": ["widget_id"]},
+        ("model 'widgets' authors 'keys.primary:' beside 'entities:'",),
+        id="keys-primary-beside-entities",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MODEL, "keys"),
+        {"foreign": {"gadget": ["gadget_id"]}},
+        ("model 'widgets' authors 'keys.foreign:'",),
+        id="keys-foreign",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MODEL, "entities"),
+        _DELETE,
+        ("model 'widgets' authors a singular 'entity:'",),
+        id="singular-entity",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MODEL, "dimensions"),
+        {"color": {"column": "color", "kind": "categorical", "topics": ["widgets"]}},
+        ("model 'widgets' dimension 'color' has unknown key 'topics'",),
+        id="dimension-topics",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MODEL, "dimensions"),
+        {"color": {"column": "color", "kind": "categorical", "preferred_filter_ops": ["="]}},
+        ("model 'widgets' dimension 'color' has unknown key 'preferred_filter_ops'",),
+        id="dimension-preferred-filter-ops",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MEASURE, "topics"),
+        ["widgets"],
+        ("measure 'widget_count' has unknown key 'topics'",),
+        id="measure-topics",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MEASURE, "preferred_companion_metrics"),
+        ["widgets"],
+        ("measure 'widget_count' has unknown key 'preferred_companion_metrics'",),
+        id="measure-companion-metrics",
+    ),
+    pytest.param(
+        "metrics.yml",
+        ("metrics", "widgets", "topics"),
+        ["widgets"],
+        ("metric 'widgets' has unknown key 'topics'",),
+        id="metric-topics",
+    ),
+    pytest.param(
+        "segments.yml",
+        ("segments",),
+        {"big_widgets": {"entity": "widget", "topics": ["widgets"]}},
+        ("segment 'big_widgets' has unknown key 'topics'",),
+        id="segment-topics",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MEASURE, "kind"),
+        _DELETE,
+        ("measure 'widget_count' has no 'kind:'",),
+        id="measure-without-kind",
+    ),
+    pytest.param(
+        "metrics.yml",
+        ("metrics", "widgets", "value_type"),
+        _DELETE,
+        ("metric 'widgets': missing 'value_type:'",),
+        id="metric-without-value-type",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MEASURE, "publish"),
+        {"id": "metric.synth.widgets", "label": "Widgets"},
+        ("measure 'widget_count' publish must be true or false",),
+        id="measure-publish-mapping",
+    ),
+    pytest.param(
+        "models/widgets.yml",
+        (*_MEASURE, "accumulation"),
+        "rolling_population",
+        ("measure 'widget_count' has unknown accumulation kind 'rolling_population'",),
+        id="freeform-accumulation",
+    ),
+    pytest.param(
+        "package.yml",
+        ("defaults", "measure"),
+        {"accumulation": {"kind": "stok"}},
+        ("defaults.measure has unknown accumulation kind 'stok'",),
+        id="defaults-accumulation-kind",
+    ),
+    pytest.param(
+        "package.yml",
+        ("defaults", "measure"),
+        {"accumulation": "stok"},
+        ("defaults.measure has unknown accumulation kind 'stok'",),
+        id="defaults-accumulation-scalar",
+    ),
+]
+
+
+def _one_single_file(rows: list[Any], *single_file_ids: str) -> list[Any]:
+    """Each row in a package directory; the named rows again as one single-file package."""
+    return [
+        *(pytest.param(*row.values, "directory", id=row.id) for row in rows),
+        *(
+            pytest.param(*row.values, "single_file", id=f"{row.id}-single-file")
+            for row in rows
+            if row.id in single_file_ids
+        ),
+    ]
+
+
 @pytest.mark.parametrize(
-    ("file", "path", "value", "expected"),
-    [
-        pytest.param(
-            "package.yml",
-            ("package", "schema_strict"),
-            True,
-            ("package block has unknown key 'schema_strict'", "strict is the only profile"),
-            id="schema-strict-true",
-        ),
-        pytest.param(
-            "package.yml",
-            ("package", "schema_strict"),
-            False,
-            ("package block has unknown key 'schema_strict'", "strict is the only profile"),
-            id="schema-strict-false",
-        ),
-        pytest.param(
-            "graph.yml",
-            ("graph", "entities", "widget", "id"),
-            "entity.synth_widget",
-            ("graph entity 'widget' has unknown key 'id'", "write `as:`"),
-            id="graph-entity-id",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MODEL, "dimensions"),
-            {
-                "color": {
-                    "id": "dimension.synth_widget_color",
-                    "column": "color",
-                    "kind": "categorical",
-                }
-            },
-            ("model 'widgets' dimension 'color' has unknown key 'id'", "write `as:`"),
-            id="dimension-id",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MEASURE, "id"),
-            "measure.synth.widget_count",
-            ("model 'widgets' measure 'widget_count' has unknown key 'id'", "write `as:`"),
-            id="measure-id",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MODEL, "grain"),
-            ["widget_id"],
-            ("model 'widgets' has unknown key 'grain'", "the entity's key keys the model's rows"),
-            id="model-grain",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MODEL, "joins"),
-            {"other": {"to": "other", "cardinality": "N:1"}},
-            ("model 'widgets' has unknown key 'joins'", "`graph.relationships` row"),
-            id="model-joins",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MODEL, "keys"),
-            {"primary": ["widget_id"]},
-            ("model 'widgets' authors 'keys.primary:' beside 'entities:'",),
-            id="keys-primary-beside-entities",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MODEL, "keys"),
-            {"foreign": {"gadget": ["gadget_id"]}},
-            ("model 'widgets' authors 'keys.foreign:'",),
-            id="keys-foreign",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MODEL, "entities"),
-            _DELETE,
-            ("model 'widgets' authors a singular 'entity:'",),
-            id="singular-entity",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MODEL, "dimensions"),
-            {"color": {"column": "color", "kind": "categorical", "topics": ["widgets"]}},
-            ("model 'widgets' dimension 'color' has unknown key 'topics'",),
-            id="dimension-topics",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MEASURE, "topics"),
-            ["widgets"],
-            ("measure 'widget_count' has unknown key 'topics'",),
-            id="measure-topics",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MEASURE, "preferred_companion_metrics"),
-            ["widgets"],
-            ("measure 'widget_count' has unknown key 'preferred_companion_metrics'",),
-            id="measure-companion-metrics",
-        ),
-        pytest.param(
-            "metrics.yml",
-            ("metrics", "widgets", "topics"),
-            ["widgets"],
-            ("metric 'widgets' has unknown key 'topics'",),
-            id="metric-topics",
-        ),
-        pytest.param(
-            "segments.yml",
-            ("segments",),
-            {"big_widgets": {"entity": "widget", "topics": ["widgets"]}},
-            ("segment 'big_widgets' has unknown key 'topics'",),
-            id="segment-topics",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MEASURE, "kind"),
-            _DELETE,
-            ("measure 'widget_count' has no 'kind:'",),
-            id="measure-without-kind",
-        ),
-        pytest.param(
-            "metrics.yml",
-            ("metrics", "widgets", "value_type"),
-            _DELETE,
-            ("metric 'widgets': missing 'value_type:'",),
-            id="metric-without-value-type",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MEASURE, "publish"),
-            {"id": "metric.synth.widgets", "label": "Widgets"},
-            ("measure 'widget_count' publish must be true or false",),
-            id="measure-publish-mapping",
-        ),
-        pytest.param(
-            "models/widgets.yml",
-            (*_MEASURE, "accumulation"),
-            "rolling_population",
-            ("measure 'widget_count' has unknown accumulation kind 'rolling_population'",),
-            id="freeform-accumulation",
-        ),
-        pytest.param(
-            "package.yml",
-            ("defaults", "measure"),
-            {"accumulation": {"kind": "stok"}},
-            ("defaults.measure has unknown accumulation kind 'stok'",),
-            id="defaults-accumulation-kind",
-        ),
-        pytest.param(
-            "package.yml",
-            ("defaults", "measure"),
-            {"accumulation": "stok"},
-            ("defaults.measure has unknown accumulation kind 'stok'",),
-            id="defaults-accumulation-scalar",
-        ),
-    ],
+    ("file", "path", "value", "expected", "layout"),
+    _one_single_file(_LEGACY_FORMS, "measure-id", "segment-topics"),
 )
-@pytest.mark.parametrize("layout", ["directory", "single_file"])
 def test_legacy_authoring_form_is_refused_at_load(
     tmp_path: Path,
     file: str,
@@ -1361,84 +1146,86 @@ def _write_balance_package(
     return pkg
 
 
+_MISREAD_ACCUMULATIONS = [
+    pytest.param(
+        _DELETE,
+        {"kind": "stock", "snapshot": "start_of_peroid"},
+        ("measure 'balance_usd'", "unknown accumulation snapshot 'start_of_peroid'"),
+        id="snapshot-typo",
+    ),
+    pytest.param(
+        _DELETE,
+        {"kind": "stock", "snapshot": None},
+        ("measure 'balance_usd'", "unknown accumulation snapshot ''"),
+        id="snapshot-empty",
+    ),
+    pytest.param(
+        _DELETE,
+        {"snapshot": "start_of_period"},
+        ("measure 'balance_usd'", "without 'kind: stock'"),
+        id="snapshot-without-kind",
+    ),
+    pytest.param(
+        _DELETE,
+        {"kind": "flow", "snapshot": "end_of_period"},
+        ("measure 'balance_usd'", "without 'kind: stock'"),
+        id="snapshot-on-flow",
+    ),
+    pytest.param(
+        {"kind": "stock"},
+        {"snapshot": "start_of_period"},
+        ("measure 'balance_usd'", "without 'kind: stock'"),
+        id="override-drops-default-kind",
+    ),
+    pytest.param(
+        "stock",
+        {},
+        ("measure 'balance_usd'", "names no 'kind:'"),
+        id="override-names-no-kind",
+    ),
+    pytest.param(
+        {"kind": "stock"},
+        None,
+        ("measure 'balance_usd'", "names no 'kind:'"),
+        id="override-null",
+    ),
+    pytest.param(
+        _STOCK_SOP,
+        {"kind": "stock"},
+        ("measure 'balance_usd'", "names no 'snapshot:'", "'start_of_period'"),
+        id="override-drops-default-snapshot",
+    ),
+    pytest.param(
+        _STOCK_SOP,
+        "stock",
+        ("measure 'balance_usd'", "names no 'snapshot:'", "'start_of_period'"),
+        id="scalar-override-drops-default-snapshot",
+    ),
+    pytest.param(
+        {"kind": "stock", "snapshot": "start_of_peroid"},
+        _DELETE,
+        ("defaults.measure", "unknown accumulation snapshot 'start_of_peroid'"),
+        id="defaults-snapshot-typo",
+    ),
+    pytest.param(
+        {"snapshot": "start_of_period"},
+        _DELETE,
+        ("defaults.measure", "without 'kind: stock'"),
+        id="defaults-snapshot-without-kind",
+    ),
+    pytest.param(
+        {"kind": "flow", "snapshot": "start_of_period"},
+        _DELETE,
+        ("defaults.measure", "without 'kind: stock'"),
+        id="defaults-snapshot-on-flow",
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    ("default", "accumulation", "expected"),
-    [
-        pytest.param(
-            _DELETE,
-            {"kind": "stock", "snapshot": "start_of_peroid"},
-            ("measure 'balance_usd'", "unknown accumulation snapshot 'start_of_peroid'"),
-            id="snapshot-typo",
-        ),
-        pytest.param(
-            _DELETE,
-            {"kind": "stock", "snapshot": None},
-            ("measure 'balance_usd'", "unknown accumulation snapshot ''"),
-            id="snapshot-empty",
-        ),
-        pytest.param(
-            _DELETE,
-            {"snapshot": "start_of_period"},
-            ("measure 'balance_usd'", "without 'kind: stock'"),
-            id="snapshot-without-kind",
-        ),
-        pytest.param(
-            _DELETE,
-            {"kind": "flow", "snapshot": "end_of_period"},
-            ("measure 'balance_usd'", "without 'kind: stock'"),
-            id="snapshot-on-flow",
-        ),
-        pytest.param(
-            {"kind": "stock"},
-            {"snapshot": "start_of_period"},
-            ("measure 'balance_usd'", "without 'kind: stock'"),
-            id="override-drops-default-kind",
-        ),
-        pytest.param(
-            "stock",
-            {},
-            ("measure 'balance_usd'", "names no 'kind:'"),
-            id="override-names-no-kind",
-        ),
-        pytest.param(
-            {"kind": "stock"},
-            None,
-            ("measure 'balance_usd'", "names no 'kind:'"),
-            id="override-null",
-        ),
-        pytest.param(
-            _STOCK_SOP,
-            {"kind": "stock"},
-            ("measure 'balance_usd'", "names no 'snapshot:'", "'start_of_period'"),
-            id="override-drops-default-snapshot",
-        ),
-        pytest.param(
-            _STOCK_SOP,
-            "stock",
-            ("measure 'balance_usd'", "names no 'snapshot:'", "'start_of_period'"),
-            id="scalar-override-drops-default-snapshot",
-        ),
-        pytest.param(
-            {"kind": "stock", "snapshot": "start_of_peroid"},
-            _DELETE,
-            ("defaults.measure", "unknown accumulation snapshot 'start_of_peroid'"),
-            id="defaults-snapshot-typo",
-        ),
-        pytest.param(
-            {"snapshot": "start_of_period"},
-            _DELETE,
-            ("defaults.measure", "without 'kind: stock'"),
-            id="defaults-snapshot-without-kind",
-        ),
-        pytest.param(
-            {"kind": "flow", "snapshot": "start_of_period"},
-            _DELETE,
-            ("defaults.measure", "without 'kind: stock'"),
-            id="defaults-snapshot-on-flow",
-        ),
-    ],
+    ("default", "accumulation", "expected", "layout"),
+    _one_single_file(_MISREAD_ACCUMULATIONS, "override-drops-default-snapshot"),
 )
-@pytest.mark.parametrize("layout", ["directory", "single_file"])
 def test_accumulation_read_as_another_is_refused_at_load(
     tmp_path: Path, default: Any, accumulation: Any, expected: tuple[str, ...], layout: str
 ) -> None:
@@ -1457,21 +1244,23 @@ def test_accumulation_read_as_another_is_refused_at_load(
     assert any(all(part in error for part in expected) for error in validate_runtime_package(pkg))
 
 
+_WHOLE_ACCUMULATIONS = [
+    pytest.param(_DELETE, _STOCK_SOP, "first_value", id="complete"),
+    pytest.param(_STOCK_SOP, _DELETE, "first_value", id="inherits-default"),
+    pytest.param(
+        _STOCK_SOP,
+        {"kind": "stock", "snapshot": " End_Of_Period "},
+        "last_value",
+        id="complete-override",
+    ),
+    pytest.param(_STOCK_SOP, "flow", "sum", id="override-names-kind"),
+]
+
+
 @pytest.mark.parametrize(
-    ("default", "accumulation", "aggregation"),
-    [
-        pytest.param(_DELETE, _STOCK_SOP, "first_value", id="complete"),
-        pytest.param(_STOCK_SOP, _DELETE, "first_value", id="inherits-default"),
-        pytest.param(
-            _STOCK_SOP,
-            {"kind": "stock", "snapshot": " End_Of_Period "},
-            "last_value",
-            id="complete-override",
-        ),
-        pytest.param(_STOCK_SOP, "flow", "sum", id="override-names-kind"),
-    ],
+    ("default", "accumulation", "aggregation", "layout"),
+    _one_single_file(_WHOLE_ACCUMULATIONS, "inherits-default"),
 )
-@pytest.mark.parametrize("layout", ["directory", "single_file"])
 def test_accumulation_stated_whole_loads(
     tmp_path: Path, default: Any, accumulation: Any, aggregation: str, layout: str
 ) -> None:
@@ -1532,543 +1321,58 @@ def test_start_of_period_stock_sums_each_series_opening_balance(tmp_path: Path) 
     assert rows == reference
 
 
-# ---------------------------------------------------------------------------
-# Section 9: graph.relationships allowed_directions propagation (Bug 1 regression)
-# ---------------------------------------------------------------------------
-
-
-def test_graph_relationships_allowed_directions_propagates(tmp_path: Path) -> None:
-    """Regression: `allowed_directions: [forward]` authored on a
-    graph.relationships entry must reach RelationshipConfig.allowed_directions.
-    Previously the translator passed the field through verbatim, but the
-    join-spec parser reads `traversal:`, silently restoring the default
-    ['forward', 'reverse'] and reopening reverse paths the author meant to
-    block.
-    """
-    pkg_dir = tmp_path / "pkg_allowed_directions"
-    _write_graph_relationship_package(
-        pkg_dir, relationship_extra={"allowed_directions": ["forward"]}
-    )
-    config = load_package_config(str(pkg_dir))
-    order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
-    customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
-    rel = next(
-        r
-        for r in config.relationships
-        if r.source_entity == order_id and r.target_entity == customer_id
-    )
-    assert rel.allowed_directions == ["forward"], (
-        f"expected ['forward'] from authored allowed_directions, got {rel.allowed_directions!r}"
-    )
-
-
-def test_graph_relationships_allowed_directions_defaults_when_omitted(tmp_path: Path) -> None:
-    """When `allowed_directions:` is not authored, the default
-    ['forward', 'reverse'] is preserved (verifies the rename is opt-in only)."""
-    pkg_dir = tmp_path / "pkg_allowed_directions_default"
-    _write_graph_relationship_package(pkg_dir, relationship_extra={})
-    config = load_package_config(str(pkg_dir))
-    order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
-    customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
-    rel = next(
-        r
-        for r in config.relationships
-        if r.source_entity == order_id and r.target_entity == customer_id
-    )
-    assert rel.allowed_directions == ["forward", "reverse"]
-
-
-# ---------------------------------------------------------------------------
-# Section 10: Package-relative refs resolve top-level metrics, not just
-# measures (Bug 2 regression)
-# ---------------------------------------------------------------------------
-
-
-def _widget_model_with_two_count_measures() -> dict[str, Any]:
-    """Helper: a model with two entity_count measures so we can compose
-    ratio/derived metrics over them."""
-    return {
-        "widgets": {
-            "id": "widgets",
-            "entity": "widget",
-            "relation": "widget",
-            "entities": {"widget": {}},
-            "times": {
-                "created_at": {
-                    "label": "Created at",
-                    "column": "created_at",
-                    "kind": "timestamp",
-                    "class": "event_time",
-                    "default": True,
-                },
-            },
-            "measures": {
-                "widget_count": {
-                    "label": "Widget count",
-                    "description": "Count.",
-                    "kind": "entity_count",
-                    "entity_key": ["widget_id"],
-                    "accumulation": {"kind": "event"},
-                    "value_type": "count",
-                },
-                "premium_count": {
-                    "label": "Premium count",
-                    "description": "Count.",
-                    "kind": "entity_count",
-                    "entity_key": ["widget_id"],
-                    "accumulation": {"kind": "event"},
-                    "value_type": "count",
-                },
-            },
-        },
-    }
-
-
-def test_metric_ratio_numerator_resolves_top_level_metric(tmp_path: Path) -> None:
-    """A ratio whose numerator is a top-level metric (not a measure) and
-    whose denominator is a measure must resolve both correctly to
-    fully-qualified ids — no bare strings left to fail downstream.
-    """
-    pkg_dir = tmp_path / "pkg_ratio_metric_numerator"
-    _write_synthetic_package(
-        pkg_dir,
-        models=_widget_model_with_two_count_measures(),
-        metrics={
-            # A top-level metric over premium_count.
-            "premium_metric": {
-                "label": "Premium metric",
-                "description": "Premium count metric.",
-                "kind": "aggregate",
-                "measure": "premium_count",
-                "value_type": "count",
-            },
-            # Ratio whose numerator references the top-level metric above
-            # (not the measure!) and whose denominator is a measure.
-            "premium_share_v2": {
-                "label": "Premium share v2",
-                "description": "Top-level metric over measure.",
-                "kind": "ratio",
-                "numerator": "premium_metric",  # → top-level metric
-                "denominator": "widget_count",  # → measure
-                "value_type": "percent",
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "premium_share_v2" in m.id)
-    expr = metric.expression
-    assert expr is not None
-    left = getattr(expr, "left", None)
-    right = getattr(expr, "right", None)
-    assert left is not None and right is not None, (
-        f"expected arithmetic with left/right, got {expr!r}"
-    )
-
-    # Numerator points at a top-level metric (premium_metric exists in
-    # this package) — should be a MetricRecipeRefExpr with the resolved
-    # metric id.
-    left_metric = getattr(left, "metric_recipe", None)
-    assert left_metric == "metric.synth.premium_metric", (
-        f"numerator should resolve to top-level metric, got {left!r}"
-    )
-
-    # Denominator is a measure-only key (no top-level metric exists for
-    # widget_count). With auto-publish gone, the loader expands measure-
-    # only ratio operands to a `kind: aggregate` AST node referencing the
-    # measure directly — no synthetic metric id is produced.
-    right_measure = getattr(right, "measure", None)
-    assert right_measure == "measure.synth.widget_count", (
-        f"denominator should resolve to a measure-aggregate node, got {right!r}"
-    )
-
-
-def test_metric_derived_ast_resolves_top_level_metric_ref(tmp_path: Path) -> None:
-    """A derived metric whose authored AST references another top-level
-    metric by local key must load cleanly with the metric ref resolved.
-    """
-    pkg_dir = tmp_path / "pkg_derived_metric_ref"
-    _write_synthetic_package(
-        pkg_dir,
-        models=_widget_model_with_two_count_measures(),
-        metrics={
-            "premium_metric": {
-                "label": "Premium metric",
-                "description": "Premium count metric.",
-                "kind": "aggregate",
-                "measure": "premium_count",
-                "value_type": "count",
-            },
-            "premium_metric_double": {
-                "label": "Premium metric (doubled)",
-                "description": "Derived metric referencing another metric.",
-                "kind": "derived",
-                "expression": {
-                    "kind": "binary",
-                    "op": "multiply",
-                    "left": {"kind": "metric", "metric": "premium_metric"},
-                    "right": {"kind": "metric", "metric": "premium_metric"},
-                },
-                "value_type": "count",
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "premium_metric_double" in m.id)
-    expr = metric.expression
-    left = getattr(expr, "left", None)
-    right = getattr(expr, "right", None)
-    assert left is not None and right is not None
-    left_metric = getattr(left, "metric_recipe", None) or getattr(left, "metric", None)
-    right_metric = getattr(right, "metric_recipe", None) or getattr(right, "metric", None)
-    assert left_metric == "metric.synth.premium_metric"
-    assert right_metric == "metric.synth.premium_metric"
-
-
 def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) -> None:
-    """If the same package-relative key resolves to BOTH a top-level
-    metric and a measure, the loader must raise a clear ambiguity error
-    rather than silently picking one.
-    """
-    pkg_dir = tmp_path / "pkg_ambiguous_metric_ref"
-    _write_synthetic_package(
-        pkg_dir,
-        models={
-            "widgets": {
-                "id": "widgets",
-                "entity": "widget",
-                "relation": "widget",
-                "entities": {"widget": {}},
-                "times": {
-                    "created_at": {
-                        "label": "Created at",
-                        "column": "created_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default": True,
-                    },
-                },
-                "measures": {
-                    "shared_key": {
-                        "label": "Measure shared_key",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["widget_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                    "denom": {
-                        "label": "Denom",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["widget_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
-        },
+    # `shared_key` names both a measure and a metric: a reference to it is refused, not guessed.
+    pkg = _write_synthetic_package(
+        tmp_path / "pkg_ambiguous_metric_ref",
+        models=_widget_models(shared_key=_count("widget_id"), denom=_count("widget_id")),
         metrics={
-            # Top-level metric whose local key collides with the measure
-            # local key `shared_key`. Authoring this way is allowed (auto-id
-            # paths produce metric.synth.shared_key for both), but any
-            # package-relative ref to `shared_key` is ambiguous and must
-            # error.
             "shared_key": {
-                "label": "Top-level metric shared_key",
-                "description": "Top-level metric.",
-                "kind": "aggregate",
-                "measure": "denom",
-                "value_type": "count",
-                # Override id so the metric and the measure auto-published
-                # metric do not collide on `metric.synth.shared_key`.
+                **_metric("aggregate", "count", measure="denom"),
                 "as": "metric.synth.shared_key_top",
             },
-            "ambiguous_consumer": {
-                "label": "Ambiguous consumer",
-                "description": "Refers to shared_key — should error.",
-                "kind": "ratio",
-                "numerator": "shared_key",
-                "denominator": "denom",
-                "value_type": "percent",
-            },
+            "ambiguous_consumer": _metric(
+                "ratio", "percent", numerator="shared_key", denominator="denom"
+            ),
         },
     )
     with pytest.raises(SemanticLayerError) as excinfo:
-        load_package_config(str(pkg_dir))
-    msg = str(excinfo.value)
-    assert "ambiguous metric reference" in msg
-    assert "shared_key" in msg
-    # The error must point at both candidates.
-    assert "measure" in msg
-    assert "metric" in msg
-
-
-# ---------------------------------------------------------------------------
-# Section 11: WT-C additions — additional coverage of v1 authoring shape
-# ---------------------------------------------------------------------------
-
-
-def _two_entity_model_skeleton() -> dict[str, Any]:
-    """Helper: orders + customers with the orders model declaring both via
-    the entities: block (no joins/keys.foreign authoring)."""
-    return {
-        "customers": {
-            "id": "customers",
-            "entity": "customer",
-            "relation": "customer",
-            "entities": {"customer": {}},
-            "measures": {
-                "customer_count": {
-                    "label": "Customer count",
-                    "description": "Count.",
-                    "kind": "entity_count",
-                    "entity_key": ["customer_id"],
-                    "accumulation": {"kind": "event"},
-                    "value_type": "count",
-                },
-            },
-        },
-        "orders": {
-            "id": "orders",
-            "relation": "orders",
-            "entities": {
-                "order": {},
-                "customer": {},
-            },
-            "measures": {
-                "order_count": {
-                    "label": "Order count",
-                    "description": "Count.",
-                    "kind": "entity_count",
-                    "entity_key": ["order_id"],
-                    "accumulation": {"kind": "event"},
-                    "value_type": "count",
-                },
-            },
-        },
-    }
-
-
-def test_graph_relationships_rollup_safe_reverse(tmp_path: Path) -> None:
-    """Reverse rewrite permissions stay on the authored edge, without a second edge."""
-    pkg_dir = tmp_path / "pkg_rollup_both_dirs"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
-            "customer": {"label": "Customer", "key": ["customer_id"], "model": "customers"},
-        },
-        graph_relationships={
-            "customer_order": {
-                "entities": ["order", "customer"],
-                "cardinality": "many_to_one",
-                "rollup_safe": {
-                    "reverse": ["max", "min"],
-                },
-                "safety": "safe",
-            },
-        },
-        models=_two_entity_model_skeleton(),
-    )
-    config = load_package_config(str(pkg_dir))
-    order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
-    customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
-    rel = next(
-        r
-        for r in config.relationships
-        if r.source_entity == order_id and r.target_entity == customer_id
-    )
-    assert rel.rollup_safe_aggregations_reverse == ["max", "min"]
+        load_package_config(str(pkg))
+    assert excinfo.value.code == "INVALID_CONFIG"
+    assert "ambiguous metric reference" in str(excinfo.value)
+    assert "shared_key" in str(excinfo.value)
 
 
 def test_times_block_consolidates_temporal_role_and_dimension(tmp_path: Path) -> None:
-    """The `times:` block key IS the temporal role; no separate
-    `temporal_role.<id>` registration is needed and the backing dimension
-    is auto-created from `column:`.
-
-    Verifies the consolidation: one author concept (`times: { ordered_at }`)
-    produces exactly one `TemporalRoleConfig` and one `DimensionConfig`,
-    both keyed off the same author key, with no duplicates.
-    """
-    pkg_dir = tmp_path / "pkg_times_consolidation"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "order": {"label": "Order", "key": ["order_id"], "model": "orders"},
+    # The `times:` key is the temporal role; its backing dimension comes from `column:`.
+    times = {
+        "ordered_at": {
+            "label": "Order time",
+            "column": "ordered_at",
+            "kind": "timestamp",
+            "class": "event_time",
+            "supported_grains": ["day", "week", "month"],
+            "default": True,
         },
+    }
+    pkg = _write_synthetic_package(
+        tmp_path / "pkg_times_consolidation",
+        graph_entities={"order": _ORDER_CUSTOMER["order"]},
         models={
-            "orders": {
-                "id": "orders",
-                "entity": "order",
-                "relation": "orders",
-                "entities": {"order": {}},
-                "times": {
-                    "ordered_at": {
-                        "label": "Order time",
-                        "column": "ordered_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "supported_grains": ["day", "week", "month"],
-                        "default": True,
-                    },
-                },
-                "measures": {
-                    "order_count": {
-                        "label": "Order count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["order_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                    },
-                },
-            },
+            "orders": _model(
+                "orders",
+                {"order": {}},
+                {"order_count": _count("order_id")},
+                entity="order",
+                relation="orders",
+                times=times,
+            )
         },
     )
-    config = load_package_config(str(pkg_dir))
-    # Temporal role: exactly one, id derived from times: key.
-    role_ids = [r.id for r in config.temporal_roles]
-    assert role_ids == ["temporal_role.synth_order_ordered_at"], (
-        f"expected single auto-derived temporal role, got {role_ids}"
-    )
-    # Backing dimension: exactly one matching the role's column.
-    backing_dims = [d for d in config.dimensions if d.id == "dimension.synth_order_ordered_at"]
-    assert len(backing_dims) == 1, (
-        f"expected one auto-created backing dimension, got {[d.id for d in config.dimensions]}"
-    )
-    assert backing_dims[0].column == "ordered_at"
-
-
-def test_metric_kind_ratio_compiles_to_arithmetic_divide(tmp_path: Path) -> None:
-    """`kind: ratio` with direct `numerator:`/`denominator:` fields compiles to an
-    `ArithmeticExpr(op='divide')` with both sides resolved to fully qualified
-    metric ids — verifying the loader produces the canonical AST shape from the
-    v1 direct-fields sugar.
-    """
-    pkg_dir = tmp_path / "pkg_ratio_arithmetic_compile"
-    _write_synthetic_package(
-        pkg_dir,
-        models=_widget_model_with_two_count_measures(),
-        metrics={
-            "premium_share_default": {
-                "label": "Premium share",
-                "description": "Premium share of widgets.",
-                "kind": "ratio",
-                "numerator": "premium_count",
-                "denominator": "widget_count",
-                "value_type": "percent",
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "premium_share_default" in m.id)
-    expr = metric.expression
-    # Direct ratio fields → arithmetic divide AST.
-    assert getattr(expr, "op", None) == "divide", (
-        f"ratio should compile to arithmetic divide, got {expr!r}"
-    )
-    # Both operands are measure-only keys (no top-level metric of those
-    # names exists). With auto-publish gone, ratio measure operands compile
-    # to `kind: aggregate` nodes against the measure id directly.
-    left_measure = getattr(getattr(expr, "left", None), "measure", None)
-    right_measure = getattr(getattr(expr, "right", None), "measure", None)
-    assert left_measure == "measure.synth.premium_count", (
-        f"numerator should resolve to a measure-aggregate node, got {expr.left!r}"
-    )
-    assert right_measure == "measure.synth.widget_count", (
-        f"denominator should resolve to a measure-aggregate node, got {expr.right!r}"
-    )
-
-
-def test_metric_kind_cumulative_direct_measure_field_resolves_package_relative(
-    tmp_path: Path,
-) -> None:
-    """`kind: cumulative` accepts a bare measure key (`measure: revenue_usd`)
-    and the loader resolves it package-relative to the fully qualified id
-    `measure.<namespace>.<key>` — no `metric.<namespace>.<key>` prefix
-    required in the author surface."""
-    pkg_dir = tmp_path / "pkg_cumulative_pkg_relative"
-    _write_synthetic_package(
-        pkg_dir,
-        models={
-            "widgets": {
-                "id": "widgets",
-                "entity": "widget",
-                "relation": "widget",
-                "entities": {"widget": {}},
-                "times": {
-                    "created_at": {
-                        "label": "Created at",
-                        "column": "created_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default": True,
-                    },
-                },
-                "measures": {
-                    "revenue_usd": {
-                        "label": "Revenue (USD)",
-                        "description": "Revenue.",
-                        "kind": "aggregate",
-                        "expr": "amount_usd",
-                        "default_agg": "sum",
-                        "accumulation": {"kind": "flow"},
-                        "value_type": "currency",
-                    },
-                },
-            },
-        },
-        metrics={
-            "cumulative_revenue_usd": {
-                "label": "Cumulative revenue (USD)",
-                "description": "Running total of revenue.",
-                "kind": "cumulative",
-                "measure": "revenue_usd",  # bare key, no metric. prefix
-                "value_type": "currency",
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "cumulative_revenue_usd" in m.id)
-    assert metric.kind == "cumulative"
-    # The compiled expression must resolve to the fully qualified measure id.
-    inner = getattr(metric.expression, "input", None) or getattr(metric.expression, "operand", None)
-    measure_id = getattr(inner, "measure", None)
-    assert measure_id == "measure.synth.revenue_usd", (
-        f"cumulative measure should resolve package-relative to "
-        f"'measure.synth.revenue_usd', got {measure_id!r} "
-        f"(expression={metric.expression!r})"
-    )
-
-
-def test_metric_kind_ratio_value_type_overrides_input_types(tmp_path: Path) -> None:
-    """A ratio metric authored with `value_type: percent` reports percent
-    on the metric record, even when both numerator and denominator are
-    count-typed measures. Verifies the explicit-output-type contract from
-    the v1 plan: every authored metric declares its own value_type, not
-    inheriting it implicitly from the inputs.
-    """
-    pkg_dir = tmp_path / "pkg_ratio_value_type"
-    _write_synthetic_package(
-        pkg_dir,
-        models=_widget_model_with_two_count_measures(),
-        metrics={
-            "premium_share": {
-                "label": "Premium share",
-                "description": "Share of widgets that are premium.",
-                "kind": "ratio",
-                "numerator": "premium_count",  # count
-                "denominator": "widget_count",  # count
-                "value_type": "percent",  # explicit override
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "premium_share" in m.id)
-    assert metric.value_type == "percent", (
-        f"ratio metric value_type should be 'percent' even when inputs are "
-        f"count-typed, got {metric.value_type!r}"
-    )
+    config = load_package_config(str(pkg))
+    assert [r.id for r in config.temporal_roles] == ["temporal_role.synth_order_ordered_at"]
+    backing = [d for d in config.dimensions if d.id == "dimension.synth_order_ordered_at"]
+    assert [d.column for d in backing] == ["ordered_at"]
 
 
 # ----------------------------------------------------------------------
