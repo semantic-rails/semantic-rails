@@ -13,7 +13,8 @@ A metric filter's set is matched on its context entities, so a row with none is 
 
 Fixture: boardings of flight legs, with a crew roster keyed by (leg, person). Boarding 7 has
 no person, boarding 8 a person with no record (P9), boarding 11 a leg with no record (L9),
-boardings 12 and 13 no leg, and leg L3 an airport with no record (SFO). The gold values come
+boardings 12 and 13 no leg, and leg L3 an airport with no record (SFO). Daily stock levels of
+regions: stock s3 has no region and s4 a region with no record (R9). The gold values come
 from SQL written independently of the engine (scalar subqueries and NOT EXISTS, no outer
 joins), run on the same database, and are also spelled out by hand.
 """
@@ -22,16 +23,15 @@ from __future__ import annotations
 
 import dataclasses
 import re
-import textwrap
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pytest
+import yaml
 
 from semantic_rails.compiler import compile_query
-from semantic_rails.config import load_package_config
 from semantic_rails.dialects import _WAREHOUSE_CONNECTORS
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
@@ -77,6 +77,14 @@ INSERT INTO checkins VALUES
   (6, 'P9', 'L3', TIMESTAMP '2026-02-12 06:00:00'),
   (7, 'P5', 'L9', TIMESTAMP '2026-02-20 06:00:00'),
   (8, 'P1', 'L2', TIMESTAMP '2026-01-20 06:00:00');
+CREATE TABLE regions (region_id VARCHAR, region_name VARCHAR);
+INSERT INTO regions VALUES ('R1', 'North'), ('R2', 'South');
+CREATE TABLE stock_levels (stock_id VARCHAR, region_id VARCHAR, snapshot_date DATE, level INTEGER);
+INSERT INTO stock_levels VALUES
+  ('s1', 'R1', DATE '2026-01-01', 10), ('s1', 'R1', DATE '2026-01-02', 12),
+  ('s2', 'R2', DATE '2026-01-01', 5), ('s2', 'R2', DATE '2026-01-02', 7),
+  ('s3', NULL, DATE '2026-01-01', 3), ('s3', NULL, DATE '2026-01-02', 4),
+  ('s4', 'R9', DATE '2026-01-02', 1);
 CREATE TABLE meals (meal_id INTEGER, boarding_id INTEGER, served_at TIMESTAMP)
 """
 
@@ -102,6 +110,9 @@ graph:
     boarding: {label: Boarding, key: [boarding_id], model: boardings}
     checkin: {label: Check-in, key: [checkin_id], model: checkins}
     meal: {label: Meal, key: [meal_id], model: meals}
+    region: {label: Region, key: [region_id], model: regions}
+    stock_level: {label: Stock level, key: [stock_id, snapshot_date], model: stock_levels,
+      allowed_as_root: true}
   # A boarding or a check-in also reaches a leg and a person through crew assignments, so
   # the package records what each question here means: the airport of the boarding's or
   # check-in's own leg, and a meal's boarding's leg, person and airport. (A boarding's own
@@ -124,83 +135,72 @@ graph:
       relationship_path: [meals_boarding, boardings_leg, legs_airport]
 """
 
+# Each model's id and relation are its name.
 MODELS = {
     "airports": """
-        model:
-          id: airports
-          relation: airports
-          entities: {airport: {}}
-          dimensions:
-            city: {label: City, kind: categorical}
+        entities: {airport: {}}
+        dimensions: {city: {label: City, kind: categorical}}
         """,
     "legs": """
-        model:
-          id: legs
-          relation: legs
-          entities: {leg: {}, airport: {}}
-          times:
-            departure_date: {label: Departure date, column: departure_date, kind: date,
-              class: event_time, supported_grains: [day, month]}
+        entities: {leg: {}, airport: {}}
+        times:
+          departure_date: {label: Departure date, column: departure_date, kind: date,
+            class: event_time, supported_grains: [day, month]}
         """,
     "people": """
-        model:
-          id: people
-          relation: people
-          entities: {person: {}}
-          dimensions:
-            full_name: {label: Name, kind: categorical}
-            is_employee: {label: Is employee, kind: boolean}
+        entities: {person: {}}
+        dimensions: {is_employee: {label: Is employee, kind: boolean}}
         """,
     "crew_roster": """
-        model:
-          id: crew_roster
-          relation: crew_roster
-          entities: {crew_assignment: {}, leg: {}, person: {}}
-          dimensions:
-            crew_role: {label: Crew role, kind: categorical}
+        entities: {crew_assignment: {}, leg: {}, person: {}}
+        dimensions: {crew_role: {label: Crew role, kind: categorical}}
         """,
     "boardings": """
-        model:
-          id: boardings
-          relation: boardings
-          entities: {boarding: {}, leg: {}, person: {}, crew_assignment: {}}
-          times:
-            boarded_at: {label: Boarded at, column: boarded_at, kind: timestamp,
-              class: event_time, supported_grains: [day, month], default: true}
-          measures:
-            boarding_count: {label: Boardings, kind: entity_count, entity_key: boarding_id,
-              accumulation: {kind: event}}
-            fare: {label: Fare, kind: aggregate, expr: fare, default_agg: sum,
-              accumulation: {kind: flow}}
-            boarding_population: {label: Boarding population, kind: entity_count,
-              entity_key: boarding_id, accumulation: {kind: population}}
-            departing_boardings: {label: Boardings by departure, kind: entity_count,
-              entity_key: boarding_id, accumulation: {kind: event},
-              times: [temporal_role.crew_leg_departure_date]}
+        entities: {boarding: {}, leg: {}, person: {}, crew_assignment: {}}
+        times:
+          boarded_at: {label: Boarded at, column: boarded_at, kind: timestamp,
+            class: event_time, supported_grains: [day, month], default: true}
+        measures:
+          boarding_count: {label: Boardings, kind: entity_count, entity_key: boarding_id,
+            accumulation: {kind: event}}
+          fare: {label: Fare, kind: aggregate, expr: fare, default_agg: sum,
+            accumulation: {kind: flow}}
+          boarding_population: {label: Boarding population, kind: entity_count,
+            entity_key: boarding_id, accumulation: {kind: population}}
+          departing_boardings: {label: Boardings by departure, kind: entity_count,
+            entity_key: boarding_id, accumulation: {kind: event},
+            times: [temporal_role.crew_leg_departure_date]}
         """,
     "checkins": """
-        model:
-          id: checkins
-          relation: checkins
-          entities: {checkin: {}, person: {}, leg: {}}
-          times:
-            checked_in_at: {label: Checked in at, column: checked_in_at, kind: timestamp,
-              class: event_time, supported_grains: [day, month], default: true}
-          measures:
-            checkin_count: {label: Check-ins, kind: entity_count, entity_key: checkin_id,
-              accumulation: {kind: event}}
+        entities: {checkin: {}, person: {}, leg: {}}
+        times:
+          checked_in_at: {label: Checked in at, column: checked_in_at, kind: timestamp,
+            class: event_time, supported_grains: [day, month], default: true}
+        measures:
+          checkin_count: {label: Check-ins, kind: entity_count, entity_key: checkin_id,
+            accumulation: {kind: event}}
         """,
     "meals": """
-        model:
-          id: meals
-          relation: meals
-          entities: {meal: {}, boarding: {}}
-          times:
-            served_at: {label: Served at, column: served_at, kind: timestamp,
-              class: event_time, supported_grains: [day, month], default: true}
-          measures:
-            meal_count: {label: Meals, kind: entity_count, entity_key: meal_id,
-              accumulation: {kind: event}}
+        entities: {meal: {}, boarding: {}}
+        times:
+          served_at: {label: Served at, column: served_at, kind: timestamp,
+            class: event_time, supported_grains: [day, month], default: true}
+        measures:
+          meal_count: {label: Meals, kind: entity_count, entity_key: meal_id,
+            accumulation: {kind: event}}
+        """,
+    "regions": """
+        entities: {region: {}}
+        dimensions: {region_name: {label: Region name, kind: categorical}}
+        """,
+    "stock_levels": """
+        entities: {stock_level: {}, region: {}}
+        times:
+          snapshot_date: {label: Snapshot date, column: snapshot_date, kind: date,
+            class: as_of_time, supported_grains: [day, month], default: true}
+        measures:
+          level: {label: Level, kind: aggregate, expr: level, default_agg: sum,
+            accumulation: {kind: stock, snapshot: end_of_period}}
         """,
 }
 
@@ -209,6 +209,7 @@ EMPLOYEE = "dimension.crew_person_is_employee"
 CITY = "dimension.crew_airport_city"
 LEG = "dimension.crew_leg_id"
 BOARDING = "dimension.crew_boarding_id"
+PERIOD = "period"  # the time bucket's column
 
 # Scalar subqueries read NULL where the lookup finds no row, independently of any join.
 SQL_ROLE = (
@@ -224,26 +225,26 @@ SQL_CITY = (
 
 def _write_package(root: Path, extra_seed: str = "") -> Path:
     pkg = root / "crew"
-    (pkg / "data").mkdir(parents=True)
-    (pkg / "models").mkdir()
+    (pkg / "models").mkdir(parents=True)
+    (pkg / "data").mkdir()
     (pkg / "data" / "seed.sql").write_text(SEED_SQL + extra_seed)
     (pkg / "package.yml").write_text(PACKAGE)
     (pkg / "graph.yml").write_text(GRAPH)
     for name, body in MODELS.items():
-        (pkg / "models" / f"{name}.yml").write_text(textwrap.dedent(body))
+        model = {"id": name, "relation": name, **yaml.safe_load(body)}
+        (pkg / "models" / f"{name}.yml").write_text(yaml.safe_dump({"model": model}))
     return pkg
 
 
-@pytest.fixture(scope="module")
-def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return _write_package(tmp_path_factory.mktemp("lookups"))
-
-
-@pytest.fixture(scope="module")
-def runtime(package: Path):
-    runtime = Runtime.from_path(str(package))
+def _runtime(root: Path, extra_seed: str = ""):
+    runtime = Runtime.from_path(str(_write_package(root, extra_seed)))
     yield opened(runtime)
     runtime.close()
+
+
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory: pytest.TempPathFactory):
+    yield from _runtime(tmp_path_factory.mktemp("lookups"))
 
 
 # A leg whose airport has a record but no city, with check-ins 9 (P6) and 10 (P7): boarding 14
@@ -263,11 +264,7 @@ INSERT INTO boardings VALUES
 
 @pytest.fixture(scope="module")
 def null_city_runtime(tmp_path_factory: pytest.TempPathFactory):
-    runtime = Runtime.from_path(
-        str(_write_package(tmp_path_factory.mktemp("null_city"), NULL_CITY_SEED))
-    )
-    yield opened(runtime)
-    runtime.close()
+    yield from _runtime(tmp_path_factory.mktemp("null_city"), NULL_CITY_SEED)
 
 
 # Person P8 has two boardings with no leg and one on a leg with no record (L8). A meal on the
@@ -289,28 +286,25 @@ INSERT INTO meals VALUES (1, 22, TIMESTAMP '2026-01-05 09:00:00'),
 
 @pytest.fixture(scope="module")
 def orphan_leg_runtime(tmp_path_factory: pytest.TempPathFactory):
-    runtime = Runtime.from_path(
-        str(_write_package(tmp_path_factory.mktemp("orphan_leg"), ORPHAN_LEG_SEED))
-    )
-    yield opened(runtime)
-    runtime.close()
+    yield from _runtime(tmp_path_factory.mktemp("orphan_leg"), ORPHAN_LEG_SEED)
 
 
 @pytest.fixture(scope="module")
 def gold():
-    connection = duckdb.connect()
-    connection.execute(SEED_SQL)
+    connections = {seed: duckdb.connect() for seed in ("", NULL_CITY_SEED)}
+    for seed, connection in connections.items():
+        connection.execute(SEED_SQL + seed)
 
-    def run(sql: str) -> dict[Any, float]:
-        return {row[0]: float(row[1]) for row in connection.execute(sql).fetchall()}
+    def run(sql: str, extra_seed: str = "") -> dict[Any, float]:
+        rows = connections[extra_seed].execute(sql).fetchall()
+        return {row[0]: float(row[1]) for row in rows}
 
     yield run
-    connection.close()
+    for connection in connections.values():
+        connection.close()
 
 
-def _ask(
-    runtime: Runtime, measure: str, *, group_by: str = "", where=()
-) -> dict[Any, float | None]:
+def _ask(runtime: Runtime, measure: str, *, group_by: str = "", where=()) -> dict[Any, float]:
     query: dict[str, Any] = {
         "select": [{"as": "value", "expression": f"measure.crew.{measure}"}],
         "where": list(where),
@@ -318,12 +312,7 @@ def _ask(
     if group_by:
         query["group_by"] = [group_by]
     rows = runtime.query(query)["rows"]
-    return {
-        row.get(group_by) if group_by else None: None
-        if row["value"] is None
-        else float(row["value"])
-        for row in rows
-    }
+    return {row.get(group_by) if group_by else None: float(row["value"]) for row in rows}
 
 
 def _conversion_query(properties: tuple[str, ...] = (), **extra: Any) -> dict[str, Any]:
@@ -402,81 +391,19 @@ def test_measures_folded_into_one_leaf_keep_the_rows_too(runtime, gold):
     )
 
 
-STOCK_SEED = """
-CREATE TABLE regions (region_id VARCHAR, region_name VARCHAR);
-INSERT INTO regions VALUES ('R1', 'North'), ('R2', 'South');
-CREATE TABLE stock_levels (stock_id VARCHAR, region_id VARCHAR, snapshot_date DATE, level INTEGER);
-INSERT INTO stock_levels VALUES
-  ('s1', 'R1', DATE '2026-01-01', 10), ('s1', 'R1', DATE '2026-01-02', 12),
-  ('s2', 'R2', DATE '2026-01-01', 5), ('s2', 'R2', DATE '2026-01-02', 7),
-  ('s3', NULL, DATE '2026-01-01', 3), ('s3', NULL, DATE '2026-01-02', 4),
-  ('s4', 'R9', DATE '2026-01-02', 1)
-"""
-
-STOCK_FILES = {
-    "package.yml": """
-        schema_version: 1
-        package:
-          id: stk
-          namespace: stk
-          warehouse: duckdb
-          default_db: data/stk.duckdb
-          seed: {kind: sql_script, source: data/seed.sql}
-        defaults:
-          dimension: {groupable: true, filterable: true}
-        """,
-    "graph.yml": """
-        graph:
-          entities:
-            region: {label: Region, key: [region_id], model: regions}
-            stock_level: {label: Stock level, key: [stock_id, snapshot_date],
-              model: stock_levels, allowed_as_root: true}
-        """,
-    "models/regions.yml": """
-        model:
-          id: regions
-          relation: regions
-          entities: {region: {}}
-          dimensions:
-            region_name: {label: Region name, kind: categorical}
-        """,
-    "models/stock_levels.yml": """
-        model:
-          id: stock_levels
-          relation: stock_levels
-          entities: {stock_level: {}, region: {}}
-          times:
-            snapshot_date: {label: Snapshot date, column: snapshot_date, kind: date,
-              class: as_of_time, supported_grains: [day, month], default: true}
-          measures:
-            level: {label: Level, kind: aggregate, expr: level, default_agg: sum,
-              accumulation: {kind: stock, snapshot: end_of_period}}
-        """,
-}
-
-
-def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
+def test_a_semi_additive_measure_keeps_the_rows_with_no_match(runtime):
     """A stock measure takes each stock's last snapshot of the month within a group, so a NULL
     group has snapshots of its own to pick from: stock s3 (no region) and s4 (a region with no
     record) are read at their last day and group under NULL."""
-    root = tmp_path / "stk"
-    (root / "data").mkdir(parents=True)
-    (root / "models").mkdir()
-    (root / "data" / "seed.sql").write_text(STOCK_SEED)
-    for name, body in STOCK_FILES.items():
-        (root / name).write_text(textwrap.dedent(body))
+    region = "dimension.crew_region_region_name"
     query = {
-        "select": [{"as": "value", "expression": "measure.stk.level"}],
-        "group_by": ["dimension.stk_region_region_name"],
-        "time": {"temporal_role": "temporal_role.stk_stock_level_snapshot_date", "grain": "month"},
+        "select": [{"as": "value", "expression": "measure.crew.level"}],
+        "group_by": [region],
+        "time": {"temporal_role": "temporal_role.crew_stock_level_snapshot_date", "grain": "month"},
     }
-    runtime = Runtime.from_path(str(root))
-    try:
-        rows = runtime.query(query)["rows"]
-    finally:
-        runtime.close()
 
-    by_region = {row["dimension.stk_region_region_name"]: row["value"] for row in rows}
+    by_region = {row[region]: row["value"] for row in runtime.query(query)["rows"]}
+
     assert by_region == {"North": 12, "South": 7, None: 5}  # s3 at 4, s4 at 1
     assert sum(by_region.values()) == 24  # each stock at its last snapshot
 
@@ -533,12 +460,10 @@ SQL_CHECKIN_CITY = (
     "(SELECT a.city FROM legs AS l, airports AS a"
     " WHERE l.leg_id = c.leg_id AND a.airport_code = l.airport_code)"
 )
-SQL_SAME_CITY = f"AND {SQL_CITY} = {SQL_CHECKIN_CITY}"
 
 
-def _conversion_gold(gold, *, group="NULL", same_city="", where=""):
-    sql = CONVERSION_SQL.format(group=group, same_city=same_city, where=where)
-    return gold(sql)
+def _conversion_sql(*, group: str = "NULL", same_city: str = "", where: str = "") -> str:
+    return CONVERSION_SQL.format(group=group, same_city=same_city, where=where)
 
 
 def test_conversion_does_not_pair_events_that_have_no_match_entity(runtime, gold):
@@ -546,12 +471,12 @@ def test_conversion_does_not_pair_events_that_have_no_match_entity(runtime, gold
     found no row must not pair with another such event (check-in 2 with boarding 7, 6 with 8)."""
     (row,) = _conversion_rate(runtime)
     assert row["rate"] == pytest.approx(4 / 6)
-    assert row["rate"] == pytest.approx(_conversion_gold(gold)[None])
+    assert row["rate"] == pytest.approx(gold(_conversion_sql())[None])
 
     by_employee = _conversion_rate(runtime, group_by=[EMPLOYEE])
     rates = {row[EMPLOYEE]: row["rate"] for row in by_employee}
     assert rates == {False: pytest.approx(0.75), True: pytest.approx(0.5)}  # 1, 7, 8 of 1, 3, 7, 8
-    assert rates == pytest.approx(_conversion_gold(gold, group=SQL_CHECKIN_EMPLOYEE))
+    assert rates == pytest.approx(gold(_conversion_sql(group=SQL_CHECKIN_EMPLOYEE)))
 
 
 def test_conversion_does_not_pair_events_on_a_property_that_has_no_match(runtime, gold):
@@ -562,37 +487,34 @@ def test_conversion_does_not_pair_events_on_a_property_that_has_no_match(runtime
     (row,) = _conversion_rate(runtime, (CITY,))
 
     assert row["rate"] == pytest.approx(1.0)
-    reference = _conversion_gold(
-        gold, same_city=SQL_SAME_CITY, where=f"AND {SQL_CHECKIN_CITY} IS NOT NULL"
+    reference = gold(
+        _conversion_sql(
+            same_city=f"AND {SQL_CITY} = {SQL_CHECKIN_CITY}",
+            where=f"AND {SQL_CHECKIN_CITY} IS NOT NULL",
+        )
     )
     assert reference[None] == pytest.approx(1.0)
 
 
-def test_conversion_pairs_on_a_matched_lookup_whose_property_is_null(null_city_runtime):
+def test_conversion_pairs_on_a_matched_lookup_whose_property_is_null(null_city_runtime, gold):
     """The lookup matched but the property is NULL, as it is on the event's own entity: check-in
     9 pairs with boarding 14 (both at an airport with no city) and not with boarding 15 (Chicago).
     Check-ins 5 and 7, whose lookups found nothing, still take no part."""
-    connection = duckdb.connect()
-    connection.execute(SEED_SQL + NULL_CITY_SEED)
     # A leg whose airport row exists: its city, NULL or not, is a match.
     matched = "SELECT l.leg_id FROM legs AS l JOIN airports AS a ON a.airport_code = l.airport_code"
-    reference = connection.execute(
-        f"""
-        SELECT AVG(CASE WHEN EXISTS (
-          SELECT 1 FROM boardings AS b WHERE b.person_id = c.person_id
-          AND b.boarded_at >= c.checked_in_at AND b.boarded_at < c.checked_in_at + INTERVAL 1 DAY
-          AND b.leg_id IN ({matched}) AND {SQL_CITY} IS NOT DISTINCT FROM {SQL_CHECKIN_CITY}
-        ) THEN 1.0 ELSE 0.0 END)
-        FROM checkins AS c WHERE c.leg_id IN ({matched})
-          AND c.person_id IN (SELECT person_id FROM people)
-        """
-    ).fetchone()
-    connection.close()
+    reference = gold(
+        _conversion_sql(
+            same_city=f"AND b.leg_id IN ({matched})"
+            f" AND {SQL_CITY} IS NOT DISTINCT FROM {SQL_CHECKIN_CITY}",
+            where=f"AND c.leg_id IN ({matched})",
+        ),
+        NULL_CITY_SEED,
+    )
 
     (row,) = _conversion_rate(null_city_runtime, (CITY,))
 
     assert row["rate"] == pytest.approx(0.75)  # check-ins 1, 8 and 9 convert, 10 doesn't
-    assert reference is not None and reference[0] == pytest.approx(row["rate"])
+    assert reference[None] == pytest.approx(row["rate"])
 
 
 def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, gold):
@@ -607,74 +529,53 @@ def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, 
     (row,) = _conversion_rate(runtime, where=[busy_legs])
 
     busy = "SELECT leg_id FROM boardings GROUP BY leg_id HAVING COUNT(*) >= 2"
-    reference = _conversion_gold(gold, where=f"AND c.leg_id IN ({busy})")[None]
+    reference = gold(_conversion_sql(where=f"AND c.leg_id IN ({busy})"))[None]
     assert row["rate"] == pytest.approx(1.0)  # check-ins 1, 5 and 8 qualify, and convert
     assert reference == pytest.approx(row["rate"])
 
 
-# ClickHouse reads '' or 0 (not NULL) from an unmatched outer-join column unless it is
-# Nullable, so its lookups stay inner joins and drop the rows they find no match for.
-JOIN_TYPE = {
-    "duckdb": "LEFT",
-    "motherduck": "LEFT",
-    "ducklake": "LEFT",
-    "postgres": "LEFT",
-    "snowflake": "LEFT",
-    "bigquery": "LEFT",
-    "databricks": "LEFT",
-    "athena": "LEFT",
-    "clickhouse": "INNER",
-}
+# One warehouse per dialect family: DuckDB and DuckLake render as MotherDuck does.
+FAMILIES = ["motherduck", "postgres", "snowflake", "bigquery", "databricks", "athena", "clickhouse"]
 
 
-def test_every_warehouse_has_a_lookup_join_type():
-    assert set(JOIN_TYPE) == set(_WAREHOUSE_CONNECTORS)
-
-
-# One warehouse per dialect family.
-@pytest.mark.parametrize(
-    "warehouse",
-    ["motherduck", "postgres", "snowflake", "bigquery", "databricks", "athena", "clickhouse"],
-)
-def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
-    base = load_package_config(str(package))
-    config = dataclasses.replace(
-        base, package=dataclasses.replace(base.package, warehouse=warehouse)
-    )
+def test_the_dialect_decides_the_lookup_join_type(runtime):
+    """ClickHouse reads '' or 0 (not NULL) from an unmatched outer-join column unless it is
+    Nullable, so its lookups stay inner joins and drop the rows they find no match for."""
+    assert {*FAMILIES, "duckdb", "ducklake"} == set(_WAREHOUSE_CONNECTORS)
     query = {
         "select": [{"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}],
         "group_by": [CITY],
         "where": [{"field": ROLE, "op": "missing", "value": True}],
         "observation_scope": "query",  # the leaf's joins alone, without a dataset probe's
     }
+    for warehouse in FAMILIES:
+        package = dataclasses.replace(runtime.config.package, warehouse=warehouse)
+        config = dataclasses.replace(runtime.config, package=package)
 
-    sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
+        sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
 
-    # The roster, the leg and the airport: three lookup hops.
-    assert re.findall(r"\b(\w+) JOIN\b", sql) == [JOIN_TYPE[warehouse]] * 3
+        # The roster, the leg and the airport: three lookup hops.
+        join_type = "INNER" if warehouse == "clickhouse" else "LEFT"
+        assert re.findall(r"\b(\w+) JOIN\b", sql) == [join_type] * 3, warehouse
 
 
-BOARDED_MONTH = "period"
 BOARDED_MONTHLY = {"temporal_role": "temporal_role.crew_boarding_boarded_at", "grain": "month"}
 DEPARTED_MONTHLY = {"temporal_role": "temporal_role.crew_leg_departure_date", "grain": "month"}
 LOOKUP_TABLES = ("airports", "legs", "people", "crew_roster")
 
 
-def _busy_leg(measure: str, boardings: int) -> dict[str, Any]:
-    return {
-        "measure": f"measure.crew.{measure}",
-        "entity": "entity.crew_leg",
-        "op": ">=",
-        "value": boardings,
-    }
-
-
-def _scoped(measure: str, *predicates: dict[str, Any]) -> dict[str, Any]:
+def _on_busy(measure: str, *minimums: int, entity: str = "leg") -> dict[str, Any]:
+    """The ``measure``'s distinct count over each ``entity`` with each of ``minimums`` or more."""
+    measure = f"measure.crew.{measure}"
+    predicates = [
+        {"measure": measure, "entity": f"entity.crew_{entity}", "op": ">=", "value": minimum}
+        for minimum in minimums
+    ]
     return {
         "kind": "scoped_aggregate",
-        "measure": f"measure.crew.{measure}",
+        "measure": measure,
         "aggregation": "count_distinct",
-        "predicates": list(predicates),
+        "predicates": predicates,
     }
 
 
@@ -687,14 +588,15 @@ def _monthly_query(expression: Any, *, group_by=(), time=None) -> dict[str, Any]
     }
 
 
-def _contextual_person_filter(measure: str, boardings: int) -> dict[str, Any]:
+def _metric_filter(entity: str, scope_mode: str, op: str, boardings: int) -> dict[str, Any]:
+    """The engine's metric filter on the ``entity``'s boarding count."""
     return {
         "expression": {
             "kind": "metric_predicate",
-            "entity": "entity.crew_person",
-            "scope_mode": "contextual",
-            "input": {"measure": f"measure.crew.{measure}"},
-            "op": "=",
+            "entity": f"entity.crew_{entity}",
+            "scope_mode": scope_mode,
+            "input": {"measure": "measure.crew.boarding_count"},
+            "op": op,
             "value": boardings,
         },
         "op": "=",
@@ -702,12 +604,11 @@ def _contextual_person_filter(measure: str, boardings: int) -> dict[str, Any]:
     }
 
 
-def _ratio_of_busy_legs() -> dict[str, Any]:
-    measure = "boarding_population"  # a population count takes the anchored entity-set path
+def _of_people_with_two_boardings(measure: str, group_by: str) -> dict[str, Any]:
     return {
-        "kind": "ratio",
-        "numerator": _scoped(measure, _busy_leg(measure, 1), _busy_leg(measure, 2)),
-        "denominator": _scoped(measure, _busy_leg(measure, 1)),
+        "select": [{"as": "value", "expression": {"measure": f"measure.crew.{measure}"}}],
+        "group_by": [group_by],
+        "metric_filters": [_metric_filter("person", "contextual", "=", 2)],
     }
 
 
@@ -716,45 +617,30 @@ def _lookup_left_joins(config, query: dict[str, Any]) -> list[str]:
     return re.findall(rf"LEFT JOIN ({'|'.join(LOOKUP_TABLES)})\b", sql)
 
 
-def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime):
-    """Departing boardings by month of the leg's departure, grouped by the boarder's kind. The
-    leg is what the time role reads, so a boarding with no leg record (11, 12, 13) has no
-    month: it stays out, as before, and no NULL time bucket appears. The person hop, which only
-    the grouping reads, keeps its rows (boardings 7 and 8, under NULL)."""
+@pytest.mark.parametrize(
+    ("group_by", "expected"),
+    [
+        # The person hop, which only the grouping reads, keeps its rows: boardings 7 and 8.
+        (EMPLOYEE, {(False, 1): 3, (True, 1): 3, (None, 1): 1, (True, 2): 2, (None, 2): 1}),
+        # The airport city is read through the leg, which the time role reads too: the leg hop
+        # is inner, the airport hop keeps its rows (boardings 8-10, whose airport has no record).
+        (CITY, {("New York", 1): 4, ("Chicago", 1): 3, (None, 2): 3}),
+    ],
+    ids=["own-hop", "hop-shared-with-the-time-role"],
+)
+def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, group_by, expected):
+    """Departing boardings by month of the leg's departure. The leg is what the time role reads,
+    so a boarding with no leg record (11, 12, 13) has no month: it stays out, as before, and no
+    NULL time bucket appears."""
     query = _monthly_query(
-        "measure.crew.departing_boardings", group_by=[EMPLOYEE], time=DEPARTED_MONTHLY
+        "measure.crew.departing_boardings", group_by=[group_by], time=DEPARTED_MONTHLY
     )
 
     rows = runtime.query(query)["rows"]
 
-    role = "period"
-    assert all(row[role] is not None for row in rows)
-    assert sum(row["value"] for row in rows) == 10  # boardings 1-10
     assert {
-        (row[EMPLOYEE], datetime.fromisoformat(row[role]).month): row["value"] for row in rows
-    } == {
-        (False, 1): 3,
-        (True, 1): 3,
-        (None, 1): 1,  # boarding 7
-        (True, 2): 2,
-        (None, 2): 1,  # boarding 8
-    }
-
-
-def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime):
-    """The airport city is read through the leg, which the time role reads too: the leg hop is
-    inner, the airport hop only the grouping reads keeps its rows (boardings 8-10, whose
-    airport has no record, group under NULL)."""
-    query = _monthly_query(
-        "measure.crew.departing_boardings", group_by=[CITY], time=DEPARTED_MONTHLY
-    )
-
-    rows = runtime.query(query)["rows"]
-
-    by_city: dict[Any, int] = {}
-    for row in rows:
-        by_city[row[CITY]] = by_city.get(row[CITY], 0) + row["value"]
-    assert by_city == {"New York": 4, "Chicago": 3, None: 3}  # boardings 1-10
+        (row[group_by], datetime.fromisoformat(row[PERIOD]).month): row["value"] for row in rows
+    } == expected
 
 
 @pytest.mark.parametrize(
@@ -765,12 +651,9 @@ def test_a_dimension_only_query_keeps_the_time_role_inner(runtime, gold, group_b
     record (11, 12, 13) has no month: it stays out, as the time role does in every leaf, and
     never shows a NULL month. The airport hop, which only the grouping reads, keeps its rows
     (boardings 8-10, whose airport has no record, under NULL)."""
-    query = {"group_by": group_by, "time": DEPARTED_MONTHLY}
+    rows = runtime.query({"group_by": group_by, "time": DEPARTED_MONTHLY})["rows"]
 
-    rows = runtime.query(query)["rows"]
-
-    role = "period"
-    months = {row[BOARDING]: datetime.fromisoformat(row[role]).month for row in rows}
+    months = {row[BOARDING]: datetime.fromisoformat(row[PERIOD]).month for row in rows}
     assert months == gold(
         "SELECT b.boarding_id, (SELECT MONTH(l.departure_date) FROM legs AS l"
         " WHERE l.leg_id = b.leg_id) FROM boardings AS b"
@@ -778,8 +661,7 @@ def test_a_dimension_only_query_keeps_the_time_role_inner(runtime, gold, group_b
     )
     assert set(months) == set(range(1, 11))
     if CITY in group_by:
-        cities = {row[BOARDING]: row[CITY] for row in rows}
-        assert cities == {
+        assert {row[BOARDING]: row[CITY] for row in rows} == {
             **dict.fromkeys(range(1, 5), "New York"),
             **dict.fromkeys(range(5, 8), "Chicago"),
             **dict.fromkeys(range(8, 11), None),
@@ -791,9 +673,7 @@ def test_a_metric_filter_matches_its_set_on_its_context_entity(runtime, gold):
     person is a context entity of the filter. The filter's set is matched on the person, so a
     boarding whose person lookup found nothing (7 and 8) has no set to be in: it stays out, as
     before, although the person hop joins LEFT like every grouping's."""
-    query = _monthly_query(
-        _scoped("boarding_count", _busy_leg("boarding_count", 1)), group_by=[EMPLOYEE]
-    )
+    query = _monthly_query(_on_busy("boarding_count", 1), group_by=[EMPLOYEE])
 
     rows = runtime.query_internal(query)["rows"]
 
@@ -811,9 +691,16 @@ def test_an_entity_set_ratio_keeps_the_inner_join(runtime):
     """Of each month's boardings on a leg, the share on a leg with two boardings or more that
     month. Boardings 12 and 13 have no leg, so no set qualifies them: March's share is 0.0, as
     the inner joins have always answered, and never the 1.0 a NULL key in the set would give."""
-    rows = runtime.query_internal(_monthly_query(_ratio_of_busy_legs()))["rows"]
+    population = "boarding_population"  # a population count takes the anchored entity-set path
+    ratio = {
+        "kind": "ratio",
+        "numerator": _on_busy(population, 1, 2),
+        "denominator": _on_busy(population, 1),
+    }
 
-    months = {datetime.fromisoformat(row[BOARDED_MONTH]).month: row["value"] for row in rows}
+    rows = runtime.query_internal(_monthly_query(ratio))["rows"]
+
+    months = {datetime.fromisoformat(row[PERIOD]).month: row["value"] for row in rows}
     # January: legs L1 (4) and L2 (3), all qualify. February: L3 (3) qualifies, L9 (1) doesn't.
     assert months == {1: pytest.approx(7 / 7), 2: pytest.approx(3 / 4), 3: 0.0}
 
@@ -825,22 +712,17 @@ def test_a_contextual_filter_read_through_a_lookup_does_not_pair_with_a_null_gro
     from the leg, so its leg is read through the leg table. Meal 1 is on boarding 22 (leg L8, no
     record): it reads NULL there, and must not pair with P8's two boardings with no leg, which
     the filter's set holds under NULL. Only P10's meal on L1 qualifies."""
-    query = {
-        "select": [{"as": "value", "expression": {"measure": "measure.crew.meal_count"}}],
-        "group_by": [LEG],
-        "metric_filters": [_contextual_person_filter("boarding_count", 2)],
-    }
+    query = _of_people_with_two_boardings("meal_count", LEG)
 
     rows = orphan_leg_runtime.query_internal(query)["rows"]
 
     assert {row[LEG]: row["value"] for row in rows} == {"L1": 1}
 
 
-def test_a_dimension_a_rollup_holds_keeps_the_inner_join(package):
+def test_a_dimension_a_rollup_holds_keeps_the_inner_join(runtime):
     """The base tables answer as a rollup that pre-joined the dimension does, so routing never
     changes an answer: a rollup of the boardings that holds the airport city keeps every
     lookup of that city inner, however the query reaches it."""
-    base = load_package_config(str(package))
     rollup = AggregateRelationConfig(
         id="aggregate_relation.city",
         relation="boardings_by_city",
@@ -852,71 +734,33 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(package):
         "group_by": [CITY, EMPLOYEE],
     }
 
-    with_rollup = dataclasses.replace(base, aggregate_relations=[rollup])
+    with_rollup = dataclasses.replace(runtime.config, aggregate_relations=[rollup])
 
-    assert _lookup_left_joins(base, query) == ["legs", "airports", "people"]
+    assert _lookup_left_joins(runtime.config, query) == ["legs", "airports", "people"]
     assert _lookup_left_joins(with_rollup, query) == ["people"]
 
 
 # The conversions and the entity-set ratio above check their rows; these reads check the join.
 @pytest.mark.parametrize(
-    "query",
+    ("query", "left_joins"),
     [
-        pytest.param(
-            _conversion_query(
-                metric_filters=[
-                    {
-                        "expression": {
-                            "kind": "metric_predicate",
-                            "entity": "entity.crew_leg",
-                            "scope_mode": "entity_only",
-                            "input": {"measure": "measure.crew.boarding_count"},
-                            "op": ">=",
-                            "value": 2,
-                        },
-                        "op": "=",
-                        "value": True,
-                    }
-                ]
-            ),
-            id="conversion-predicate-set",
-        ),
-        pytest.param(
-            _monthly_query(_scoped("boarding_count", _busy_leg("boarding_count", 1))),
-            id="qualified-set",
-        ),
-        pytest.param(
-            # The set's own query groups by the airport, read through the leg: a nested query.
-            _monthly_query(
-                _scoped(
-                    "boarding_count",
-                    {**_busy_leg("boarding_count", 1), "entity": "entity.crew_airport"},
-                )
-            ),
-            id="nested-query-of-a-qualified-set",
-        ),
+        (_conversion_query(metric_filters=[_metric_filter("leg", "entity_only", ">=", 2)]), []),
+        (_monthly_query(_on_busy("boarding_count", 1)), []),
+        # The set's own query groups by the airport, read through the leg: a nested query.
+        (_monthly_query(_on_busy("boarding_count", 1, entity="airport")), []),
+        # A metric filter leaves the query's own lookups LEFT. Its route to the person walks
+        # the boarding hop, which stays inner; the leg is its context entity, matched in its
+        # set (see the orphan-leg test above).
+        (_of_people_with_two_boardings("meal_count", LEG), ["legs"]),
+        (_of_people_with_two_boardings("boarding_count", EMPLOYEE), ["people"]),
+    ],
+    ids=[
+        "conversion-predicate-set",
+        "qualified-set",
+        "nested-query-of-a-qualified-set",
+        "metric-filter-context",
+        "metric-filter-entity-grouped",
     ],
 )
-def test_every_other_read_of_a_lookup_keeps_the_inner_join(package, query):
-    assert _lookup_left_joins(load_package_config(str(package)), query) == []
-
-
-@pytest.mark.parametrize(
-    ("measure", "group_by", "left_joins"),
-    [
-        # The filter's route to the person walks the boarding hop, which stays inner; the leg
-        # is its context entity, matched in its set (see the orphan-leg test above).
-        pytest.param("meal_count", LEG, ["legs"], id="metric-filter-context"),
-        pytest.param("boarding_count", EMPLOYEE, ["people"], id="metric-filter-entity-grouped"),
-    ],
-)
-def test_a_metric_filter_leaves_the_query_s_own_lookups_left(
-    package, measure, group_by, left_joins
-):
-    query = {
-        "select": [{"as": "value", "expression": {"measure": f"measure.crew.{measure}"}}],
-        "group_by": [group_by],
-        "metric_filters": [_contextual_person_filter("boarding_count", 2)],
-    }
-
-    assert _lookup_left_joins(load_package_config(str(package)), query) == left_joins
+def test_every_other_read_of_a_lookup_keeps_the_inner_join(runtime, query, left_joins):
+    assert _lookup_left_joins(runtime.config, query) == left_joins
