@@ -273,13 +273,6 @@ def _input_expression_kind(raw: Any) -> str:
     """
     if not isinstance(raw, dict):
         return ""
-    kind = str(raw.get("kind", "")).strip()
-    return kind
-
-
-def _compiled_expression_kind(raw: Any) -> str:
-    if not isinstance(raw, dict):
-        return ""
     return str(raw.get("kind", "")).strip()
 
 
@@ -358,7 +351,7 @@ def _expression_normalized_away_warnings(
                 )
             )
             continue
-        compiled_kind = _compiled_expression_kind(compiled_expr)
+        compiled_kind = _input_expression_kind(compiled_expr)
         if compiled_kind != original_kind:
             warnings.append(
                 semantic_issue(
@@ -381,11 +374,7 @@ def _expression_normalized_away_warnings(
     # Position: metric_filters — there is no direct surviving "compiled"
     # field for these in post_aggregation_exprs, so we check the
     # normalized query echoed back in the explain payload.
-    normalized = getattr(getattr(logical_plan, "query", None), "get", lambda *_: None)
-    if callable(normalized):
-        norm_query = logical_plan.query if hasattr(logical_plan, "query") else {}
-    else:
-        norm_query = {}
+    norm_query = getattr(logical_plan, "query", {})
     raw_filters = list(payload.get("metric_filters", []) or [])
     norm_filters = list(dict(norm_query or {}).get("metric_filters", []) or [])
     for index, item in enumerate(raw_filters):
@@ -399,7 +388,7 @@ def _expression_normalized_away_warnings(
         compiled_expr = (
             (compiled_item or {}).get("expression", {}) if isinstance(compiled_item, dict) else {}
         )
-        compiled_kind = _compiled_expression_kind(compiled_expr)
+        compiled_kind = _input_expression_kind(compiled_expr)
         if compiled_kind != original_kind:
             warnings.append(
                 semantic_issue(
