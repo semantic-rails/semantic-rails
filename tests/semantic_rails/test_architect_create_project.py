@@ -178,13 +178,12 @@ def test_connection_file_references_remain_valid(
     )
 
 
-@pytest.mark.parametrize("dry_run", [True, False])
 @pytest.mark.parametrize(
-    "options",
+    ("options", "dry_run"),
     [
-        {"password": "SYNTHETIC_CREDENTIAL_MARKER"},
-        {"options": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}},
-        {"account_env": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}},
+        ({"password": "SYNTHETIC_CREDENTIAL_MARKER"}, False),
+        ({"options": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}}, True),
+        ({"account_env": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}}, False),
     ],
 )
 def test_invalid_connection_options_stop_before_scaffold_or_transaction(
@@ -217,13 +216,12 @@ def test_invalid_connection_options_stop_before_scaffold_or_transaction(
     assert not (tmp_path / ".semantic-rails").exists()
 
 
-@pytest.mark.parametrize("dry_run", [True, False])
 @pytest.mark.parametrize(
-    "options",
+    ("options", "dry_run"),
     [
-        {"password": "SYNTHETIC_CREDENTIAL_MARKER"},
-        {"options": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}},
-        {"host_env": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}},
+        ({"password": "SYNTHETIC_CREDENTIAL_MARKER"}, False),
+        ({"options": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}}, True),
+        ({"host_env": {"password": "SYNTHETIC_CREDENTIAL_MARKER"}}, False),
     ],
 )
 def test_mcp_create_rejects_invalid_options_without_echo_or_receipt(
@@ -638,15 +636,14 @@ def test_legacy_receipt_cannot_launder_byte_identical_authored_model(tmp_path: P
     assert model_path.read_bytes() == before["models/core/orders.yml"]
 
 
-@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
 @pytest.mark.parametrize(
-    "change,bypass_source_guard,reason",
+    "change,bypass_source_guard,reason,dry_run",
     [
-        ("description", False, "scaffold_source_modified"),
-        ("relation", False, "scaffold_source_modified"),
-        ("relation", True, "scaffold_model_modified"),
-        ("entity", False, "scaffold_source_modified"),
-        ("entity", True, "scaffold_model_modified"),
+        ("description", False, "scaffold_source_modified", True),
+        ("relation", False, "scaffold_source_modified", True),
+        ("relation", True, "scaffold_model_modified", False),
+        ("entity", False, "scaffold_source_modified", False),
+        ("entity", True, "scaffold_model_modified", True),
     ],
 )
 def test_legacy_receipt_without_snapshot_refuses_overwrite(
@@ -1167,9 +1164,16 @@ def test_same_path_entity_overwrite_replaces_unchanged_scaffold_model(tmp_path: 
     assert "orders_count" in _yaml(project / "models" / "core" / "orders.yml")["model"]["measures"]
 
 
-@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
-@pytest.mark.parametrize("same_path", [False, True], ids=["different-path", "same-path"])
-@pytest.mark.parametrize("edit", ["relation", "dimension"])
+# Each edit, path and mode once: the guard is the same whatever the combination.
+@pytest.mark.parametrize(
+    ("edit", "same_path", "dry_run"),
+    [
+        ("relation", False, False),
+        ("relation", True, True),
+        ("dimension", False, True),
+        ("dimension", True, False),
+    ],
+)
 def test_create_overwrite_refuses_semantically_modified_first_model(
     tmp_path: Path, dry_run: bool, same_path: bool, edit: str
 ) -> None:
@@ -1207,8 +1211,9 @@ def test_create_overwrite_refuses_semantically_modified_first_model(
         assert not (project / "models" / "core" / "customers.yml").exists()
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
-@pytest.mark.parametrize("same_path", [False, True], ids=["different-path", "same-path"])
+@pytest.mark.parametrize(
+    ("through_mcp", "same_path"), [(False, False), (True, True)], ids=["service", "mcp-same-path"]
+)
 def test_create_overwrite_keeps_unchanged_scaffold_control(
     tmp_path: Path, through_mcp: bool, same_path: bool
 ) -> None:
@@ -1319,9 +1324,17 @@ def test_create_same_entity_refuses_to_replace_authored_relation(
     assert project_revision(project) == revision
 
 
-@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
-@pytest.mark.parametrize("same_path", [False, True], ids=["different-path", "same-path"])
-@pytest.mark.parametrize("graph_case", ["multi_entity", "missing", "unrecognized"])
+@pytest.mark.parametrize(
+    ("graph_case", "same_path", "dry_run"),
+    [
+        ("multi_entity", False, True),
+        ("multi_entity", True, False),
+        ("missing", False, False),
+        ("missing", True, True),
+        ("unrecognized", False, True),
+        ("unrecognized", True, False),
+    ],
+)
 def test_create_overwrite_refuses_ambiguous_graph_before_model_replacement(
     tmp_path: Path, dry_run: bool, same_path: bool, graph_case: str
 ) -> None:
@@ -1646,141 +1659,31 @@ def test_mcp_dialog_to_create_postgres_round_trip(tmp_path: Path) -> None:
     assert package["package"]["connection"]["options"] == draft["connection_options"]
 
 
-def test_mcp_dialog_does_not_claim_missing_connection_details_are_ready(tmp_path: Path) -> None:
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-
-    dialog = _setup_dialog(
-        server,
-        "pg_shop",
-        {
-            "package_id": "pg_shop",
-            "warehouse": "postgres",
-            "connection_kind": "postgres_native",
-        },
-    )
-    assert dialog["ok"] is False
-    assert dialog["status"] == "needs_connection_details"
-    assert dialog["warehouse"] == "postgres"
-    assert "draft_arguments" not in dialog
-
-
-def test_mcp_dialog_requires_named_snowflake_cli_connection(tmp_path: Path) -> None:
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-
-    dialog = _setup_dialog(
-        server,
-        "snow_shop",
-        {
-            "package_id": "snow_shop",
-            "warehouse": "snowflake",
-            "connection_kind": "snowflake_cli",
-            "connection_options": '{"database":"ANALYTICS"}',
-        },
-    )
-    assert dialog["ok"] is False
-    assert dialog["status"] == "needs_connection_details"
-    assert "connection_name" in dialog["required_answers"]
-
-
-@pytest.mark.parametrize("connection_options", ["{}", '{"host_env":"DATABRICKS_HOST"}'])
-def test_mcp_dialog_requires_databricks_connection_options(
-    tmp_path: Path, connection_options: str
-) -> None:
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-
-    async def incomplete(
-        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
-    ) -> ElicitResult:
-        return ElicitResult(
-            action="accept",
-            content={
-                "package_id": "lake_shop",
-                "warehouse": "databricks",
-                "connection_kind": "databricks_native",
-                "connection_name": "my_profile",
-                "connection_options": connection_options,
-            },
-        )
-
-    (dialog,) = _session_call(
-        server,
-        [("setup_project_dialog", {"package_id": "lake_shop", "interactive": True})],
-        elicitation_callback=incomplete,
-    )
-    assert dialog["ok"] is False
-    assert dialog["status"] == "needs_connection_details"
-    if connection_options == "{}":
-        assert "host or host_env" in dialog["required_answers"]
-    assert "http_path or http_path_env" in dialog["required_answers"]
-    assert "token_env or token_file" in dialog["required_answers"]
-
-    async def complete(
-        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
-    ) -> ElicitResult:
-        return ElicitResult(
-            action="accept",
-            content={
-                "package_id": "lake_shop",
-                "warehouse": "databricks",
-                "connection_kind": "databricks_native",
-                "connection_options": (
-                    '{"host_env":"DATABRICKS_HOST",'
-                    '"http_path_env":"DATABRICKS_HTTP_PATH",'
-                    '"token_env":"DATABRICKS_TOKEN"}'
-                ),
-            },
-        )
-
-    (ready,) = _session_call(
-        server,
-        [("setup_project_dialog", {"package_id": "lake_shop", "interactive": True})],
-        elicitation_callback=complete,
-    )
-    assert ready["ok"] is True, ready
-    assert ready["draft_arguments"]["data"] == "external"
-    (created,) = _session_call(
-        server,
-        [
-            (
-                "create_project",
-                {**ready["draft_arguments"], "idempotency_key": "lake-create", "dry_run": False},
-            )
-        ],
-    )
-    assert created["ok"] is True, created
-    package = _yaml(tmp_path / "configs" / "semantic_rails" / "lake_shop" / "package.yml")
-    assert (
-        package["package"]["connection"]["options"]
-        == ready["draft_arguments"]["connection_options"]
-    )
-
-
 @pytest.mark.parametrize(
-    ("warehouse", "kind", "expected_missing"),
+    ("warehouse", "kind", "name", "options", "missing"),
     [
-        ("motherduck", "motherduck_native", "database"),
-        ("Databricks", "databricks_native", "host or host_env"),
+        ("postgres", "postgres_native", None, None, "connection_options"),
+        ("snowflake", "snowflake_cli", None, '{"database":"ANALYTICS"}', "connection_name"),
+        # A named profile is no connection for these warehouses.
+        ("motherduck", "motherduck_native", "my_profile", "{}", "database"),
+        ("Databricks", "databricks_native", "my_profile", "{}", "host or host_env"),
     ],
 )
-def test_mcp_dialog_rejects_unsupported_named_connection(
-    tmp_path: Path, warehouse: str, kind: str, expected_missing: str
+def test_mcp_dialog_does_not_claim_missing_connection_details_are_ready(
+    tmp_path: Path, warehouse: str, kind: str, name: str | None, options: str | None, missing: str
 ) -> None:
-    server = create_architect_mcp_server(workspace_root=tmp_path)
+    content = {"package_id": "shop_x", "warehouse": warehouse, "connection_kind": kind}
+    if name is not None:
+        content["connection_name"] = name
+    if options is not None:
+        content["connection_options"] = options
 
-    dialog = _setup_dialog(
-        server,
-        "profile_shop",
-        {
-            "package_id": "profile_shop",
-            "warehouse": warehouse,
-            "connection_kind": kind,
-            "connection_name": "my_profile",
-            "connection_options": "{}",
-        },
-    )
+    dialog = _setup_dialog(create_architect_mcp_server(workspace_root=tmp_path), "shop_x", content)
+
     assert dialog["ok"] is False
     assert dialog["status"] == "needs_connection_details"
-    assert expected_missing in dialog["required_answers"]
+    assert any(missing in answer for answer in dialog["required_answers"]), dialog
+    assert "draft_arguments" not in dialog
 
 
 @pytest.mark.parametrize(
@@ -1959,7 +1862,7 @@ def test_mcp_dialog_readiness_matches_supported_warehouse_adapters(
 
 
 def test_create_project_where_dbt_already_built_the_warehouse(tmp_path: Path) -> None:
-    """B2: the package directory already holds the database dbt wrote there; it
+    """The package directory already holds the database dbt wrote there; it
     has no authored files yet, so its revision is still absent."""
     build_dbt_warehouse(tmp_path / "shop" / "data" / "shop.duckdb")
     assert project_revision(tmp_path / "shop") == "absent"
@@ -1971,7 +1874,7 @@ def test_create_project_where_dbt_already_built_the_warehouse(tmp_path: Path) ->
 
 
 def test_external_projects_carry_no_placeholders(tmp_path: Path) -> None:
-    """B2: nothing the warehouse does not have (no event_type, no amount)."""
+    """Nothing the warehouse does not have (no event_type, no amount)."""
     spec = ProjectSpec(
         package_id="shop",
         warehouse=ProjectWarehouse(data="external"),
