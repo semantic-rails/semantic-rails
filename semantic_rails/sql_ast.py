@@ -456,6 +456,14 @@ class SqlCallWithOrder:
     ignore_nulls: bool = False
 
 
+@dataclass(frozen=True)
+class SqlAggregateFilter:
+    """``call FILTER (WHERE where)``: an aggregate that reads only the rows ``where`` keeps."""
+
+    call: SqlExpr
+    where: SqlExpr
+
+
 _INDEX_WRAPPERS = frozenset({"", "OFFSET", "ORDINAL", "SAFE_OFFSET"})
 
 
@@ -518,6 +526,7 @@ SqlExpr = (
     | SqlWindow
     | SqlWithinGroup
     | SqlCallWithOrder
+    | SqlAggregateFilter
     | SqlIndexAccess
     | SqlParameterizedCall
     | SqlJsonExtract

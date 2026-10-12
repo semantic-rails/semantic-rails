@@ -80,11 +80,13 @@ def test_registry_returns_bigquery_dialect_rendering_googlesql_forms():
         ),
         (
             DIALECT.first_value(_col("x"), _col("o")),
-            "(ARRAY_AGG(x IGNORE NULLS ORDER BY o ASC LIMIT 1))[SAFE_OFFSET(0)]",
+            "(ARRAY_AGG(CASE WHEN (o IS NULL) THEN NULL ELSE x END IGNORE NULLS"
+            " ORDER BY o ASC LIMIT 1))[SAFE_OFFSET(0)]",
         ),
         (
             DIALECT.last_value(_col("x"), _col("o")),
-            "(ARRAY_AGG(x IGNORE NULLS ORDER BY o DESC LIMIT 1))[SAFE_OFFSET(0)]",
+            "(ARRAY_AGG(CASE WHEN (o IS NULL) THEN NULL ELSE x END IGNORE NULLS"
+            " ORDER BY o DESC LIMIT 1))[SAFE_OFFSET(0)]",
         ),
         # Retain the joinable clause as well as the exact NULL predicate.
         (

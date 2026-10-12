@@ -22,6 +22,7 @@ from .expressions import (
     validate_call_name,
 )
 from .sql_ast import (
+    SqlAggregateFilter,
     SqlBinary,
     SqlCall,
     SqlCase,
@@ -31,6 +32,7 @@ from .sql_ast import (
     SqlField,
     SqlIdentifier,
     SqlInterval,
+    SqlIsNull,
     SqlJoin,
     SqlJsonExtract,
     SqlLiteral,
@@ -104,6 +106,18 @@ def backslash_quoted_string_literal(value: str) -> str:
 
 # An ISO date or naive timestamp, the text a TIMESTAMP literal reads.
 _ISO_TEMPORAL = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)?")
+
+
+def _value_and_key_known(expr: Any, order_expr: Any) -> Any:
+    """The rows a first or last value reads: its value and its order key both known. DuckDB's
+    ``arg_min``/``arg_max``, the reference, skip a row where either is NULL."""
+    known = SqlBinary(expr, "IS NOT", SqlLiteral(None))
+    return SqlBinary(known, "AND", SqlBinary(order_expr, "IS NOT", SqlLiteral(None)))
+
+
+def _null_where_null(expr: Any, value: Any) -> Any:
+    """``value``, NULL where ``expr`` is NULL."""
+    return SqlCase([SqlCaseWhen(SqlIsNull(expr), SqlLiteral(None))], else_expr=value)
 
 
 def _day_rows(day: Any, source: str, series: SqlTableFunction | None = None) -> SqlSelect:
@@ -205,6 +219,8 @@ class SqlDialect:
         return SqlCall("MEDIAN", [expr])
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
+        """``expr`` at the least ``order_expr``, over the rows where both are known: a row
+        with a NULL value or a NULL key is skipped, as DuckDB's ``arg_min`` skips it."""
         return SqlCall("arg_min", [expr, order_expr])
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
@@ -425,11 +441,14 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     def quote_string_literal(self, value: str) -> str:
         return backslash_escaped_string_literal(value)
 
+    # MIN_BY/MAX_BY ignore a NULL key but return the value at the edge even when it is NULL
+    # (docs.snowflake.com/en/sql-reference/functions/min_by), and Snowflake has no aggregate
+    # FILTER: a NULL value's key is NULL too, so its row is skipped as well.
     def first_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MIN_BY", [expr, order_expr])
+        return SqlCall("MIN_BY", [expr, _null_where_null(expr, order_expr)])
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MAX_BY", [expr, order_expr])
+        return SqlCall("MAX_BY", [expr, _null_where_null(expr, order_expr)])
 
     def timestamp_type_name(self) -> str:
         return "TIMESTAMP_NTZ"
@@ -590,14 +609,16 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
         return self.percentile_cont(expr, 0.5)
 
     def _value_by(self, expr: Any, order_expr: Any, direction: str) -> Any:
+        # ARRAY_AGG keeps NULL values and sorts a NULL key last ascending but first
+        # descending: FILTER keeps the rows whose value and key are both known.
         from .sql_ast import SqlCallWithOrder, SqlIndexAccess
 
+        ordered = SqlCallWithOrder(
+            SqlCall("ARRAY_AGG", [expr]),
+            order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
+        )
         return SqlIndexAccess(
-            SqlCallWithOrder(
-                SqlCall("ARRAY_AGG", [expr]),
-                order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
-            ),
-            SqlLiteral(1),
+            SqlAggregateFilter(ordered, _value_and_key_known(expr, order_expr)), SqlLiteral(1)
         )
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
@@ -903,12 +924,14 @@ class BigQueryDialect(SqlDialect):
     def _array_agg_edge(self, expr: Any, order_expr: Any, direction: str) -> Any:
         # No MIN_BY/MAX_BY: ARRAY_AGG(expr IGNORE NULLS ORDER BY o … LIMIT 1)
         # [SAFE_OFFSET(0)], the first non-NULL value (an array holding NULL is an
-        # error on BigQuery), or NULL for a group with none.
+        # error on BigQuery), or NULL for a group with none. A row with no key reads NULL
+        # too: BigQuery sorts NULL first ascending, and IGNORE NULLS applies before ORDER BY
+        # and LIMIT (aggregate function calls, GoogleSQL reference).
         from .sql_ast import SqlCallWithOrder, SqlIndexAccess
 
         return SqlIndexAccess(
             expr=SqlCallWithOrder(
-                call=SqlCall("ARRAY_AGG", [expr]),
+                call=SqlCall("ARRAY_AGG", [_null_where_null(order_expr, expr)]),
                 order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
                 limit=1,
                 ignore_nulls=True,
@@ -991,8 +1014,9 @@ class BigQueryDialect(SqlDialect):
                 ),
                 "median_exact": True,
                 "first_last_value_method": (
-                    "(ARRAY_AGG(expr IGNORE NULLS ORDER BY order LIMIT 1))[SAFE_OFFSET(0)] — "
-                    "the first non-NULL value, NULL when there is none."
+                    "(ARRAY_AGG(CASE WHEN order IS NULL THEN NULL ELSE expr END IGNORE NULLS "
+                    "ORDER BY order LIMIT 1))[SAFE_OFFSET(0)] — the first value whose value and "
+                    "order are both known, NULL when there is none."
                 ),
             }
         )
@@ -1034,11 +1058,16 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     def quote_string_literal(self, value: str) -> str:
         return backslash_quoted_string_literal(value)
 
+    # MIN_BY/MAX_BY return the value at the edge even when it is NULL; FILTER keeps the rows
+    # whose value and key are both known (docs.databricks.com/en/sql/language-manual/
+    # functions/min_by.html: min_by(expr, ordExpr) [FILTER (WHERE cond)]).
     def first_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MIN_BY", [expr, order_expr])
+        known = _value_and_key_known(expr, order_expr)
+        return SqlAggregateFilter(SqlCall("MIN_BY", [expr, order_expr]), known)
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MAX_BY", [expr, order_expr])
+        known = _value_and_key_known(expr, order_expr)
+        return SqlAggregateFilter(SqlCall("MAX_BY", [expr, order_expr]), known)
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         """Boundary-crossing date difference matching DuckDB ``DATE_DIFF``.
@@ -1219,11 +1248,16 @@ class AthenaDialect(SqlDialect):
     def median(self, expr: Any) -> Any:
         return self.percentile_cont(expr, 0.5)
 
+    # Trino's min_by/max_by don't ignore NULLs as other aggregates do (trino.io/docs/current/
+    # functions/aggregate.html); FILTER, which every Trino aggregate takes, keeps the rows whose
+    # value and key are both known.
     def first_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MIN_BY", [expr, order_expr])
+        known = _value_and_key_known(expr, order_expr)
+        return SqlAggregateFilter(SqlCall("MIN_BY", [expr, order_expr]), known)
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MAX_BY", [expr, order_expr])
+        known = _value_and_key_known(expr, order_expr)
+        return SqlAggregateFilter(SqlCall("MAX_BY", [expr, order_expr]), known)
 
     def date_add(self, unit: str, value_expr: Any, date_expr: Any) -> Any:
         # Trino form: DATE_ADD('unit', value, ts) — unit as a string
@@ -1345,6 +1379,8 @@ class ClickHouseDialect(SqlDialect):
     def median(self, expr: Any) -> Any:
         return self.percentile_cont(expr, 0.5)
 
+    # argMin/argMax skip a NULL value and a NULL key alike, as arg_min does
+    # (clickhouse.com/docs/sql-reference/aggregate-functions/reference/argmin).
     def first_value(self, expr: Any, order_expr: Any) -> Any:
         return SqlCall("ARGMIN", [expr, order_expr])  # renders argMin
 

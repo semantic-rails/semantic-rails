@@ -68,8 +68,14 @@ def test_athena_registry_entry_renders_trino_forms():
         # The t-digest sketch (APPROX_PERCENTILE) is gone — exactness is the contract.
         (DIALECT.percentile_cont(_ident("x"), 0.95), _expected_exact_percentile(0.95)),
         (DIALECT.median(_ident("x")), _expected_exact_percentile(0.5)),
-        (DIALECT.first_value(_ident("x"), _ident("t")), "MIN_BY(x, t)"),
-        (DIALECT.last_value(_ident("x"), _ident("t")), "MAX_BY(x, t)"),
+        (
+            DIALECT.first_value(_ident("x"), _ident("t")),
+            "MIN_BY(x, t) FILTER (WHERE x IS NOT NULL AND t IS NOT NULL)",
+        ),
+        (
+            DIALECT.last_value(_ident("x"), _ident("t")),
+            "MAX_BY(x, t) FILTER (WHERE x IS NOT NULL AND t IS NOT NULL)",
+        ),
         # Trino: DATE_ADD('unit', value, ts) — NOT the INTERVAL form.
         (DIALECT.date_add("day", SqlLiteral(7), _ident("ts")), "DATE_ADD('day', 7, ts)"),
         (DIALECT.date_trunc("month", _ident("ts")), "DATE_TRUNC('month', CAST(ts AS TIMESTAMP))"),

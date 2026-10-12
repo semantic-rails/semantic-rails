@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from .operators import LIKE_ESCAPE
 from .sql_ast import (
+    SqlAggregateFilter,
     SqlBinary,
     SqlCall,
     SqlCallWithOrder,
@@ -344,6 +345,8 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         limit_sql = f" LIMIT {int(expr.limit)}" if expr.limit is not None else ""
         nulls = " IGNORE NULLS" if expr.ignore_nulls else ""
         return f"{function_name}({args}{nulls} ORDER BY {order_sql}{limit_sql})"
+    if isinstance(expr, SqlAggregateFilter):
+        return f"{render_expr(expr.call)} FILTER (WHERE {render_expr(expr.where)})"
     if isinstance(expr, SqlIndexAccess):
         index_sql = render_expr(expr.index)
         if expr.wrapper:
