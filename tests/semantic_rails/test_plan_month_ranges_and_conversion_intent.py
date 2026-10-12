@@ -19,14 +19,9 @@ from __future__ import annotations
 import pytest
 
 from semantic_rails.planner.plan import plan_payload
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
-
-def _plan(runtime, intent: str, detail: str = "best") -> dict:
-    return plan_payload(runtime, intent=intent, detail=detail)
-
-
-def _best_time(payload: dict) -> dict:
-    return ((payload.get("best") or {}).get("query") or {}).get("time") or {}
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 @pytest.mark.parametrize(
@@ -49,56 +44,42 @@ def _best_time(payload: dict) -> dict:
     ],
     ids=["both-years", "shared-year", "single-month", "year-rollover"],
 )
-def test_month_bounds_land_in_query_ir(runtime_factory, intent, start, end, grain):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = _plan(runtime, intent)
-    finally:
-        runtime.close()
+def test_month_bounds_land_in_query_ir(runtime, intent, start, end, grain):
+    payload = plan_payload(runtime, intent=intent, detail="best")
     assert payload["status"] == "ok"
-    time_spec = _best_time(payload)
+    time_spec = payload["best"]["query"]["time"]
     assert (time_spec.get("start"), time_spec.get("end")) == (start, end)
     if grain is not None:
         assert time_spec.get("grain") == grain
 
 
-def test_conversion_intent_with_non_conversion_draft_is_low_confidence(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    payload = _plan(
-        runtime,
-        "conversion rate of customers who ordered adele-ade and then ordered "
-        "chai and mighty within 28 days, by month",
-    )
-    assert payload["status"] == "low_confidence"
-    why = payload.get("why") or {}
-    assert why.get("code") == "CONVERSION_INTENT_UNREALIZED"
-    hint_kinds = {hint.get("kind") for hint in why.get("recovery_hints") or []}
-    assert "author_conversion_ir" in hint_kinds
-    assert why["details"]["curated_conversion_metrics"], (
-        "expected curated conversion metrics to be surfaced for redirection"
-    )
-
-
-def test_conversion_intent_resolved_to_conversion_metric_stays_ok(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    payload = _plan(runtime, "session to order conversion rate (7d) by month")
-    assert payload["status"] == "ok"
-    select = (payload.get("best") or {}).get("query", {}).get("select") or []
-    assert "conversion" in str(select)
-
-
-def test_non_conversion_intent_is_unaffected_by_the_guard(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    payload = _plan(runtime, "monthly revenue by store")
-    assert payload["status"] == "ok"
-    assert "why" not in payload
-
-
-def test_currency_conversion_phrasing_does_not_trip_the_guard(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    payload = _plan(runtime, "revenue converted to euros by month")
-    # Not a funnel, so the conversion guard stays quiet. The draft is revenue in USD, though,
-    # and "converted" names catalog objects (Converted Order Id) it doesn't use: not ready.
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert payload["why"]["details"]["terms"] == ["converted"]
+@pytest.mark.parametrize(
+    ("intent", "code"),
+    [
+        # A funnel the draft doesn't realize is held with the curated conversion metrics.
+        (
+            "conversion rate of customers who ordered adele-ade and then ordered "
+            "chai and mighty within 28 days, by month",
+            "CONVERSION_INTENT_UNREALIZED",
+        ),
+        # Resolved to a conversion metric, it answers.
+        ("session to order conversion rate (7d) by month", None),
+        # The guard leaves other questions alone.
+        ("monthly revenue by store", None),
+        # Not a funnel, so the guard stays quiet; "converted" names catalog objects (Converted
+        # Order Id) the revenue draft doesn't use: not ready.
+        ("revenue converted to euros by month", "PLAN_UNMATCHED_TERMS"),
+    ],
+)
+def test_only_an_unrealized_conversion_intent_is_held_for_it(runtime, intent, code):
+    payload = plan_payload(runtime, intent=intent, detail="best")
+    assert payload["status"] == ("low_confidence" if code else "ok"), payload.get("why")
+    assert (payload.get("why") or {}).get("code") == code
+    if code == "CONVERSION_INTENT_UNREALIZED":
+        hint_kinds = {hint.get("kind") for hint in payload["why"]["recovery_hints"]}
+        assert "author_conversion_ir" in hint_kinds
+        assert payload["why"]["details"]["curated_conversion_metrics"]
+    elif code == "PLAN_UNMATCHED_TERMS":
+        assert payload["why"]["details"]["terms"] == ["converted"]
+    elif "conversion" in intent:
+        assert "conversion" in str(payload["best"]["query"]["select"])

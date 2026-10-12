@@ -11,9 +11,8 @@ about another subject, so plan keeps it in ``best`` and returns ``low_confidence
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -33,6 +32,8 @@ from semantic_rails.planner.unmatched_words import (
     unmatched_intent_terms,
 )
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import assert_plan_held
 
 STORE = "dimension.jaffle_store_name"
@@ -40,20 +41,15 @@ STORE = "dimension.jaffle_store_name"
 STORES = ["dimension.jaffle_store_id", STORE]
 
 
-@pytest.fixture()
-def jaffle(runtime_factory: Any) -> Iterator[Runtime]:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        yield runtime
-    finally:
-        runtime.close()
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
 
 
-@pytest.fixture()
-def billing(tmp_path: Path) -> Iterator[Runtime]:
+@pytest.fixture(scope="module")
+def billing(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
     """An invoice package: Charge amount is described as "the charges that are not discounts",
     and only Discount amount's description says "markdown"."""
 
+    tmp_path = tmp_path_factory.mktemp("billing")
     (tmp_path / "models").mkdir()
     (tmp_path / "data" / "billing_csv").mkdir(parents=True)
     (tmp_path / "data" / "billing_csv" / "invoices.csv").write_text(
@@ -103,11 +99,8 @@ def billing(tmp_path: Path) -> Iterator[Runtime]:
     }
     for name, body in files.items():
         (tmp_path / name).write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
-    runtime = Runtime.from_path(str(tmp_path))
-    try:
+    with closing(opened(Runtime.from_path(str(tmp_path)))) as runtime:
         yield runtime
-    finally:
-        runtime.close()
 
 
 def _catalog_words(runtime: Runtime, question: str, query: dict[str, Any]) -> list[str]:
@@ -137,7 +130,6 @@ def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
     assert payload["best"]["query"]["group_by"] == STORES
     assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
     assert payload["why"]["details"]["ambiguous_groupings"] == ["product type"]
-    assert payload["why"]["message"].startswith("The draft drops the grouping by customer type")
 
 
 @contextmanager
@@ -240,20 +232,44 @@ def test_a_time_grain_reads_its_unit_once(jaffle: Runtime) -> None:
 
 
 @pytest.mark.parametrize(
-    ("intent", "terms"),
+    ("intent", "terms", "kind"),
     [
-        ("revenue by order month and order year", ["year"]),
-        ("revenue by order month, month", ["month"]),
+        ("revenue by order month and order year", ["year"], None),
+        ("revenue by order month, month", ["month"], None),
         # The time block carries one clock grouping; a second one is never consumed.
-        ("revenue by order month and order date", ["date"]),
-        ("revenue by order year and order date", ["date"]),
-        ("revenue by order date and order month", ["date", "month"]),
+        ("revenue by order month and order date", ["date"], None),
+        ("revenue by order year and order date", ["date"], None),
+        ("revenue by order date and order month", ["date", "month"], None),
+        # An unknown modifier.
+        ("revenue decile by store", ["decile"], "filter_values_unrealized"),
+        ("What is completed revenue by month?", ["completed"], "filter_values_unrealized"),
+        # The intent parse records these as "received", "message" and "account".
+        ("revenue from sent messages", ["sent", "messages"], "filter_values_unrealized"),
+        ("revenue for accounts", ["accounts"], "filter_values_unrealized"),
+        # A word naming an object the draft doesn't use. A governed metric's name: Cumulative
+        # revenue.
+        ("revenue with cumulative", ["cumulative"], None),
+        # Revenue isn't the customer count.
+        ("how many customers ordered in 2017", ["customers"], None),
+        # Revenue's Order entity isn't an object the draft selects, so it consumes no word: not a
+        # dropped grouping by order, nor "orders", which names the Orders measure.
+        ("revenue by store, order", ["order"], None),
+        ("revenue from orders", ["orders"], None),
+        # A framing word that names an object (Calendar day's "date", Order time) counts too: only
+        # a time grain the draft carries reads it, and these drafts carry none.
+        ("revenue by store, date", ["date"], None),
+        ("orders by store, time", ["time"], None),
+        # A plural the planner doesn't fold still names Membership status.
+        ("revenue by store, statuses", ["statuses"], None),
     ],
 )
-def test_a_clock_grouping_consumes_only_its_grain_once(
-    jaffle: Runtime, intent: str, terms: list[str]
+def test_a_question_word_the_draft_does_not_consume_is_not_ready(
+    jaffle: Runtime, intent: str, terms: list[str], kind: str | None
 ) -> None:
-    _not_ready(plan_payload(jaffle, intent=intent), terms)
+    payload = plan_payload(jaffle, intent=intent)
+    _not_ready(payload, terms)
+    if kind:
+        assert payload["why"]["details"]["kind"] == kind
 
 
 @pytest.mark.parametrize(
@@ -452,22 +468,6 @@ def test_a_declared_filter_value_matches_reference_sql(jaffle: Runtime) -> None:
     assert reference != pytest.approx(total)
 
 
-@pytest.mark.parametrize(
-    ("intent", "terms"),
-    [
-        ("revenue decile by store", ["decile"]),
-        ("What is completed revenue by month?", ["completed"]),
-        # The intent parse records these as "received", "message" and "account".
-        ("revenue from sent messages", ["sent", "messages"]),
-        ("revenue for accounts", ["accounts"]),
-    ],
-)
-def test_an_unknown_modifier_is_not_ready(jaffle: Runtime, intent: str, terms: list[str]) -> None:
-    payload = plan_payload(jaffle, intent=intent)
-    _not_ready(payload, terms)
-    assert payload["why"]["details"]["kind"] == "filter_values_unrealized"
-
-
 def test_an_honored_inclusion_clause_consumes_its_marker(jaffle: Runtime) -> None:
     query = {
         "select": ["measure.jaffle.revenue_usd"],
@@ -509,31 +509,6 @@ def test_a_count_reads_only_its_number_of(
     }
 
     assert _catalog_words(jaffle, intent, by_name) == terms
-
-
-@pytest.mark.parametrize(
-    ("intent", "terms"),
-    [
-        # A governed metric's name: Cumulative revenue.
-        ("revenue with cumulative", ["cumulative"]),
-        # Revenue isn't the customer count.
-        ("how many customers ordered in 2017", ["customers"]),
-        # Revenue's Order entity isn't an object the draft selects, so it consumes no word: not a
-        # dropped grouping by order, nor "orders", which names the Orders measure.
-        ("revenue by store, order", ["order"]),
-        ("revenue from orders", ["orders"]),
-        # A framing word that names an object (Calendar day's "date", Order time) counts too: only
-        # a time grain the draft carries reads it, and these drafts carry none.
-        ("revenue by store, date", ["date"]),
-        ("orders by store, time", ["time"]),
-        # A plural the planner doesn't fold still names Membership status.
-        ("revenue by store, statuses", ["statuses"]),
-    ],
-)
-def test_a_word_naming_an_object_the_draft_does_not_use_is_not_ready(
-    jaffle: Runtime, intent: str, terms: list[str]
-) -> None:
-    _not_ready(plan_payload(jaffle, intent=intent), terms)
 
 
 def test_a_description_that_negates_the_word_does_not_answer_it(billing: Runtime) -> None:

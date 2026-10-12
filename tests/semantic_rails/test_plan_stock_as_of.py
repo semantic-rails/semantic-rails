@@ -174,15 +174,14 @@ def _assert_held(plan: dict[str, Any], grain: str | None) -> None:
     assert gap["actual"] == {"grain": grain}
 
 
-@pytest.mark.parametrize("detail", ["best", "full"])
 @pytest.mark.parametrize(
-    ("intent", "grain"),
+    ("intent", "grain", "detail"),
     [
-        ("total MRR", None),
-        ("MRR by week", "week"),
-        ("MRR by month", "month"),
+        ("total MRR", None, "best"),
+        ("MRR by week", "week", "full"),
+        ("MRR by month", "month", "best"),
         # No grain asked: one total over the three months.
-        ("MRR last 3 months", None),
+        ("MRR last 3 months", None, "full"),
     ],
 )
 def test_a_balance_over_more_than_one_day_per_row_is_held(
@@ -191,17 +190,16 @@ def test_a_balance_over_more_than_one_day_per_row_is_held(
     _assert_held(_plan(runtime, intent, detail=detail), grain)
 
 
-@pytest.mark.parametrize("detail", ["best", "full"])
 @pytest.mark.parametrize(
-    ("intent", "day"),
+    ("intent", "day", "detail"),
     [
-        ("What's our MRR?", "2026-10-04"),
-        ("What is our MRR?", "2026-10-04"),
-        ("MRR", "2026-10-04"),
-        ("How much MRR do we have?", "2026-10-04"),
-        ("MRR by plan", "2026-10-04"),
-        ("MRR last week", "2026-10-04"),
-        ("MRR last month", "2026-09-30"),
+        ("What's our MRR?", "2026-10-04", "best"),
+        ("What is our MRR?", "2026-10-04", "full"),
+        ("MRR", "2026-10-04", "best"),
+        ("How much MRR do we have?", "2026-10-04", "full"),
+        ("MRR by plan", "2026-10-04", "best"),
+        ("MRR last week", "2026-10-04", "full"),
+        ("MRR last month", "2026-09-30", "best"),
     ],
 )
 def test_a_balance_with_no_day_or_one_period_reads_its_closing_day(

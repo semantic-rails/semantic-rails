@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import date
 from pathlib import Path
 from shutil import copytree
@@ -194,6 +195,11 @@ def test_named_reading_matches_reference_sql(subscriptions, phrase, start, end, 
         assert "all time: no start date" in plan["assumptions"]
     elif "2026" not in phrase:
         assert any(start[:4] in assumption for assumption in plan["assumptions"])
+    # The reading records the exact span it read.
+    read = _time_window(intent, NOW)
+    assert read.spans
+    for low, high in read.spans:
+        assert intent[low:high].lower().strip() in phrase.lower()
 
 
 @pytest.mark.parametrize("phrase", ["on Thu Sept 30"])
@@ -208,65 +214,51 @@ def test_ambiguous_reading_names_both_options(subscriptions, phrase):
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
 
 
-@pytest.mark.parametrize(
-    "phrase", ["all time", "of all time", "ever", "since launch", "to date", "in total"]
-)
-def test_all_time_stock_stays_held(subscriptions, phrase):
-    plan = plan_payload(
-        subscriptions, intent=f"MRR {phrase}", partial_query={"policy_context": NOW}
-    )
-    assert plan["status"] != "ok"
-    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+ALL_TIME_DAY = {"temporal_role": "temporal_role.subscriptions_account_day_day", "grain": "day"}
+CALLER_WINDOW = {"start": "2026-09-22", "end": "2026-10-01"}
 
 
 @pytest.mark.parametrize(
-    "phrase",
+    ("question", "time"),
     [
-        "in early September",
-        "in late September",
-        "in mid-September",
-        "September and December",
-        "in September and Q3",
-        "from September to December",
-        "before September",
-        "as of September",
-        "in fiscal Q3",
-        "on Sept 31",
-        "on February 30",
-        "since early September",
-        "all time in September",
-        "ytd",
-        "mtd",
+        # An all-time stock stays held, even with a day grain forced on it.
+        *(
+            (f"MRR {phrase}", None)
+            for phrase in ["all time", "of all time", "ever", "since launch", "to date", "in total"]
+        ),
+        *((f"MRR {phrase}", ALL_TIME_DAY) for phrase in ["all time", "ever", "since launch"]),
+        # A caller's window can't silently bound all time.
+        *(
+            (f"new accounts {phrase}", CALLER_WINDOW)
+            for phrase in ["ever", "all time", "since launch"]
+        ),
+        # Unknown or several readings.
+        *(
+            (f"new accounts {phrase}", None)
+            for phrase in [
+                "in early September",
+                "in late September",
+                "in mid-September",
+                "September and December",
+                "in September and Q3",
+                "from September to December",
+                "before September",
+                "as of September",
+                "in fiscal Q3",
+                "on Sept 31",
+                "on February 30",
+                "since early September",
+                "all time in September",
+                "ytd",
+                "mtd",
+            ]
+        ),
     ],
 )
-def test_unknown_or_multiple_time_readings_are_not_executable(subscriptions, phrase):
-    plan = plan_payload(
-        subscriptions, intent=f"new accounts {phrase}", partial_query={"policy_context": NOW}
-    )
+def test_a_reading_plan_cannot_answer_is_not_executable(subscriptions, question, time):
+    partial = {"policy_context": NOW, **({"time": time} if time else {})}
+    plan = plan_payload(subscriptions, intent=question, partial_query=partial)
     assert plan["status"] != "ok", plan.get("best")
-    assert "execute" not in plan.get("next", {}).get("ready_for", [])
-
-
-@pytest.mark.parametrize("phrase", [row[0] for row in ANSWER_CASES])
-def test_reading_records_the_exact_span(phrase):
-    intent = f"new accounts {phrase}?"
-    read = _time_window(intent, NOW)
-    assert read.spans
-    for span in read.spans:
-        assert intent[span[0] : span[1]].lower().strip() in phrase.lower()
-
-
-@pytest.mark.parametrize("phrase", ["ever", "all time", "since launch"])
-def test_caller_cannot_silently_bound_all_time(subscriptions, phrase):
-    plan = plan_payload(
-        subscriptions,
-        intent=f"new accounts {phrase}",
-        partial_query={
-            "policy_context": NOW,
-            "time": {"start": "2026-09-22", "end": "2026-10-01"},
-        },
-    )
-    assert plan["status"] != "ok"
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
 
 
@@ -289,23 +281,6 @@ def test_period_to_date_is_not_read_as_all_time(phrase):
     read = _time_window(f"new accounts {phrase}", NOW)
     assert "all time: no start date" not in read.assumptions
     assert not any(not bounds for _span, bounds in read.windows)
-
-
-@pytest.mark.parametrize("phrase", ["all time", "ever", "since launch"])
-def test_forced_day_grain_does_not_make_an_all_time_stock_ready(subscriptions, phrase):
-    plan = plan_payload(
-        subscriptions,
-        intent=f"MRR {phrase}",
-        partial_query={
-            "policy_context": NOW,
-            "time": {
-                "temporal_role": "temporal_role.subscriptions_account_day_day",
-                "grain": "day",
-            },
-        },
-    )
-    assert plan["status"] != "ok"
-    assert "execute" not in plan.get("next", {}).get("ready_for", [])
 
 
 def test_generated_bounded_draft_cannot_answer_all_time(subscriptions):
@@ -441,65 +416,21 @@ def test_scoped_beginning_is_not_all_time(shop, phrase):
     assert not any(not bounds for _span, bounds in read.windows)
 
 
+SIGNUPS = ("signups", "DISTINCT customer_id", "signed_up_at")
+
+
 @pytest.mark.parametrize(
     ("intent", "table", "key", "clock", "start", "end", "expected"),
     [
-        (
-            "signups in total last month",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-06-01",
-            "2024-07-01",
-            2,
-        ),
-        (
-            "signups ever last month",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-06-01",
-            "2024-07-01",
-            2,
-        ),
-        (
-            "signups in  total last month",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-06-01",
-            "2024-07-01",
-            2,
-        ),
-        (
-            "orders in total in Q1 2024",
-            "orders",
-            "order_id",
-            "ordered_at",
-            "2024-01-01",
-            "2024-04-01",
-            3,
-        ),
-        (
-            "signups March 2",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-03-02",
-            "2024-03-03",
-            1,
-        ),
-        (
-            "signups Mon May 6",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-05-06",
-            "2024-05-07",
-            1,
-        ),
+        ("signups in total last month", *SIGNUPS, "2024-06-01", "2024-07-01", 2),
+        ("signups ever last month", *SIGNUPS, "2024-06-01", "2024-07-01", 2),
+        ("signups in  total last month", *SIGNUPS, "2024-06-01", "2024-07-01", 2),
+        ("orders in total in Q1 2024", "orders", "order_id", "ordered_at", "2024-01-01",
+         "2024-04-01", 3),
+        ("signups March 2", *SIGNUPS, "2024-03-02", "2024-03-03", 1),
+        ("signups Mon May 6", *SIGNUPS, "2024-05-06", "2024-05-07", 1),
     ],
-)
+)  # fmt: skip
 def test_bounded_reading_matches_shop_reference_sql(
     shop, intent, table, key, clock, start, end, expected
 ):
@@ -546,26 +477,9 @@ def test_explicit_all_time_still_conflicts_with_a_bounded_window(shop, phrase):
     [
         "revenue for customer April",
         "Jan's revenue",
-        "signups from the June promotion",
         "signups first half hour",
         "signups first quarter hour",
-        *[
-            f"signups from the {month} promotion"
-            for month in (
-                "January",
-                "February",
-                "March",
-                "April",
-                "May",
-                "June",
-                "July",
-                "August",
-                "September",
-                "October",
-                "November",
-                "December",
-            )
-        ],
+        *[f"signups from the {month} promotion" for month in calendar.month_name[1:]],
     ],
 )
 def test_non_time_month_or_fraction_does_not_resolve_a_window(intent):

@@ -80,47 +80,30 @@ def runtime_with_planner_block(
     return _build
 
 
-def test_disabled_patterns_defaults_to_empty(runtime_with_planner_block) -> None:
-    """No planner block in the package YAML means the full registry is active."""
-
-    runtime = runtime_with_planner_block(None)
-    try:
-        assert runtime.config.package.planner.disabled_patterns == []
-        assert _active_patterns(runtime) == list(PATTERNS)
-    finally:
-        runtime.close()
-
-
-def test_disabled_pattern_filters_plan_surface(runtime_with_planner_block) -> None:
-    """A pattern listed in ``package.planner.disabled_patterns`` is
-    skipped by both compose and the public plan payload.
-    """
-
-    runtime = runtime_with_planner_block(["qualified_metric_rollup"])
-    try:
-        active = {p.name for p in _active_patterns(runtime)}
-        assert "qualified_metric_rollup" not in active
-
-        result = compose(runtime, _QUALIFIED_INTENT)
-        assert result.pattern != "qualified_metric_rollup"
-
-        planned = plan_payload(runtime, intent=_QUALIFIED_INTENT, detail="full")
-        assert planned["best"]["pattern"] != "qualified_metric_rollup"
-    finally:
-        runtime.close()
-
-
-def test_unknown_disabled_pattern_names_are_silently_ignored(
-    runtime_with_planner_block,
+@pytest.mark.parametrize(
+    "disabled",
+    [
+        # No planner block: the full registry is active.
+        None,
+        # A listed pattern is skipped by both compose and the public plan payload.
+        ["qualified_metric_rollup"],
+        # A name no pattern registers is a no-op filter, never an error.
+        ["this_pattern_does_not_exist"],
+    ],
+)
+def test_disabled_patterns_filter_the_plan_surface(
+    runtime_with_planner_block, disabled: list[str] | None
 ) -> None:
-    """A name that doesn't correspond to any registered pattern must
-    not raise — it's just a no-op filter.
-    """
-
-    runtime = runtime_with_planner_block(["this_pattern_does_not_exist"])
+    runtime = runtime_with_planner_block(disabled)
     try:
-        assert len(_active_patterns(runtime)) == len(PATTERNS)
-        result = compose(runtime, _QUALIFIED_INTENT)
-        assert result.pattern == "qualified_metric_rollup"
+        assert runtime.config.package.planner.disabled_patterns == (disabled or [])
+        active = _active_patterns(runtime)
+        skipped = disabled == ["qualified_metric_rollup"]
+        assert active == [p for p in PATTERNS if not skipped or p.name != disabled[0]]
+        assert (
+            compose(runtime, _QUALIFIED_INTENT).pattern == "qualified_metric_rollup"
+        ) is not skipped
+        planned = plan_payload(runtime, intent=_QUALIFIED_INTENT, detail="full")
+        assert (planned["best"]["pattern"] == "qualified_metric_rollup") is not skipped
     finally:
         runtime.close()

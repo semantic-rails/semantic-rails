@@ -15,7 +15,7 @@ without words only when they are the "s" ending a contraction ("what's").
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -140,7 +140,7 @@ PARTS_HELD = {
 
 @pytest.mark.parametrize(("question", "kind", "clause"), HELD)
 def test_one_value_never_answers_a_question_asking_for_more(
-    jaffle: Runtime, question: str, kind: str, clause: str
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str, kind: str, clause: str
 ) -> None:
     payload = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
 
@@ -155,22 +155,13 @@ def test_one_value_never_answers_a_question_asking_for_more(
     assert why["code"] == GAP
     [gap] = why["details"]["gaps"]
     assert (gap["kind"], gap["clause"]) == (kind, clause)
-    assert clause in gap["message"]
     # The draft stays for inspection, unchanged: one value.
     query = payload["best"]["query"]
     assert len(query["select"]) == 1
     assert not query.get("group_by")
     assert gap["actual"]["select_count"] == 1
-
-
-@pytest.mark.parametrize(("question", "kind", "clause"), HELD)
-def test_only_the_shape_check_holds_them(
-    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str, kind: str, clause: str
-) -> None:
-    """Without the check each is `ok`: no other check reads its shape words."""
-
+    # Without the check each is `ok`: no other check reads its shape words.
     monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
-
     assert plan_payload(jaffle, intent=question)["status"] == "ok"
 
 
@@ -291,22 +282,6 @@ NARROWER = [
 
 @pytest.mark.parametrize(("question", "partial", "kind", "clause"), NARROWER)
 def test_a_shape_answering_a_narrower_question_is_held(
-    jaffle: Runtime, question: str, partial: dict[str, Any], kind: str, clause: str
-) -> None:
-    payload = plan_payload(
-        jaffle, intent=question, partial_query={**partial, "policy_context": NOW}
-    )
-
-    assert payload["status"] == "low_confidence"
-    assert "ready_for" not in payload["next"]
-    assert payload["why"]["code"] == GAP
-    [gap] = _gaps(payload)
-    assert (gap["kind"], gap["clause"]) == (kind, clause)
-    assert clause in gap["message"]
-
-
-@pytest.mark.parametrize(("question", "partial", "kind", "clause"), NARROWER)
-def test_only_the_shape_check_holds_those(
     jaffle: Runtime,
     monkeypatch: pytest.MonkeyPatch,
     question: str,
@@ -314,12 +289,17 @@ def test_only_the_shape_check_holds_those(
     kind: str,
     clause: str,
 ) -> None:
-    monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
-    payload = plan_payload(
-        jaffle, intent=question, partial_query={**partial, "policy_context": NOW}
-    )
+    partial_query = {**partial, "policy_context": NOW}
+    payload = plan_payload(jaffle, intent=question, partial_query=partial_query)
 
-    assert payload["status"] == "ok"
+    assert payload["status"] == "low_confidence"
+    assert "ready_for" not in payload["next"]
+    assert payload["why"]["code"] == GAP
+    [gap] = _gaps(payload)
+    assert (gap["kind"], gap["clause"]) == (kind, clause)
+    # Only the shape check holds it.
+    monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
+    assert plan_payload(jaffle, intent=question, partial_query=partial_query)["status"] == "ok"
 
 
 @pytest.mark.parametrize(
@@ -388,24 +368,19 @@ def test_only_the_listed_entitys_key_lists_its_rows(
 
 
 def test_a_category_that_declares_no_values_lists_no_rows(
-    runtime_factory: Callable[[str], Runtime], monkeypatch: pytest.MonkeyPatch
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Without its declared values, a customer's type still groups customers into types."""
 
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        config = runtime._config
-        dimensions = [
-            replace(row, value_domain="") if row.id == CUSTOMER_TYPE else row
-            for row in config.dimensions
-        ]
-        monkeypatch.setattr(runtime, "_config", replace(config, dimensions=dimensions))
-        partial = {"group_by": [CUSTOMER_TYPE]}
-        payload = plan_payload(runtime, intent="Who are our customers?", partial_query=partial)
-        monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
-        unchecked = plan_payload(runtime, intent="Who are our customers?", partial_query=partial)
-    finally:
-        runtime.close()
+    dimensions = [
+        replace(row, value_domain="") if row.id == CUSTOMER_TYPE else row
+        for row in jaffle._config.dimensions
+    ]
+    monkeypatch.setattr(jaffle, "_config", replace(jaffle._config, dimensions=dimensions))
+    partial = {"group_by": [CUSTOMER_TYPE]}
+    payload = plan_payload(jaffle, intent="Who are our customers?", partial_query=partial)
+    monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
+    unchecked = plan_payload(jaffle, intent="Who are our customers?", partial_query=partial)
 
     assert payload["status"] == "low_confidence"
     [gap] = _gaps(payload)

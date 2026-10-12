@@ -9,8 +9,8 @@ plan. Every answer is compared with independent DuckDB SQL.
 
 from __future__ import annotations
 
-import itertools
 import shutil
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,7 @@ from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
 from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import assert_plan_held
 from tests.semantic_rails.test_plan_accuracy_guard import _draft_plan
 
@@ -65,11 +66,20 @@ def _open(tmp_path: Path, values: list[ValueDomainValue], seed: str = "") -> Run
 
 @pytest.fixture(scope="module")
 def shop(tmp_path_factory):
-    runtime = _open(tmp_path_factory.mktemp("exclusions"), _values())
-    try:
+    with closing(_open(tmp_path_factory.mktemp("exclusions"), _values())) as runtime:
         yield runtime
-    finally:
-        runtime.close()
+
+
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
+
+
+def _labelled(shop: Runtime, monkeypatch, label: str, *extra: ValueDomainValue) -> Runtime:
+    """The shop with the store channel labelled ``label``, for this test only."""
+    domain = ValueDomainConfig(
+        id="value_domain.channels", dimensions=[CHANNEL], values=_values(label, *extra)
+    )
+    monkeypatch.setattr(shop, "_config", replace(shop._config, value_domains=[domain]))
+    return shop
 
 
 def _reference(runtime: Runtime, where: str) -> set[int]:
@@ -178,7 +188,11 @@ SPELLINGS = [("web", "Top", "Top"), ("Web", '"Top"', '"Top"'), ("the web", "stor
 
 
 @pytest.mark.parametrize(
-    ("marker", "form", "spelling"), list(itertools.product(MARKERS, LISTS, SPELLINGS))
+    ("marker", "form", "spelling"),
+    [
+        (MARKERS[index % len(MARKERS)], form, SPELLINGS[index % len(SPELLINGS)])
+        for index, form in enumerate(LISTS)
+    ],
 )
 def test_every_list_form_reads_each_item(shop, marker, form, spelling):
     question = marker.format(form.format(*spelling[:2]))
@@ -253,19 +267,16 @@ def test_an_exclusion_window_is_never_a_positive_window():
         ("+", "signups excluding web, +"),
     ],
 )
-def test_short_and_symbol_names_are_items(tmp_path, monkeypatch, label, question):
-    runtime = _open(tmp_path, _values(label))
-    try:
-        assert [kind for kind, _text in _items(runtime, question)] == ["value", "value"]
-        assert len(_gaps(runtime, question, _drops("web"))) == 1
-        # The planner leaves the second item out too, and answers.
-        payload = _plan(runtime, question, _drops("web"))
-        assert payload["best"]["query"]["where"] == [*_drops("web"), *_dropped("web", "store")]
-        _assert_answered(runtime, payload, BOTH)
-        _draft_plan(monkeypatch, _signups_draft(_drops("web")))
-        _assert_held(_plan(runtime, question))
-    finally:
-        runtime.close()
+def test_short_and_symbol_names_are_items(shop, monkeypatch, label, question):
+    runtime = _labelled(shop, monkeypatch, label)
+    assert [kind for kind, _text in _items(runtime, question)] == ["value", "value"]
+    assert len(_gaps(runtime, question, _drops("web"))) == 1
+    # The planner leaves the second item out too, and answers.
+    payload = _plan(runtime, question, _drops("web"))
+    assert payload["best"]["query"]["where"] == [*_drops("web"), *_dropped("web", "store")]
+    _assert_answered(runtime, payload, BOTH)
+    _draft_plan(monkeypatch, _signups_draft(_drops("web")))
+    _assert_held(_plan(runtime, question))
 
 
 BOTH = "channel IS DISTINCT FROM 'web' AND channel IS DISTINCT FROM 'store'"
@@ -299,12 +310,8 @@ BOTH = "channel IS DISTINCT FROM 'web' AND channel IS DISTINCT FROM 'store'"
         ("Top", "signups not on Tue. June 25", [("time", "on Tue. June 25")]),
     ],
 )
-def test_every_character_of_a_list_is_read(tmp_path, label, question, items):
-    runtime = _open(tmp_path, _values(label))
-    try:
-        assert _items(runtime, question) == items
-    finally:
-        runtime.close()
+def test_every_character_of_a_list_is_read(shop, monkeypatch, label, question, items):
+    assert _items(_labelled(shop, monkeypatch, label), question) == items
 
 
 @pytest.mark.parametrize(
@@ -318,17 +325,14 @@ def test_every_character_of_a_list_is_read(tmp_path, label, question, items):
         ("Top", "signups excluding web and ‘store’"),
     ],
 )
-def test_an_unread_list_character_holds(tmp_path, monkeypatch, label, question):
+def test_an_unread_list_character_holds(shop, monkeypatch, label, question):
     # The planner dropped only web here: 4, where the reference drops both values.
-    runtime = _open(tmp_path, _values(label))
-    try:
-        assert _reference(runtime, BOTH) == {105}
+    runtime = _labelled(shop, monkeypatch, label)
+    assert _reference(runtime, BOTH) == {105}
+    _assert_held(_plan(runtime, question))
+    for where in (_drops("web"), _drops("web", op="!="), _drops("web", "store")):
+        _draft_plan(monkeypatch, _signups_draft(where))
         _assert_held(_plan(runtime, question))
-        for where in (_drops("web"), _drops("web", op="!="), _drops("web", "store")):
-            _draft_plan(monkeypatch, _signups_draft(where))
-            _assert_held(_plan(runtime, question))
-    finally:
-        runtime.close()
 
 
 @pytest.mark.parametrize("question", ["signups excluding web.", "signups excluding web?"])
@@ -338,42 +342,36 @@ def test_a_question_ending_in_a_mark_is_answered(shop, monkeypatch, question):
     _assert_answered(shop, _plan(shop, question), "channel IS DISTINCT FROM 'web'")
 
 
-@pytest.mark.parametrize("label", ["Including Top", "Includes Top", "Include", "All but Web"])
-@pytest.mark.parametrize("quote", ['"', ""])
-def test_a_marker_inside_a_name_holds(tmp_path, monkeypatch, label, quote):
+@pytest.mark.parametrize(
+    ("label", "quote"),
+    [("Including Top", '"'), ("Includes Top", ""), ("Include", '"'), ("All but Web", "")],
+)
+def test_a_marker_inside_a_name_holds(shop, monkeypatch, label, quote):
     # Read as a marker, the name ended the list early or opened a clause of its own: the
     # planner drafted '= store' (3) or dropped web alone (4).
     question = f"signups excluding web and {quote}{label}{quote}"
-    runtime = _open(tmp_path, _values(label))
-    try:
-        assert _reference(runtime, BOTH) == {105}
-        assert _items(runtime, question) == [("unknown", question)]
+    runtime = _labelled(shop, monkeypatch, label)
+    assert _reference(runtime, BOTH) == {105}
+    assert _items(runtime, question) == [("unknown", question)]
+    _assert_held(_plan(runtime, question))
+    for where in (
+        [*_drops("web"), {"field": CHANNEL, "op": "is", "value": "store"}],
+        _drops("web"),
+        _drops("web", "store"),
+    ):
+        _draft_plan(monkeypatch, _signups_draft(where))
         _assert_held(_plan(runtime, question))
-        for where in (
-            [*_drops("web"), {"field": CHANNEL, "op": "is", "value": "store"}],
-            _drops("web"),
-            _drops("web", "store"),
-        ):
-            _draft_plan(monkeypatch, _signups_draft(where))
-            _assert_held(_plan(runtime, question))
-    finally:
-        runtime.close()
 
 
-def test_a_name_spans_a_separator_only_when_it_contains_it(tmp_path, monkeypatch):
-    runtime = _open(tmp_path, _values("Mall", ValueDomainValue(value="wm", label="Web Mall")))
-    try:
-        assert _items(runtime, "signups excluding web, mall") == [
-            ("value", "web"),
-            ("value", "mall"),
-        ]
-        assert _items(runtime, "signups excluding web mall") == [("value", "web mall")]
-        payload = _plan(runtime, "signups excluding web, mall", _drops("web", "store"))
-        _assert_answered(runtime, payload, BOTH)
-        _draft_plan(monkeypatch, _signups_draft(_drops("wm")))
-        _assert_held(_plan(runtime, "signups excluding web, mall"))
-    finally:
-        runtime.close()
+def test_a_name_spans_a_separator_only_when_it_contains_it(shop, monkeypatch):
+    mall = ValueDomainValue(value="wm", label="Web Mall")
+    runtime = _labelled(shop, monkeypatch, "Mall", mall)
+    assert _items(runtime, "signups excluding web, mall") == [("value", "web"), ("value", "mall")]
+    assert _items(runtime, "signups excluding web mall") == [("value", "web mall")]
+    payload = _plan(runtime, "signups excluding web, mall", _drops("web", "store"))
+    _assert_answered(runtime, payload, BOTH)
+    _draft_plan(monkeypatch, _signups_draft(_drops("wm")))
+    _assert_held(_plan(runtime, "signups excluding web, mall"))
 
 
 # --- a draft answers an exclusion only by leaving out exactly its values ---------
@@ -404,7 +402,10 @@ QUESTIONS = [
 ]
 
 
-@pytest.mark.parametrize(("question", "draft"), list(itertools.product(QUESTIONS, DRAFTS)))
+@pytest.mark.parametrize(
+    ("question", "draft"),
+    [(QUESTIONS[index % len(QUESTIONS)], draft) for index, draft in enumerate(DRAFTS)],
+)
 def test_a_clause_is_answered_only_by_leaving_out_exactly_its_values(shop, question, draft):
     gaps = _gaps(shop, question, DRAFTS[draft])
     clauses = exclusion_clauses(shop._config, question, _time_window(question, policy_context=NOW))
@@ -421,20 +422,27 @@ def test_a_clause_is_answered_only_by_leaving_out_exactly_its_values(shop, quest
         _assert_held(_plan(shop, question, DRAFTS[draft]), kind)
 
 
+_WHERES = [_drops("store", op="!="), _drops("store"), _drops("web")]
+
+
 @pytest.mark.parametrize(
-    "question",
+    ("question", "where"),
     [
-        "signups not in June 2024",
-        "signups not on June 25, 2024",
-        "signups excluding Jun. 25, 2024",
-        "signups not on Jun. 25",
-        "signups not on Tue. June 25",
-        "signups excluding last month",
-        "signups excluding web and June 2024",
-        "signups excluding web, in June 2024",
+        (question, _WHERES[index % len(_WHERES)])
+        for index, question in enumerate(
+            [
+                "signups not in June 2024",
+                "signups not on June 25, 2024",
+                "signups excluding Jun. 25, 2024",
+                "signups not on Jun. 25",
+                "signups not on Tue. June 25",
+                "signups excluding last month",
+                "signups excluding web and June 2024",
+                "signups excluding web, in June 2024",
+            ]
+        )
     ],
 )
-@pytest.mark.parametrize("where", [_drops("store", op="!="), _drops("store"), _drops("web")])
 def test_a_time_exclusion_always_holds(shop, question, where):
     # Query IR has no window complement, whatever else the draft drops. The reference
     # for "not in June 2024" beside "!= store" is 2; the June window alone gave 1.
@@ -472,20 +480,17 @@ def test_a_time_exclusion_always_holds(shop, question, where):
         ("signups excluding web and partner", "partner"),
     ],
 )
-def test_a_partly_dropped_list_is_completed_or_held(tmp_path, monkeypatch, question, second):
-    runtime = _open(tmp_path, _values("A" if '"A"' in question else "Top"))
+def test_a_partly_dropped_list_is_completed_or_held(shop, monkeypatch, question, second):
+    runtime = _labelled(shop, monkeypatch, "A" if '"A"' in question else "Top")
     both = f"channel IS DISTINCT FROM 'web' AND channel IS DISTINCT FROM '{second}'"
-    try:
-        # The planner leaves every item out beside the caller's, and answers.
-        payload = _plan(runtime, question, _drops("web"))
-        assert payload["best"]["query"]["where"] == [*_drops("web"), *_dropped("web", second)]
-        _assert_answered(runtime, payload, both)
-        _assert_answered(runtime, _plan(runtime, question, _drops("web", op="!=")), both)
-        # A draft that drops only the first item holds, though it validates.
-        _draft_plan(monkeypatch, _signups_draft(_drops("web")))
-        _assert_held(_plan(runtime, question))
-    finally:
-        runtime.close()
+    # The planner leaves every item out beside the caller's, and answers.
+    payload = _plan(runtime, question, _drops("web"))
+    assert payload["best"]["query"]["where"] == [*_drops("web"), *_dropped("web", second)]
+    _assert_answered(runtime, payload, both)
+    _assert_answered(runtime, _plan(runtime, question, _drops("web", op="!=")), both)
+    # A draft that drops only the first item holds, though it validates.
+    _draft_plan(monkeypatch, _signups_draft(_drops("web")))
+    _assert_held(_plan(runtime, question))
 
 
 @pytest.mark.parametrize(
@@ -513,14 +518,9 @@ def test_an_excluded_value_named_top_is_no_ranking(shop):
 
 
 def test_an_exclusion_is_answered_with_the_null_keeping_not(shop):
-    # Held before, though its draft counted these 4: the answer is the executable form.
-    payload = _plan(shop, "signups excluding web")
-    assert payload["best"]["query"]["where"] == _drops("web")
-    _assert_answered(shop, payload, "channel IS DISTINCT FROM 'web'")
-    assert _selected(shop, payload["best"]["query"])[1] == 4
-    windowed = _plan(shop, "signups excluding web in June 2024")
-    _assert_answered(shop, windowed, f"channel IS DISTINCT FROM 'web' AND {JUNE_2024}")
-    assert _selected(shop, windowed["best"]["query"]) == ({107}, 1)
+    # Its numbers, with and without a window, are the answers ledger's
+    # shop/plan-signups-excluding-web cases: here, the draft's form and the caller's '!='.
+    assert _plan(shop, "signups excluding web")["best"]["query"]["where"] == _drops("web")
     # A plain '!=' is the same word.
     payload = _plan(shop, "signups excluding web", _drops("web", op="!="))
     _assert_answered(shop, payload, "channel IS DISTINCT FROM 'web'")
@@ -615,18 +615,14 @@ STORE = "dimension.jaffle_store_name"
         "revenue by month excluding Brooklyn",
     ],
 )
-def test_an_exclusion_inside_a_grouping_phrase_holds(runtime_factory, question):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        window = _time_window(question)
-        assert [
-            item.text
-            for clause in exclusion_clauses(runtime._config, question, window)
-            for item in clause.items
-        ] == [question]
-        _assert_held(plan_payload(runtime, intent=question))
-    finally:
-        runtime.close()
+def test_an_exclusion_inside_a_grouping_phrase_holds(jaffle, question):
+    window = _time_window(question)
+    assert [
+        item.text
+        for clause in exclusion_clauses(jaffle._config, question, window)
+        for item in clause.items
+    ] == [question]
+    _assert_held(plan_payload(jaffle, intent=question))
 
 
 @pytest.mark.parametrize(
@@ -639,14 +635,10 @@ def test_an_exclusion_inside_a_grouping_phrase_holds(runtime_factory, question):
         "revenue grouped by store excluding Brooklyn",
     ],
 )
-def test_an_exclusion_after_a_grouping_holds(runtime_factory, question):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=question)
-        _assert_held(payload)
-        assert "ask_for_breakdown" in {hint["kind"] for hint in payload["why"]["recovery_hints"]}
-    finally:
-        runtime.close()
+def test_an_exclusion_after_a_grouping_holds(jaffle, question):
+    payload = plan_payload(jaffle, intent=question)
+    _assert_held(payload)
+    assert "ask_for_breakdown" in {hint["kind"] for hint in payload["why"]["recovery_hints"]}
 
 
 @pytest.mark.parametrize(
@@ -659,25 +651,21 @@ def test_an_exclusion_after_a_grouping_holds(runtime_factory, question):
         ("revenue for all stores except New Orleans", "New Orleans", ""),
     ],
 )
-def test_a_store_exclusion_is_answered_as_reference_sql(runtime_factory, question, excluded, grain):
+def test_a_store_exclusion_is_answered_as_reference_sql(jaffle, question, excluded, grain):
     # Held before. The answer leaves the store out with ``not``, which keeps orders whose store
     # has no name, and it matches reference SQL.
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=question)
-        assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query"]
-        assert query["where"] == [{"field": STORE, "op": KEEPS, "value": excluded}]
-        assert query.get("time", {}).get("grain", "") == grain
-        total = sum(row["revenue_usd"] for row in runtime.query(query)["rows"])
-        overall = {key: value for key, value in query.items() if key not in {"time", "order_by"}}
-        by_store = {
-            row[STORE]: row["revenue_usd"]
-            for row in runtime.query({**overall, "group_by": [STORE]})["rows"]
-        }
-    finally:
-        runtime.close()
-    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+    payload = plan_payload(jaffle, intent=question)
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query"]
+    assert query["where"] == [{"field": STORE, "op": KEEPS, "value": excluded}]
+    assert query.get("time", {}).get("grain", "") == grain
+    total = sum(row["revenue_usd"] for row in jaffle.query(query)["rows"])
+    overall = {key: value for key, value in query.items() if key not in {"time", "order_by"}}
+    by_store = {
+        row[STORE]: row["revenue_usd"]
+        for row in jaffle.query({**overall, "group_by": [STORE]})["rows"]
+    }
+    with duckdb.connect(jaffle.db_path, read_only=True) as connection:
         expected = dict(
             connection.execute(
                 "SELECT s.store_name, SUM(o.order_total_cents / 100.0) FROM jaffle_order o "

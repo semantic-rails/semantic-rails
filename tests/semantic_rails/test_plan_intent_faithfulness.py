@@ -6,8 +6,12 @@ import duckdb
 import pytest
 
 from semantic_rails.planner import plan_payload
+from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import assert_plan_held, disable_planner_patterns
+
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 def _gap_kinds(payload: dict) -> set[str]:
@@ -40,16 +44,11 @@ def _gap_kinds(payload: dict) -> set[str]:
     ],
 )
 def test_validating_but_unfaithful_complex_plans_fail_closed(
-    runtime_factory,
-    intent: str,
-    expected_gap: str,
+    runtime, monkeypatch: pytest.MonkeyPatch, intent: str, expected_gap: str
 ) -> None:
-    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr(runtime, "_config", runtime._config)  # restored after the test
     disable_planner_patterns(runtime, "conjoined_metrics")
-    try:
-        payload = plan_payload(runtime, intent=intent)
-    finally:
-        runtime.close()
+    payload = plan_payload(runtime, intent=intent)
 
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
@@ -59,29 +58,25 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
     assert payload["why"]["recovery_hints"]
 
 
-def test_conjoined_store_quarter_answers_with_the_keyed_store(runtime_factory) -> None:
+def test_conjoined_store_quarter_answers_with_the_keyed_store(runtime) -> None:
     # "store" names the Store entity, so the conjoined subjects group by its key and name.
-    runtime = runtime_factory("jaffle_shop")
     now = {"now": "2017-04-15"}
-    try:
-        payload = plan_payload(
-            runtime,
-            intent="Revenue and order count by store last quarter",
-            partial_query={"policy_context": now},
-        )
-        assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query"]
-        assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
-        rows = runtime.query(query, now=now["now"])["rows"]
-        with duckdb.connect(runtime.db_path, read_only=True) as connection:
-            reference = connection.execute(
-                "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0), "
-                "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN jaffle_store s USING "
-                "(store_id) WHERE o.ordered_at >= TIMESTAMP '2017-01-01' AND o.ordered_at < "
-                "TIMESTAMP '2017-04-01' GROUP BY 1, 2 ORDER BY 1"
-            ).fetchall()
-    finally:
-        runtime.close()
+    payload = plan_payload(
+        runtime,
+        intent="Revenue and order count by store last quarter",
+        partial_query={"policy_context": now},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query"]
+    assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
+    rows = runtime.query(query, now=now["now"])["rows"]
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        reference = connection.execute(
+            "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0), "
+            "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN jaffle_store s USING "
+            "(store_id) WHERE o.ordered_at >= TIMESTAMP '2017-01-01' AND o.ordered_at < "
+            "TIMESTAMP '2017-04-01' GROUP BY 1, 2 ORDER BY 1"
+        ).fetchall()
     actual = [
         (
             row["dimension.jaffle_store_id"],
@@ -127,26 +122,34 @@ def test_conjoined_store_quarter_answers_with_the_keyed_store(runtime_factory) -
             "PLAN_INTENT_COVERAGE_GAP",
             ["comparison_unrealized"],
         ),
+        (
+            "revenue vs order count by store name last quarter",
+            "inline_comparison",
+            "low_confidence",
+            "PLAN_INTENT_COVERAGE_GAP",
+            ["comparison_unrealized"],
+        ),
     ],
 )
 def test_faithfulness_gate_preserves_realized_and_supported_shapes(
-    runtime_factory,
+    runtime,
     intent: str,
     pattern: str,
     status: str,
     code: str | None,
     named: list[str] | None,
 ) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=intent)
-    finally:
-        runtime.close()
+    payload = plan_payload(runtime, intent=intent)
 
     assert payload["best"]["pattern"] == pattern
     assert payload["status"] == status, payload.get("why")
     if status == "ok":
         assert payload["next"]["ready_for"] == ["execute"]
+        if "Brooklyn" in intent:
+            # A positive value filter is not mistaken for a negation.
+            assert payload["best"]["query"]["where"] == [
+                {"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
+            ]
         return
     # The faithfulness gate keeps the shape; another check holds it and names why.
     assert payload["why"]["code"] == code
@@ -157,34 +160,13 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
         assert sorted(_gap_kinds(payload)) == named
 
 
-def test_faithfulness_gate_keeps_a_comparison_with_no_prior_period(runtime_factory) -> None:
-    """The gate keeps the comparison's shape; with no prior-period select, the answer-shape
-    check holds it."""
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="revenue vs order count by store name last quarter")
-    finally:
-        runtime.close()
-
-    assert payload["best"]["pattern"] == "inline_comparison"
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-    assert _gap_kinds(payload) == {"comparison_unrealized"}
-    assert "ready_for" not in payload["next"]
-
-
-def test_qualifier_on_another_clock_is_not_offered_as_ready(runtime_factory) -> None:
+def test_qualifier_on_another_clock_is_not_offered_as_ready(runtime) -> None:
     # The stores' qualifier reads all their rows; the snapshot still has no as-of day.
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(
-            runtime,
-            intent="Give me the sum of active menu snapshot at the store dimension for stores "
-            "that have done more than one order and more than one session grouped by month",
-        )
-    finally:
-        runtime.close()
+    payload = plan_payload(
+        runtime,
+        intent="Give me the sum of active menu snapshot at the store dimension for stores "
+        "that have done more than one order and more than one session grouped by month",
+    )
 
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
@@ -192,43 +174,26 @@ def test_qualifier_on_another_clock_is_not_offered_as_ready(runtime_factory) -> 
     assert "ready_for" not in payload["next"]
 
 
-def test_a_lifetime_qualifier_reads_every_row_of_the_entity(runtime_factory) -> None:
+def test_a_lifetime_qualifier_reads_every_row_of_the_entity(runtime) -> None:
     # "Lifetime orders" is the customer's count over all time, whatever the orders' months.
-    runtime = runtime_factory("jaffle_shop")
     now = "2017-09-15"
-    try:
-        payload = plan_payload(
-            runtime, intent="monthly orders for customers with at least 10 lifetime orders", now=now
-        )
-        assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query"]
-        [qualifier] = query["where"]
-        assert (qualifier["entity"], qualifier["over"]) == ("entity.jaffle_customer", "all_time")
-        rows = runtime.query(query, now=now)["rows"]
-        with duckdb.connect(runtime.db_path, read_only=True) as connection:
-            reference = connection.execute(
-                "SELECT DATE_TRUNC('month', o.ordered_at), COUNT(DISTINCT o.order_id) "
-                "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
-                "WHERE c.lifetime_order_count >= 10 GROUP BY 1 ORDER BY 1"
-            ).fetchall()
-    finally:
-        runtime.close()
+    payload = plan_payload(
+        runtime, intent="monthly orders for customers with at least 10 lifetime orders", now=now
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query"]
+    [qualifier] = query["where"]
+    assert (qualifier["entity"], qualifier["over"]) == ("entity.jaffle_customer", "all_time")
+    rows = runtime.query(query, now=now)["rows"]
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        reference = connection.execute(
+            "SELECT DATE_TRUNC('month', o.ordered_at), COUNT(DISTINCT o.order_id) "
+            "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+            "WHERE c.lifetime_order_count >= 10 GROUP BY 1 ORDER BY 1"
+        ).fetchall()
     assert reference
     assert [(str(row["period"])[:10], row["order_count"]) for row in rows] == [
         (str(month)[:10], count) for month, count in reference
-    ]
-
-
-def test_positive_value_filter_is_not_mistaken_for_negation(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="orders by store in Brooklyn")
-    finally:
-        runtime.close()
-
-    assert payload["status"] == "ok"
-    assert payload["best"]["query"]["where"] == [
-        {"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
     ]
 
 
@@ -236,8 +201,6 @@ def test_positive_value_filter_is_not_mistaken_for_negation(runtime_factory) -> 
 def trailing_window_runtime(tmp_path_factory):
     """A snapshot stock labelled with its own trailing window, like a vendor's 14-day uniques."""
     import duckdb
-
-    from semantic_rails.runtime import Runtime
 
     package = tmp_path_factory.mktemp("subject_window") / "f4win"
     (package / "models").mkdir(parents=True)
@@ -314,9 +277,9 @@ def test_a_subject_with_its_own_window_is_flagged_for_another_period(
         assert payload["best"]["query"]["time"]["grain"] == "day"
 
 
-def test_rolling_metrics_are_not_checked(runtime_factory) -> None:
+def test_rolling_metrics_are_not_checked(runtime) -> None:
     # A rolling metric is read by day as a matter of course; its window is follow-up work.
-    payload = plan_payload(runtime_factory("jaffle_shop"), intent="rolling revenue by day")
+    payload = plan_payload(runtime, intent="rolling revenue by day")
     assert "subject_window_mismatch" not in _gap_kinds(payload)
 
 
