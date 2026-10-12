@@ -421,9 +421,15 @@ def test_cli_import_writes_a_package_and_refuses_to_overwrite(
 
 
 @pytest.mark.parametrize(
-    "option", [["--warehouse", "duckdb"], ["--description", "Example"], ["--schema-strict"]]
+    "option",
+    [
+        ["--warehouse", "duckdb"],
+        ["--description", "Example"],
+        ["--schema-strict"],
+        ["--from", "metricflow"],
+    ],
 )
-def test_import_refuses_removed_translation_options(option):
+def test_import_refuses_removed_translation_options_and_other_formats(option):
     from semantic_rails.cli.app import build_parser
 
     with pytest.raises(SystemExit) as exc:
@@ -442,25 +448,3 @@ def test_import_refuses_removed_translation_options(option):
             ]
         )
     assert exc.value.code == 2
-
-
-def test_import_refuses_unsupported_source_format(tmp_path):
-    from semantic_rails.cli.app import build_parser
-
-    output = tmp_path / "out"
-    with pytest.raises(SystemExit) as exc:
-        build_parser().parse_args(
-            [
-                "import",
-                "--from",
-                "metricflow",
-                "--source",
-                "input.yml",
-                "--output",
-                str(output),
-                "--package-id",
-                "example",
-            ]
-        )
-    assert exc.value.code == 2
-    assert not output.exists()
