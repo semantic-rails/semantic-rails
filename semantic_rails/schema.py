@@ -208,6 +208,21 @@ class MeasureExternalDiscontinuity:
 
 
 @dataclass(frozen=True)
+class ZeroThrough:
+    """How far a table counts as loaded, so its empty periods read 0 up to there (a model's or
+    the project's ``zero_through``; ``data``, the last row, is no record). ``now``: through the
+    request's ``now``. ``loaded``: through ``MAX(column)`` of ``relation``, the date or
+    timestamp a load records as complete."""
+
+    kind: str  # "now" | "loaded"
+    name: str = ""  # "<model>.<field>", as the package declares it
+    relation: str = ""
+    column: str = ""
+    data_type: str = ""  # "date" | "timestamp"
+    timezone: str = "UTC"  # the zone a naive timestamp column is stored in
+
+
+@dataclass(frozen=True)
 class MeasureConfig:
     id: str
     entity: str
@@ -249,6 +264,8 @@ class MeasureConfig:
     # False when authored ``publish: false`` and no metric aggregates it whole; a metric that
     # filters it then makes it a building block (``config_parts.measure_governance``).
     publish: bool = True
+    # Its model's declared loaded edge; None is the last row (``data``).
+    zero_through: ZeroThrough | None = None
 
 
 @dataclass(frozen=True)

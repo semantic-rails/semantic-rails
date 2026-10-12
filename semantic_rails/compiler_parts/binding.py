@@ -363,7 +363,15 @@ def _bind_with_row_filters(
                     "refusal offered, with the same source_entity and target_entity.",
                 },
             )
-    sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters)
+    sql_ast, parameters = apply_row_filters(
+        bound.sql_ast,
+        row_filters,
+        load_logs={
+            row.zero_through.relation
+            for row in config.measures
+            if row.zero_through is not None and row.zero_through.kind == "loaded"
+        },
+    )
     if row_filters:
         # Enforcement reads the whole package; a refusal names only policies the caller sees.
         shown = {row.id for row in bound.config.semantic_policies}

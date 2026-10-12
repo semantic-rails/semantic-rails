@@ -125,7 +125,16 @@ _PACKAGE_KEYS: frozenset[str] = frozenset(
 )
 _SEED_KEYS: frozenset[str] = frozenset({"kind", "source", "post_sql", "null_strings"})
 _DEFAULTS_KEYS: frozenset[str] = frozenset(
-    {"dimension", "time", "measure", "relationship", "operational", "meta", "observation_scope"}
+    {
+        "dimension",
+        "time",
+        "measure",
+        "relationship",
+        "operational",
+        "meta",
+        "observation_scope",
+        "zero_through",
+    }
 )
 _GRAPH_KEYS: frozenset[str] = frozenset(
     {"entities", "relationships", "path_policy", "path_preferences"}
@@ -224,6 +233,7 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "time_entity",
         "time_column",
         "variants",
+        "zero_through",
     }
 )
 _MODEL_VARIANT_KEYS: frozenset[str] = frozenset(

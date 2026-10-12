@@ -48,6 +48,7 @@ from .schema import (
     TemporalRoleConfig,
     ValueDomainConfig,
     ValueDomainValue,
+    ZeroThrough,
 )
 from .schema import base_of as base_of
 from .schema import require_base as require_base
@@ -154,8 +155,11 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         texts="topics example_entries authoring_warnings",
         identity="name aliases",
         typed="operational meta",
-        rows="validity_windows external_discontinuities",
+        rows="validity_windows external_discontinuities zero_through",
     ),
+    # The load log's physical names stay: the engine reads them. Its declared name may name a
+    # hidden model; an answer names it only where the caller sees that model.
+    ZeroThrough: _classes("kind relation column data_type timezone", text="name"),
     MetricConfig: _classes(
         "id kind expression temporal_role compatible_temporal_roles filter_spec window_spec "
         "preferred_companion_metrics value_type",

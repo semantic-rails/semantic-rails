@@ -29,7 +29,7 @@ ROOT = SHOP.parents[3]
 LEDGER = SHOP / "tests" / "answers.yml"
 KEYS = {"kind", "query", "now", "context", "expected_rows", "expected_rows_by_backend", "code", "expect", "why", "cites", "tags", "variant", "reference_sql", "clarify", "intent", "partial_query", "known_wrong"}  # fmt: skip
 TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result"}  # fmt: skip
-TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days"]
+TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days", "tickets", "ticket_loads", "ticket_audits", "ticket_exports"]  # fmt: skip
 DEFINITIONS = str(SHOP.relative_to(ROOT)) + "/models/"
 DECISIONS = {
     "docs/QUERY_CALL.md#select",

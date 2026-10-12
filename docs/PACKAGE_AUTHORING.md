@@ -2619,6 +2619,81 @@ model:
 Metrics do NOT inherit a model's default time — they remain explicit because
 metrics often span entities.
 
+## Empty periods
+
+A sum or count reads `0` for a period with no rows only when the period is loaded: no data
+is `NULL`, data of nothing is `0` (the full rule is in
+[Empty groups](QUERY_CALL.md#empty-groups-null-or-0)). How far a table is loaded is its
+**edge**, and `zero_through` says where it comes from. Set it on a model (a table), or once
+for the package in `defaults.yml`; a model's own value wins. There is no per-measure key.
+
+| `zero_through` | The edge | Use it when |
+|---|---|---|
+| `data` (the default) | the table's last row at or before `now` | nothing records how far the load ran |
+| `{loaded: <model>.<field>}` | `MAX(<field>)` over that model's table, capped at `now` | a load log (or a coverage mart) records each completed load |
+| `now` | the request's `now` | the table is always loaded, and you accept that a stalled load also reads `0` |
+
+```yaml
+# defaults.yml: every model's tables are loaded by the nightly that writes export_runs
+defaults:
+  zero_through: {loaded: export_runs.through_day}
+
+# models/export_runs.yml: one row per completed load
+model:
+  id: export_runs
+  relation: export_runs
+  entities: {export_run: {}}
+  times:
+    through_day: {column: through_day, kind: date}   # the last day each run loaded completely
+
+# models/lifecycle_events.yml: a quiet event table the same nightly loads
+model:
+  id: lifecycle_events
+  relation: fct_lifecycle_event
+  entities: {lifecycle_event: {}}
+  # (no zero_through: the project's load log applies; write data or now to override it)
+```
+
+- **`data`.** A quiet table whose last event is from 12 September reads `NULL` for every
+  later week, with `NO_DATA_YET`: "its last row is dated 2026-09-12. Nothing says this data is
+  loaded past it, so later weeks read NULL, not 0." The answer's `window.data_through` is that
+  last row's date.
+- **`{loaded: …}`.** The field is a `date` or `timestamp` time of any other model on the
+  same connection, read over a plain table or view (not a relation pipeline). A
+  date means the load completed through the end of that day in the query clock's zone (the
+  next local midnight, on the clock, across daylight-saving changes); a timestamp is that
+  instant. A period reads `0` when it ends by then. A load that reached the start of today (a
+  nightly that ran) also covers a period that starts before its edge and runs into today, such
+  as "this month so far", whose unfinished part the answer states (`PARTIAL_PERIOD`); today's
+  own day, which nothing of is loaded yet, reads `NULL`. A load that stalled a whole day or more
+  covers only the periods that end by its edge: the week it stopped in, and every later one,
+  reads `NULL` with `NO_DATA_YET`: "its data is loaded through 2026-10-11, so later weeks read
+  NULL, not 0". Rows that exist keep their values, but a stray row after the
+  edge never makes the empty periods around it `0`. An empty load log (no date) reads `NULL`
+  for every empty period: "its loaded-through date is unavailable". `window.data_through` is the
+  loaded-through date and `window.data_through_source` names the load log as declared
+  (`export_runs.through_day`), or says `loaded` to a caller whose view hides that model.
+- **`now`.** Every empty period up to `now` reads `0` once the table has data, and the answer
+  carries the note `ZERO_AFTER_LAST_ROW`: "reads 0 after its last row (2026-09-12) because the
+  package says this table is always loaded; a stalled load would also read 0".
+  `window.data_through_source` is `now`.
+
+The edge is only the upper bound: a period before the table's first row still reads `NULL`,
+and `observation_scope` decides what counts as observed, as before. Balances, averages,
+distinct populations and `additive: false` measures ignore the edge. A caller row filter never
+filters the load log (it records how far the whole load ran); a `row_filter` policy on the
+load log's own model refuses the query for the callers it applies to (`POLICY_DENIED`,
+`row_filter_on_load_log`), so the log is never read unfiltered. ClickHouse reads no loaded
+coverage, so a ClickHouse package refuses any value but `data` (`INVALID_CONFIG`). Name one
+load log per load job; a model that another job loads declares its own.
+
+Known limits:
+
+- A window total (a window with no grain) answers its one row only on DuckDB, MotherDuck,
+  DuckLake and Postgres. On Snowflake, BigQuery, Databricks, Athena and ClickHouse it groups by
+  a constant with no one-row spine, so a quiet window total returns no row at all, whatever the
+  edge. A named window's series is covered by the edge on every warehouse but ClickHouse.
+
 ## Examples and tests
 
 Examples also teach `plan` the package's own questions. An example answers only

@@ -102,6 +102,22 @@ INSERT INTO account_days VALUES
   (3, DATE '2024-01-05', 'team', 100),
   (1, DATE '2024-01-15', 'pro', 20), (3, DATE '2024-01-15', 'team', 200);
 
+-- Support tickets, a quiet event table: tickets open on 2024-09-02, 09-04 and 09-11, and a
+-- stray ticket 4 lands on 2024-10-09, after the last load. The nightly load log ticket_loads
+-- records each run's loaded-through day, the last through Sunday 2024-09-29; ticket_audits,
+-- a log no run has written to yet, is empty.
+CREATE TABLE tickets (ticket_id INTEGER, opened_at TIMESTAMP, minutes INTEGER);
+INSERT INTO tickets VALUES
+  (1, TIMESTAMP '2024-09-02 09:00:00', 30), (2, TIMESTAMP '2024-09-04 14:00:00', 45),
+  (3, TIMESTAMP '2024-09-11 10:00:00', 20), (4, TIMESTAMP '2024-10-09 08:00:00', 15);
+CREATE TABLE ticket_loads (run_id INTEGER, through_day DATE);
+INSERT INTO ticket_loads VALUES
+  (1, DATE '2024-09-15'), (2, DATE '2024-09-22'), (3, DATE '2024-09-29');
+CREATE TABLE ticket_audits (run_id INTEGER, through_day DATE);
+-- ticket_exports, a nightly that ran through Thursday 2024-11-14: November has no ticket.
+CREATE TABLE ticket_exports (run_id INTEGER, through_day DATE);
+INSERT INTO ticket_exports VALUES (1, DATE '2024-11-13'), (2, DATE '2024-11-14');
+
 -- A monthly rollup of orders by store, keyed by a DATE (the base table's key is a TIMESTAMP).
 CREATE TABLE orders_monthly AS
 SELECT CAST(date_trunc('month', ordered_at) AS DATE) AS month_start, store_id,

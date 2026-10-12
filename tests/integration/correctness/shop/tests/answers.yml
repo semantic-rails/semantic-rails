@@ -1,6 +1,6 @@
 fixture:
-  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
-  data_sha256: 6326af948b83796bef51d7828ca1e74b9978f3b55893a92e7e8533f84ac8599f
+  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits, ticket_exports]
+  data_sha256: c5dec6658f5436086b09d9a6de69cb7bb836ebf2ef4fd8222155f11ef5b37456
 tests:
   shop/sibling-input-clock-filter-keeps-independent-history:
     kind: query_matches_snapshot
@@ -7596,6 +7596,225 @@ tests:
       LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b
         AND o.ordered_at < TIMESTAMP '2024-08-03 12:00:00'
       GROUP BY 1
+  shop/last-week-before-its-last-days-loaded-keeps-its-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'On Monday August 5 at 06:00 the last order is order 11 on Thursday August 1, so last week (July 29 to August 5) totals the 2 it holds; Friday to Sunday are whole days after the data, which the answer discloses (PARTIAL_DATA) without changing the total.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#time]
+    tags: [time-window]
+    query:
+      select: [measure.shop.revenue]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-08-05T06:00:00Z'
+    expected_rows: [{revenue: 2}]
+    reference_sql: |
+      SELECT SUM(o.amount) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-07-29' AND o.ordered_at < TIMESTAMP '2024-08-05'
+  shop/a-week-so-far-after-a-nightly-load-keeps-its-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'On Friday August 2 at 06:00 the data runs through Thursday August 1 (order 11), as a nightly load leaves it: this week so far totals 2, and only today, still unfinished, has no rows, so the answer says nothing more.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#time]
+    tags: [time-window]
+    query:
+      select: [measure.shop.revenue]
+      time: {this: week}
+    now: '2024-08-02T06:00:00Z'
+    expected_rows: [{revenue: 2}]
+    reference_sql: |
+      SELECT SUM(o.amount) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-07-29' AND o.ordered_at <= TIMESTAMP '2024-08-02 06:00:00'
+  shop/a-quiet-week-the-load-log-covers-reads-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'No ticket opened from September 23 to 29, 2024, and the tickets model names its load log, which says the load ran through Sunday September 29: the quiet week is loaded, so it reads 0, though the last ticket is from September 11.'
+    cites: &loaded_cites [tests/integration/correctness/shop/models/tickets.yml#model.measures.tickets_opened, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.tickets_opened]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-09-30T06:00:00Z'
+    expected_rows: [{tickets_opened: 0}]
+    reference_sql: |
+      SELECT CASE WHEN (SELECT MAX(through_day) FROM ticket_loads) >= DATE '2024-09-29'
+        THEN COUNT(DISTINCT t.ticket_id) END
+      FROM tickets AS t
+      WHERE t.opened_at >= TIMESTAMP '2024-09-23' AND t.opened_at < TIMESTAMP '2024-09-30'
+  shop/a-quiet-week-after-the-last-row-without-a-load-log-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The same quiet week over the same tickets, through a model that names no load log: nothing says the data is loaded past the last ticket (September 11), so the week reads NULL, not 0.'
+    cites: [tests/integration/correctness/shop/models/ticket_rows.yml#model.measures.tickets_by_last_row, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.tickets_by_last_row]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-09-30T06:00:00Z'
+    expected_rows: [{tickets_by_last_row: null}]
+    reference_sql: |
+      SELECT CASE WHEN (SELECT MAX(opened_at) FROM tickets
+          WHERE opened_at <= TIMESTAMP '2024-09-30 06:00:00') >= TIMESTAMP '2024-09-23'
+        THEN COUNT(DISTINCT t.ticket_id) END
+      FROM tickets AS t
+      WHERE t.opened_at >= TIMESTAMP '2024-09-23' AND t.opened_at < TIMESTAMP '2024-09-30'
+  shop/weeks-read-zero-through-the-load-log-then-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Four weeks to October 7, 2024: the week of September 9 holds ticket 3; the next two weeks are quiet and end by the load log''s September 29, so they read 0; the week of September 30 is after it, so it reads NULL (no data yet), never 0.'
+    cites: *loaded_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.tickets_opened, measure.shop.ticket_minutes]
+      time: {last: {unit: week, value: 4}, grain: week}
+    now: '2024-10-07T06:00:00Z'
+    expected_rows:
+      - {period: '2024-09-09', tickets_opened: 1, ticket_minutes: 20}
+      - {period: '2024-09-16', tickets_opened: 0, ticket_minutes: 0}
+      - {period: '2024-09-23', tickets_opened: 0, ticket_minutes: 0}
+      - {period: '2024-09-30', tickets_opened: null, ticket_minutes: null}
+    reference_sql: |
+      SELECT g.b,
+        CASE WHEN COUNT(t.ticket_id) > 0 OR g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+          THEN COUNT(DISTINCT t.ticket_id) END,
+        CASE WHEN COUNT(t.ticket_id) > 0 THEN SUM(t.minutes)
+          WHEN g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads) THEN 0 END
+      FROM generate_series(TIMESTAMP '2024-09-09', TIMESTAMP '2024-09-30', INTERVAL '7 days') AS g(b)
+      LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+      GROUP BY g.b
+  shop/a-stray-row-after-the-load-log-keeps-its-week:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Ticket 4 (October 9, 2024) landed after the load log''s September 29: its week keeps its 1, but it never certifies the weeks around it, so the empty weeks of September 30 and October 14 read NULL; only the week of September 23 is loaded and reads 0.'
+    cites: *loaded_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.tickets_opened]
+      time: {start: '2024-09-23', end: '2024-10-21', grain: week}
+    now: '2024-10-21T06:00:00Z'
+    expected_rows:
+      - {period: '2024-09-23', tickets_opened: 0}
+      - {period: '2024-09-30', tickets_opened: null}
+      - {period: '2024-10-07', tickets_opened: 1}
+      - {period: '2024-10-14', tickets_opened: null}
+    reference_sql: |
+      SELECT g.b,
+        CASE WHEN COUNT(t.ticket_id) > 0 OR g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+          THEN COUNT(DISTINCT t.ticket_id) END
+      FROM generate_series(TIMESTAMP '2024-09-23', TIMESTAMP '2024-10-14', INTERVAL '7 days') AS g(b)
+      LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+      GROUP BY g.b
+  shop/a-quiet-week-under-an-empty-load-log-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The tickets model that names ticket_audits, a load log no run has written to: how far the data is loaded is unknown, so the quiet week reads NULL, never a silent 0.'
+    cites: [tests/integration/correctness/shop/models/ticket_audited.yml#model.measures.audited_tickets, tests/integration/correctness/shop/models/ticket_audited.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.audited_tickets]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-09-30T06:00:00Z'
+    expected_rows: [{audited_tickets: null}]
+    reference_sql: |
+      SELECT CASE WHEN (SELECT MAX(through_day) FROM ticket_audits) >= DATE '2024-09-29'
+        THEN COUNT(DISTINCT t.ticket_id) END
+      FROM tickets AS t
+      WHERE t.opened_at >= TIMESTAMP '2024-09-23' AND t.opened_at < TIMESTAMP '2024-09-30'
+  shop/a-quiet-week-of-an-always-loaded-table-reads-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The tickets model that says it is loaded through now: the quiet week after the last ticket (September 11) reads 0, said as an assumption a stalled load would share (ZERO_AFTER_LAST_ROW).'
+    cites: [tests/integration/correctness/shop/models/ticket_feed.yml#model.measures.tickets_always_loaded, tests/integration/correctness/shop/models/ticket_feed.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.tickets_always_loaded]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-09-30T06:00:00Z'
+    expected_rows: [{tickets_always_loaded: 0}]
+    reference_sql: |
+      SELECT CASE WHEN EXISTS (SELECT 1 FROM tickets WHERE opened_at < TIMESTAMP '2024-09-23')
+        THEN COUNT(DISTINCT t.ticket_id) END
+      FROM tickets AS t
+      WHERE t.opened_at >= TIMESTAMP '2024-09-23' AND t.opened_at < TIMESTAMP '2024-09-30'
+  shop/weeks-of-an-always-loaded-table-read-zero-up-to-now:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Four weeks to October 7, 2024 on the tickets model that says it is loaded through now: every quiet week after the first ticket reads 0, the week of September 30 included (the load log would leave it NULL); ticket 4, after now, is not counted.'
+    cites: [tests/integration/correctness/shop/models/ticket_feed.yml#model.measures.tickets_always_loaded, tests/integration/correctness/shop/models/ticket_feed.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.tickets_always_loaded]
+      time: {last: {unit: week, value: 4}, grain: week}
+    now: '2024-10-07T06:00:00Z'
+    expected_rows:
+      - {period: '2024-09-09', tickets_always_loaded: 1}
+      - {period: '2024-09-16', tickets_always_loaded: 0}
+      - {period: '2024-09-23', tickets_always_loaded: 0}
+      - {period: '2024-09-30', tickets_always_loaded: 0}
+    reference_sql: |
+      SELECT g.b,
+        CASE WHEN g.b >= (SELECT date_trunc('week', MIN(opened_at)) FROM tickets)
+          THEN COUNT(DISTINCT t.ticket_id) END
+      FROM generate_series(TIMESTAMP '2024-09-09', TIMESTAMP '2024-09-30', INTERVAL '7 days') AS g(b)
+      LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+        AND t.opened_at <= TIMESTAMP '2024-10-07 06:00:00'
+      GROUP BY g.b
+  shop/a-quiet-month-so-far-after-last-nights-load-reads-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'November 2024 so far, on Friday the 15th at 06:00: last night''s load ran through Thursday the 14th and no ticket opened in November, so the month so far reads 0; only today, still unfinished, is not loaded, which a month so far states anyway.'
+    cites: &exported_cites [tests/integration/correctness/shop/models/ticket_exported.yml#model.measures.exported_tickets, tests/integration/correctness/shop/models/ticket_exported.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.exported_tickets]
+      time: {this: month}
+    now: '2024-11-15T06:00:00Z'
+    expected_rows: [{exported_tickets: 0}]
+    reference_sql: |
+      SELECT CASE WHEN (SELECT MAX(through_day) FROM ticket_exports) >= DATE '2024-11-14'
+        THEN COUNT(DISTINCT t.ticket_id) END
+      FROM tickets AS t
+      WHERE t.opened_at >= TIMESTAMP '2024-11-01' AND t.opened_at <= TIMESTAMP '2024-11-15 06:00:00'
+  shop/a-quiet-month-so-far-after-a-stalled-load-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The same month so far a day later, on Saturday the 16th at 06:00: the last load still ran only through Thursday the 14th, so Friday, a whole day, is not loaded and the quiet month reads NULL (no data yet), never 0.'
+    cites: *exported_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.exported_tickets]
+      time: {this: month}
+    now: '2024-11-16T06:00:00Z'
+    expected_rows: [{exported_tickets: null}]
+    reference_sql: |
+      SELECT CASE WHEN (SELECT MAX(through_day) FROM ticket_exports) >= DATE '2024-11-15'
+        THEN COUNT(DISTINCT t.ticket_id) END
+      FROM tickets AS t
+      WHERE t.opened_at >= TIMESTAMP '2024-11-01' AND t.opened_at <= TIMESTAMP '2024-11-16 06:00:00'
+  shop/today-in-a-week-by-day-after-last-nights-load-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'This week by day on Friday November 15, 2024 at 06:00, after a load through Thursday the 14th: Monday to Thursday are loaded and quiet, so they read 0; today starts at the load''s edge, nothing of it is loaded, so it reads NULL.'
+    cites: *exported_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.exported_tickets]
+      time: {this: week, grain: day}
+    now: '2024-11-15T06:00:00Z'
+    expected_rows:
+      - {period: '2024-11-11', exported_tickets: 0}
+      - {period: '2024-11-12', exported_tickets: 0}
+      - {period: '2024-11-13', exported_tickets: 0}
+      - {period: '2024-11-14', exported_tickets: 0}
+      - {period: '2024-11-15', exported_tickets: null}
+    reference_sql: |
+      SELECT g.b,
+        CASE WHEN COUNT(t.ticket_id) > 0
+            OR g.b < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_exports)
+          THEN COUNT(DISTINCT t.ticket_id) END
+      FROM generate_series(TIMESTAMP '2024-11-11', TIMESTAMP '2024-11-15', INTERVAL '1 day') AS g(b)
+      LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '1' DAY
+        AND t.opened_at <= TIMESTAMP '2024-11-15 06:00:00'
+      GROUP BY g.b
   shop/a-ratio-with-no-denominator-in-the-window-reads-null:
     kind: query_matches_snapshot
     expect: answer

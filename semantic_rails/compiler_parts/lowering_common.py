@@ -81,6 +81,7 @@ from .dependencies import (
 )
 from .empty_groups import (
     LeafScope,
+    declared_edge,
     expr_resolves_to_zero,
     has_nested_case,
     reads_every_row,
@@ -562,6 +563,16 @@ def _record_time_scope(
         role = _temporal_role_index(config)[
             _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
         ]
+        # A sum or count's declared edge bounds its gated buckets; others keep the last row.
+        measure = _measure_index(config)[row.bound_measure.measure_id]
+        edge = (
+            declared_edge(measure.zero_through, plan.time, role.timezone or "UTC", _dialect(config))
+            if measure.zero_through is not None
+            and local
+            and _emits_time_coverage(plan, config)
+            and resolves_to_zero(row.bound_measure.aggregation, measure)
+            else None
+        )
         record_leaf_scope(
             alias,
             LeafScope(
@@ -573,6 +584,7 @@ def _record_time_scope(
                 raw_time=raw_time,
                 storage_zone=role.column_timezone or role.timezone or "UTC",
                 bounded=bool(plan.time.get("start") or plan.time.get("end")),
+                edge=edge,
             ),
         )
 

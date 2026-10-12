@@ -196,6 +196,9 @@ class _Writer:
             key, alias = _keyed(measure.id, f"measure.{self.ns}.")
             skip = {"entity", "row_grain", "source_relation", "expr", "measure_class"}
             skip |= {"allowed_aggregations", "invalid_aggregations", "authoring_warnings"}
+            if (edge := measure.zero_through) is not None:  # each measure carries its model's
+                model["zero_through"] = "now" if edge.kind == "now" else {"loaded": edge.name}
+            skip.add("zero_through")
             counted = measure.measure_class in {"event_count", "distinct_population"}
             spec = {
                 **alias,

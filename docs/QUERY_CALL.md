@@ -435,7 +435,10 @@ A result threshold filters result rows; to filter which entities count toward a 
 {"rows": [{"period": "2017-08-21", "period_partial": false, "order_count": 1961, "revenue_usd": 24249.450000000146},
           {"period": "2017-08-28", "period_partial": false, "order_count": 1470, "revenue_usd": 16381.80000000001}],
  "window": {"start": "2017-08-21", "end": "2017-09-04", "now": "2017-09-04T12:00:00Z", "partial": false, "data_through": "2017-08-31"},
- "clock": "temporal_role.jaffle_order_time"}
+ "clock": "temporal_role.jaffle_order_time",
+ "warnings": [{"code": "PARTIAL_DATA",
+   "message": "Data runs through 2017-08-31, so the week of 2017-08-28 covers 4 of its 7 days.",
+   "details": {"through": "2017-08-31", "days_covered": 4, "days": 7, "period": "2017-08-28"}}]}
 ```
 
 ### The clock
@@ -492,9 +495,11 @@ What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full
 ```
 
 - **NULL with `NO_DATA_YET`** after the data's edge: the last week has orders through Thursday
-  2017-08-31 and nothing loaded after it, so Friday to Sunday read NULL, never 0.
-  `window.data_through` is that edge: the date, in the clock's zone, of the last row at or before
-  `now`.
+  2017-08-31 and nothing says the data is loaded past that last row, so Friday to Sunday read
+  NULL, never 0. `window.data_through` is that edge: the date, in the clock's zone, of the last
+  row at or before `now`. A package that records how far its load ran says so with
+  `zero_through` (["Empty periods"](PACKAGE_AUTHORING.md#empty-periods)): a quiet week the load
+  covers then reads 0.
 
 ```json
 {"select": ["measure.jaffle.order_count"], "time": {"last": {"unit": "week", "value": 1}, "grain": "day"}}
@@ -510,8 +515,8 @@ What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full
           {"period": "2017-09-03", "period_partial": false, "order_count": null}],
  "window": {"start": "2017-08-28", "end": "2017-09-04", "now": "2017-09-04T12:00:00Z", "partial": false, "data_through": "2017-08-31"},
  "warnings": [{"code": "NO_DATA_YET",
-   "message": "No data yet for measure.jaffle.order_count after the day of 2017-08-31, the last day with data, so later days read NULL, not 0.",
-   "details": {"outputs": ["order_count"], "measures": [{"id": "measure.jaffle.order_count", "edge": "2017-08-31", "edge_source": "last_bucket"}]}}]}
+   "message": "No data yet for measure.jaffle.order_count: its last row is dated 2017-08-31. Nothing says this data is loaded past it, so later days read NULL, not 0.",
+   "details": {"outputs": ["order_count"], "measures": [{"id": "measure.jaffle.order_count", "edge": "2017-08-31", "edge_source": "last_row"}]}}]}
 ```
 
 - **NULL** before the first row: the days before 2016-09-01 read NULL.
@@ -527,7 +532,7 @@ What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full
 ```
 
 The same call with `"last": {"unit": "week", "value": 1}` and no grain reads one total,
-`1470`, over the four loaded days.
+`1470`, over the four loaded days, and says so (`PARTIAL_DATA`, below).
 
 ### Partial periods
 
@@ -554,6 +559,15 @@ is partial by definition and says how much of the period it covers:
 `last` counts only complete periods, so it is never partial. A window with only `start` runs to
 `now`, so it is partial. Both `this` and a `start`-only window end at the request's `now`
 exactly, to the microsecond: a row stamped after `now` is not counted.
+
+A complete period can still hold days the data doesn't reach. When a window total, or a row of
+a day-or-coarser series, spans a whole day (in the clock's zone) after `window.data_through`
+and before `now`'s day, the answer carries `PARTIAL_DATA`: "Data runs through 2017-08-31, so
+this total covers 4 of the window's 7 days" (for a series row, "the week of 2017-08-28 covers 4
+of its 7 days"), with `details` `{through, days_covered, days, period}` (`period` only for a
+series row). The number is what the loaded days hold; `partial` keeps its meaning (the period
+ends after `now`). A nightly load whose only gap is today's unfinished day says nothing, and a
+period wholly after the edge is `NO_DATA_YET`'s to explain.
 
 ### Balances
 
@@ -814,7 +828,7 @@ per-entity aggregation.
 ```jsonc
 {"status": "ok",
  "rows": [...],                                       // one column per group_by id, then period, period_partial, then select columns
- "window": {"start", "end", "now", "partial", "data_through"},  // whenever a window or a grain series was resolved
+ "window": {"start", "end", "now", "partial", "data_through", "data_through_source"},  // whenever a window or a grain series was resolved
  "clock": "temporal_role.<id>",                       // whenever a time-bearing measure was read
  "observation_scope": "dataset",                      // always
  "routes": [{"from", "to", "via"}],                   // only when a route was chosen among several
@@ -831,7 +845,9 @@ per-entity aggregation.
   `this` starts on a date and ends at `now`, stated with the clock zone's offset), `now` as
   used, `partial`, and `data_through` once loaded coverage has read the edge (DuckDB,
   MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a named
-  window's series).
+  window's series). `data_through_source` says where a declared edge comes from: the load log
+  as the package declares it (`export_runs.through_day`; `loaded` when the caller can't see
+  that model), or `now`; it is left out when the edge is the last row.
 - No field is empty: `routes`, `assumptions`, `warnings` and `errors` appear only when they
   have entries, and a list, object or string with nothing in it is left out (`rows` stays: an
   empty result is an answer).
@@ -980,9 +996,15 @@ empty period inside the base relation's loaded range reads `0`; one before its f
 row or after its last row at or before `now` reads `NULL`. Coverage reads the
 whole base relation under policy row filters, ignoring measure and call filters, and is
 reported as `window.data_through`. Populated sums and positive counts always survive, including
-future-dated rows. `NO_DATA_YET` names each affected output and measure with its `edge` and
-`edge_source` (`last_bucket`: the last period with data; `before_window`: the data ends before
-the window starts). Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+future-dated rows. `NO_DATA_YET` names each affected output and measure with its `edge`, the
+date of the measure's last row, and `edge_source` `last_row`: nothing says the data is loaded
+past that row. A table whose package declares its edge (`zero_through`, see
+["Empty periods"](PACKAGE_AUTHORING.md#empty-periods)) reads `0` in an empty period only when
+the period ends by that edge (or, after a load that reached the start of today, starts before
+it): a load log's loaded-through date (`edge_source` `loaded`; `edge`
+is null and the message says "loaded-through date unavailable" when the log holds none) or
+`now` (`edge_source` `now`, with the note `ZERO_AFTER_LAST_ROW` when the answer reaches past the
+last row). Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).

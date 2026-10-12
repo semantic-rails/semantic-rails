@@ -81,6 +81,24 @@ def _yaml(workspace: Path, relative: str) -> dict[str, Any]:
 STATUS = {"status": {"label": "Status", "kind": "categorical"}}
 
 
+def test_model_replace_keeps_how_far_its_tables_are_loaded(workspace: Path) -> None:
+    """zero_through binds the model's tables to a load edge, like calendar_id to a calendar:
+    a replace keeps it, and a merge never touches it."""
+    model = workspace / "shop" / "models" / "orders.yml"
+    document = yaml.safe_load(model.read_text(encoding="utf-8"))
+    document["model"]["zero_through"] = "now"
+    model.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    project = ArchitectProject(workspace / "shop", workspace_root=workspace)
+
+    report = project.upsert_model(**ORDERS, dimensions=STATUS, label="Orders", replace=True).report
+
+    assert report["ok"] is True, report
+    assert "zero_through" not in report.get("dropped_fields", [])
+    assert _yaml(workspace, "models/orders.yml")["model"]["zero_through"] == "now"
+    project.upsert_model(**{**ORDERS, "measures": {}}, label="Orders again")
+    assert _yaml(workspace, "models/orders.yml")["model"]["zero_through"] == "now"
+
+
 @pytest.mark.parametrize(
     ("arguments", "dropped", "batch"),
     [

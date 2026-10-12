@@ -1,0 +1,9 @@
+# The same tickets with no load log: empty periods read 0 only up to the last row.
+model:
+  id: ticket_rows
+  relation: tickets
+  entities: {ticket_row: {}}
+  times:
+    opened_at: {column: opened_at, kind: timestamp, class: event_time, default: true}
+  measures:
+    tickets_by_last_row: {kind: entity_count, entity_key: ticket_id, accumulation: {kind: flow}}

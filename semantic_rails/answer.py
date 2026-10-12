@@ -16,7 +16,7 @@ import hashlib
 import os
 import re
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -120,13 +120,11 @@ def answer_fields(
             out["window"]["partial"] = window.partial
         elif rows:
             out["window"]["partial"] = any(row.get(PERIOD_PARTIAL) for row in rows)
-        edges = [
-            value
-            for key, value in (coverage or {}).items()
-            if key.endswith("__data_through") and isinstance(value, datetime)
-        ]
-        if edges:
-            out["window"]["data_through"] = local_date(min(edges), zone)
+        through, source = data_through(coverage, zone)
+        if through is not None:
+            out["window"]["data_through"] = through
+            if source:
+                out["window"]["data_through_source"] = source
         if "this" in window.spec:
             text = describe_window(window, now=now, timezone=zone)
             assumptions.append({"code": "PARTIAL_PERIOD", "message": text})
@@ -164,6 +162,44 @@ def answer_fields(
     out["routes"] = routes_taken(config, compiled)
     out["assumptions"] = assumptions
     return out
+
+
+def data_through(coverage: Mapping[str, Any] | None, zone: str) -> tuple[str | None, str]:
+    """The answer's edge: the date, in the clock's zone, of the earliest edge among the coverage
+    the answer read (None when it read none), and how it is known: "" for a last row at or
+    before ``now``, else a declared edge's name (``now``, or the load log as the package
+    declares it, ``loaded`` where the caller doesn't see it)."""
+    edges = [
+        (_utc(value), str((coverage or {}).get(key.removesuffix("data_through") + "declared", "")))
+        for key, value in (coverage or {}).items()
+        if key.endswith("__data_through") and isinstance(value, datetime)
+    ]
+    if not edges:
+        return None, ""
+    instant, source = min(edges, key=lambda edge: edge[0])
+    return local_date(instant, zone), source
+
+
+def _utc(instant: datetime) -> datetime:
+    """``instant`` as naive UTC, as coverage reads it."""
+    return instant if instant.tzinfo is None else instant.astimezone(UTC).replace(tzinfo=None)
+
+
+def load_log_name(config: Any, rows: Any) -> str:
+    """The load log a declared edge's mark reads (``rows``: ``MAX`` of its column over its
+    relation), as the package declares it, where the caller's view shows that column: else
+    ``loaded``, which names nothing hidden."""
+    relation = rows.from_table.name
+    column = rows.select[0].expression.args[0].parts[-1]
+    owners = {row.id for row in config.entities if row.table == relation}
+    shown = any(row.entity in owners and row.column == column for row in config.dimensions)
+    names = {
+        row.zero_through.name
+        for row in config.measures
+        if row.zero_through is not None
+        and (row.zero_through.relation, row.zero_through.column) == (relation, column)
+    }
+    return names.pop() if shown and len(names) == 1 and "" not in names else "loaded"
 
 
 def _instant(now: datetime, zone: str) -> str:

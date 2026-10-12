@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..dialects import dialect_for_warehouse
@@ -29,6 +30,7 @@ from ..schema import (
     TemporalRoleConfig,
     ValueDomainConfig,
     ValueDomainValue,
+    ZeroThrough,
 )
 from .aggregate_rows import _ROLLUP_HOLDS, _resolve_variant_specs
 from .loader_chain import _ensure_unique_object_ids, _parse_package_meta
@@ -65,6 +67,7 @@ from .temporal_rows import (
     _parse_external_discontinuities,
     _parse_validity_windows,
 )
+from .zero_through import FieldOf, field_reader, zero_through
 
 
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
@@ -671,6 +674,19 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         entities=entities,
         entity_lookup=entity_lookup,
         relationships=relationships,
+        path=path,
+    )
+    measures = _with_zero_through(
+        measures,
+        model_rows,
+        defaults,
+        warehouse=str(package_raw.get("warehouse", "duckdb")).strip().lower(),
+        field_of=field_reader(
+            model_rows,
+            relation_aliases,
+            _load_fields(dimension_lookup, temporal_lookup, dimensions, temporal_roles),
+        ),
+        model_of={measure: model for (model, _), measure in measure_lookup.items()},
         path=path,
     )
     measures = resolve_lookup_measures(
@@ -1314,3 +1330,45 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     _validate_policy_scopes(config, path=path)
     validate_expression_calls(config, dialect_for_warehouse(config.package.warehouse))
     return config
+
+
+def _load_fields(
+    dimension_lookup: dict[tuple[str, str], str],
+    temporal_lookup: dict[tuple[str, str], str],
+    dimensions: list[DimensionConfig],
+    temporal_roles: list[TemporalRoleConfig],
+) -> dict[tuple[str, str], tuple[str, str, str]]:
+    """Each model field's column, data type and the zone its naive values are stored in."""
+    dims = {row.id: row for row in dimensions}
+    roles = {row.id: row for row in temporal_roles}
+    out = {}
+    for key, dim_id in dimension_lookup.items():
+        role = roles.get(temporal_lookup.get(key, ""))
+        zone = (role.column_timezone or role.timezone) if role is not None else ""
+        out[key] = (dims[dim_id].column, dims[dim_id].data_type, zone or "UTC")
+    return out
+
+
+def _with_zero_through(
+    measures: list[MeasureConfig],
+    model_rows: dict[str, dict[str, Any]],
+    defaults: dict[str, Any],
+    *,
+    warehouse: str,
+    field_of: FieldOf,
+    model_of: dict[str, str],
+    path: str,
+) -> list[MeasureConfig]:
+    """Each measure with its model's ``zero_through``, else the project's default."""
+
+    def edge(value: Any, where: str) -> ZeroThrough | None:
+        return zero_through(value, where=where, path=path, warehouse=warehouse, field_of=field_of)
+
+    default = edge(defaults.get("zero_through"), "defaults.zero_through")
+    edges = {
+        model_id: edge(model["zero_through"], f"models.{model_id}.zero_through")
+        if "zero_through" in model
+        else default
+        for model_id, model in model_rows.items()
+    }
+    return [replace(row, zero_through=edges.get(model_of.get(row.id, ""))) for row in measures]

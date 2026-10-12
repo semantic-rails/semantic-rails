@@ -20,9 +20,11 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import asdict, replace
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import __version__, operators, visible_view
 from .acceleration.routing import (
@@ -46,6 +48,7 @@ from .answer import (
     _withhold_values,
     answer_fields,
     finish,
+    load_log_name,
     mark_partial_periods,
 )
 from .ast import (
@@ -508,18 +511,20 @@ def _scope_refusal(payload: dict[str, Any]) -> SemanticLayerError | None:
     )
 
 
-def _compiled_cte_row(runtime, compiled, payload, probes, columns):
-    """Read the settlement's own CTEs, preserving bound row filters and request limits."""
+def _compiled_cte_row(runtime, compiled, payload, columns):
+    """Read the settlement's own CTEs (``columns``: each CTE's columns), preserving bound row
+    filters and request limits."""
     from .relation_pipelines import attach_relation_ctes
     from .renderer import render_select_for_profile
     from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlParameter, SqlSelect, SqlTableRef
     from .sql_preparation import finalize_parameters
 
+    probes = sorted(columns)
     probe = SqlSelect(
         select=[
             SqlField(SqlIdentifier([name, column]), f"{name}__{column}")
             for name in probes
-            for column in columns
+            for column in columns[name]
         ],
         from_table=SqlTableRef(probes[0]),
         joins=[SqlJoin("CROSS", SqlTableRef(name)) for name in probes[1:]],
@@ -555,22 +560,52 @@ def _compiled_cte_row(runtime, compiled, payload, probes, columns):
 
 def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
     """The loaded coverage the answer's guard read, once: each coverage CTE's first and last
-    loaded bucket and the instant (UTC) of its last row at or before ``now``.
+    loaded bucket and the instant (UTC) of its last row at or before ``now``, and each declared
+    edge's first uncertified bucket and loaded-through bound.
 
+    A declared edge's ``data_through`` is the last instant it certifies (UTC), with its
+    ``edge_source`` (``loaded`` or ``now``) and how the answer names it (``declared``); a
+    coverage CTE that only declared edges read keeps its last row as ``last_row`` instead.
     ``{}`` when the SQL reads no coverage or the read fails: a failed disclosure read never
     changes the answer or its warnings.
     """
     by_alias, _ = _guard_probe_names(compiled, "coverage_")
+    edges, _ = _guard_probe_names(compiled, "edge_")
     balances = [item["probes"] for item in compiled.get("balance_edges", ())]
-    probes = sorted(set().union(*by_alias.values(), *balances))
+    probes = set().union(*by_alias.values(), *balances)
     if not probes:
         return {}
+    columns = {
+        **dict.fromkeys(probes, ("loaded_from", "loaded_to", "data_through")),
+        **dict.fromkeys(
+            set().union(*edges.values()), ("loaded_before", "loaded_through", "edge_source")
+        ),
+    }
     try:
-        return _compiled_cte_row(
-            runtime, compiled, payload, probes, ("loaded_from", "loaded_to", "data_through")
-        )
+        coverage = _compiled_cte_row(runtime, compiled, payload, columns)
     except Exception:
         return {}
+    zone = ZoneInfo(_time_zone(runtime._config, compiled) or "UTC")
+    ctes = {cte.name: cte.query for cte in compiled["sql_ast"].ctes}
+    for edge in set().union(*edges.values()):
+        through = coverage.get(f"{edge}__loaded_through")
+        coverage[f"{edge}__data_through"] = (
+            (through - timedelta(microseconds=1))
+            .replace(tzinfo=zone)
+            .astimezone(UTC)
+            .replace(tzinfo=None)
+            if isinstance(through, datetime)
+            else None
+        )
+        coverage[f"{edge}__declared"] = (
+            load_log_name(runtime._config, ctes[f"{edge}_rows"])
+            if coverage.get(f"{edge}__edge_source") == "loaded"
+            else "now"
+        )
+    for probe in set().union(*by_alias.values()):
+        if all(edges.get(alias) for alias, names in by_alias.items() if probe in names):
+            coverage[f"{probe}__last_row"] = coverage.pop(f"{probe}__data_through", None)
+    return coverage
 
 
 def _no_data_in_scope_warnings(
@@ -612,7 +647,7 @@ def _no_data_in_scope_warnings(
         _, by_output = _guard_probe_names(compiled, "observed_")
         probes = sorted(set().union(*(by_output.get(name, set()) for name in outputs)))
         if probes:
-            seen = _compiled_cte_row(runtime, compiled, payload, probes, ("seen",))
+            seen = _compiled_cte_row(runtime, compiled, payload, dict.fromkeys(probes, ("seen",)))
             outputs = {
                 name: item
                 for name, item in outputs.items()
@@ -1774,7 +1809,12 @@ class Runtime:
 
     @runtime_request_scope
     def query_internal(self, payload: dict[str, Any]) -> dict[str, Any]:
-        from .runtime_parts.answer_warnings import _compiled_warnings, _no_data_yet_warnings
+        from .runtime_parts.answer_warnings import (
+            _compiled_warnings,
+            _no_data_yet_warnings,
+            _partial_data_warnings,
+            _zero_after_last_row_notes,
+        )
 
         refusal = _scope_refusal(payload)
         if refusal is not None:
@@ -1896,6 +1936,20 @@ class Runtime:
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
                 *coverage_warnings,
+                *_partial_data_warnings(
+                    compiled,
+                    rows,
+                    coverage,
+                    now=_answer_now(payload),
+                    zone=_time_zone(self._config, compiled) or "UTC",
+                ),
+                *_zero_after_last_row_notes(
+                    compiled,
+                    coverage,
+                    now=_answer_now(payload),
+                    zone=_time_zone(self._config, compiled) or "UTC",
+                    excluded_outputs=_withheld_columns(policy_effects),
+                ),
                 *_no_data_in_scope_warnings(
                     compiled,
                     rows,

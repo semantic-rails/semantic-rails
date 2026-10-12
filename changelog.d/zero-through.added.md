@@ -1,0 +1,13 @@
+- A package can say how far each table is loaded with `zero_through`, on a model or once in
+  `defaults.yml`: `data` (the default, the last row), `now`, or
+  `{loaded: <model>.<field>}`, the latest date or timestamp a load log records. A quiet
+  week that the load covers then reads 0 instead of NULL, and after a nightly that ran, so
+  does a quiet "this month so far" (only today is unloaded); a period after the edge reads NULL
+  with `NO_DATA_YET` ("its data is loaded through <date>"), even beside a stray later row, and
+  an empty load log reads NULL ("loaded-through date unavailable"). `window.data_through` is
+  the declared date, and `window.data_through_source` names the load log (`loaded` to a caller
+  who can't see it) or `now`. `now` adds the note `ZERO_AFTER_LAST_ROW`. A `row_filter` on the
+  load log refuses the query rather than read it unfiltered; ClickHouse packages may only
+  declare `data`. See "Empty periods" in `docs/PACKAGE_AUTHORING.md`.
+- `NO_DATA_YET` under the last-row edge now says how to declare a load log ("If the load ran
+  and nothing happened, declare zero_through").

@@ -764,11 +764,12 @@ def test_a_never_matched_operand_reads_null_beyond_the_loaded_range(
         undisclosed["rendered_sql"],
     )
     assert _warnings(undisclosed)[0]["details"]["outputs"] == ["b"]
-    # The filled series and the coverage marker bucket the same timestamps the same way.
+    # The filled series and the coverage marker bucket the same timestamps the same way; the
+    # edge is the last order's day, November 30.
     assert _warnings(response) == []
     [warning] = _warnings(response, "NO_DATA_YET")
     assert warning["details"]["measures"] == [
-        {"id": b["measure"], "edge": "2023-11-01", "edge_source": "last_bucket"}
+        {"id": b["measure"], "edge": "2023-11-30", "edge_source": "last_row"}
     ]
 
 

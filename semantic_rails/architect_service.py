@@ -71,8 +71,9 @@ _REMOVABLE = ("model", "dimension", "time", "measure", "metric", "segment", "rel
 _PIN_ENDS = ("source_entity", "target_entity")
 _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 
-# What upsert_model(replace=True) keeps from the model it rewrites.
-_KEPT_ON_REPLACE = ("id", "entities", "calendar_id")
+# What upsert_model(replace=True) keeps from the model it rewrites: its identity and how
+# its tables are bound (a calendar, and how far they are loaded).
+_KEPT_ON_REPLACE = ("id", "entities", "calendar_id", "zero_through")
 # Model blocks of named objects: dropped_fields names each object a replace drops.
 _MODEL_BLOCKS = ("dimensions", "times", "measures")
 
@@ -770,8 +771,8 @@ class ArchitectProject:
         """Create or update a model and its primary graph entity.
 
         Fields merge into an existing model; ``replace=True`` rewrites it from
-        the arguments, keeping only its ``id``, ``entities`` block and
-        ``calendar_id``, and reports what it dropped as ``dropped_fields``.
+        the arguments, keeping only its ``id``, ``entities`` block, ``calendar_id`` and
+        ``zero_through``, and reports what it dropped as ``dropped_fields``.
 
         ``calendar=True`` makes the entity the package calendar for
         ``calendar_id`` (default ``"default"``): ``kind: time``, not a query

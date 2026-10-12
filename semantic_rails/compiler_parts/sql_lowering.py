@@ -63,6 +63,7 @@ from .empty_groups import (
     record_balance_output,
     record_zero_output,
     recording_leaf_scopes,
+    refuse_declared_edges,
     refuse_shared_names,
     refuse_unsettled,
     require_time_scopes,
@@ -472,6 +473,16 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # The one place an empty group reads 0 instead of NULL: the projection reads every such
     # measure through the guard below, so nothing after it can change what it sees.
     zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
+    if zero and plan.time:
+        measures = _measure_index(config)
+        refuse_declared_edges(
+            (
+                measures[row.bound_measure.measure_id]
+                for row in plan.measure_plans
+                if row.bound_measure.alias in zero
+            ),
+            _dialect(config),
+        )
     projected_fields: list[SqlField] = [
         SqlField(SqlIdentifier(parts=["base", alias]), alias) for alias in key_aliases
     ]

@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .. import visible_view
-from ..answer import _time_zone
-from ..ast import normalize_query, plain_filters, time_output_alias
+from ..answer import _time_zone, data_through
+from ..ast import TIME_AXIS, normalize_query, plain_filters, time_output_alias
 from ..caveats import caveat_warnings
-from ..clock import local_date
+from ..clock import engine_window, local_date, local_now, period_end
 from ..compiler import read_routes
 from ..compiler_parts.empty_groups import GUARDED_BASE, base_reads, sql_nodes
 from ..compiler_parts.indexes import get_package_analysis
@@ -499,10 +500,44 @@ def _covered_through(window: dict[str, Any], probed: dict[str, str]) -> str:
     return last if inside else ""
 
 
-def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excluded_outputs=()):
-    """Disclose only edges proven by the same coverage that guarded the answer's NULLs."""
+def _settled_by(compiled, outputs):
+    """Each output's measures, with the coverage CTEs and declared-edge CTEs that settled them."""
     from ..compiler_parts.aliasing import AliasRegistry
 
+    by_alias, by_output = _guard_probe_names(compiled, "coverage_")
+    edge_alias, edge_output = _guard_probe_names(compiled, "edge_")
+    bound = [row.bound_measure for row in compiled["logical_plan"].measure_plans]
+    aliases = AliasRegistry.for_plan(
+        compiled["logical_plan"], measure_aliases=[b.alias for b in bound]
+    )
+    for output, item in outputs.items():
+        for measure in item["measures"]:
+            if "probes" in item:  # a balance's own coverage: a stock declares no edge
+                yield output, measure, set(item["probes"]), set()
+                continue
+            leaves = [aliases.internal(b.alias) for b in bound if b.measure_id == measure]
+            names = set().union(*(by_alias.get(a, set()) for a in leaves))
+            edges = set().union(*(edge_alias.get(a, set()) for a in leaves))
+            names &= by_output.get(output, set())
+            edges &= edge_output.get(output, set())
+            # Combined plans can settle the output itself instead of its leaf aliases.
+            if not names and len(item["measures"]) == 1:
+                names, edges = by_output.get(output, set()), edge_output.get(output, set())
+            if names:
+                yield output, measure, names, edges
+
+
+# Said where only the last row bounds a period: how an author states a quiet, loaded table.
+DECLARE_EDGE = (
+    "If the load ran and nothing happened, declare zero_through (PACKAGE_AUTHORING.md, "
+    '"Empty periods").'
+)
+
+
+def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excluded_outputs=()):
+    """Disclose only edges proven by the same coverage that guarded the answer's NULLs: a
+    measure's last row, or its declared edge (the load log's loaded-through date, which a
+    stray later row never moves, or ``now``)."""
     time = compiled["logical_plan"].time
     outputs = {
         item["output"]: item
@@ -516,7 +551,7 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
     }
     if not outputs:
         return []
-    by_alias, by_output = _guard_probe_names(compiled, "coverage_")
+    _, by_output = _guard_probe_names(compiled, "coverage_")
     for name, item in outputs.items():
         if "probes" in item:  # a balance's own coverage
             by_output[name] = set(item["probes"])
@@ -524,87 +559,102 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
     if not probes or any(f"{p}__loaded_to" not in coverage for p in probes):
         return []
     window = _requested_window(compiled, payload)
-    bound = [row.bound_measure for row in compiled["logical_plan"].measure_plans]
-    aliases = AliasRegistry.for_plan(
-        compiled["logical_plan"], measure_aliases=[b.alias for b in bound]
-    )
     time_key = time_output_alias(time)
     affected: list[str] = []
     measures: list[dict[str, Any]] = []
-    last_rows: dict[str, str] = {}
-    for output, item in outputs.items():
-        for measure in item["measures"]:
-            names = set(item.get("probes", ())) or set().union(
-                *(
-                    by_alias.get(aliases.internal(b.alias), set())
-                    for b in bound
-                    if b.measure_id == measure
-                )
-            ) & by_output.get(output, set())
-            # Combined plans can settle the output itself instead of its leaf aliases.
-            if not names and len(item["measures"]) == 1:
-                names = by_output.get(output, set())
-            if not names:
-                continue
-            edges = [coverage[f"{p}__loaded_to"] for p in sorted(names)]
-            edge, source = None, None
-            if time.get("window_total") and any(
-                coverage.get(f"{p}__loaded_from") == 1 for p in names
+    for output, measure, names, declared in _settled_by(compiled, outputs):
+        edges = [coverage[f"{p}__loaded_to"] for p in sorted(names)]
+        firsts = [coverage.get(f"{p}__loaded_from") for p in sorted(names)]
+        befores = [coverage.get(f"{e}__loaded_before") for e in sorted(declared)]
+        if time.get("window_total") and 1 in firsts:
+            continue
+        if all(value is None for value in edges):
+            pass  # No visible rows: an undated disclosure, never another caller's edge.
+        elif time.get("window_total"):
+            if not window["start"] or not all(
+                value == 0 if declared else value == -1
+                for value in (befores if declared else edges)
             ):
                 continue
-            if all(value is None for value in edges):
-                pass  # No visible rows: an undated disclosure, never another caller's edge.
-            elif time.get("window_total"):
-                if not window["start"] or not all(value == -1 for value in edges):
-                    continue
-                edge, source = window["start"], "before_window"
-                through = [coverage.get(f"{p}__data_through") for p in names]
-                if all(isinstance(value, datetime) for value in through):
-                    last_rows[measure] = local_date(max(through), zone)
-            else:
-                # Require every mapped leaf to have a dated edge before claiming one.
-                if not rows or any(value is None for value in edges):
-                    continue
-                buckets = [row.get(time_key) for row in rows if row.get(output) is None]
-                values = [*edges, *buckets]
-                # Compare SQL's bucket keys only, never raw bounds or coerced dates.
-                if not (
-                    all(type(value) is date for value in values)
-                    or (
-                        all(type(value) is datetime for value in values)
-                        and len({value.utcoffset() is None for value in values}) == 1
-                    )
-                ):
-                    continue
-                latest = max(edges)
-                if not any(bucket > latest for bucket in buckets):
-                    continue
-                edge = (
-                    latest.date().isoformat()
-                    if type(latest) is datetime
-                    and time.get("grain") in {"day", "week", "month", "quarter", "year"}
-                    else latest.isoformat()
+        else:
+            # Require every mapped leaf to have a dated edge before claiming one.
+            firsts = firsts if declared else []
+            if not rows or any(value is None for value in [*edges, *firsts]):
+                continue
+            buckets = [row.get(time_key) for row in rows if row.get(output) is None]
+            bounds = [value for value in befores if value is not None]
+            values = [*edges, *firsts, *bounds, *buckets]
+            # Compare SQL's bucket keys only, never raw bounds or coerced dates.
+            if not (
+                all(type(value) is date for value in values)
+                or (
+                    all(type(value) is datetime for value in values)
+                    and len({value.utcoffset() is None for value in values}) == 1
                 )
-                source = "last_bucket"
-            detail = {"id": measure, "edge": edge, "edge_source": source}
-            if detail not in measures:
-                measures.append(detail)
-            if output not in affected:
-                affected.append(output)
+            ):
+                continue
+            # A declared edge certifies buckets before its first uncertified one (none when the
+            # load log holds no date); the last row, buckets up to its own.
+            if not any(
+                bucket >= max(firsts) and (bucket >= min(bounds) if bounds else bool(declared))
+                if declared
+                else bucket > max(edges)
+                for bucket in buckets
+            ):
+                continue
+        edge, source = None, None
+        if declared and any(value is not None for value in edges):
+            through = [coverage.get(f"{e}__data_through") for e in declared]
+            source = coverage.get(f"{min(declared)}__edge_source")
+            if all(isinstance(value, datetime) for value in through):
+                edge = local_date(min(through), zone)
+        elif any(value is not None for value in edges):
+            # The edge is the last row's day, read by the same coverage on every leaf.
+            through = [coverage.get(f"{p}__data_through") for p in names]
+            if not all(isinstance(value, datetime) for value in through):
+                continue
+            edge, source = local_date(max(through), zone), "last_row"
+        detail = {"id": measure, "edge": edge, "edge_source": source}
+        if detail not in measures:
+            measures.append(detail)
+        if output not in affected:
+            affected.append(output)
     if not affected:
         return []
+    total = time.get("window_total")
+    later = (
+        f"the window starting {window['start']} reads NULL"
+        if total
+        else f"later {time.get('grain') or 'period'}s read NULL"
+    )
+    declared_later = "this window's total reads NULL" if total else later
     messages = []
-    grain = str(time.get("grain") or "day")
     for item in measures:
-        if item["edge_source"] == "before_window":
-            last = last_rows.get(item["id"])
-            ends = f"its data runs through {last}, " if last else "its data ends "
-            reason = f"in this window: {ends}before {item['edge']}, the window start, so the total reads NULL, not 0"
-        elif item["edge"] is not None:
-            reason = f"after the {grain} of {item['edge']}, the last {grain} with data, so later {grain}s read NULL, not 0"
+        named, day = item["id"], item["edge"]
+        if item["edge_source"] == "last_row":
+            messages.append(
+                f"No data yet for {named}: its last row is dated {day}. Nothing says this data "
+                f"is loaded past it, so {later}, not 0. {DECLARE_EDGE}"
+            )
+        elif item["edge_source"] == "now" and day is not None:
+            messages.append(
+                f"No data yet for {named}: it counts as loaded through now ({day}), so "
+                f"{declared_later}, not 0."
+            )
+        elif item["edge_source"] is not None and day is not None:
+            messages.append(
+                f"No data yet for {named}: its data is loaded through {day}, so "
+                f"{declared_later}, not 0."
+            )
+        elif item["edge_source"] is not None:
+            messages.append(
+                f"No data yet for {named}: its loaded-through date is unavailable (its load log "
+                "holds none), so its empty periods read NULL, not 0."
+            )
         else:
-            reason = "with no dated coverage edge, so it reads NULL, not 0"
-        messages.append(f"No data yet for {item['id']} {reason}.")
+            messages.append(
+                f"No data yet for {named}, with no dated coverage edge, so it reads NULL, not 0."
+            )
     return [
         semantic_issue(
             code="NO_DATA_YET",
@@ -619,6 +669,121 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
             object_ids=sorted({item["id"] for item in measures}),
         )
     ]
+
+
+def _zero_after_last_row_notes(compiled, coverage, *, now, zone="UTC", excluded_outputs=()):
+    """ZERO_AFTER_LAST_ROW for each sum or count counted as loaded through ``now``
+    (``zero_through: now``) whose answer reaches a day after its last row: those days read 0
+    because the package says the table is always loaded, as a stalled load would too."""
+    time = compiled["logical_plan"].time or {}
+    outputs = {
+        item["output"]: item
+        for item in compiled.get("zero_outputs", [])
+        if item["output"] not in excluded_outputs
+    }
+    today = local_now(now, zone).date()
+    reach = min(_last_day(engine_window(time, now=now, timezone=zone).end) or today, today)
+    last_rows: dict[str, str] = {}
+    for _, measure, names, declared in _settled_by(compiled, outputs):
+        last = [coverage.get(f"{p}__last_row", coverage.get(f"{p}__data_through")) for p in names]
+        if (
+            any(coverage.get(f"{e}__edge_source") == "now" for e in declared)
+            and all(isinstance(value, datetime) for value in last)
+            and date.fromisoformat(day := local_date(max(last), zone)) < reach
+        ):
+            last_rows[measure] = day
+    if not last_rows:
+        return []
+    return [
+        semantic_issue(
+            code="ZERO_AFTER_LAST_ROW",
+            message=" ".join(
+                f"{measure} reads 0 after its last row ({day}) because the package says this "
+                "table is always loaded; a stalled load would also read 0."
+                for measure, day in last_rows.items()
+            ),
+            severity="info",
+            stage="execution",
+            details={
+                "measures": [{"id": measure, "last_row": day} for measure, day in last_rows.items()]
+            },
+            object_ids=sorted(last_rows),
+        )
+    ]
+
+
+def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
+    """PARTIAL_DATA for a window total, or each period of a day-or-coarser series, whose span
+    holds a whole day (in the clock's zone) after the answer's ``data_through`` and before
+    ``now``'s day: its number covers only the days through that edge. A nightly load whose only
+    gap is today's unfinished day says nothing, and a span wholly after the edge is
+    ``NO_DATA_YET``'s to explain."""
+    through, _ = data_through(coverage, zone)
+    time = compiled["logical_plan"].time or {}
+    grain = str(time.get("grain") or "")
+    if through is None or not (time.get("window_total") or grain in _DAY_GRAINS):
+        return []
+    edge = date.fromisoformat(through)
+    today = local_now(now, zone).date()
+    window = engine_window(time, now=now, timezone=zone)
+    first, last = _first_day(window.start), _last_day(window.end)
+    spans: list[tuple[date | None, date, date]] = []
+    if time.get("window_total"):
+        if first is not None and last is not None:
+            spans.append((None, first, last))
+    else:
+        for period in dict.fromkeys(_period_day(row.get(TIME_AXIS), zone) for row in rows):
+            if period is not None:
+                try:
+                    end = period_end(period, grain) - timedelta(days=1)
+                except (ValueError, OverflowError):
+                    end = date.max  # the calendar's last period ends with it
+                spans.append((period, max(period, first or period), min(end, last or end)))
+    warnings = []
+    for period, start, end in spans:
+        end = min(end, today)
+        # A whole day after the edge and before today, inside the span.
+        if edge < start or edge >= min(end, today - timedelta(days=1)):
+            continue
+        days, covered = (end - start).days + 1, (min(edge, end) - start).days + 1
+        span = "this total" if period is None else f"the {grain} of {period.isoformat()}"
+        whole = "the window's" if period is None else "its"
+        warnings.append(
+            semantic_issue(
+                code="PARTIAL_DATA",
+                message=f"Data runs through {through}, so {span} covers {covered} of {whole} {days} days.",
+                severity="warning",
+                stage="execution",
+                details={
+                    "through": through,
+                    "days_covered": covered,
+                    "days": days,
+                    **({"period": period.isoformat()} if period is not None else {}),
+                },
+            )
+        )
+    return warnings
+
+
+_DAY_GRAINS = ("day", "week", "month", "quarter", "year")
+
+
+def _first_day(value: str | None) -> date | None:
+    return None if value is None else datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+
+
+def _last_day(value: str | None) -> date | None:
+    """The last day an exclusive end reaches: the day before a midnight, else its own day."""
+    if value is None:
+        return None
+    end = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return end.date() - timedelta(days=1) if end.time() == datetime.min.time() else end.date()
+
+
+def _period_day(value: Any, zone: str) -> date | None:
+    if isinstance(value, datetime):
+        return (value.astimezone(ZoneInfo(zone)) if value.utcoffset() is not None else value).date()
+    return value if isinstance(value, date) else None
 
 
 def _measure_validity_warnings(config, logical_plan, display_config=None) -> list[dict[str, Any]]:
