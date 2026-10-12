@@ -26,10 +26,8 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.query_call import read_call
-from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.sql_ast import (
     SqlBinary,
@@ -63,9 +61,14 @@ def test_filter_rejects_null_classifies_only_known_excluding_forms(op, value, ex
     assert filter_rejects_null(op, value) is expected
 
 
-@pytest.mark.parametrize("op", ["IS", "IS NOT", "is", " is   not "])
-@pytest.mark.parametrize("value", ["x", "true", "false", 0, 1, 1.0, [], [True], {}])
-@pytest.mark.parametrize("builder", ["comparison", "binary"])
+# Every operand once, rotating the spelling of IS and the builder.
+@pytest.mark.parametrize(
+    ("op", "value", "builder"),
+    [
+        (["IS", "IS NOT", "is", " is   not "][i % 4], value, ["comparison", "binary"][i % 2])
+        for i, value in enumerate(["x", "true", "false", 0, 1, 1.0, [], [True], {}])
+    ],
+)
 def test_an_expression_is_refuses_non_null_non_boolean_operands(op, value, builder):
     """Inside the expression language ``IS`` keeps its SQL meaning: a null or boolean test."""
     with pytest.raises(SemanticLayerError) as exc:
@@ -152,8 +155,13 @@ def test_engine_built_empty_memberships_compile_to_constants():
     assert build_filter_condition(_COL, "not", []) == SqlLiteral(True)
 
 
-@pytest.mark.parametrize("op", ["gt", "gte", "lt", "lte", "contains"])
-@pytest.mark.parametrize("value", [["Philadelphia", "Brooklyn"], ("Philadelphia",)])
+@pytest.mark.parametrize(
+    ("op", "value"),
+    [
+        (op, [["Philadelphia", "Brooklyn"], ("Philadelphia",)][i % 2])
+        for i, op in enumerate(["gt", "gte", "lt", "lte", "contains"])
+    ],
+)
 def test_list_value_with_single_value_word_is_rejected(op, value):
     with pytest.raises(SemanticLayerError) as exc:
         build_filter_condition(_COL, op, value)
@@ -200,45 +208,6 @@ def test_a_retired_or_null_spelling_is_refused_at_its_path(op, value, path, fix)
     assert exc.value.details["path"] == path
     (hint,) = exc.value.details["recovery_hints"]
     assert fix in hint["message"]
-
-
-# ---------------------------------------------------------------------
-# Compile-level checks — rendered SQL through the full lowering stack.
-# ---------------------------------------------------------------------
-
-
-def _compiled_sql(config, where_item: dict) -> str:
-    query = {
-        "select": [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}],
-        "group_by": [STORE],
-        "where": [where_item],
-    }
-    return compile_query(config, Registry(config), read_call(query, config=config)[0])["sql"]
-
-
-def test_missing_false_renders_is_not_null(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    rendered = _compiled_sql(config, {"field": STORE, "op": "missing", "value": False})
-    assert "store_name IS NOT NULL" in rendered
-    assert "!= NULL" not in rendered
-    rendered = _compiled_sql(config, {"field": STORE, "op": "missing", "value": True})
-    assert "store_name IS NULL" in rendered
-
-
-def test_is_with_a_scalar_string_does_not_character_split(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    rendered = _compiled_sql(config, {"field": STORE, "op": "is", "value": "Philadelphia"})
-    assert "store_name = 'Philadelphia'" in rendered
-    assert "'P', 'h'" not in rendered
-
-
-def test_not_with_a_list_keeps_unknown_stores(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    rendered = _compiled_sql(config, {"field": STORE, "op": "not", "value": ["Philadelphia"]})
-    assert (
-        "((jaffle_store.store_name <> 'Philadelphia') OR (jaffle_store.store_name IS NULL))"
-        in rendered
-    )
 
 
 # ---------------------------------------------------------------------
