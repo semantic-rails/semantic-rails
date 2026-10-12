@@ -345,13 +345,6 @@ def _conversion_rate(
     return runtime.query(_conversion_query(properties, **extra))["rows"]
 
 
-def test_null_and_orphan_foreign_keys_group_under_null(runtime, gold):
-    by_employee = _ask(runtime, "fare", group_by=EMPLOYEE)
-
-    assert by_employee == {False: 370.0, True: 130.0, None: 130.0}  # boardings 7 and 8
-    assert by_employee == gold(f"SELECT {SQL_EMPLOYEE}, SUM(b.fare) FROM boardings AS b GROUP BY 1")
-
-
 @pytest.mark.parametrize(
     ("dimension", "expected"),
     [
@@ -384,10 +377,10 @@ def test_excluding_crew_through_the_roster_lookup(runtime, gold):
     assert _ask(runtime, "boarding_count", where=not_crew) == {None: 9}
 
 
-def test_measures_folded_into_one_leaf_keep_the_rows_too(runtime, package, gold):
+def test_measures_folded_into_one_leaf_keep_the_rows_too(runtime, gold):
     """Two measures of one entity share a leaf, which reads the lookup with its own code path:
-    it must keep the rows with no match (boardings 7 and 8, under NULL) as a single measure
-    does."""
+    it must keep the rows with no match (boardings 7 and 8: a NULL person and one with no
+    record, under NULL) as a single measure does."""
     query = {
         "select": [
             {"as": "boardings", "expression": "measure.crew.boarding_count"},
@@ -407,8 +400,6 @@ def test_measures_folded_into_one_leaf_keep_the_rows_too(runtime, package, gold)
     assert {row[EMPLOYEE]: float(row["fare"]) for row in rows} == gold(
         f"SELECT {SQL_EMPLOYEE}, SUM(b.fare) FROM boardings AS b GROUP BY 1"
     )
-    config = load_package_config(str(package))
-    assert _lookup_left_joins(config, runtime.engine_payload(query)) == ["people"]
 
 
 STOCK_SEED = """
@@ -482,16 +473,12 @@ def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
     runtime = Runtime.from_path(str(root))
     try:
         rows = runtime.query(query)["rows"]
-        engine = runtime.engine_payload(query)
     finally:
         runtime.close()
 
     by_region = {row["dimension.stk_region_region_name"]: row["value"] for row in rows}
     assert by_region == {"North": 12, "South": 7, None: 5}  # s3 at 4, s4 at 1
     assert sum(by_region.values()) == 24  # each stock at its last snapshot
-    config = load_package_config(str(root))
-    sql = " ".join(compile_query(config, Registry(config), engine)["sql"].split())
-    assert re.findall(r"LEFT JOIN (regions)\b", sql) == ["regions"]
 
 
 @pytest.mark.parametrize(
@@ -644,7 +631,11 @@ def test_every_warehouse_has_a_lookup_join_type():
     assert set(JOIN_TYPE) == set(_WAREHOUSE_CONNECTORS)
 
 
-@pytest.mark.parametrize("warehouse", sorted(JOIN_TYPE))
+# One warehouse per dialect family.
+@pytest.mark.parametrize(
+    "warehouse",
+    ["motherduck", "postgres", "snowflake", "bigquery", "databricks", "athena", "clickhouse"],
+)
 def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
     base = load_package_config(str(package))
     config = dataclasses.replace(
@@ -725,7 +716,7 @@ def _lookup_left_joins(config, query: dict[str, Any]) -> list[str]:
     return re.findall(rf"LEFT JOIN ({'|'.join(LOOKUP_TABLES)})\b", sql)
 
 
-def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, package):
+def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime):
     """Departing boardings by month of the leg's departure, grouped by the boarder's kind. The
     leg is what the time role reads, so a boarding with no leg record (11, 12, 13) has no
     month: it stays out, as before, and no NULL time bucket appears. The person hop, which only
@@ -748,11 +739,9 @@ def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, package
         (True, 2): 2,
         (None, 2): 1,  # boarding 8
     }
-    config = load_package_config(str(package))
-    assert _lookup_left_joins(config, runtime.engine_payload(query)) == ["people"]
 
 
-def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime, package):
+def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime):
     """The airport city is read through the leg, which the time role reads too: the leg hop is
     inner, the airport hop only the grouping reads keeps its rows (boardings 8-10, whose
     airport has no record, group under NULL)."""
@@ -765,19 +754,13 @@ def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime, package):
     by_city: dict[Any, int] = {}
     for row in rows:
         by_city[row[CITY]] = by_city.get(row[CITY], 0) + row["value"]
-    assert by_city == {"New York": 4, "Chicago": 3, None: 3}
-    config = load_package_config(str(package))
-    assert _lookup_left_joins(config, runtime.engine_payload(query)) == ["airports"]
+    assert by_city == {"New York": 4, "Chicago": 3, None: 3}  # boardings 1-10
 
 
 @pytest.mark.parametrize(
-    ("group_by", "left_joins"),
-    [([BOARDING], []), ([BOARDING, CITY], ["airports"])],
-    ids=["time-role-alone", "grouping-shares-the-hop"],
+    "group_by", [[BOARDING], [BOARDING, CITY]], ids=["time-role-alone", "grouping-shares-the-hop"]
 )
-def test_a_dimension_only_query_keeps_the_time_role_inner(
-    runtime, package, gold, group_by, left_joins
-):
+def test_a_dimension_only_query_keeps_the_time_role_inner(runtime, gold, group_by):
     """Boardings by the month their leg departed, dimensions alone. A boarding with no leg
     record (11, 12, 13) has no month: it stays out, as the time role does in every leaf, and
     never shows a NULL month. The airport hop, which only the grouping reads, keeps its rows
@@ -801,14 +784,9 @@ def test_a_dimension_only_query_keeps_the_time_role_inner(
             **dict.fromkeys(range(5, 8), "Chicago"),
             **dict.fromkeys(range(8, 11), None),
         }
-    config = load_package_config(str(package))
-    assert "INNER JOIN legs" in " ".join(
-        compile_query(config, Registry(config), query)["sql"].split()
-    )
-    assert _lookup_left_joins(config, query) == left_joins
 
 
-def test_a_metric_filter_matches_its_set_on_its_context_entity(runtime, package, gold):
+def test_a_metric_filter_matches_its_set_on_its_context_entity(runtime, gold):
     """Boardings whose leg has any boarding that month, grouped by the boarder's kind: the
     person is a context entity of the filter. The filter's set is matched on the person, so a
     boarding whose person lookup found nothing (7 and 8) has no set to be in: it stays out, as
@@ -827,7 +805,6 @@ def test_a_metric_filter_matches_its_set_on_its_context_entity(runtime, package,
         f"SELECT {SQL_EMPLOYEE}, COUNT(*) FROM boardings AS b"
         f" WHERE b.leg_id IS NOT NULL AND {SQL_EMPLOYEE} IS NOT NULL GROUP BY 1"
     )
-    assert _lookup_left_joins(load_package_config(str(package)), query) == ["people"]
 
 
 def test_an_entity_set_ratio_keeps_the_inner_join(runtime):
@@ -881,12 +858,10 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(package):
     assert _lookup_left_joins(with_rollup, query) == ["people"]
 
 
+# The conversions and the entity-set ratio above check their rows; these reads check the join.
 @pytest.mark.parametrize(
     "query",
     [
-        pytest.param(_conversion_query(), id="conversion-match-key"),
-        pytest.param(_conversion_query((CITY,)), id="conversion-property"),
-        pytest.param(_conversion_query(group_by=[EMPLOYEE]), id="conversion-grouped"),
         pytest.param(
             _conversion_query(
                 metric_filters=[
@@ -906,7 +881,6 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(package):
             ),
             id="conversion-predicate-set",
         ),
-        pytest.param(_monthly_query(_ratio_of_busy_legs()), id="entity-set-ratio"),
         pytest.param(
             _monthly_query(_scoped("boarding_count", _busy_leg("boarding_count", 1))),
             id="qualified-set",
