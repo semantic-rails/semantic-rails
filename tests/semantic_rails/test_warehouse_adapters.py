@@ -97,20 +97,6 @@ def _timed_query(adapter: DuckDBAdapter, timeout_ms: int) -> tuple[BaseException
 
 
 @pytest.mark.timeout(30)
-def test_duckdb_statement_timeout_stops_the_running_query(tmp_path):
-    adapter = DuckDBAdapter(_duckdb_file(tmp_path))
-    try:
-        error, elapsed = _timed_query(adapter, 200)
-    finally:
-        adapter.close()
-
-    assert isinstance(error, SemanticLayerError)
-    assert error.code == "QUERY_EXECUTION_ERROR"
-    assert _interrupt_in_chain(error)
-    assert elapsed < 10
-
-
-@pytest.mark.timeout(30)
 def test_duckdb_statement_timeout_only_stops_its_own_query(tmp_path):
     adapter = DuckDBAdapter(_duckdb_file(tmp_path))
     results: dict[int, tuple[BaseException | None, float]] = {}
@@ -130,6 +116,8 @@ def test_duckdb_statement_timeout_only_stops_its_own_query(tmp_path):
 
     short_error, short_elapsed = results[200]
     long_error, long_elapsed = results[5_000]
+    assert isinstance(short_error, SemanticLayerError)
+    assert short_error.code == "QUERY_EXECUTION_ERROR"
     assert _interrupt_in_chain(short_error)
     assert short_elapsed < 4
     # The short query's watchdog left the long one running until its own timeout.
