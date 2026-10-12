@@ -23,7 +23,7 @@ from semantic_rails.sql_ast import SqlCall, SqlIdentifier
 ROLE = "temporal_role.jaffle_order_time"
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config():
     original = load_package_config("configs/semantic_rails/jaffle_shop")
     return replace(

@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from semantic_rails.compiler import compile_query
+from semantic_rails.config import load_package_config
 from semantic_rails.db_parts.base import QueryRows, WarehouseAdapter
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
@@ -13,12 +14,23 @@ from semantic_rails.renderer import render_select
 from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import SqlField, SqlIdentifier, SqlLiteral, SqlOrder, SqlSelect
 from semantic_rails.top_n import limit_order, limit_rows
+from tests.semantic_rails.conftest import copy_package_config
 
 
-@pytest.mark.parametrize("warehouse", supported_warehouses())
-@pytest.mark.parametrize("profile", ["audit", "compact", "debug"])
-def test_compiled_top_n_prepares_one_extra_row(package_config_factory, warehouse, profile):
-    package_config, _ = package_config_factory("jaffle_shop")
+@pytest.fixture(scope="module")
+def package(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("top_n"), "jaffle_shop")
+    return load_package_config(str(path)), path
+
+
+# Profiles change presentation; probe limits and mappings use the same SQL AST.
+@pytest.mark.parametrize(
+    "warehouse,profile",
+    [(warehouse, "audit") for warehouse in supported_warehouses()]
+    + [("duckdb", profile) for profile in ("compact", "debug")],
+)
+def test_compiled_top_n_prepares_one_extra_row(package, warehouse, profile):
+    package_config, _ = package
     config = replace(package_config, package=replace(package_config.package, warehouse=warehouse))
     compiled = compile_query(
         config,
@@ -156,9 +168,9 @@ def test_exact_sort_key_takes_precedence_over_folded_matches():
 )
 @pytest.mark.parametrize("tied", [False, True], ids=["distinct-cutoff", "tied-cutoff"])
 def test_runtime_cutoff_uses_warehouse_result_key_casing(
-    package_config_factory, warehouse, alias, returned_key, store_key, tied
+    package, warehouse, alias, returned_key, store_key, tied
 ):
-    config, config_path = package_config_factory("jaffle_shop")
+    config, config_path = package
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     rows = [
         {returned_key: value, store_key: store}

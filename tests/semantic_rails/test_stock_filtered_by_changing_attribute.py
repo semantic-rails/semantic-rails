@@ -16,8 +16,10 @@ match (data of nothing), and NULL in a period with no snapshot at all (no data).
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ import yaml
 
 from semantic_rails.compiler import plan_query
 from semantic_rails.compiler_parts.sql_lowering import lower_to_sql
+from semantic_rails.config import load_package_snapshot
 from semantic_rails.dialects import DuckDbDialect
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.query_call import read_call
@@ -167,15 +170,18 @@ def _reference(
     grain: str = "week",
     before: str = "true",
     fixture_sql: str = "",
+    connection: duckdb.DuckDBPyConnection | None = None,
 ) -> list[tuple[Any, ...]]:
     """Each account's last (first) snapshot per period among the rows `before` keeps, then
     the sum of those meeting `condition`: 0 in a period whose snapshots all fail it, and
     NULL where those meeting it have no known fee."""
     direction = "asc" if measure == "fee_sop" else "desc"
     period = f"date_trunc('{grain}', d.date_day)::date"
-    connection = duckdb.connect()
-    try:
-        _load(connection)
+    shared = connection is not None
+    assert not (shared and fixture_sql), "mutated references need their own database"
+    with nullcontext(connection) if shared else duckdb.connect() as connection:
+        if not shared:
+            _load(connection)
         if fixture_sql:
             connection.execute(fixture_sql)
         return connection.execute(
@@ -190,8 +196,19 @@ def _reference(
             f"  else sum(fee) filter (where {condition}) end "
             "from chosen where rn = 1 group by period order by period"
         ).fetchall()
-    finally:
-        connection.close()
+
+
+@pytest.fixture(scope="module")
+def reference():
+    with duckdb.connect() as connection:
+        _load(connection)
+        yield partial(_reference, connection=connection)
+
+
+@pytest.fixture(scope="module")
+def package_snapshot(tmp_path_factory):
+    package = _package(tmp_path_factory.mktemp("fees"))
+    return load_package_snapshot(str(package))
 
 
 def _query(
@@ -243,10 +260,12 @@ def snapshot_lowering(request, monkeypatch) -> None:
 
 
 @pytest.fixture
-def runtime(snapshot_lowering, tmp_path: Path) -> Iterator[Runtime]:
-    runtime = Runtime.from_path(str(_package(tmp_path)))
-    yield runtime
-    runtime.close()
+def runtime(snapshot_lowering, package_snapshot) -> Iterator[Runtime]:
+    runtime = Runtime.from_snapshot(package_snapshot)
+    try:
+        yield runtime
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(
@@ -262,21 +281,21 @@ def runtime(snapshot_lowering, tmp_path: Path) -> Iterator[Runtime]:
     ],
 )
 def test_a_filter_reads_each_series_closing_snapshot(
-    runtime: Runtime, where: dict[str, Any], condition: str, closing_week: int
+    runtime: Runtime, reference, where: dict[str, Any], condition: str, closing_week: int
 ) -> None:
     answer = _query(runtime, [where], time={"grain": "week"})
-    assert answer == _reference(condition)
+    assert answer == reference(condition)
     assert (WEEK, closing_week) in answer
 
 
-def test_start_of_period_reads_each_series_opening_snapshot(runtime: Runtime) -> None:
+def test_start_of_period_reads_each_series_opening_snapshot(runtime: Runtime, reference) -> None:
     week = {"grain": "week"}
     # a opens the week of 09-14 on basic and the next on pro.
     pro = _query(runtime, [_is(PLAN, "pro")], measure="fee_sop", time=week)
-    assert pro == _reference("plan = 'pro'", measure="fee_sop")
+    assert pro == reference("plan = 'pro'", measure="fee_sop")
     assert pro == [(date(2026, 9, 7), 0), (WEEK, 0), (date(2026, 9, 21), 500)]
     basic = _query(runtime, [_is(PLAN, "basic")], measure="fee_sop", time=week)
-    assert basic == _reference("plan = 'basic'", measure="fee_sop")
+    assert basic == reference("plan = 'basic'", measure="fee_sop")
     assert (WEEK, 297) in basic
 
 
@@ -284,7 +303,7 @@ def test_start_of_period_reads_each_series_opening_snapshot(runtime: Runtime) ->
 @pytest.mark.parametrize("grain", ["day", "week", "month"])
 @pytest.mark.parametrize("field", [PLAN, STATE, SEGMENT])
 def test_a_filter_equals_its_row_of_the_grouped_breakdown(
-    runtime: Runtime, measure: str, grain: str, field: str
+    runtime: Runtime, reference, measure: str, grain: str, field: str
 ) -> None:
     time = {"grain": grain}
     grouped = {
@@ -296,12 +315,10 @@ def test_a_filter_equals_its_row_of_the_grouped_breakdown(
         filtered = _query(runtime, [_is(field, value)], measure=measure, time=time)
         # A period whose closing snapshots all hold another value reads 0.
         assert filtered == [(period, grouped.get((period, value), 0)) for period in periods]
-        assert filtered == _reference(
-            f"{FILTERED[field]} = '{value}'", measure=measure, grain=grain
-        )
+        assert filtered == reference(f"{FILTERED[field]} = '{value}'", measure=measure, grain=grain)
 
 
-def test_no_snapshot_reads_null_and_no_match_reads_zero(runtime: Runtime) -> None:
+def test_no_snapshot_reads_null_and_no_match_reads_zero(runtime: Runtime, reference) -> None:
     enterprise = [_is(PLAN, "enterprise")]
     # A named window answers every week in it.
     filled = {"grain": "week", "start": "2026-09-07", "end": "2026-10-12"}
@@ -313,7 +330,7 @@ def test_no_snapshot_reads_null_and_no_match_reads_zero(runtime: Runtime) -> Non
         (date(2026, 9, 28), None),
         (date(2026, 10, 5), None),
     ]
-    assert _query(runtime, enterprise, time={"grain": "week"}) == _reference("plan = 'enterprise'")
+    assert _query(runtime, enterprise, time={"grain": "week"}) == reference("plan = 'enterprise'")
     # Untimed, the period is everything; a date with no snapshot has no data.
     assert _query(runtime, enterprise) == [(0,)]
     assert _query(runtime, [*enterprise, _is(DAY, "2026-09-20")]) == [(0,)]
@@ -399,11 +416,11 @@ def test_only_a_balance_summed_across_series_reads_zero(runtime: Runtime) -> Non
     ],
 )
 def test_a_time_bound_applies_before_the_snapshot_is_chosen(
-    runtime: Runtime, where: dict[str, Any], before: str, expected: int
+    runtime: Runtime, reference, where: dict[str, Any], before: str, expected: int
 ) -> None:
     answer = _query(runtime, [where], time={"grain": "week"})
     assert (WEEK, expected) in answer
-    assert answer == _reference("true", before=before)
+    assert answer == reference("true", before=before)
 
 
 def test_an_entity_set_share_reads_the_same_closing_snapshots(runtime: Runtime) -> None:
