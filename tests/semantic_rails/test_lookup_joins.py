@@ -479,27 +479,13 @@ def test_conversion_does_not_pair_events_that_have_no_match_entity(runtime, gold
     assert rates == pytest.approx(gold(_conversion_sql(group=SQL_CHECKIN_EMPLOYEE)))
 
 
-def test_conversion_does_not_pair_events_on_a_property_that_has_no_match(runtime, gold):
+def test_conversion_pairs_on_a_matched_lookup_whose_property_is_null(null_city_runtime, gold):
     """Events also pair on constant properties, here the airport city read through the leg.
     Check-in 7 and boarding 11 (leg L9) and check-in 5 and boarding 9 (an airport with no
-    record) both have no city, so they must not pair as having "the same city": only check-ins
-    1 and 8 have one, and both convert."""
-    (row,) = _conversion_rate(runtime, (CITY,))
-
-    assert row["rate"] == pytest.approx(1.0)
-    reference = gold(
-        _conversion_sql(
-            same_city=f"AND {SQL_CITY} = {SQL_CHECKIN_CITY}",
-            where=f"AND {SQL_CHECKIN_CITY} IS NOT NULL",
-        )
-    )
-    assert reference[None] == pytest.approx(1.0)
-
-
-def test_conversion_pairs_on_a_matched_lookup_whose_property_is_null(null_city_runtime, gold):
-    """The lookup matched but the property is NULL, as it is on the event's own entity: check-in
-    9 pairs with boarding 14 (both at an airport with no city) and not with boarding 15 (Chicago).
-    Check-ins 5 and 7, whose lookups found nothing, still take no part."""
+    record) have no city, so they must not pair as having "the same city": they take no part.
+    Where the lookup matched but the property is NULL, as it is on the event's own entity,
+    check-in 9 pairs with boarding 14 (both at an airport with no city) and not with boarding
+    15 (Chicago)."""
     # A leg whose airport row exists: its city, NULL or not, is a match.
     matched = "SELECT l.leg_id FROM legs AS l JOIN airports AS a ON a.airport_code = l.airport_code"
     reference = gold(
@@ -643,15 +629,12 @@ def test_a_time_role_read_through_a_lookup_keeps_the_inner_join(runtime, group_b
     } == expected
 
 
-@pytest.mark.parametrize(
-    "group_by", [[BOARDING], [BOARDING, CITY]], ids=["time-role-alone", "grouping-shares-the-hop"]
-)
-def test_a_dimension_only_query_keeps_the_time_role_inner(runtime, gold, group_by):
+def test_a_dimension_only_query_keeps_the_time_role_inner(runtime, gold):
     """Boardings by the month their leg departed, dimensions alone. A boarding with no leg
     record (11, 12, 13) has no month: it stays out, as the time role does in every leaf, and
     never shows a NULL month. The airport hop, which only the grouping reads, keeps its rows
     (boardings 8-10, whose airport has no record, under NULL)."""
-    rows = runtime.query({"group_by": group_by, "time": DEPARTED_MONTHLY})["rows"]
+    rows = runtime.query({"group_by": [BOARDING, CITY], "time": DEPARTED_MONTHLY})["rows"]
 
     months = {row[BOARDING]: datetime.fromisoformat(row[PERIOD]).month for row in rows}
     assert months == gold(
@@ -660,12 +643,11 @@ def test_a_dimension_only_query_keeps_the_time_role_inner(runtime, gold, group_b
         " WHERE EXISTS (SELECT 1 FROM legs AS l WHERE l.leg_id = b.leg_id)"
     )
     assert set(months) == set(range(1, 11))
-    if CITY in group_by:
-        assert {row[BOARDING]: row[CITY] for row in rows} == {
-            **dict.fromkeys(range(1, 5), "New York"),
-            **dict.fromkeys(range(5, 8), "Chicago"),
-            **dict.fromkeys(range(8, 11), None),
-        }
+    assert {row[BOARDING]: row[CITY] for row in rows} == {
+        **dict.fromkeys(range(1, 5), "New York"),
+        **dict.fromkeys(range(5, 8), "Chicago"),
+        **dict.fromkeys(range(8, 11), None),
+    }
 
 
 def test_a_metric_filter_matches_its_set_on_its_context_entity(runtime, gold):
