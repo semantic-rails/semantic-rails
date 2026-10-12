@@ -60,25 +60,48 @@ def test_registry_returns_bigquery_dialect():
     assert connector.adapter == "semantic_rails.db_parts.bigquery:create_adapter"
 
 
-def test_date_trunc_reverses_args_and_uses_datetime_trunc():
-    sql = render_expr(DIALECT.date_trunc("day", _col("t", "created_at")))
-    assert sql == "DATETIME_TRUNC(t.created_at, DAY)"
-
-
-def test_date_trunc_week_maps_to_isoweek_for_duckdb_parity():
-    sql = render_expr(DIALECT.date_trunc("week", _col("t", "created_at")))
-    assert sql == "DATETIME_TRUNC(t.created_at, ISOWEEK)"
+@pytest.mark.parametrize(
+    ("method", "args", "expected"),
+    [
+        ("date_trunc", ("day", _col("t", "created_at")), "DATETIME_TRUNC(t.created_at, DAY)"),
+        ("date_trunc", ("week", _col("t", "created_at")), "DATETIME_TRUNC(t.created_at, ISOWEEK)"),
+        (
+            "date_diff",
+            ("day", _col("s", "started_at"), _col("e", "ended_at")),
+            "DATETIME_DIFF(e.ended_at, s.started_at, DAY)",
+        ),
+        ("date_add", ("day", SqlLiteral(7), _col("t", "d")), "DATETIME_ADD(t.d, INTERVAL (7) DAY)"),
+        (
+            "date_add",
+            ("month", SqlLiteral(1), _col("t", "d")),
+            "DATETIME_ADD(t.d, INTERVAL (1) MONTH)",
+        ),
+        (
+            "first_value",
+            (_col("x"), _col("o")),
+            "(ARRAY_AGG(x IGNORE NULLS ORDER BY o ASC LIMIT 1))[SAFE_OFFSET(0)]",
+        ),
+        (
+            "last_value",
+            (_col("x"), _col("o")),
+            "(ARRAY_AGG(x IGNORE NULLS ORDER BY o DESC LIMIT 1))[SAFE_OFFSET(0)]",
+        ),
+        # Retain the joinable clause as well as the exact NULL predicate.
+        (
+            "null_safe_eq",
+            (_col("a"), _col("b")),
+            "COALESCE(CAST(a AS STRING), '__sr_null__') = COALESCE(CAST(b AS STRING), '__sr_null__') AND a IS NOT DISTINCT FROM b",
+        ),
+    ],
+)
+def test_dialect_method_rendering(method, args, expected):
+    assert render_expr(getattr(DIALECT, method)(*args)) == expected
 
 
 @pytest.mark.parametrize("grain", ["month", "quarter", "year", "hour", "minute", "second"])
 def test_date_trunc_passes_other_grains_through(grain: str):
     sql = render_expr(DIALECT.date_trunc(grain, _col("t", "ts")))
     assert sql == f"DATETIME_TRUNC(t.ts, {grain.upper()})"
-
-
-def test_date_diff_puts_end_first():
-    sql = render_expr(DIALECT.date_diff("day", _col("s", "started_at"), _col("e", "ended_at")))
-    assert sql == "DATETIME_DIFF(e.ended_at, s.started_at, DAY)"
 
 
 @pytest.mark.parametrize("unit", ["day", "week", "month", "quarter", "year", "hour"])
@@ -159,18 +182,6 @@ def test_authored_date_diff_normalizes_datetime_columns():
     )
 
 
-def test_date_add_renders_parenthesized_interval():
-    # BigQuery accepts DATETIME_ADD(dt, INTERVAL (7) DAY) — the
-    # parenthesized form the SqlInterval node renders.
-    sql = render_expr(DIALECT.date_add("day", SqlLiteral(7), _col("t", "d")))
-    assert sql == "DATETIME_ADD(t.d, INTERVAL (7) DAY)"
-
-
-def test_date_add_supports_month_unit():
-    sql = render_expr(DIALECT.date_add("month", SqlLiteral(1), _col("t", "d")))
-    assert sql == "DATETIME_ADD(t.d, INTERVAL (1) MONTH)"
-
-
 def _exact_percentile_sql(column: str, p: str) -> str:
     """The exact linear-interpolation form percentile_cont lowers to:
     v[FLOOR(h)] + (h - FLOOR(h)) * (v[CEIL(h)] - v[FLOOR(h)]) with
@@ -201,29 +212,6 @@ def test_median_is_percentile_50():
     sql = render_expr(DIALECT.median(_col("x")))
     assert sql == _exact_percentile_sql("x", "0.5")
     assert sql == render_expr(DIALECT.percentile_cont(_col("x"), 0.5))
-
-
-def test_first_value_is_the_first_non_null_value():
-    sql = render_expr(DIALECT.first_value(_col("x"), _col("o")))
-    assert sql == "(ARRAY_AGG(x IGNORE NULLS ORDER BY o ASC LIMIT 1))[SAFE_OFFSET(0)]"
-
-
-def test_last_value_orders_descending():
-    sql = render_expr(DIALECT.last_value(_col("x"), _col("o")))
-    assert sql == "(ARRAY_AGG(x IGNORE NULLS ORDER BY o DESC LIMIT 1))[SAFE_OFFSET(0)]"
-
-
-def test_null_safe_eq_pairs_joinable_equality_with_exact_predicate():
-    # BigQuery rejects FULL OUTER JOINs without a plain field-equality
-    # conjunct, so null_safe_eq mirrors the Postgres dialect: a text-
-    # normalized equality (the conjunct the planner requires) AND the
-    # exact IS NOT DISTINCT FROM predicate (the filter).
-    sql = render_expr(DIALECT.null_safe_eq(_col("a"), _col("b")))
-    assert sql == (
-        "COALESCE(CAST(a AS STRING), '__sr_null__') = "
-        "COALESCE(CAST(b AS STRING), '__sr_null__') "
-        "AND a IS NOT DISTINCT FROM b"
-    )
 
 
 def test_conditional_aggregate_count_uses_native_countif():
