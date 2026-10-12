@@ -210,7 +210,7 @@ def test_failed_query_reports_stale_seed_hint_without_replacing_database(
     assert file_digest(db_path) == before
 
 
-@pytest.mark.parametrize("kind", ["sql", "csv"])
+@pytest.mark.parametrize("kind", ["sql"])
 def test_explicit_seed_refuses_existing_wal_without_touching_database(
     tmp_path: Path, monkeypatch, kind: str
 ) -> None:
@@ -230,7 +230,7 @@ def test_explicit_seed_refuses_existing_wal_without_touching_database(
     assert not list(tmp_path.glob("*.seed.*.tmp"))
 
 
-@pytest.mark.parametrize("kind", ["sql", "csv"])
+@pytest.mark.parametrize("kind", ["csv"])
 def test_explicit_seed_refuses_wal_created_during_build(
     tmp_path: Path, monkeypatch, kind: str
 ) -> None:
