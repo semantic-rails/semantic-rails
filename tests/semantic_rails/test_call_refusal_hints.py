@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+import semantic_rails
 from semantic_rails.embedding import RequestContext
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.package_snapshot import load_package_snapshot
@@ -171,3 +175,71 @@ def test_an_unsettled_empty_group_names_the_callers_output(runtime: Runtime) -> 
     assert error["details"]["outputs"] == ["orders"]
     assert "leaf__" not in json.dumps(error)
     assert runtime.validate({**call, "observation_scope": "query"}, now=NOW)["ok"] is True
+
+
+# The modules that write refusal messages, hints and answer disclosures, and the call words
+# that left the call. A word is matched in prose (a string literal with a space; docstrings are
+# not emitted); ALLOWED lists the phrases where one means something else.
+WRITERS = (
+    "issues.py",
+    "diagnostics.py",
+    "query_call.py",
+    "policies.py",
+    "answer.py",
+    "runtime.py",
+    "runtime_parts/assumptions.py",
+    "runtime_parts/answer_warnings.py",
+    "metadata_parts/valid_values.py",
+)
+RETIRED_WORDS = {
+    "metric_filters": r"\bmetric_filters?\b",
+    "metric-filter": r"\bmetric-filters?\b",
+    "temporal as a cut": r"\btemporal\b",
+    "range": r"\brange\b",
+    "fill": r"\bfill\b",
+    "version": r"\bversion\b",
+    "policy_context": r"\bpolicy_context\b",
+    "time_dimension": r"\btime_dimensions?\b",
+    "grain as a top-level key": r"(?<![\w.])[`'\"]grain[`'\"]|(?<![\w.`'\"])grain\s*:",
+}
+ALLOWED = ("temporal role", "range predicate", "time.fill")
+
+
+def _prose(path: Path) -> Iterator[tuple[int, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    skipped = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            skipped.update(id(part) for part in node.values)
+            text = "".join(p.value if isinstance(p, ast.Constant) else "{}" for p in node.values)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in skipped:
+                continue
+            text = node.value
+        else:
+            continue
+        if " " in text.strip():
+            yield node.lineno, text
+
+
+def test_no_refusal_hint_or_disclosure_uses_a_retired_call_word() -> None:
+    root = Path(semantic_rails.__file__).parent
+    hits = []
+    for name in WRITERS:
+        for line, text in _prose(root / name):
+            prose = text
+            for phrase in ALLOWED:
+                prose = prose.replace(phrase, "")
+            hits += [
+                f"{name}:{line} [{word}] {text[:80]!r}"
+                for word, pattern in RETIRED_WORDS.items()
+                if re.search(pattern, prose)
+            ]
+    assert hits == []
