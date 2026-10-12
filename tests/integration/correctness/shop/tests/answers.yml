@@ -1,6 +1,6 @@
 fixture:
-  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
-  data_sha256: 6326af948b83796bef51d7828ca1e74b9978f3b55893a92e7e8533f84ac8599f
+  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits]
+  data_sha256: c3ebecaf94d65c2ae5428f1d1c1246cd0c76dd5ca30512b21df574e02acacf40
 tests:
   shop/sibling-input-clock-filter-keeps-independent-history:
     kind: query_matches_snapshot

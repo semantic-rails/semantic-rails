@@ -7,6 +7,12 @@ graph:
     refund: {label: Refund, key: [refund_id], model: refunds}
     clock_edge: {label: Clock edge, key: [id], model: clock_edges}
     account_day: {label: Account day, key: [account_id, snapshot_day], model: account_days}
+    ticket: {label: Ticket, key: [ticket_id], model: tickets}
+    ticket_load: {label: Ticket load, key: [run_id], model: ticket_loads}
+    ticket_audit: {label: Ticket audit, key: [run_id], model: ticket_audits}
+    ticket_row: {label: Ticket row, key: [ticket_id], model: ticket_rows}
+    ticket_feed: {label: Ticket feed, key: [ticket_id], model: ticket_feed}
+    ticket_audited: {label: Audited ticket, key: [ticket_id], model: ticket_audited}
     default_calendar: {label: Calendar, kind: time, key: [date_day], model: default_calendar,
       allowed_as_root: false}
     fiscal_calendar: {label: Fiscal calendar, kind: time, key: [date_day],
