@@ -68,8 +68,6 @@ from .empty_groups import (
     require_time_scopes,
     zero_aliases,
 )
-from .empty_groups import reads_every_row as reads_every_row
-from .empty_groups import record_leaf_scope as record_leaf_scope
 from .indexes import (
     _measure_index,
 )
@@ -94,27 +92,21 @@ from .lowering_common import (
     _time_alias_for_plan,
 )
 from .lowering_common import _filtered_series_candidate as _filtered_series_candidate
-from .lowering_common import _filtered_series_operand as _filtered_series_operand
-from .lowering_common import _foldable_leaf_signature as _foldable_leaf_signature
-from .lowering_common import _record_time_scope as _record_time_scope
 from .lowering_common import _snapshot_series_columns as _snapshot_series_columns
 from .lowering_common import _stock_clock_key_gap as _stock_clock_key_gap
 from .lowering_common import _stock_snapshot_refusal as _stock_snapshot_refusal
-from .lowering_common import _time_bucket_expr as _time_bucket_expr
 from .lowering_common import _value_filter_condition as _value_filter_condition
 from .paths import (
     _join_condition,
 )
 from .paths import _joins_for_paths as _joins_for_paths
 from .paths import _resolve_dimension_expr as _resolve_dimension_expr
-from .paths import rollup_held_lookups as rollup_held_lookups
 from .post_aggregation import (
     _compile_post_expr,
     _namespace_sql_select,
     share_partition,
 )
 from .predicate_sets import _anchored_entity_set_select, _requested_order
-from .predicate_sets import _minimal_predicate_set_ctes as _minimal_predicate_set_ctes
 from .row_counts import (
     _names_in_use,
     _row_count_names,
@@ -122,7 +114,6 @@ from .row_counts import (
     override_row_counts,
     share_group_counts,
 )
-from .row_counts import _row_markers as _row_markers
 from .temporal import (
     refuse_authored_calendar,
     window_total_refusal,

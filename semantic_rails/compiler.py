@@ -19,40 +19,20 @@ from collections.abc import Sequence
 from dataclasses import asdict, replace
 from typing import Any
 
-from .acceleration.selection import _select_aggregate_relation as _select_aggregate_relation
-from .ast import (
-    NormalizedQuery,
-    normalize_query,
-    time_output_alias,
-)
+from .ast import normalize_query, time_output_alias
 from .compiler_parts import nested
 from .compiler_parts.bind import _collect_conversion_exprs as _collect_conversion_exprs
-from .compiler_parts.bind import _scoped_predicate_expr_payload as _scoped_predicate_expr_payload
 from .compiler_parts.binding import BoundQuery, _record_bound_plan, bind_query
 from .compiler_parts.binding import _guard_route_row_filters as _guard_route_row_filters
 from .compiler_parts.binding import bind_metadata_objects as bind_metadata_objects
 from .compiler_parts.binding import query_route_rows as query_route_rows
 from .compiler_parts.binding import read_routes as read_routes
-from .compiler_parts.conversion import _conversion_leaf_cte as _conversion_leaf_cte
 from .compiler_parts.conversion import _conversion_sources as _conversion_sources
 from .compiler_parts.conversion import _conversion_supported as _conversion_supported
-from .compiler_parts.dependencies import (
-    candidate_planning,
-    plan_bindings,
-)
-from .compiler_parts.empty_groups import (
-    recording_zero_outputs,
-)
-from .compiler_parts.indexes import (
-    get_package_analysis,
-)
-from .compiler_parts.leaf_paths import _leaf_path_selections as _leaf_path_selections
-from .compiler_parts.lowering_common import _all_metric_predicates as _all_metric_predicates
-from .compiler_parts.paths import (
-    inner_lookups,
-)
+from .compiler_parts.dependencies import candidate_planning, plan_bindings
+from .compiler_parts.empty_groups import recording_zero_outputs
+from .compiler_parts.paths import inner_lookups
 from .compiler_parts.plan_checks import NonAdditiveRefusal as NonAdditiveRefusal
-from .compiler_parts.plan_checks import _child_scope_clarification as _child_scope_clarification
 from .compiler_parts.plan_checks import (
     _object_default_query_temporal_role as _object_default_query_temporal_role,
 )
@@ -65,16 +45,11 @@ from .compiler_parts.planning import (
     _extend_config_with_synthetic_measures as _extend_config_with_synthetic_measures,
 )
 from .compiler_parts.planning import _plan_query, resolve_compile_config
-from .compiler_parts.planning import _require_child_group_leaves as _require_child_group_leaves
 from .compiler_parts.planning import plan_query as plan_query
 from .compiler_parts.predicate import _entity_determines as _entity_determines
 from .compiler_parts.predicate import (
     _predicate_context_entity_candidates as _predicate_context_entity_candidates,
 )
-from .compiler_parts.predicate import _predicate_ctes_and_join as _predicate_ctes_and_join
-from .compiler_parts.predicate import _predicate_time_alias as _predicate_time_alias
-from .compiler_parts.predicate import _predicate_time_spec as _predicate_time_spec
-from .compiler_parts.predicate import _predicate_where_condition as _predicate_where_condition
 from .compiler_parts.predicate import _reduced_context_entities as _reduced_context_entities
 from .compiler_parts.predicate import (
     _refuse_overridden_predicate_input as _refuse_overridden_predicate_input,
@@ -82,160 +57,17 @@ from .compiler_parts.predicate import (
 from .compiler_parts.sql_lowering import lower_to_sql
 from .compiler_parts.temporal import _requires_query_time as _requires_query_time
 from .compiler_parts.temporal import _time_bound_relationship_ids as _time_bound_relationship_ids
-from .compiler_parts.temporal import (
-    _validate_restrictive_time_semantics as _validate_restrictive_time_semantics,
-)
 from .diagnostics import relationship_contract_payload
 from .dialects import dialect_for_warehouse
-from .errors import SemanticLayerError
-from .expressions import (
-    AggregateExpr,
-    ArithmeticExpr,
-    BooleanExpr,
-    CallExpr,
-    CaseExpr,
-    ColumnRefExpr,
-    ComparisonExpr,
-    ConversionExpr,
-    CumulativeExpr,
-    DistributionExpr,
-    EntityValueExpr,
-    LiteralExpr,
-    MeasureRefExpr,
-    MetricPredicateExpr,
-    MetricRecipeRefExpr,
-    OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
-    RatioExpr,
-    RollingExpr,
-    ScopedAggregateExpr,
-    SemanticExpr,
-    expr_kind,
-    expr_to_dict,
-)
-from .fanout import (
-    analyze_fanout,
-    resolve_path,
-)
-from .ir import (
-    BoundMeasure,
-    ExplainArtifact,
-    LogicalPlan,
-    MeasurePlan,
-    PathSelection,
-    RewriteStep,
-    SemanticDag,
-    SemanticDagNode,
-)
+from .ir import ExplainArtifact, LogicalPlan
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
-from .renderer import render_select_for_profile as render_select_for_profile
+from .renderer import render_select_for_profile
 from .row_filters import RowFilter
-from .row_filters import apply_row_filters as apply_row_filters
-from .schema import (
-    DimensionConfig,
-    MeasureConfig,
-    MetricConfig,
-    PackageConfig,
-    RelationshipConfig,
-    TemporalRoleConfig,
-)
-from .sql_ast import (
-    SqlBinary,
-    SqlCall,
-    SqlCase,
-    SqlCaseWhen,
-    SqlCast,
-    SqlCte,
-    SqlField,
-    SqlIdentifier,
-    SqlIn,
-    SqlIsNull,
-    SqlJoin,
-    SqlLiteral,
-    SqlOrder,
-    SqlOrderTerm,
-    SqlSelect,
-    SqlTableRef,
-    SqlWindow,
-    SqlWithinGroup,
-)
+from .schema import PackageConfig
+from .sql_ast import SqlSelect
 from .sql_preparation import finalize_parameters
 from .temporal_support import validate_temporal_support
-
-__all__ = [
-    "AggregateExpr",
-    "ArithmeticExpr",
-    "BooleanExpr",
-    "BoundMeasure",
-    "CallExpr",
-    "CaseExpr",
-    "ColumnRefExpr",
-    "ComparisonExpr",
-    "ConversionExpr",
-    "CumulativeExpr",
-    "DimensionConfig",
-    "DistributionExpr",
-    "EntityValueExpr",
-    "ExplainArtifact",
-    "LiteralExpr",
-    "LogicalPlan",
-    "MeasureConfig",
-    "MeasurePlan",
-    "MeasureRefExpr",
-    "MetricConfig",
-    "MetricPredicateExpr",
-    "MetricRecipeRefExpr",
-    "NormalizedQuery",
-    "OffsetWindowExpr",
-    "PackageConfig",
-    "PathSelection",
-    "PeriodToDateExpr",
-    "PriorPeriodExpr",
-    "RatioExpr",
-    "Registry",
-    "RelationshipConfig",
-    "RewriteStep",
-    "RollingExpr",
-    "ScopedAggregateExpr",
-    "SemanticDag",
-    "SemanticDagNode",
-    "SemanticExpr",
-    "SemanticLayerError",
-    "SqlBinary",
-    "SqlCall",
-    "SqlCase",
-    "SqlCaseWhen",
-    "SqlCast",
-    "SqlCte",
-    "SqlField",
-    "SqlIdentifier",
-    "SqlIn",
-    "SqlIsNull",
-    "SqlJoin",
-    "SqlLiteral",
-    "SqlOrder",
-    "SqlOrderTerm",
-    "SqlSelect",
-    "SqlTableRef",
-    "SqlWindow",
-    "SqlWithinGroup",
-    "TemporalRoleConfig",
-    "analyze_fanout",
-    "attach_relation_ctes",
-    "compile_query",
-    "dialect_for_warehouse",
-    "expr_kind",
-    "expr_to_dict",
-    "get_package_analysis",
-    "lower_to_sql",
-    "normalize_query",
-    "plan_query",
-    "relationship_contract_payload",
-    "render_select_for_profile",
-    "resolve_path",
-]
 
 
 def _compile_query_sql_ast(
