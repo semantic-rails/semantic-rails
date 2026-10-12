@@ -191,9 +191,10 @@ def test_the_load_log_mark_compiles_beside_coverage_on_every_warehouse_that_read
     assert "edge_1_rows" in sql and "ticket_loads" in sql and "loaded_before" in sql
 
 
-def test_the_declared_edge_never_moves_routing(shop):
-    """An open monthly window reads the rollup with or without an edge on its measures; a
-    named window reads the base either way."""
+def test_a_declared_edge_reads_its_base_never_a_rollup(shop):
+    """A declared edge caps the rows a measure reads at an instant, which a rollup's buckets
+    can't: an open monthly window that reads the rollup without an edge reads the base, capped,
+    with one. Measures without an edge route as before."""
     base = load_package_config(str(shop))
     declared = replace(
         base,
@@ -204,26 +205,17 @@ def test_the_declared_edge_never_moves_routing(shop):
             for row in base.measures
         ],
     )
-    sql: dict[str, list[str]] = {}
+    open_window = {"select": ["measure.shop.revenue"], "time": {"grain": "month", "end": "2023-12-01"}}  # fmt: skip
+    sql = {}
     for name, config in (("last_row", base), ("now", declared)):
         runtime = Runtime.from_config(config, source_path=str(shop))
         try:
-            sql[name] = [
-                runtime.compile({"select": ["measure.shop.revenue"], "time": time}, now=NOW)[
-                    "rendered_sql"
-                ]
-                for time in (
-                    {"grain": "month", "end": "2023-12-01"},
-                    {"grain": "month", "start": "2023-10-01", "end": "2024-09-01"},
-                )
-            ]
+            sql[name] = runtime.compile(open_window, now=NOW)["rendered_sql"]
         finally:
             runtime.close()
-    assert sql["now"][0] == sql["last_row"][0]
-    assert "FROM orders_monthly" in sql["now"][0]
-    assert ["FROM orders_monthly" in text for text in sql["now"]] == [True, False]
-    assert ["FROM orders_monthly" in text for text in sql["last_row"]] == [True, False]
-    assert "edge_1" in sql["now"][1] and "edge_1" not in sql["last_row"][1]
+    assert "FROM orders_monthly" in sql["last_row"]
+    assert "FROM orders_monthly" not in sql["now"]
+    assert "<= CAST('2024-10-07 06:00:00' AS TIMESTAMP)" in sql["now"]
 
 
 def _scope(edge: DeclaredEdge) -> LeafScope:

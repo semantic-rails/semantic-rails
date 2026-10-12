@@ -73,7 +73,7 @@ def test_without_a_load_log_the_last_row_is_the_edge_and_the_answer_says_how_to_
     "case_id",
     [
         "weeks-read-zero-through-the-load-log-then-null",
-        "a-stray-row-after-the-load-log-keeps-its-week",
+        "a-stray-row-after-the-load-log-is-not-read",
     ],
 )
 def test_weeks_after_the_load_log_say_loaded_through(request, backend_name, case_id):
@@ -406,3 +406,45 @@ def test_a_zero_passing_entity_filter_over_unloaded_periods_is_refused(duckdb_ba
     assert raised.value.code == "INVALID_METRIC_PREDICATE"
     assert raised.value.details["measures"] == ["measure.shop.tickets_opened"]
     assert raised.value.details["recovery_hints"][0]["code"] == "FIX_QUERY_CALL"
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize("logged", ["through_day"], indirect=True)
+@pytest.mark.parametrize(
+    "expression",
+    [
+        {"kind": "cumulative", "input": "measure.logged.event_count"},
+        {
+            "kind": "share",
+            "input": "measure.logged.event_count",
+            "over": ["dimension.logged_event_caller"],
+        },
+        {
+            "kind": "prior_period",
+            "input": "measure.logged.event_count",
+            "offset": {"unit": "day", "value": 1},
+        },
+    ],
+    ids=["cumulative", "share", "prior_period"],
+)
+def test_no_row_past_the_load_log_is_read_by_anything(logged, backend_name, expression):
+    """A stray event after the load log (November 4) is never read: a sparse series by
+    caller, its running total, its share and its prior period see none of it, as if it
+    were not there, and an untimed total counts only the loaded events."""
+    stray = "INSERT INTO {events} VALUES (3, 'late', TIMESTAMP '2024-11-04 09:00:00')"
+    events = next(row.table for row in logged.config.entities if row.id == "entity.logged_event")
+    if backend_name == "duckdb":
+        logged.close()
+        with duckdb.connect(logged.db_path) as conn:
+            conn.execute(stray.format(events=events))
+    else:
+        _rows(logged, stray.format(events=events))
+    call = {
+        "select": ["measure.logged.event_count", {"expression": expression, "as": "x"}],
+        "group_by": ["dimension.logged_event_caller"],
+        "time": {"grain": "day", "end": "2024-11-05"},
+    }
+    result = logged.query(call, now=NOW)
+    assert {row["period"] for row in result["rows"]} == {"2024-10-30"}
+    total = logged.query({"select": ["measure.logged.event_count"]}, now=NOW)
+    assert total["rows"] == [{"event_count": 2}]

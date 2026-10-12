@@ -7681,10 +7681,10 @@ tests:
       FROM generate_series(TIMESTAMP '2024-09-09', TIMESTAMP '2024-09-30', INTERVAL '7 days') AS g(b)
       LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
       GROUP BY g.b
-  shop/a-stray-row-after-the-load-log-keeps-its-week:
+  shop/a-stray-row-after-the-load-log-is-not-read:
     kind: query_matches_snapshot
     expect: answer
-    why: 'Ticket 4 (October 9, 2024) landed after the load log''s September 29: its week keeps its 1, but it never certifies the weeks around it, so the empty weeks of September 30 and October 14 read NULL; only the week of September 23 is loaded and reads 0.'
+    why: 'Ticket 4 (October 9, 2024) landed after the load log''s September 29, so the package says its week isn''t loaded yet: no row past the log is read, so the weeks of September 30, October 7 and October 14 read NULL (no data yet), and only the week of September 23, loaded and quiet, reads 0.'
     cites: *loaded_cites
     tags: [null-vs-zero, time-window]
     query:
@@ -7694,14 +7694,19 @@ tests:
     expected_rows:
       - {period: '2024-09-23', tickets_opened: 0}
       - {period: '2024-09-30', tickets_opened: null}
-      - {period: '2024-10-07', tickets_opened: 1}
+      - {period: '2024-10-07', tickets_opened: null}
       - {period: '2024-10-14', tickets_opened: null}
     reference_sql: |
+      WITH loaded AS (
+        SELECT x.* FROM tickets AS x
+        WHERE x.opened_at <= TIMESTAMP '2024-10-21 06:00:00'
+          AND x.opened_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+      )
       SELECT g.b,
         CASE WHEN COUNT(t.ticket_id) > 0 OR g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
           THEN COUNT(DISTINCT t.ticket_id) END
       FROM generate_series(TIMESTAMP '2024-09-23', TIMESTAMP '2024-10-14', INTERVAL '7 days') AS g(b)
-      LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+      LEFT JOIN loaded AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
       GROUP BY g.b
   shop/a-quiet-week-under-an-empty-load-log-reads-null:
     kind: query_matches_snapshot
@@ -7830,10 +7835,10 @@ tests:
           over: period
       time: {start: '2024-09-23', end: '2024-10-21', grain: week}
     now: '2024-10-21T06:00:00Z'
-  shop/an-entity-filter-0-fails-keeps-the-stray-week-past-the-load-log:
+  shop/an-entity-filter-0-fails-reads-nothing-past-the-load-log:
     kind: query_matches_snapshot
     expect: answer
-    why: 'Tickets opened at least once that week, by week to October 21, 2024: a threshold 0 fails reads only real counts, so the stray ticket 4 keeps its week after the load log''s September 29, the loaded week of September 23 reads 0, and the unloaded empty weeks read NULL.'
+    why: 'Tickets opened at least once that week, by week to October 21, 2024: a threshold 0 fails reads only real counts, and nothing past the load log''s September 29 is read, so the stray ticket 4 isn''t either; the loaded week of September 23 reads 0 and the later weeks NULL.'
     cites: [tests/integration/correctness/shop/models/tickets.yml#model.measures.tickets_opened, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#entity-filters, docs/QUERY_CALL.md#empty-groups-null-or-0]
     tags: [null-vs-zero, time-window]
     query:
@@ -7847,16 +7852,21 @@ tests:
     expected_rows:
       - {period: '2024-09-23', tickets_opened: 0}
       - {period: '2024-09-30', tickets_opened: null}
-      - {period: '2024-10-07', tickets_opened: 1}
+      - {period: '2024-10-07', tickets_opened: null}
       - {period: '2024-10-14', tickets_opened: null}
     reference_sql: |
+      WITH loaded AS (
+        SELECT x.* FROM tickets AS x
+        WHERE x.opened_at <= TIMESTAMP '2024-10-21 06:00:00'
+          AND x.opened_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+      )
       SELECT g.b,
         CASE WHEN COUNT(t.ticket_id) > 0 OR g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
           THEN COUNT(DISTINCT t.ticket_id) END
       FROM generate_series(TIMESTAMP '2024-09-23', TIMESTAMP '2024-10-14', INTERVAL '7 days') AS g(b)
       LEFT JOIN (
-        SELECT x.ticket_id, x.opened_at FROM tickets AS x
-        WHERE (SELECT COUNT(*) FROM tickets AS y WHERE y.ticket_id = x.ticket_id
+        SELECT x.ticket_id, x.opened_at FROM loaded AS x
+        WHERE (SELECT COUNT(*) FROM loaded AS y WHERE y.ticket_id = x.ticket_id
           AND date_trunc('week', y.opened_at) = date_trunc('week', x.opened_at)) >= 1
       ) AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
       GROUP BY g.b

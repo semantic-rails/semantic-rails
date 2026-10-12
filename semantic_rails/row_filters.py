@@ -2,9 +2,10 @@
 
 One ordinary scan plus engine-tagged observation/coverage scans may read the same
 physical relation. Every scan gets the same bound predicate; joins remain denied. A declared
-load log's mark (``zero_through``: one ``MAX`` over its relation, joined to nothing) reads how
-far the whole load has completed, so it is read as it is, unless a filter applies to that
-relation: then the statement is refused, never read unfiltered.
+load log's mark (``zero_through``: a ``MAX`` over its relation, or an EXISTS against it that
+caps a measure's rows, joined to nothing) reads how far the whole load has completed, so it is
+read as it is, unless a filter applies to that relation: then the statement is refused, never
+read unfiltered.
 """
 
 from __future__ import annotations
@@ -118,7 +119,6 @@ def apply_row_filters(
         if isinstance(node, SqlTableRef)
         and node.name in load_logs
         and id(node) in scan_of
-        and not scan_of[id(node)].where
         and _observes(scan_of[id(node)])
     }
     marked = {node.name for node in nodes if id(node) in marks}

@@ -2668,21 +2668,30 @@ model:
   own day, which nothing of is loaded yet, reads `NULL`. A load that stalled a whole day or more
   covers only the periods that end by its edge: the week it stopped in, and every later one,
   reads `NULL` with `NO_DATA_YET`: "its data is loaded through 2026-10-11, so later weeks read
-  NULL, not 0". Rows that exist keep their values, but a stray row after the
-  edge never makes the empty periods around it `0`. An empty load log (no date) reads `NULL`
-  for every empty period: "its loaded-through date is unavailable". `window.data_through` is the
+  NULL, not 0". An empty load log (no date) certifies nothing, so no row is read and every
+  period reads `NULL`: "its loaded-through date is unavailable". `window.data_through` is the
   loaded-through date and `window.data_through_source` names the load log as declared
   (`export_runs.through_day`), or says `loaded` to a caller whose view hides that model; with
   `sql_profile: "off"` no plan descriptor names it either. A caller who may read the SQL sees
-  the load log's table and column in it (one `MAX` read beside the coverage it bounds).
+  the load log's table and column in it (the reads that cap each measure and bound coverage).
 - **`now`.** Every empty period up to `now` reads `0` once the table has data, and the answer
   carries the note `ZERO_AFTER_LAST_ROW`: "reads 0 after its last row (2026-09-12) because the
   package says this table is always loaded; a stalled load would also read 0".
   `window.data_through_source` is `now`.
 
+**A declared edge caps what is read.** Every measure of the model reads only the rows at or
+before its edge, on the clock the query reads it by (for a load log, rows before the next local
+midnight after its date, or at or before its timestamp; for `now`, rows at or before the
+request's `now`): series, totals, an answer without a window, running totals, shares, prior
+periods and entity filters all see the same rows. A stray row after the edge is not read, so
+its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
+base table, never a rollup, whose buckets can't stop at an instant. A clock on another model
+than the measure's own is not capped.
+
 The edge is only the upper bound: a period before the table's first row still reads `NULL`,
 and `observation_scope` decides what counts as observed, as before. Balances, averages,
-distinct populations and `additive: false` measures ignore the edge. A caller row filter never
+distinct populations and `additive: false` measures never read `0` for an empty period, edge or
+not. A caller row filter never
 filters the load log (it records how far the whole load ran); a `row_filter` policy on the
 load log's own model refuses the query for the callers it applies to (`POLICY_DENIED`,
 `row_filter_on_load_log`), so the log is never read unfiltered. ClickHouse reads no loaded
@@ -2693,9 +2702,10 @@ Known limits:
 
 - An entity filter whose threshold an entity with no rows passes (`lte 0`, `is 0`, `lt 1`),
   taken per period or over the window, on a measure whose table declares an edge is refused
-  (`INVALID_METRIC_PREDICATE`): it can't yet read each entity's 0 in a period after the edge as
-  NULL. A threshold 0 fails (`gte 1`) answers, and so does `over: "all_time"`, which reads every
-  row the way an answer without a window does.
+  (`INVALID_METRIC_PREDICATE`): the edge stops what is read, but a window or period that runs
+  past it would still count each entity with no loaded rows there, such as a customer whose
+  order isn't loaded yet, as 0. A threshold 0 fails (`gte 1`) answers, and so does
+  `over: "all_time"`.
 - A window total (a window with no grain) answers its one row only on DuckDB, MotherDuck,
   DuckLake and Postgres. On Snowflake, BigQuery, Databricks, Athena and ClickHouse it groups by
   a constant with no one-row spine, so a quiet window total returns no row at all, whatever the

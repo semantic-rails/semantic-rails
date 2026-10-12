@@ -93,6 +93,7 @@ from .lowering_common import (
     _and_conditions,
     _apply_role_timezone,
     _dialect,
+    _edge_cap,
     _entity_in_terms_of_anchor_plan,
     _filtered_series_operand,
     _measure_dim_relation,
@@ -592,6 +593,14 @@ def _entity_in_terms_of_leaf_select(
             anchor_entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
         where_clauses.append(_value_filter_condition(expr, item, config))
+    where_clauses.extend(
+        _edge_cap(
+            _measure_index(config)[measure_plan.bound_measure.measure_id],
+            _leaf_time_role(measure_plan.bound_measure, normalize_query(plan.query), config),
+            config,
+            entity=anchor_entity,
+        )
+    )
     select_fields.append(
         SqlField(
             _aggregation_expr(
@@ -1264,6 +1273,9 @@ def _measure_leaf_select(
         target.append(condition := _value_filter_condition(expr, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
+    where_clauses.extend(
+        _edge_cap(measure, leaf_time_role, config, source_relation=measure_source_override)
+    )
     untimed = [*where_clauses, *authored_conditions, *predicate_row_conditions]
     if plan.time:
         where_clauses.extend(
@@ -1682,6 +1694,14 @@ def _measure_group_leaf_select(
         (authored_conditions if preserve_buckets else where_clauses).append(
             _value_filter_condition(expr, item, config)
         )
+    where_clauses.extend(
+        _edge_cap(
+            first_measure,
+            leaf_time_role,
+            config,
+            source_relation=getattr(first_measure, "source_relation", "") or "",
+        )
+    )
     untimed = [*where_clauses, *authored_conditions]
     if plan.time:
         where_clauses.extend(

@@ -8,9 +8,10 @@ Projection bypasses and sums without a row count refuse with EMPTY_GROUPS_UNSETT
 and non-additive values remain NULL.
 
 A table's declared edge (``zero_through``: ``now``, or a load log's loaded-through mark)
-replaces its last row as the upper bound of loaded coverage: an empty period reads 0 only when
-it ends at or before that edge (or, under a load log that reached today, starts before it), and
-NULL after it even beside a later stray row. The lower bound (the first row) and observation
+caps what its measures read (``declared_cap``): no row past the edge exists for any leaf,
+nested or not. It also replaces the last row as the upper bound of loaded coverage: an empty
+period reads 0 only when it ends at or before that edge (or, under a load log that reached
+today, starts before it), and NULL after it. The lower bound (the first row) and observation
 are unchanged.
 
 ``observation_scope`` says where "observed" is judged: ``dataset`` (the default) in the
@@ -587,7 +588,7 @@ def coverage_select(scope: LeafScope, dialect: Any) -> SqlSelect:
     at or before the request's ``now`` (the data-through edge, never the warehouse clock), and
     that last row's instant in UTC."""
     known = dialect.utc_timestamp(scope.raw_time, scope.storage_zone)
-    loaded = SqlBinary(known, "<=", _now_literal(dialect))
+    loaded = SqlBinary(known, "<=", now_literal(dialect))
     return SqlSelect(
         select=[
             SqlField(SqlCall("MIN", [scope.bucket]), "loaded_from"),
@@ -622,7 +623,38 @@ def capping_at(now: datetime) -> Iterator[CoverageClock]:
         yield clock
 
 
-def _now_literal(dialect: Any) -> Any:
+def declared_cap(
+    edge: ZeroThrough, raw: Any, local: Any, storage_zone: str, dialect: Any
+) -> list[Any]:
+    """The conditions a declared edge puts on the rows a leaf reads, ``raw`` its clock column
+    and ``local`` that column on the clock's zone: at or before the request's ``now`` (as
+    coverage compares it), and, for a load log, inside a mark it records (a DATE through the
+    end of that day on the clock: before its next local midnight; a timestamp at or after the
+    row's instant). An empty load log, or one with no mark, lets no row through: nothing is
+    certified."""
+    instant = dialect.utc_timestamp(raw, storage_zone)
+    cap: list[Any] = [SqlBinary(instant, "<=", now_literal(dialect))]
+    if edge.kind == "loaded":
+        mark = SqlIdentifier(parts=[edge.relation, edge.column])
+        if edge.data_type == "date":
+            next_midnight = dialect.date_add("day", SqlLiteral(1), dialect.timestamp_cast(mark))
+            covers = SqlBinary(next_midnight, ">", dialect.timestamp_cast(local))
+        else:
+            covers = SqlBinary(dialect.utc_timestamp(mark, edge.timezone), ">=", instant)
+        cap.append(
+            SqlExists(
+                SqlSelect(
+                    select=[SqlField(SqlLiteral(1), "seen")],
+                    from_table=SqlTableRef(name=edge.relation),
+                    where=[covers],
+                    observation_scan=True,
+                )
+            )
+        )
+    return cap
+
+
+def now_literal(dialect: Any) -> Any:
     return dialect.timestamp_cast(SqlLiteral(CoverageClock(request_now()).literal))
 
 

@@ -51,6 +51,7 @@ from ..ir import (
 )
 from ..schema import (
     AggregateRelationConfig,
+    MeasureConfig,
     PackageConfig,
 )
 from ..sql_ast import (
@@ -81,12 +82,14 @@ from .dependencies import (
 )
 from .empty_groups import (
     LeafScope,
+    declared_cap,
     declared_edge,
     expr_resolves_to_zero,
     has_nested_case,
     reads_every_row,
     record_balance_scope,
     record_leaf_scope,
+    refuse_declared_edges,
     request_now,
     resolves_to_zero,
     sql_nodes,
@@ -101,6 +104,7 @@ from .indexes import (
     get_package_analysis,
 )
 from .paths import (
+    _column_ref,
     _direct_dimension_source_expr,
     _entity_in_terms_of_parent_relationship,
     _joins_for_paths,
@@ -533,6 +537,42 @@ def _require_filtered_series_operand(
         )
 
 
+def _edge_cap(
+    measure: MeasureConfig,
+    role_id: str,
+    config: PackageConfig,
+    *,
+    entity: str = "",
+    source_relation: str = "",
+) -> list[Any]:
+    """What a measure's declared edge (``zero_through``) lets the leaf that reads it on the
+    clock ``role_id`` (an untimed read: the measure's default clock) read: the rows at or
+    before the edge (``declared_cap``). None past it exist for anything the leaf feeds, nested
+    predicates and windows included. A clock on another model isn't capped; its edge isn't
+    read there either (``_record_time_scope``)."""
+    role_id = role_id or measure.default_temporal_role
+    if measure.zero_through is None or not role_id:
+        return []
+    dialect = _dialect(config)
+    refuse_declared_edges([measure], dialect)
+    role = _temporal_role_index(config)[role_id]
+    dim = _dimension_index(config)[role.dimension]
+    direct = _direct_dimension_source_expr(
+        entity or measure.entity, role.dimension, config, source_relation_override=source_relation
+    )
+    if direct is None and dim.entity != (entity or measure.entity):
+        return []
+    entities = _entity_index(config)
+    raw = (
+        direct[0]
+        if direct is not None
+        else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
+    )
+    zone = role.column_timezone or role.timezone or "UTC"
+    local = _apply_role_timezone(raw, role, config)
+    return declared_cap(measure.zero_through, raw, local, zone, dialect)
+
+
 def _record_time_scope(
     plan: LogicalPlan,
     config: PackageConfig,
@@ -637,7 +677,7 @@ def _record_balance_edge(
 
 
 def _dataset_scope(
-    row: MeasurePlan, config: PackageConfig, owned: LeafScope | None = None
+    row: MeasurePlan, config: PackageConfig, owned: LeafScope | None = None, role_id: str = ""
 ) -> LeafScope | None:
     """A sum or count's own rows under its authored conditions (its filter, its CASE, the joins
     they need), without the query's filters or window: what ``dataset`` observation probes,
@@ -667,6 +707,8 @@ def _dataset_scope(
             measure.entity, str(item["field"]), config, source_relation_override=override
         ) or _resolve_dimension_expr(str(item["field"]), config)
         where.append(_value_filter_condition(expr, item, config))
+    # Rows past a declared edge are never read, so they observe nothing either.
+    where.extend(_edge_cap(measure, role_id, config, source_relation=override))
     relation = _measure_source_relation(measure, _entity_index(config)[measure.entity])
     joins = [*_joins_for_paths(measure.entity, paths, config, measure_entity=measure.entity)]
     if owned is not None and _bound_metric_predicates(bound):
@@ -1195,6 +1237,7 @@ def _foldable_leaf_signature(
         getattr(measure_plan, "aggregate_relation_id", "") or "",
         measure.entity,
         getattr(measure, "source_relation", "") or "",
+        measure.zero_through,  # one scan reads one edge
         _path_signature(measure_plan.path_selections),
         tuple(plan.group_by),
         _freeze_payload(plan.time),

@@ -95,6 +95,8 @@ def _leaf_rollup_blocker(
         return ROUTING_OFF
     if _measure_index(config)[bound.measure_id].lookup_from:
         return "parent_lookup"  # its value is another measure's total per parent, not a column
+    if _measure_index(config)[bound.measure_id].zero_through is not None:
+        return "declared_edge"  # its base read stops at the edge; a rollup's buckets can't
     if _bound_metric_predicates(bound) or any(
         isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
     ):

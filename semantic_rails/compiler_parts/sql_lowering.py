@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from typing import Any, cast
 
+from ..ast import normalize_query
 from ..errors import SemanticLayerError
 from ..expressions import (
     BooleanExpr,
@@ -99,6 +100,7 @@ from .lowering_common import _stock_snapshot_refusal as _stock_snapshot_refusal
 from .lowering_common import _value_filter_condition as _value_filter_condition
 from .paths import (
     _join_condition,
+    _leaf_time_role,
 )
 from .paths import _joins_for_paths as _joins_for_paths
 from .paths import _resolve_dimension_expr as _resolve_dimension_expr
@@ -297,7 +299,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                         owned = owned_reads.get(row.bound_measure.alias)
                         if owned is not None:
                             owned = _namespaced_scope(owned, leaf_select, f"{cte_name}__")
-                        if (scope := _dataset_scope(row, config, owned)) is not None:
+                        role = _leaf_time_role(
+                            row.bound_measure, normalize_query(plan.query), config
+                        )
+                        if (scope := _dataset_scope(row, config, owned, role)) is not None:
                             observed[row.bound_measure.alias] = scope
                 emitted = {field.alias for field in leaf_select.select}
                 rows.update(
