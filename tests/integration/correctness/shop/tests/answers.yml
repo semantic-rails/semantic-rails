@@ -3698,6 +3698,65 @@ tests:
       - {period: '2024-02-12', order_count: null}
       - {period: '2024-02-19', order_count: null}
       - {period: '2024-02-26', order_count: null}
+  shop/scoped-period-predicate-beside-an-entity-filter-answers-by-dataset:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Under the dataset scope the scoped aggregate's own per-quarter predicate is read through its set, so its empty groups can be settled before the entity filter; customers 102, 103 and 104 ordered in the first quarter of 2024, so store a reads 24 (orders 4 and 6) and b 8 (order 5).
+    cites: *quiet_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select:
+        - as: revenue
+          expression:
+            kind: scoped_aggregate
+            measure: measure.shop.revenue
+            aggregation: sum
+            predicates: [{entity: entity.shop_customer, measure: measure.shop.order_count, op: gte, value: 1, over: period}]
+      group_by: [dimension.shop_order_store_id]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 1}]
+          over: period
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: quarter, start: '2024-01-01', end: '2024-04-01'}
+    now: '2024-09-01T00:00:00Z'
+    reference_sql: |
+      SELECT o.store_id, date_trunc('quarter', o.ordered_at), SUM(o.amount) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-01-01' AND o.ordered_at < TIMESTAMP '2024-04-01'
+        AND EXISTS (SELECT 1 FROM orders AS x WHERE x.customer_id = o.customer_id
+          AND date_trunc('quarter', x.ordered_at) = date_trunc('quarter', o.ordered_at)
+          AND x.ordered_at >= TIMESTAMP '2024-01-01' AND x.ordered_at < TIMESTAMP '2024-04-01')
+      GROUP BY 1, 2
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 24}
+      - {dimension.shop_order_store_id: b, period: '2024-01-01', revenue: 8}
+  shop/scoped-period-predicate-beside-a-where-answers-by-dataset:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Beside a row condition too, the scoped aggregate's own per-quarter predicate is read through its set under the dataset scope, so store a reads 24 (orders 4 and 6).
+    cites: *quiet_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select:
+        - as: revenue
+          expression:
+            kind: scoped_aggregate
+            measure: measure.shop.revenue
+            aggregation: sum
+            predicates: [{entity: entity.shop_customer, measure: measure.shop.order_count, op: gte, value: 1, over: period}]
+      group_by: [dimension.shop_order_store_id]
+      where:
+        - {field: dimension.shop_order_store_id, op: is, value: a}
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: quarter, start: '2024-01-01', end: '2024-04-01'}
+    now: '2024-09-01T00:00:00Z'
+    reference_sql: |
+      SELECT o.store_id, date_trunc('quarter', o.ordered_at), SUM(o.amount) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-01-01' AND o.ordered_at < TIMESTAMP '2024-04-01' AND o.store_id = 'a'
+        AND EXISTS (SELECT 1 FROM orders AS x WHERE x.customer_id = o.customer_id
+          AND date_trunc('quarter', x.ordered_at) = date_trunc('quarter', o.ordered_at)
+          AND x.ordered_at >= TIMESTAMP '2024-01-01' AND x.ordered_at < TIMESTAMP '2024-04-01')
+      GROUP BY 1, 2
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 24}
   shop/scoped-predicate-unknown-aggregate-fails-not:
     kind: query_matches_snapshot
     expect: answer

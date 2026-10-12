@@ -723,12 +723,16 @@ def _record_balance_edge(
     record_balance_scope(row.bound_measure.alias, scope, _dialect(config))
 
 
-def _dataset_scope(row: MeasurePlan, config: PackageConfig) -> LeafScope | None:
+def _dataset_scope(
+    row: MeasurePlan, config: PackageConfig, owned: LeafScope | None = None
+) -> LeafScope | None:
     """A sum or count's own rows under its authored conditions (its filter, its CASE, the joins
     they need), without the query's filters or window: what ``dataset`` observation probes,
-    whichever leaf answers. None for a condition on a metric predicate, a fan-out or a hop
-    valid over time, which the probe can't read, and for a nested CASE, whose settlement
-    can't tell unknown amounts from no rows: the guard then refuses."""
+    whichever leaf answers. Its own metric predicates (a scoped aggregate's, over all time, a
+    window or each period) are read through the leaf's joins to their sets (``owned``, renamed
+    as the leaf's CTE names them). None for a predicate it can't read that way, a fan-out or a
+    hop valid over time, and for a nested CASE, whose settlement can't tell unknown amounts
+    from no rows: the guard then refuses."""
     from ..compiler import _path_has_temporal_validity
 
     bound = row.bound_measure
@@ -738,7 +742,7 @@ def _dataset_scope(row: MeasurePlan, config: PackageConfig) -> LeafScope | None:
         not resolves_to_zero(bound.aggregation, measure)
         or measure.lookup_from
         or has_nested_case(measure)
-        or _bound_metric_predicates(bound)
+        or (_bound_metric_predicates(bound) and owned is None)
         or any(
             s.analysis.get("status") != "ok" or _path_has_temporal_validity(s.chosen_path, config)
             for s in paths
@@ -753,12 +757,46 @@ def _dataset_scope(row: MeasurePlan, config: PackageConfig) -> LeafScope | None:
         ) or _resolve_dimension_expr(str(item["field"]), config)
         where.append(_value_filter_condition(expr, item, config))
     relation = _measure_source_relation(measure, _entity_index(config)[measure.entity])
+    joins = [*_joins_for_paths(measure.entity, paths, config, measure_entity=measure.entity)]
+    if owned is not None and _bound_metric_predicates(bound):
+        joins.extend(owned.joins)
+        where.extend(owned.where)
+        # Every column the predicates' joins read must come from a relation the probe reads.
+        readable = {relation} | {
+            name
+            for join in joins
+            for name in (getattr(join.table, "name", ""), getattr(join.table, "alias", ""))
+            if name
+        }
+        if any(
+            isinstance(node, SqlIdentifier)
+            and len(node.parts) > 1
+            and ".".join(node.parts[:-1]) not in readable
+            for node in sql_nodes([[join.on for join in owned.joins if join.on], list(owned.where)])
+        ):
+            return None
     return LeafScope(
         from_table=SqlTableRef(name=relation),
-        joins=tuple(_joins_for_paths(measure.entity, paths, config, measure_entity=measure.entity)),
+        joins=tuple(joins),
         where=tuple(where),
         value=SqlCall("COUNT", [_config_expr_to_sql(measure.expr, measure, config)]),
     )
+
+
+# Each root leaf's joins to its own predicates' sets and their row conditions, by output alias.
+_owned_predicate_reads: ContextVar[dict[str, LeafScope] | None] = ContextVar(
+    "owned_predicate_reads", default=None
+)
+
+
+@contextmanager
+def _recording_owned_predicate_reads() -> Iterator[dict[str, LeafScope]]:
+    reads: dict[str, LeafScope] = {}
+    token = _owned_predicate_reads.set(reads)
+    try:
+        yield reads
+    finally:
+        _owned_predicate_reads.reset(token)
 
 
 def _is_window_total_key(expr: Any, time_alias: str) -> bool:
@@ -3174,6 +3212,8 @@ def _measure_leaf_select(
     predicate_ctes: list[SqlCte] = []
     predicate_joins: list[SqlJoin] = []
     predicate_row_conditions: list[Any] = []
+    owned_joins: list[SqlJoin] = []
+    owned_conditions: list[Any] = []
     owned_predicates = _bound_metric_predicates(measure_plan.bound_measure)
     query_predicates = _query_metric_predicates(plan)
     for index, predicate in enumerate(_all_metric_predicates(plan, measure_plan)):
@@ -3190,6 +3230,25 @@ def _measure_leaf_select(
         predicate_ctes.extend(ctes)
         predicate_joins.extend(joins)
         predicate_row_conditions.extend(row_conditions)
+        if predicate in owned_predicates:
+            owned_joins.extend(joins)
+            owned_conditions.extend(row_conditions)
+    owned_reads = _owned_predicate_reads.get()
+    # A contextual predicate's set reads the query's own filters: no probe sees past them.
+    if (
+        owned_reads is not None
+        and owned_predicates
+        and plan_is_root()
+        and all(predicate.scope_mode != "contextual" for predicate in owned_predicates)
+    ):
+        owned_reads[measure_plan.bound_measure.alias] = LeafScope(
+            from_table=SqlTableRef(
+                name=_measure_source_relation(measure, entities[measure.entity])
+            ),
+            joins=tuple(owned_joins),
+            where=tuple(owned_conditions),
+            value=None,
+        )
 
     select_fields: list[SqlField] = []
     group_fields: list[Any] = []
@@ -6094,7 +6153,11 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
         # A window on the request's own query hides data outside it: keep what each leaf reads.
-        with recording_leaf_scopes() as scopes, naming_row_counts(row_counts, overrides):
+        with (
+            recording_leaf_scopes() as scopes,
+            naming_row_counts(row_counts, overrides),
+            _recording_owned_predicate_reads() as owned_reads,
+        ):
             for measure_group in measure_groups:
                 cte_name = measure_group[0].cte_name
                 # A folded group shares one scan, so its filters cut every leaf in it.
@@ -6105,7 +6168,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                             _require_filtered_series_operand(leaf_select, row, config)
                             record_retained_filtered_series(row.bound_measure.alias)
                     for row in measure_group if probing else ():
-                        if (scope := _dataset_scope(row, config)) is not None:
+                        owned = owned_reads.get(row.bound_measure.alias)
+                        if owned is not None:
+                            owned = _namespaced_scope(owned, leaf_select, f"{cte_name}__")
+                        if (scope := _dataset_scope(row, config, owned)) is not None:
                             observed[row.bound_measure.alias] = scope
                 emitted = {field.alias for field in leaf_select.select}
                 rows.update(
