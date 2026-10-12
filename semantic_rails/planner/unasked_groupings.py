@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from .. import operators
-from ._base import _object_by_id, _singular
+from ._base import _grouped_dimensions, _object_by_id, _singular
 from .call import Call, Time
 from .grouping_checks import _entity_grouping_dimensions, _query_clocks, _reads_grouping
 from .groupings import _listed_grouping_terms, _named_run
@@ -168,11 +168,7 @@ def _unasked_grouping_why(
     chosen = set(caller.group_by)
     clock = _object_by_id(config.temporal_roles, time.temporal_role)
     clock_day = str(getattr(clock, "dimension", "") or "") if grain == "day" else ""
-    grouped = [
-        row
-        for item in dict.fromkeys(query.group_by)
-        if (row := _object_by_id(config.dimensions, item)) is not None
-    ]
+    grouped = _grouped_dimensions(config, query)
     unasked = [
         row
         for row in grouped

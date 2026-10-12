@@ -252,6 +252,32 @@ def _object_by_id(rows: Iterable[Any], object_id: str) -> Any | None:
     return next((row for row in rows if getattr(row, "id", "") == object_id), None)
 
 
+def _matching(options: list[list[Any]]) -> tuple[list[bool], dict[Any, int]]:
+    """Give each row one of its options, no option twice (augmenting paths): whether each row
+    got one, and the row that holds each option."""
+    owner: dict[Any, int] = {}
+
+    def assign(index: int, seen: set[Any]) -> bool:
+        for option in options[index]:
+            if option not in seen:
+                seen.add(option)
+                if option not in owner or assign(owner[option], seen):
+                    owner[option] = index
+                    return True
+        return False
+
+    return [assign(index, set()) for index in range(len(options))], owner
+
+
+def _grouped_dimensions(config: Any, query: Any) -> list[Any]:
+    """The dimensions a draft groups by, each once, in its order."""
+    return [
+        row
+        for item in dict.fromkeys(query.group_by)
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
+
+
 def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[list[Any], Any]:
     """The rows sharing the ranking's top score, and the one the question names, if any.
 

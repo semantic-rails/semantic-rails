@@ -9,6 +9,7 @@ from typing import Any
 from ._base import (
     _NAME_CONNECTORS,
     _dimension,
+    _grouped_dimensions,
     _last_token,
     _object_by_id,
     _requested_grouping_spans,
@@ -168,11 +169,7 @@ def _key_only_assumptions(
     id")."""
 
     caller = set(partial_query.group_by if partial_query else ())
-    grouped = [
-        row
-        for item in dict.fromkeys(query.group_by)
-        if (row := _object_by_id(config.dimensions, item)) is not None
-    ]
+    grouped = _grouped_dimensions(config, query)
     lines: list[str] = []
     for row in grouped:
         entity = _object_by_id(config.entities, row.entity)
@@ -290,22 +287,21 @@ def _listed_grouping_terms(text: str, config: Any) -> list[str]:
         term = pieces[index].strip()
         if not term:
             continue
-        if (
-            index
-            and "," in pieces[index - 1]
-            and not (
-                _is_temporal_grouping_term(term)
-                or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
-                or any(
-                    row.calendar_id and _names_time_axis(term, row.label) for row in config.entities
-                )
-                or any(_grouping_matches(term, row) for row in config.dimensions)
-                or any(_grouping_matches(term, row, entity=True) for row in config.entities)
-            )
-        ):
+        if index and "," in pieces[index - 1] and not _names_a_grouping(term, config):
             break
         terms.append(term)
     return terms
+
+
+def _names_a_grouping(term: str, config: Any) -> bool:
+    """Whether a term names a time grain, a clock, a calendar, a dimension or an entity."""
+    return (
+        _is_temporal_grouping_term(term)
+        or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
+        or any(row.calendar_id and _names_time_axis(term, row.label) for row in config.entities)
+        or any(_grouping_matches(term, row) for row in config.dimensions)
+        or any(_grouping_matches(term, row, entity=True) for row in config.entities)
+    )
 
 
 def _is_temporal_grouping_term(term: str) -> bool:
