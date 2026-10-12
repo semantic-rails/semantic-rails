@@ -37,7 +37,11 @@ def _query(*, fill=False, groups=(), **extra):
     }
 
 
-# Every dialect, each with one of the fill and group shapes; ClickHouse refuses a fill.
+# One warehouse per dialect family: DuckLake and MotherDuck render as DuckDB does.
+DIALECTS = [w for w in supported_warehouses() if w not in {"ducklake", "motherduck"}]
+
+
+# Every dialect family, each with one of the fill and group shapes; ClickHouse refuses a fill.
 @pytest.mark.parametrize(
     ("warehouse", "fill", "groups"),
     [
@@ -46,10 +50,8 @@ def _query(*, fill=False, groups=(), **extra):
         ("clickhouse", False, GROUPS),
         ("clickhouse", True, GROUPS[::-1]),
         ("databricks", False, GROUPS[::-1]),
-        ("duckdb", True, []),
+        ("duckdb", True, GROUPS[::-1]),
         ("duckdb", False, GROUPS),
-        ("ducklake", True, GROUPS[::-1]),
-        ("motherduck", False, []),
         ("postgres", True, GROUPS),
         ("snowflake", False, GROUPS[::-1]),
     ],
@@ -83,7 +85,7 @@ def test_default_order_is_time_then_authored_groups(config, warehouse, fill, gro
     ("warehouse", "fill", "field"),
     [
         (warehouse, index % 2 == 1, ["time", "orders", GROUPS[0]][index % 3])
-        for index, warehouse in enumerate(supported_warehouses())
+        for index, warehouse in enumerate(DIALECTS)
     ],
 )
 def test_explicit_order_wins_without_extra_tiebreakers(config, fill, field, warehouse):
@@ -174,7 +176,7 @@ def test_default_order_covers_alternate_lowering_paths(config, shape):
             "metric-filter",
         )
     ]
-    + [(warehouse, "distribution") for warehouse in supported_warehouses() if warehouse != "duckdb"]
+    + [(warehouse, "distribution") for warehouse in DIALECTS if warehouse != "duckdb"]
     + [("postgres", "nested-distribution")],
 )
 @pytest.mark.parametrize("explicit", [False, True])

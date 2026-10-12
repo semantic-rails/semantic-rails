@@ -282,7 +282,11 @@ def test_computed_boolean_null_renders_per_lowering(runtime, warehouse, lowering
         assert render_expr(comparison) == f"FALSE != {expected}"
 
 
-@pytest.mark.parametrize("warehouse", supported_warehouses())
+# One warehouse per dialect family: DuckLake and MotherDuck render as DuckDB does.
+DIALECTS = [w for w in supported_warehouses() if w not in {"ducklake", "motherduck"}]
+
+
+@pytest.mark.parametrize("warehouse", DIALECTS)
 def test_compile_binds_dialect_for_computed_boolean_null(runtime, warehouse):
     config = replace(runtime.config, package=replace(runtime.config.package, warehouse=warehouse))
     expression = NOT_NULL
