@@ -106,6 +106,7 @@ from .paths import (
     _entity_in_terms_of_parent_relationship,
     _joins_for_paths,
     _leaf_time_role,
+    _path_selection,
     _resolve_dimension_expr,
     dimension_filter,
     rollup_held_lookups,
@@ -115,7 +116,6 @@ from .post_aggregation import (
 )
 from .temporal import (
     _fractional_second,
-    _time_bound_relationship_ids,
     window_total_refusal,
 )
 
@@ -922,25 +922,14 @@ def _anchor_path_selection(
     target_entity: str,
     purpose: str,
 ) -> PathSelection | None:
-    if start_entity == target_entity:
-        return None
-    query = normalize_query(plan.query)
-    chosen, candidates = resolve_path(config, start=start_entity, target=target_entity)
-    analysis = analyze_fanout(
-        config,
-        start_entity,
-        chosen,
-        time_bound_relationships=_time_bound_relationship_ids(query, config),
-    )
-    if analysis.get("status") != "ok":
-        return None
-    return PathSelection(
+    selection = _path_selection(
+        config=config,
+        query=normalize_query(plan.query),
+        start_entity=start_entity,
         target_entity=target_entity,
         purpose=purpose,
-        chosen_path=list(chosen),
-        candidate_paths=[list(path) for path in candidates],
-        analysis=analysis,
     )
+    return selection if selection is not None and selection.analysis.get("status") == "ok" else None
 
 
 def _anchor_route_agrees(

@@ -31,6 +31,7 @@ from ..expressions import (
     expr_kind,
 )
 from ..fanout import (
+    analyze_fanout,
     enters_validity_window,
     record_route_choice,
     resolve_path,
@@ -62,11 +63,41 @@ from .indexes import (
     get_package_analysis,
     rollup_dimension_entities,
 )
-from .temporal import _allows_coarse_snapshot_alignment, _validate_leaf_window_clock
+from .temporal import (
+    _allows_coarse_snapshot_alignment,
+    _time_bound_relationship_ids,
+    _validate_leaf_window_clock,
+)
 
 
 def _column_ref(table: str, column: str) -> SqlIdentifier:
     return SqlIdentifier(parts=[*str(table).split("."), column])
+
+
+def _path_selection(
+    *,
+    config: PackageConfig,
+    query: NormalizedQuery,
+    start_entity: str,
+    target_entity: str,
+    purpose: str,
+) -> PathSelection | None:
+    if target_entity == start_entity:
+        return None
+    chosen, candidates = resolve_path(config, start=start_entity, target=target_entity)
+    analysis = analyze_fanout(
+        config,
+        start_entity,
+        chosen,
+        time_bound_relationships=_time_bound_relationship_ids(query, config),
+    )
+    return PathSelection(
+        target_entity=target_entity,
+        purpose=purpose,
+        chosen_path=list(chosen),
+        candidate_paths=[list(path) for path in candidates],
+        analysis=analysis,
+    )
 
 
 def _split_column_ref(value: str) -> tuple[str, str]:

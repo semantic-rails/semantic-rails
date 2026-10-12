@@ -35,7 +35,6 @@ from ..fanout import (
 from ..ir import (
     LogicalPlan,
     MeasurePlan,
-    PathSelection,
 )
 from ..schema import (
     PackageConfig,
@@ -84,6 +83,7 @@ from .paths import (
     _entity_key_dimension_ids,
     _expression_root_entity,
     _leaf_time_role,
+    _path_selection,
     unknown_as_null,
 )
 from .plan_checks import _LOOKUP_TIME_EXPRS, _predicate_metric_label, _predicate_sql_names
@@ -96,35 +96,8 @@ from .temporal import (
     _floor_to_grain,
     _is_grain_boundary,
     _parse_time_literal,
-    _time_bound_relationship_ids,
     _window_measure_exprs,
 )
-
-
-def _path_selection(
-    *,
-    config: PackageConfig,
-    query: NormalizedQuery,
-    start_entity: str,
-    target_entity: str,
-    purpose: str,
-) -> PathSelection | None:
-    if target_entity == start_entity:
-        return None
-    chosen, candidates = resolve_path(config, start=start_entity, target=target_entity)
-    analysis = analyze_fanout(
-        config,
-        start_entity,
-        chosen,
-        time_bound_relationships=_time_bound_relationship_ids(query, config),
-    )
-    return PathSelection(
-        target_entity=target_entity,
-        purpose=purpose,
-        chosen_path=list(chosen),
-        candidate_paths=[list(path) for path in candidates],
-        analysis=analysis,
-    )
 
 
 def _predicate_where_condition(op: str, value: Any) -> Any:
