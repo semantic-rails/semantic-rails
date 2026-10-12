@@ -409,6 +409,7 @@ tests:
         - entity: entity.shop_customer
           having: [{field: metric.shop.closed_orders, op: gte, value: 1}]
           over: window
+      observation_scope: query
     expected_rows:
       - {period: '2023-11-13', signups: null}
       - {period: '2023-11-14', signups: null}
@@ -2488,8 +2489,9 @@ tests:
   shop/customers_with_no_large_orders-case_count-no_match_keeps_no_customer:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for customers with no large orders case count no match
-      keeps no customer.
+    why: No order reaches 1000, so every customer's huge order count is NULL and no customer is kept; signups have rows,
+      and under the dataset scope (the default) an entity filter, like any where, does not decide whether there is data,
+      so the count of the kept signups reads 0 (data of nothing).
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.measures.huge_order_count
       - tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count
@@ -2507,12 +2509,12 @@ tests:
         having: [{field: measure.shop.huge_order_count, op: is, value: 0}]
         over: all_time
     reference_sql: |-
-      SELECT NULLIF(COUNT(*), 0) FROM signups AS s
+      SELECT COUNT(*) FROM signups AS s
                   WHERE EXISTS (SELECT 1 FROM orders WHERE amount >= 1000)
                     AND (SELECT COUNT(*) FROM orders AS o
                          WHERE o.customer_id = s.customer_id AND o.amount >= 1000) = 0
     expected_rows:
-      - {signups: null}
+      - {signups: 0}
   shop/predicate-conditional_count-null-=:
     kind: query_matches_snapshot
     expect: answer
@@ -3471,6 +3473,231 @@ tests:
         HAVING SUM(tax_amount) IS NOT NULL AND SUM(tax_amount) <> 0)
       GROUP BY 1, 2
     expected_rows: []
+  shop/entity-filter-all-time-quiet-days-pass-is-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: No order falls in February 2024, inside the loaded data; customers who ever ordered exist, so each February day reads 0 orders for them (data of nothing), and having is 0 keeps all 29 days.
+    cites: &quiet_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#entity-filters, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      having: [{field: measure.shop.order_count, op: is, value: 0}]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 1}]
+          over: all_time
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-02-01', end: '2024-03-01', grain: day}
+    now: '2024-03-02T00:00:00Z'
+    reference_sql: |
+      SELECT g.b FROM generate_series(TIMESTAMP '2024-02-01', TIMESTAMP '2024-02-29', INTERVAL '1 day') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b
+        AND o.customer_id IN (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(*) >= 1)
+      GROUP BY g.b HAVING COUNT(o.order_id) = 0
+    expected_rows:
+      - {period: '2024-02-01'}
+      - {period: '2024-02-02'}
+      - {period: '2024-02-03'}
+      - {period: '2024-02-04'}
+      - {period: '2024-02-05'}
+      - {period: '2024-02-06'}
+      - {period: '2024-02-07'}
+      - {period: '2024-02-08'}
+      - {period: '2024-02-09'}
+      - {period: '2024-02-10'}
+      - {period: '2024-02-11'}
+      - {period: '2024-02-12'}
+      - {period: '2024-02-13'}
+      - {period: '2024-02-14'}
+      - {period: '2024-02-15'}
+      - {period: '2024-02-16'}
+      - {period: '2024-02-17'}
+      - {period: '2024-02-18'}
+      - {period: '2024-02-19'}
+      - {period: '2024-02-20'}
+      - {period: '2024-02-21'}
+      - {period: '2024-02-22'}
+      - {period: '2024-02-23'}
+      - {period: '2024-02-24'}
+      - {period: '2024-02-25'}
+      - {period: '2024-02-26'}
+      - {period: '2024-02-27'}
+      - {period: '2024-02-28'}
+      - {period: '2024-02-29'}
+  shop/entity-filter-all-time-quiet-weeks-read-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The weeks of February 2024 hold no order, and the customers who ever ordered have orders elsewhere, so each week reads 0, not NULL.
+    cites: *quiet_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.order_count]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 1}]
+          over: all_time
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-02-01', end: '2024-03-01', grain: week}
+    now: '2024-04-02T00:00:00Z'
+    reference_sql: |
+      SELECT g.b, COUNT(o.order_id)
+      FROM generate_series(TIMESTAMP '2024-01-29', TIMESTAMP '2024-02-26', INTERVAL '7 day') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('week', o.ordered_at) = g.b
+        AND o.ordered_at >= TIMESTAMP '2024-02-01' AND o.ordered_at < TIMESTAMP '2024-03-01'
+        AND o.customer_id IN (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(*) >= 1)
+      GROUP BY g.b
+    expected_rows:
+      - {period: '2024-01-29', order_count: 0}
+      - {period: '2024-02-05', order_count: 0}
+      - {period: '2024-02-12', order_count: 0}
+      - {period: '2024-02-19', order_count: 0}
+      - {period: '2024-02-26', order_count: 0}
+  shop/entity-filter-period-quiet-weeks-read-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: In March 2024 customer 104 orders in the week of February 26 and customer 102 in the week of March 25; the weeks between hold no qualifying customer's order and read 0, as the qualifying population has rows.
+    cites: *quiet_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.order_count]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 1}]
+          over: period
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-03-01', end: '2024-04-01', grain: week}
+    now: '2024-04-02T00:00:00Z'
+    reference_sql: |
+      SELECT g.b, COUNT(o.order_id)
+      FROM generate_series(TIMESTAMP '2024-02-26', TIMESTAMP '2024-03-25', INTERVAL '7 day') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('week', o.ordered_at) = g.b
+        AND o.ordered_at >= TIMESTAMP '2024-03-01' AND o.ordered_at < TIMESTAMP '2024-04-01'
+        AND EXISTS (SELECT 1 FROM orders AS x WHERE x.customer_id = o.customer_id
+          AND date_trunc('week', x.ordered_at) = date_trunc('week', o.ordered_at)
+          AND x.ordered_at >= TIMESTAMP '2024-03-01' AND x.ordered_at < TIMESTAMP '2024-04-01')
+      GROUP BY g.b
+    expected_rows:
+      - {period: '2024-02-26', order_count: 1}
+      - {period: '2024-03-04', order_count: 0}
+      - {period: '2024-03-11', order_count: 0}
+      - {period: '2024-03-18', order_count: 0}
+      - {period: '2024-03-25', order_count: 1}
+  shop/entity-filter-window-with-no-qualifying-entity-reads-zero-by-dataset:
+    kind: query_matches_snapshot
+    expect: answer
+    why: No customer ordered in February 2024, so the window keeps no customer; under the dataset scope (the default) data in scope is judged before the where, entity filters included, and orders have rows, so each week inside the loaded data reads 0 (data of nothing).
+    cites: *quiet_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.order_count]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 1}]
+          over: window
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-02-01', end: '2024-03-01', grain: week}
+    now: '2024-04-02T00:00:00Z'
+    reference_sql: |
+      SELECT g.b, CASE WHEN EXISTS (SELECT 1 FROM orders WHERE order_id IS NOT NULL) THEN COUNT(o.order_id) END
+      FROM generate_series(TIMESTAMP '2024-01-29', TIMESTAMP '2024-02-26', INTERVAL '7 day') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('week', o.ordered_at) = g.b
+        AND o.ordered_at >= TIMESTAMP '2024-02-01' AND o.ordered_at < TIMESTAMP '2024-03-01'
+        AND o.customer_id IN (SELECT customer_id FROM orders WHERE ordered_at >= TIMESTAMP '2024-02-01'
+          AND ordered_at < TIMESTAMP '2024-03-01' GROUP BY customer_id HAVING COUNT(*) >= 1)
+      GROUP BY g.b
+    expected_rows:
+      - {period: '2024-01-29', order_count: 0}
+      - {period: '2024-02-05', order_count: 0}
+      - {period: '2024-02-12', order_count: 0}
+      - {period: '2024-02-19', order_count: 0}
+      - {period: '2024-02-26', order_count: 0}
+  shop/entity-filter-window-with-no-qualifying-entity-reads-null-in-query-scope:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Judged inside the call's filters, the window's qualifying population is empty and has no rows anywhere, so every week reads NULL (no data in scope) with NO_DATA_IN_SCOPE, never 0.
+    cites: *quiet_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.order_count]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 1}]
+          over: window
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-02-01', end: '2024-03-01', grain: week}
+      observation_scope: query
+    now: '2024-04-02T00:00:00Z'
+    reference_sql: |
+      SELECT g.b, CASE WHEN EXISTS (SELECT 1 FROM orders WHERE customer_id IN (SELECT customer_id FROM orders
+        WHERE ordered_at >= TIMESTAMP '2024-02-01' AND ordered_at < TIMESTAMP '2024-03-01'
+        GROUP BY customer_id HAVING COUNT(*) >= 1)) THEN COUNT(o.order_id) END
+      FROM generate_series(TIMESTAMP '2024-01-29', TIMESTAMP '2024-02-26', INTERVAL '7 day') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('week', o.ordered_at) = g.b
+        AND o.ordered_at >= TIMESTAMP '2024-02-01' AND o.ordered_at < TIMESTAMP '2024-03-01'
+        AND o.customer_id IN (SELECT customer_id FROM orders WHERE ordered_at >= TIMESTAMP '2024-02-01'
+          AND ordered_at < TIMESTAMP '2024-03-01' GROUP BY customer_id HAVING COUNT(*) >= 1)
+      GROUP BY g.b
+    expected_rows:
+      - {period: '2024-01-29', order_count: null}
+      - {period: '2024-02-05', order_count: null}
+      - {period: '2024-02-12', order_count: null}
+      - {period: '2024-02-19', order_count: null}
+      - {period: '2024-02-26', order_count: null}
+  shop/entity-filter-period-with-no-qualifying-entity-reads-zero-by-dataset:
+    kind: query_matches_snapshot
+    expect: answer
+    why: No customer orders in any week of February 2024, so no week keeps a customer; under the dataset scope orders have rows, so each week inside the loaded data reads 0.
+    cites: *quiet_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.order_count]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 1}]
+          over: period
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-02-01', end: '2024-03-01', grain: week}
+    now: '2024-04-02T00:00:00Z'
+    reference_sql: |
+      SELECT g.b, CASE WHEN EXISTS (SELECT 1 FROM orders WHERE order_id IS NOT NULL) THEN COUNT(o.order_id) END
+      FROM generate_series(TIMESTAMP '2024-01-29', TIMESTAMP '2024-02-26', INTERVAL '7 day') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('week', o.ordered_at) = g.b
+        AND o.ordered_at >= TIMESTAMP '2024-02-01' AND o.ordered_at < TIMESTAMP '2024-03-01'
+        AND EXISTS (SELECT 1 FROM orders AS x WHERE x.customer_id = o.customer_id
+          AND date_trunc('week', x.ordered_at) = date_trunc('week', o.ordered_at)
+          AND x.ordered_at >= TIMESTAMP '2024-02-01' AND x.ordered_at < TIMESTAMP '2024-03-01')
+      GROUP BY g.b
+    expected_rows:
+      - {period: '2024-01-29', order_count: 0}
+      - {period: '2024-02-05', order_count: 0}
+      - {period: '2024-02-12', order_count: 0}
+      - {period: '2024-02-19', order_count: 0}
+      - {period: '2024-02-26', order_count: 0}
+  shop/entity-filter-period-with-no-qualifying-entity-reads-null-in-query-scope:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Judged inside the call's filters, no week of February 2024 keeps a customer, so the population has no rows and every week reads NULL with NO_DATA_IN_SCOPE.
+    cites: *quiet_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.order_count]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.order_count, op: gte, value: 1}]
+          over: period
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-02-01', end: '2024-03-01', grain: week}
+      observation_scope: query
+    now: '2024-04-02T00:00:00Z'
+    reference_sql: |
+      SELECT g.b, CASE WHEN EXISTS (SELECT 1 FROM orders WHERE customer_id IN (SELECT customer_id FROM orders
+        WHERE ordered_at >= TIMESTAMP '2024-02-01' AND ordered_at < TIMESTAMP '2024-03-01'
+        GROUP BY customer_id HAVING COUNT(*) >= 1)) THEN COUNT(o.order_id) END
+      FROM generate_series(TIMESTAMP '2024-01-29', TIMESTAMP '2024-02-26', INTERVAL '7 day') AS g(b)
+      LEFT JOIN orders AS o ON date_trunc('week', o.ordered_at) = g.b
+        AND o.ordered_at >= TIMESTAMP '2024-02-01' AND o.ordered_at < TIMESTAMP '2024-03-01'
+        AND EXISTS (SELECT 1 FROM orders AS x WHERE x.customer_id = o.customer_id
+          AND date_trunc('week', x.ordered_at) = date_trunc('week', o.ordered_at)
+          AND x.ordered_at >= TIMESTAMP '2024-02-01' AND x.ordered_at < TIMESTAMP '2024-03-01')
+      GROUP BY g.b
+    expected_rows:
+      - {period: '2024-01-29', order_count: null}
+      - {period: '2024-02-05', order_count: null}
+      - {period: '2024-02-12', order_count: null}
+      - {period: '2024-02-19', order_count: null}
+      - {period: '2024-02-26', order_count: null}
   shop/scoped-predicate-unknown-aggregate-fails-not:
     kind: query_matches_snapshot
     expect: answer

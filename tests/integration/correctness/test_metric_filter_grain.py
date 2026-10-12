@@ -166,6 +166,8 @@ def test_distribution_predicate_retains_declared_grain(request, backend_name, en
                 entity, "all_time", ORDERS if customer else REVENUE, "gte", 2 if customer else 7
             )
         ],
+        # Beside a distribution, an entity filter is judged inside the filters only.
+        "observation_scope": "query",
     }
     where = (
         "o.customer_id IN (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(*) >= 2)"

@@ -387,6 +387,8 @@ def test_contextual_predicate_period_join_refuses_timezone_conversion(
             "end": "2024-07-01T23:00:00",
         },
         "where": [edges],
+        # A day no edge qualifies on is judged inside the filters: it holds no value.
+        "observation_scope": "query",
     }
     runtime = backend.runtimes["utc_implicit"]
     if clock == "local_day":

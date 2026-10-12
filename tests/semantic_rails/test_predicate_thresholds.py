@@ -426,10 +426,13 @@ def test_a_window_in_which_an_operand_has_no_data_keeps_no_customer(runtime, op,
     filters = [_predicate(CUSTOMER, net, op, value, scope_mode="contextual")]
     # Orders 2 and 4 are the February orders of customers 1 and 3, and neither customer is kept.
     # The predicate is tested per output period, so the window is asked by month. Its one
-    # month holds no order of a kept customer: nothing in the population measured has data
-    # there, so it reads NULL, not 0.
-    rows = _run(runtime, "order_count", filters, time={**FEBRUARY, "grain": "month"})
+    # month holds no order of a kept customer: judged inside the filters, nothing in the
+    # population measured has data there, so it reads NULL; judged before them (the dataset
+    # scope, the default), orders have data, so it reads 0.
+    monthly = {**FEBRUARY, "grain": "month"}
+    rows = _run(runtime, "order_count", filters, time=monthly, observation_scope="query")
     assert [row["n"] for row in rows] == [None]
+    assert [row["n"] for row in _run(runtime, "order_count", filters, time=monthly)] == [0]
     with pytest.raises(SemanticLayerError) as refused:
         _run(runtime, "order_count", filters, time=FEBRUARY)
     assert refused.value.code == "WINDOW_TOTAL_UNSUPPORTED"
@@ -545,15 +548,17 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_member_w
         "from tickets u where u.member_id = m.member_id and u.ticket_id >= 100) = 0)"
     )[0]
     assert kept == 0
-    response = runtime.query_internal(
-        {
-            "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
-            "metric_filters": [_predicate(MEMBER, late, op, value)],
-        }
-    )
+    query = {
+        "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
+        "metric_filters": [_predicate(MEMBER, late, op, value)],
+    }
+    # Judged inside the filters, the kept population has no activity: NULL, and the answer
+    # says so. Judged before them (the dataset scope, the default), activities have rows: 0.
+    response = runtime.query_internal({**query, "observation_scope": "query"})
     assert response["rows"] == [{"n": None}]
     (warning,) = _no_data_warnings(response)
     assert warning["details"]["outputs"] == ["n"]
+    assert runtime.query_internal(query)["rows"] == [{"n": 0}]
 
 
 @LARGE_ORDER_COUNTS

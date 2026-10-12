@@ -202,10 +202,16 @@ def observation_scope(query: Mapping[str, Any], config: PackageConfig) -> str:
 
 
 def observed_outside_filters(query: Mapping[str, Any], config: PackageConfig) -> bool:
-    """Whether observation looks outside the query's own ``where`` filters: under ``dataset``,
-    when it has one. A metric predicate selects the population measured and a time window is
-    judged as before, in either scope."""
-    return observation_scope(query, config) == "dataset" and bool(query.get("where"))
+    """Whether observation looks outside the query's own ``where``: under ``dataset``, when it
+    has a filter or an entity filter, which is part of the call's ``where`` (the engine holds
+    it as a metric predicate). A time window is judged as before, in either scope."""
+    entity_filters = any(
+        dict(row.get("expression") or {}).get("kind") == "metric_predicate"
+        for row in query.get("metric_filters") or []
+    )
+    return observation_scope(query, config) == "dataset" and bool(
+        query.get("where") or entity_filters
+    )
 
 
 _dataset_observation: ContextVar[bool] = ContextVar("dataset_observation", default=False)

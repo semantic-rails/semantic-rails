@@ -629,8 +629,9 @@ def _record_time_scope(
 ) -> None:
     if not plan.time or not _needs_time_scope(plan, config):
         return
-    # A leaf with CTEs of its own (an entity filter's population) records only where its
-    # base is loaded: its conditions read those CTEs, which an observation probe can't see.
+    # A leaf with CTEs of its own (an entity filter's population) keeps its joins and
+    # conditions: they read those CTEs under the names the leaf's own CTE gives them
+    # (_namespaced_scope), so the untimed probe observes the qualifying population.
     nested = bool(leaf.ctes)
     if nested and (
         not isinstance(leaf.from_table, SqlTableRef)
@@ -649,15 +650,30 @@ def _record_time_scope(
             alias,
             LeafScope(
                 from_table=leaf.from_table,
-                joins=() if nested else tuple(leaf.joins),
-                where=() if nested else tuple(untimed),
+                joins=tuple(leaf.joins),
+                where=tuple(untimed),
                 value=value,
                 bucket=_coverage_bucket(plan, config, raw_time, bucket, role) if local else None,
                 raw_time=raw_time,
                 storage_zone=role.column_timezone or role.timezone or "UTC",
-                bounded=not nested and bool(plan.time.get("start") or plan.time.get("end")),
+                bounded=bool(plan.time.get("start") or plan.time.get("end")),
             ),
         )
+
+
+def _namespaced_scope(scope: LeafScope, leaf: SqlSelect, prefix: str) -> LeafScope:
+    """A nested leaf's scope reading its CTEs by the names they take inside the leaf's CTE."""
+    named = _namespace_sql_select(
+        SqlSelect(
+            select=[],
+            from_table=scope.from_table,
+            joins=list(scope.joins),
+            where=list(scope.where),
+            ctes=list(leaf.ctes),
+        ),
+        prefix,
+    )
+    return replace(scope, joins=tuple(named.joins), where=tuple(named.where))
 
 
 def _coverage_bucket(
@@ -3274,7 +3290,7 @@ def _measure_leaf_select(
         target.append(condition := _value_filter_condition(expr, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
-    untimed = [*where_clauses, *authored_conditions]
+    untimed = [*where_clauses, *authored_conditions, *predicate_row_conditions]
     if plan.time:
         where_clauses.extend(
             _source_time_window(raw_expr, plan.time, config, role_id=leaf_time_role)
@@ -6065,10 +6081,14 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     refuse_shared_names(row_counts.values(), taken)
     overrides = override_row_counts(plan, config) if plan_is_root() else {}
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
-    # Under the dataset scope, each measure's own rows, which the query's where filters never
-    # cut. A query metric predicate selects the rows measured, which no such probe reads.
+    # Under the dataset scope, each measure's own rows, which the query's where filters and
+    # entity filters never cut. A where beside an entity filter is not probed, so it refuses.
     observed: dict[str, LeafScope] = {}
-    probing = guard_empty and observes_dataset() and not _query_metric_predicates(plan)
+    probing = (
+        guard_empty
+        and observes_dataset()
+        and not (_query_metric_predicates(plan) and plan.query.get("where"))
+    )
     retained = _retained_filtered_series(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
@@ -6105,6 +6125,11 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 ):
                     require_time_scopes((row.bound_measure.alias for row in measure_group), scopes)
                 _refuse_varying_time_key(plan, leaf_select)
+                for row in measure_group if leaf_select.ctes else ():
+                    if (scope := scopes.get(row.bound_measure.alias)) is not None:
+                        scopes[row.bound_measure.alias] = _namespaced_scope(
+                            scope, leaf_select, f"{cte_name}__"
+                        )
                 leaf_ctes.append(
                     SqlCte(name=cte_name, query=_namespace_sql_select(leaf_select, f"{cte_name}__"))
                 )
