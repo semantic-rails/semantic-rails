@@ -57,7 +57,7 @@ from ..sql_ast import (
     build_comparison_condition,
     build_negation,
 )
-from .dependencies import binding_cut, measure_cut_owners, measure_objects
+from .dependencies import binding_cut, holding, measure_cut_owners, measure_objects
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -105,11 +105,8 @@ def earlier_settlement(enabled: bool = True) -> Iterator[None]:
     does a metric predicate's source over several measures under a threshold that 0 passes
     (``_predicate_ctes_and_join``). It is off by default, and a nested block never turns it
     off."""
-    token = _earlier_settlement.set(enabled or _earlier_settlement.get())
-    try:
+    with holding(_earlier_settlement, enabled or _earlier_settlement.get()):
         yield
-    finally:
-        _earlier_settlement.reset(token)
 
 
 def earlier_settlement_applies() -> bool:

@@ -78,6 +78,7 @@ from .bind import (
     earlier_settlement_applies,
 )
 from .dependencies import (
+    holding,
     plan_is_root,
 )
 from .empty_groups import (
@@ -317,11 +318,8 @@ def recording_stock_key_gaps() -> Iterator[list[dict[str, Any]]]:
     were a series; the runtime warns about each one the SQL actually reads.
     """
     gaps: list[dict[str, Any]] = []
-    token = _stock_key_gaps.set(gaps)
-    try:
+    with holding(_stock_key_gaps, gaps):
         yield gaps
-    finally:
-        _stock_key_gaps.reset(token)
 
 
 def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConfig) -> list[str]:
@@ -695,11 +693,8 @@ _owned_predicate_reads: ContextVar[dict[str, LeafScope] | None] = ContextVar(
 @contextmanager
 def _recording_owned_predicate_reads() -> Iterator[dict[str, LeafScope]]:
     reads: dict[str, LeafScope] = {}
-    token = _owned_predicate_reads.set(reads)
-    try:
+    with holding(_owned_predicate_reads, reads):
         yield reads
-    finally:
-        _owned_predicate_reads.reset(token)
 
 
 def _is_window_total_key(expr: Any, time_alias: str) -> bool:

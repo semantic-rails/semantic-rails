@@ -50,7 +50,7 @@ from ..sql_ast import (
     SqlTableRef,
     build_filter_condition,
 )
-from .dependencies import record_bound_object
+from .dependencies import holding, record_bound_object
 from .indexes import (
     _default_temporal_role,
     _dimension_index,
@@ -537,11 +537,8 @@ def inner_lookups() -> Iterator[None]:
     """Join every lookup INNER while a metric predicate's own query or a distribution's
     per-entity values lower: each holds the entities that have rows, never a NULL key for rows
     that have none."""
-    token = _inner_lookups.set(True)
-    try:
+    with holding(_inner_lookups, True):
         yield
-    finally:
-        _inner_lookups.reset(token)
 
 
 def rollup_held_lookups(

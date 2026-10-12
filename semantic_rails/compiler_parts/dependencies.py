@@ -70,12 +70,19 @@ def record_ids(ids: set[str]) -> None:
 
 
 @contextmanager
-def capture_objects(target: set[str]) -> Iterator[None]:
-    token = _targets.set((*_targets.get(), target))
+def holding(var: ContextVar[T], value: T) -> Iterator[None]:
+    """Hold ``var`` at ``value`` for the block, then restore it."""
+    token = var.set(value)
     try:
         yield
     finally:
-        _targets.reset(token)
+        var.reset(token)
+
+
+@contextmanager
+def capture_objects(target: set[str]) -> Iterator[None]:
+    with holding(_targets, (*_targets.get(), target)):
+        yield
 
 
 @contextmanager
@@ -101,11 +108,8 @@ def cut_owners(*aliases: str) -> Iterator[None]:
     """
     plan = _plan.get()
     root = plan is not None and plan.root
-    token = _cut_owners.set((frozenset(aliases) or None) if root else _cut_owners.get())
-    try:
+    with holding(_cut_owners, (frozenset(aliases) or None) if root else _cut_owners.get()):
         yield
-    finally:
-        _cut_owners.reset(token)
 
 
 def measure_cut_owners(measure_id: str) -> AbstractContextManager[None]:
@@ -121,11 +125,8 @@ def plan_bindings(plan: LogicalPlan, *, project_cut: bool = False) -> Iterator[P
         target = bindings.leaves.setdefault(bound.alias, set())
         bindings.measures.setdefault(bound.measure_id, []).append(target)
         bindings.aliases.setdefault(bound.measure_id, []).append(bound.alias)
-    token = _plan.set(bindings)
-    try:
+    with holding(_plan, bindings):
         yield bindings
-    finally:
-        _plan.reset(token)
 
 
 def plan_is_root() -> bool:
@@ -149,11 +150,8 @@ def project_is_cut() -> bool:
 def measure_objects(measure_id: str) -> Iterator[None]:
     plan = _plan.get()
     targets = plan.measures.get(measure_id, []) if plan is not None else []
-    token = _targets.set((*_targets.get(), *targets))
-    try:
+    with holding(_targets, (*_targets.get(), *targets)):
         yield
-    finally:
-        _targets.reset(token)
 
 
 def record_leaf_reference(alias: str) -> None:
@@ -198,11 +196,8 @@ def leaf_predicate_roles(*aliases: str) -> Iterator[None]:
     """Retain effective roles from actual compilation of leaf-owned predicates."""
     plan = _plan.get()
     roles: set[str] = set()
-    token = _role_targets.set((*_role_targets.get(), roles))
-    try:
+    with holding(_role_targets, (*_role_targets.get(), roles)):
         yield
-    finally:
-        _role_targets.reset(token)
     if plan is not None:
         for alias in aliases:
             plan.temporal_roles.setdefault(alias, set()).update(roles)
@@ -233,21 +228,15 @@ _active: ContextVar[BindingDependencies | None] = ContextVar("binding_dependenci
 @contextmanager
 def binding_dependencies() -> Iterator[BindingDependencies]:
     dependencies = BindingDependencies()
-    token = _active.set(dependencies)
-    try:
+    with holding(_active, dependencies):
         yield dependencies
-    finally:
-        _active.reset(token)
 
 
 @contextmanager
 def candidate_planning() -> Iterator[None]:
     """Do not authorize alternative paths merely examined by the planner."""
-    token = _active.set(None)
-    try:
+    with holding(_active, None):
         yield
-    finally:
-        _active.reset(token)
 
 
 def record_bound_object(row: Any, config: PackageConfig) -> None:
