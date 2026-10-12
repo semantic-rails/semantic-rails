@@ -50,7 +50,8 @@ The facade includes:
 
 A multi-tenant host must derive `RequestContext` from authenticated identity and
 pass it to every remote MCP/HTTP request boundary. A request that says who is asking
-(`policy_context` in a body or tool arguments) is refused with `IDENTITY_CLAIM_REFUSED`.
+(`policy_context` anywhere in a body or in tool arguments) is refused with
+`IDENTITY_CLAIM_REFUSED`.
 
 A host asks a question with the query call and passes identity and the clock beside it:
 

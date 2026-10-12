@@ -86,9 +86,7 @@ All JSON HTTP responses include the operation payload plus additive contract fie
 - `api_version`
 - `request_id`
 - `package_id`
-- `warnings`
-- `errors`
-- `recovery_hints`
+- `warnings`, `errors` and `recovery_hints`, each only when it has entries
 - `timing_ms`
 
 Clients may send `X-Request-ID`, `X-Correlation-ID`, a `request_id` query parameter, or a
@@ -296,7 +294,7 @@ The preferred human-like query-building cascade is:
 7. `query`
    Execute once the query is assembled.
 
-`plan` is the agent planning entrypoint. It returns `status`, `intent_ir`, and a validated best draft call (`best.query_ir`) by default. `detail: "query"` (the MCP default) is for when the next step is direct execution; it keeps the same planning and validation behavior but omits trace, alternatives, `next`, and compose hints. For advanced runtime-composition requests, drafts may use inline kinds such as `ratio`, `scoped_aggregate`, `aggregate_if`, `metric_predicate`, `entity_value`, `distribution`, `between`, and `arithmetic`.
+`plan` is the agent planning entrypoint. It returns `status`, `intent_ir`, and a validated best draft call (`best.query`) by default. `detail: "query"` (the MCP default) is for when the next step is direct execution; it keeps the same planning and validation behavior but omits trace, alternatives, `next`, and compose hints. For advanced runtime-composition requests, drafts may use inline kinds such as `ratio`, `scoped_aggregate`, `aggregate_if`, `metric_predicate`, `entity_value`, `distribution`, `between`, and `arithmetic`.
 
 ## Compile-Only SQL
 
@@ -406,7 +404,7 @@ Over HTTP the body is the call with its options beside it:
 The body may also be the call itself. `options` takes `now`, `verbosity` and `sql_profile`;
 any other key beside `query` and `options` is refused. Identity never travels in the body:
 the resolved request context scopes visibility, access and metric-constraint policies, and a
-`policy_context` in the body is refused with `IDENTITY_CLAIM_REFUSED`. `options.now` pins the
+`policy_context` anywhere in the body is refused with `IDENTITY_CLAIM_REFUSED`. `options.now` pins the
 instant relative windows (`time.last`, `time.this`) resolve against; `plan` takes `options.now`
 beside `intent` and its seed `query`.
 
@@ -858,7 +856,7 @@ Response keys:
 - `plan_version`
 - `intent`
 - `intent_ir`
-- `status` (`ok`, `low_confidence`, `unrealizable`, or `out_of_scope`)
+- `status` (`ok`, `needs_clarification`, `low_confidence`, `unrealizable`, or `out_of_scope`)
 - `best` (`null` unless a draft exists)
 - `next`
 - `why` when `status != "ok"`
@@ -869,7 +867,7 @@ Response keys:
 
 `detail="query"` is an MCP-oriented compact projection. It preserves
 `plan_version`, `intent`, `status`, `why`, `tie_break_hints`, `assumptions`, `warnings`, and a compact
-`best` containing `pattern`, `query_ir`, `resolved`, `validation_ok`, and
+`best` containing `pattern`, `query`, `resolved`, `validation_ok`, and
 `subject_ids_used`.
 
 For `status="out_of_scope"`, `why.code` distinguishes classifier
@@ -888,10 +886,10 @@ prove that the qualification was applied. Store grouping terms use the same
 dimension resolution as other entities. A bare "by store" can therefore require clarification;
 name the intended dimension, such as "by store id" or "by store name".
 
-`best.query_ir` is the call for the selected draft. When
+`best.query` is the call for the selected draft. When
 `status="ok"`, `plan` has already called `validate`, which pays the
 compile cost and warms the runtime compile cache. Agents can forward
-`best.query_ir` to `compile` or `query`; call `validate` again only when
+`best.query` to `compile` or `query`; call `validate` again only when
 they need the full diagnostics envelope or are editing the call by hand.
 
 Planning reads the time reference against the request's `now` (`options.now` over HTTP, the
@@ -903,11 +901,15 @@ zone; a `now` without an offset is UTC. A draft is `ok`
 only when the question's window reads the same days in the selected temporal
 role's zone as in the planning zone; otherwise plan holds with
 `TIME_WINDOW_UNRESOLVED`, names the window phrases in
-`why.details.unresolved_phrases` and returns no `query_ir`. The check covers every
+`why.details.unresolved_phrases` and returns no `best.query`. The check covers every
 role a metric's legs are read on: a leg that can't read the selected role keeps its
 own, and `why.details.temporal_roles` names each such role whose zone reads other
-days, with its zone. A relative phrase is drafted as a window on the request's `now`. A
-caller bound is read only at a whole day
+days, with its zone. A relative phrase stays relative in the draft ("last week" is
+`time.last`, "this month" `time.this`), so the call resolves against the `now` it is sent
+with. Two periods side by side ("month over month") return `needs_clarification` with
+`PERIOD_COMPARISON` and a call that reads them as one series; a comparison whose period isn't
+over at `now` holds with `PERIOD_COMPARISON_INCOMPLETE`. A caller bound is read only at a
+whole day
 (a date, or 00:00 with no offset or a UTC one), and one with a zone designator (`Z`
 or `±hh:mm`) only when its offset is the role zone's at that instant; a window
 missing either bound, a bound with another time of day, or a window whose start is
@@ -937,11 +939,11 @@ only strict matches satisfy a grouping. The reason lists
 `ambiguous_groupings` and `details.clarification.options`, with one validated
 option per visible candidate dimension. Each option names its `id`, `label`
 and grouping `term`. With exactly one unclear term, it also carries
-`group_by`, `where` and `order_by`: apply those three fields to `best.query_ir`,
+`group_by`, `where` and `order_by`: apply those three fields to `best.query`,
 then validate or execute the chosen reading. Filters and unrelated groupings
 are preserved; dimension sort fields follow the chosen grouping. With two or
 more unclear terms, options carry `id`, `label`, `term` and `replaces`, the draft
-`group_by` IDs matching that term. In `best.query_ir`, for each ambiguous term,
+`group_by` IDs matching that term. In `best.query`, for each ambiguous term,
 remove its chosen option's `replaces` IDs from `group_by` and the corresponding
 `order_by` entries, add the chosen `id` to `group_by`, keep `group_by` IDs sorted
 so choices compose in any order, then validate. When two terms could replace the
@@ -963,7 +965,7 @@ the package without the hidden object. Error messages refer
 to structured clock alternatives without embedding catalog IDs. Package authoring
 validation retains the full catalog for reference suggestions.
 
-Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
+Validate or execute `best.query` directly. `next` carries `ready_for` and optional
 `valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift
 reasons use slot paths in `best.trace.intent_slots` and `why.details.fallback_slots`
 instead of repeating their values. Full/debug and query detail retain expanded diagnostics.
@@ -1019,7 +1021,7 @@ entries; no field is ever empty):
 - `recovery_hints` (when there are some)
 - `policy_effects`
 - `provenance_summary`
-- `disabled_options`
+- `disabled_options` (when there are some)
 - `logical_plan`
 - `explain`
 - `query` (the call it answered, in the call's spelling)

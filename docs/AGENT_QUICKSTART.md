@@ -142,14 +142,14 @@ Use `plan` when the user gives a natural-language analysis intent. Use `build-op
 user is interactively editing a query call one step at a time.
 
 `plan` runs validation inline and checks the draft against the question. When `status="ok"` and
-there are no `warnings`, agents can forward `best.query_ir` directly to `execute`
+there are no `warnings`, agents can forward `best.query` directly to `execute`
 (`/api/v1/query`). Call `validate` only when you want diagnostics without running the query, for
 example after editing the call or after `low_confidence`.
 
 A question that asks several things one draft can't answer ("Last week, how many accounts signed
 up, and what was the MRR?") comes back as `parts`, one plan per clause, each with its own
 `status`, `best` and `why`; the top-level `status` is `ok` only when every part is, and `best` is
-the first part's. When `status` is `ok`, execute each part's `best.query_ir` and report each
+the first part's. When `status` is `ok`, execute each part's `best.query` and report each
 answer. With
 `why.code="PLAN_PARTS_HELD"`, plan couldn't read the parts alone (a part points back at another,
 names nothing, or lacks a window, grouping or filter another part states): ask them one at a
@@ -162,7 +162,7 @@ The checks cover time windows, rankings, named filter values, exclusions and the
 (the listed entity's key for "who" or "which", a row per item for "each", a prior-period value
 to compare with for a comparison, a select of its own for each question), not every phrasing:
 a draft can still misread a question and report `ok`, sometimes with only a `PLAN_UNMATCHED_TERMS`
-warning (see the README's known limitations). Compare `best.query_ir` with the question before
+warning (see the README's known limitations). Compare `best.query` with the question before
 executing it.
 
 Statuses are:
@@ -217,9 +217,12 @@ Statuses are:
   means. Don't plan again without a word a hold names: the question without it may be another
   one. Only the "s" ending a contraction ("What's") means nothing, and only then does the hint
   offer asking again without it; never the "t" of "can't".
+- `needs_clarification`: the question reads more than one way, or asks what this release
+  doesn't answer side by side (`PERIOD_COMPARISON`: "revenue month over month"). `why`
+  carries the options, each with a ready call; ask the user which one they mean and execute it.
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
-  which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and
+  which returns no `best.query`: pass the window, temporal role and grain in `query.time` and
   plan again),
   or a validating fallback would drift from the requested target, grouping, qualification,
   filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
@@ -296,7 +299,7 @@ curl -s -X POST http://127.0.0.1:8081/api/v1/compile \
 ### Identity
 
 Who is asking (environment, audience, roles) comes from the request's credentials, never from
-the body: a `policy_context` in a body is refused with `IDENTITY_CLAIM_REFUSED`. The default
+the body: a `policy_context` anywhere in a request body is refused with `IDENTITY_CLAIM_REFUSED`. The default
 resolver of `semantic-rails serve` reads the `X-Semantic-Environment`, `X-Semantic-Audience`
 and `X-Semantic-Roles` headers; a hosted deployment derives identity from authentication instead
 (see [Embedding](EMBEDDING.md)). The runtime applies package visibility, access, and
@@ -323,7 +326,7 @@ compile, and query calls.
    (`{entity, any | none}`) up front when the question already says it.
    A `PLAN_UNMATCHED_TERMS` grouping option also carries `group_by` and `order_by` to
    apply with `where` for one unclear term. With several, each option names its
-   `term` and `replaces` IDs: in `best.query_ir`, remove those IDs from `group_by`
+   `term` and `replaces` IDs: in `best.query`, remove those IDs from `group_by`
    and their `order_by` entries, add the chosen `id`, keep `group_by` sorted, then validate.
    When two terms could replace the same grouping, plan offers no options; ask the user.
 
@@ -372,7 +375,7 @@ repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 nodes instead of being retried as raw SQL. `AMBIGUOUS_CHILD_SCOPE` routes to a clarification
 node: each of its `details.clarification.options` is a complete `where` to resend.
 A `PLAN_UNMATCHED_TERMS` grouping option also carries `group_by` and `order_by` to apply
-with `where` for one unclear term. With several, in `best.query_ir` remove each chosen
+with `where` for one unclear term. With several, in `best.query` remove each chosen
 option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`,
 keep `group_by` sorted, then validate. When two terms could replace the same grouping,
 plan offers no options; ask the user. `AMBIGUOUS_PATH` (`details.reason:

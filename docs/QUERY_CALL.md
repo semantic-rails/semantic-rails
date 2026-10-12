@@ -15,8 +15,11 @@ below.
 
 Every example on this page runs on the bundled `jaffle_shop` package, sent with
 `now = "2017-09-04T12:00:00Z"` (a Monday; jaffle's orders run from 2016-09-01 through
-2017-08-31). The outputs are real; they show the rows and the answer fields each section
-discusses, with routing notes and other informational warnings left out.
+2017-08-31). The outputs are real, at `verbosity: "minimal"` (the MCP default); they show the
+rows and the answer fields each section discusses, and leave informational warnings out. Every
+`measure.jaffle.order_count` answer also states `GOVERNED_METRIC_EXISTS` for the two metrics
+that filter that measure ([The `aggregation` override](#the-aggregation-override)); where a
+section shows `assumptions`, it shows them all.
 
 ## The call at a glance
 
@@ -102,8 +105,9 @@ tests:
 ### Identity
 
 Identity (environment, audience, roles) comes from credentials, never from the call. Over
-HTTP and the remote MCP endpoint, a `policy_context` in the body or in `query` is refused with
-`IDENTITY_CLAIM_REFUSED`; it is never stripped silently. A trusted local caller states it
+HTTP and the remote MCP endpoint, a `policy_context` anywhere in the request (beside `query`, in
+it, or nested deeper) is refused with `IDENTITY_CLAIM_REFUSED`; it is never stripped
+silently. A trusted local caller states it
 beside the call: `context=` in Python, `--environment`/`--audience` on the CLI, `context:` in a
 package example or test.
 
@@ -294,6 +298,9 @@ entity passes. It has exactly one of `any`, `none` or `having`:
     month");
   - `period`: per entity per output period (needs `time.grain`).
 
+  An entity whose aggregate is unknown (`NULL`: no data, or amounts that are all NULL) fails
+  every threshold, `not` included.
+
 ```json
 {"select": ["measure.jaffle.order_count"],
  "time": {"last": {"unit": "month", "value": 1}},
@@ -303,14 +310,43 @@ entity passes. It has exactly one of `any`, `none` or `having`:
 ```jsonc
 {"rows": [{"order_count": 7956}],
  "window": {"start": "2017-08-01", "end": "2017-09-01", "now": "2017-09-04T12:00:00Z", "partial": false, "data_through": "2017-08-31"},
- "assumptions": ["The time window had no grain, so it was aggregated as one total over the window with no time column. Set time.grain to get one row per period.",
-   {"code": "ENTITY_FILTER_OVER", "entity": "entity.jaffle_customer", "over": "all_time",
-    "message": "Each entity.jaffle_customer's aggregate was taken over all of its rows, ignoring the query window."}]}
+ "assumptions": [{"code": "WINDOW_TOTAL",
+                  "message": "The time window had no grain, so it was aggregated as one total over the window with no time column. Set time.grain to get one row per period."},
+                 {"code": "ENTITY_FILTER_OVER", "entity": "entity.jaffle_customer", "over": "all_time",
+                  "message": "Each entity.jaffle_customer's aggregate was taken over all of its rows, ignoring the query window."},
+                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count", "metric": "metric.sales.high_value_customer_orders"},
+                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count", "metric": "metric.sales.repeat_customer_orders"}]}
 ```
 
 With `"over": "window"` the same call keeps the customers with 20 orders in August and reads
 `1790`. A `having` without `over` is never guessed: it is refused with
 `ENTITY_FILTER_PERIOD_UNSTATED`, whose `details.options` are the three `over` words.
+
+When the filter keeps no entity, the measure has no rows to count. Under the default
+`observation_scope: "dataset"` that reads 0 inside the loaded data; under `"query"` it reads
+`NULL`. No customer placed 80 orders in a day of the last week:
+
+```json
+{"select": ["measure.jaffle.order_count"],
+ "time": {"last": {"unit": "week", "value": 1}, "grain": "day"},
+ "where": [{"entity": "entity.jaffle_customer", "having": [{"field": "measure.jaffle.order_count", "op": "gte", "value": 80}], "over": "window"}]}
+```
+
+```jsonc
+{"rows": [{"period": "2017-08-28", "period_partial": false, "order_count": 0},
+          {"period": "2017-08-29", "period_partial": false, "order_count": 0},
+          {"period": "2017-08-30", "period_partial": false, "order_count": 0},
+          {"period": "2017-08-31", "period_partial": false, "order_count": 0},
+          {"period": "2017-09-01", "period_partial": false, "order_count": null},
+          {"period": "2017-09-02", "period_partial": false, "order_count": null},
+          {"period": "2017-09-03", "period_partial": false, "order_count": null}],
+ "observation_scope": "dataset"}
+```
+
+With `"observation_scope": "query"` every day reads `null`. Under `dataset`, an entity filter
+beside a `where` condition, or in a call whose `distribution` sits beside a sum or count, can't
+tell no data from data of nothing: it is refused with `EMPTY_GROUPS_UNSETTLED` and the hint to
+send `observation_scope: "query"`.
 
 ### Conditions on a child entity
 
@@ -505,11 +541,14 @@ is partial by definition and says how much of the period it covers:
           {"period": "2017-08-29", "period_partial": false, "order_count": 364},
           {"period": "2017-08-30", "period_partial": true, "order_count": 328}],
  "window": {"start": "2017-08-28", "end": "2017-08-30T15:00:00Z", "now": "2017-08-30T15:00:00Z", "partial": true, "data_through": "2017-08-30"},
- "assumptions": [{"code": "PARTIAL_PERIOD", "message": "the week of 2017-08-28 so far (3 of 7 days)"}]}
+ "assumptions": [{"code": "PARTIAL_PERIOD", "message": "the week of 2017-08-28 so far (3 of 7 days)"},
+                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count", "metric": "metric.sales.high_value_customer_orders"},
+                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count", "metric": "metric.sales.repeat_customer_orders"}]}
 ```
 
 `last` counts only complete periods, so it is never partial. A window with only `start` runs to
-`now`, so it is partial.
+`now`, so it is partial. Both `this` and a `start`-only window end at the request's `now`
+exactly, to the microsecond: a row stamped after `now` is not counted.
 
 ### Balances
 
@@ -526,6 +565,7 @@ in that month; "inventory right now" is the last closing day:
 ```jsonc
 {"rows": [{"period": "2017-03-01", "period_partial": false, "inventory_on_hand_eop": 870},
           {"period": "2017-04-01", "period_partial": false, "inventory_on_hand_eop": 860}],
+ "window": {"start": "2017-03-01", "end": "2017-05-01", "now": "2017-09-04T12:00:00Z", "partial": false, "data_through": "2017-04-01"},
  "clock": "temporal_role.jaffle_inventory_day"}
 ```
 
@@ -536,11 +576,12 @@ in that month; "inventory right now" is the last closing day:
 ```jsonc
 // sent with now = "2017-04-02T09:00:00Z"
 {"rows": [{"period": "2017-04-01", "period_partial": false, "inventory_on_hand_eop": 860}],
- "window": {"start": "2017-04-01", "end": "2017-04-02", "now": "2017-04-02T09:00:00Z", "partial": false}}
+ "window": {"start": "2017-04-01", "end": "2017-04-02", "now": "2017-04-02T09:00:00Z", "partial": false, "data_through": "2017-04-01"}}
 ```
 
 Without a grain, a window over a balance reads the window's closing day (`860` for March and
-April together), never the sum of its days.
+April together), never the sum of its days. A period after the last snapshot reads `NULL` with
+`NO_DATA_YET`, as any measure's does.
 
 ## `order_by`
 
@@ -748,8 +789,8 @@ returned row's total spans the same number:
 ```
 
 ```jsonc
-{"rows": [{"dimension.jaffle_store_name": "Brooklyn", "revenue_usd": 259424.85000000204, "store_share": 0.3478043627784724},
-          {"dimension.jaffle_store_name": "Philadelphia", "revenue_usd": 486468.17999984865, "store_share": 0.6521956372215276}],
+{"rows": [{"dimension.jaffle_store_name": "Brooklyn", "revenue_usd": 259424.84999999977, "store_share": 0.34780436277846943},
+          {"dimension.jaffle_store_name": "Philadelphia", "revenue_usd": 486468.1799998507, "store_share": 0.6521956372215306}],
  "assumptions": [{"code": "SHARE_OF_TOTAL", "column": "store_share", "input": "measure.jaffle.revenue_usd",
                   "over": ["dimension.jaffle_store_name"], "unit": "fraction", "rows": 2}]}
 ```
@@ -772,7 +813,8 @@ per-entity aggregation.
  "routes": [{"from", "to", "via"}],                   // only when a route was chosen among several
  "assumptions": [...],                                // only when the answer assumed something: a window total, a partial
                                                       // period, an entity filter's over, a statistic override, a governed
-                                                      // metric, a share's denominator, a key beside a name
+                                                      // metric, a share's denominator, a key beside a name,
+                                                      // a series that keeps only its observed periods
  "warnings": [...]}                                   // only when there are some: NO_DATA_YET, UNKNOWN_ROWS_KEPT, TIES_AT_LIMIT, ...
 ```
 
@@ -959,6 +1001,15 @@ column (`column_timezone` different from `timezone`) is converted before its bou
 buckets; shapes that would read the stored values instead (an entity filter `over: window`, a
 conversion metric on that clock) are refused with `WINDOWED_TIME_FILTER_UNSUPPORTED`, naming
 the shape in `details.path`. A clock whose zone is not a known zone refuses relative windows.
+
+**Windows that end at now.** `this` and a `start`-only window end at `now` itself. On DuckDB,
+MotherDuck, DuckLake and Postgres a zone-aware column is cut at `now`'s instant and a plain
+timestamp at `now`'s wall time in the clock's zone. Snowflake, BigQuery, ClickHouse,
+Databricks and Athena don't run the query in the clock's zone, so they can't tell the two
+apart: on a clock in a zone other than UTC that declares no `column_timezone`, such a window is
+refused (`INVALID_QUERY` at `time.this` or `time.start`, with the hint to declare
+`column_timezone` or send a dated window). Dated windows (`last`, `start` with `end`) answer
+there as usual.
 
 **Fill and the calendar.** The engine generates a Gregorian day spine in SQL, bucketed like
 the `period` column (calendar months, quarters and years; Monday weeks) in the clock's zone. A
