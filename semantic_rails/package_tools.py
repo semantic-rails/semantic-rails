@@ -171,15 +171,10 @@ def _artifact_file_rows(source_path: str, *, config: Any | None = None) -> list[
 def package_manifest(
     ref: PackageReference,
     *,
-    config: Any | None = None,
     checks: dict[str, Any] | None = None,
     snapshot: LoadedPackageSnapshot | None = None,
 ) -> dict[str, Any]:
     snapshot = snapshot or load_package_snapshot(ref.source_path)
-    if config is not None and config != snapshot.config:
-        raise SemanticLayerError(
-            "INVALID_CONFIG", "Manifest config does not match the loaded source snapshot."
-        )
     config = snapshot.config
     return {
         "schema_version": ARTIFACT_SCHEMA_VERSION,

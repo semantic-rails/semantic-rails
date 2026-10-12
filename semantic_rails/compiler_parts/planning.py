@@ -117,8 +117,6 @@ def plan_query(
     config: PackageConfig,
     registry: Registry | None,
     payload: dict[str, Any],
-    *,
-    collapse_window: bool = True,
 ) -> LogicalPlan:
     validate_temporal_support(config, payload)
     raw_query = normalize_query(payload, config=config)
@@ -130,9 +128,7 @@ def plan_query(
     )
 
     with candidate_planning(), earlier_settlement(distribution):
-        return _plan_query(
-            config, registry, raw_query, collapse_window=collapse_window, top_level=True
-        )
+        return _plan_query(config, registry, raw_query, collapse_window=True, top_level=True)
 
 
 def _plan_query(
