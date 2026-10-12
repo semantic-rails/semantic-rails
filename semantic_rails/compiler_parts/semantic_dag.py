@@ -47,199 +47,86 @@ def _semantic_dag_for_query(query: NormalizedQuery, config: PackageConfig) -> Se
         counter += 1
         return f"{kind}_{counter}"
 
-    def _walk(expr: SemanticExpr, *, label: str = "") -> str:
-        if isinstance(expr, MeasureRefExpr):
-            node_id = _next_id("source_leaf")
-            measure = _measure_index(config).get(expr.measure)
-            nodes.append(
-                SemanticDagNode(
-                    id=node_id,
-                    kind="SourceLeaf",
-                    label=label or expr.measure,
-                    details={
-                        "measure": expr.measure,
-                        "aggregation": expr.aggregation
-                        or (measure.default_aggregation if measure else ""),
-                        "entity": measure.entity if measure else "",
-                        "temporal_roles": list(
-                            measure.compatible_temporal_roles if measure else []
-                        ),
-                    },
-                )
-            )
-            return node_id
-        if isinstance(expr, AggregateExpr):
-            node_id = _next_id("source_leaf")
-            measure = _measure_index(config).get(expr.measure)
-            details = {
-                "measure": expr.measure,
-                "aggregation": expr.aggregation or (measure.default_aggregation if measure else ""),
-                "entity": measure.entity if measure else "",
-                "temporal_roles": list(measure.compatible_temporal_roles if measure else []),
-                "filter": dict(expr.filter),
-            }
-            nodes.append(
-                SemanticDagNode(
-                    id=node_id, kind="SourceLeaf", label=label or expr.measure, details=details
-                )
-            )
-            return node_id
-        if isinstance(expr, ScopedAggregateExpr):
-            source_id = _next_id("source_leaf")
-            measure = _measure_index(config).get(expr.measure)
-            nodes.append(
-                SemanticDagNode(
-                    id=source_id,
-                    kind="SourceLeaf",
-                    label=label or expr.measure,
-                    details={
-                        "measure": expr.measure,
-                        "aggregation": expr.aggregation
-                        or (measure.default_aggregation if measure else ""),
-                        "entity": measure.entity if measure else "",
-                        "where": [dict(item) for item in expr.where],
-                    },
-                )
-            )
-            current = source_id
-            for predicate in expr.predicates:
-                predicate_id = _next_id("predicate_set")
-                nodes.append(
-                    SemanticDagNode(
-                        id=predicate_id,
-                        kind="PredicateSet",
-                        label=str(
-                            predicate.get("metric", predicate.get("metric", "metric_predicate"))
-                        ),
-                        inputs=[],
-                        details=dict(predicate),
-                    )
-                )
-                semi_id = _next_id("scoped_semijoin")
-                nodes.append(
-                    SemanticDagNode(
-                        id=semi_id,
-                        kind="ScopedSemiJoin",
-                        inputs=[current, predicate_id],
-                        details={
-                            "entity": predicate.get("entity", ""),
-                            "time_alignment": predicate.get("time_alignment", ""),
-                        },
-                    )
-                )
-                current = semi_id
-            return current
-        if isinstance(expr, MetricRecipeRefExpr):
-            recipe = _recipe_index(config).get(expr.metric_recipe)
-            if recipe is not None:
-                child = _walk(recipe.expression, label=expr.metric_recipe)
-                node_id = _next_id("metric_ref")
-                nodes.append(
-                    SemanticDagNode(
-                        id=node_id,
-                        kind="MetricRef",
-                        label=expr.metric_recipe,
-                        inputs=[child],
-                        details={"metric": expr.metric_recipe},
-                    )
-                )
-                return node_id
-            node_id = _next_id("metric_ref")
-            nodes.append(
-                SemanticDagNode(
-                    id=node_id,
-                    kind="MetricRef",
-                    label=expr.metric_recipe,
-                    details={"metric": expr.metric_recipe},
-                )
-            )
-            return node_id
-        if isinstance(expr, RatioExpr):
-            left = _walk(expr.numerator, label=f"{label}_numerator")
-            right = _walk(expr.denominator, label=f"{label}_denominator")
-            node_id = _next_id("post_calc")
-            nodes.append(
-                SemanticDagNode(
-                    id=node_id,
-                    kind="PostAggregateCalc",
-                    label=label,
-                    inputs=[left, right],
-                    details={"op": "ratio"},
-                )
-            )
-            return node_id
-        if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-            left = _walk(expr.left, label=label)
-            right = _walk(expr.right, label=label)
-            node_id = _next_id("post_calc")
-            nodes.append(
-                SemanticDagNode(
-                    id=node_id,
-                    kind="PostAggregateCalc",
-                    label=label,
-                    inputs=[left, right],
-                    details={"op": expr.op},
-                )
-            )
-            return node_id
-        if isinstance(expr, EntityValueExpr):
-            child = _walk(expr.input, label=label)
-            node_id = _next_id("entity_rollup")
-            nodes.append(
-                SemanticDagNode(
-                    id=node_id,
-                    kind="EntityRollup",
-                    label=label,
-                    inputs=[child],
-                    details={
-                        "entity": expr.entity,
-                        "value_filters": [dict(item) for item in expr.where],
-                    },
-                )
-            )
-            return node_id
-        if isinstance(expr, DistributionExpr):
-            child = _walk(expr.over, label=label)
-            node_id = _next_id("distribution")
-            dist_details: dict[str, Any] = {
-                "function": expr.function,
-                "parameters": dict(expr.parameters),
-            }
-            if expr.p is not None:
-                dist_details["p"] = expr.p
-            nodes.append(
-                SemanticDagNode(
-                    id=node_id,
-                    kind="DistributionAggregate",
-                    label=label,
-                    inputs=[child],
-                    details=dist_details,
-                )
-            )
-            return node_id
-        if isinstance(expr, (BooleanExpr, CallExpr)):
-            child_ids = [_walk(arg, label=label) for arg in expr.args]
-            node_id = _next_id("post_calc")
-            nodes.append(
-                SemanticDagNode(
-                    id=node_id,
-                    kind="PostAggregateCalc",
-                    label=label,
-                    inputs=child_ids,
-                    details={"op": getattr(expr, "op", getattr(expr, "name", ""))},
-                )
-            )
-            return node_id
-        node_id = _next_id(expr_kind(expr).lower())
+    def add(
+        prefix: str, kind: str, label: str, details: dict[str, Any], inputs: list[str] | None = None
+    ) -> str:
+        node_id = _next_id(prefix)
         nodes.append(
             SemanticDagNode(
-                id=node_id,
-                kind=expr_kind(expr),
-                label=label,
-                details={"expression": expr_to_dict(expr)},
+                id=node_id, kind=kind, label=label, inputs=list(inputs or []), details=details
             )
         )
         return node_id
+
+    def _walk(expr: SemanticExpr, *, label: str = "") -> str:
+        if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            measure = _measure_index(config).get(expr.measure)
+            details: dict[str, Any] = {
+                "measure": expr.measure,
+                "aggregation": expr.aggregation or (measure.default_aggregation if measure else ""),
+                "entity": measure.entity if measure else "",
+            }
+            if isinstance(expr, ScopedAggregateExpr):
+                details["where"] = [dict(item) for item in expr.where]
+            else:
+                details["temporal_roles"] = list(
+                    measure.compatible_temporal_roles if measure else []
+                )
+            if isinstance(expr, AggregateExpr):
+                details["filter"] = dict(expr.filter)
+            current = add("source_leaf", "SourceLeaf", label or expr.measure, details)
+            for predicate in expr.predicates if isinstance(expr, ScopedAggregateExpr) else ():
+                predicate_id = add(
+                    "predicate_set",
+                    "PredicateSet",
+                    str(predicate.get("metric", "metric_predicate")),
+                    dict(predicate),
+                )
+                current = add(
+                    "scoped_semijoin",
+                    "ScopedSemiJoin",
+                    "",
+                    {
+                        "entity": predicate.get("entity", ""),
+                        "time_alignment": predicate.get("time_alignment", ""),
+                    },
+                    [current, predicate_id],
+                )
+            return current
+        if isinstance(expr, MetricRecipeRefExpr):
+            recipe = _recipe_index(config).get(expr.metric_recipe)
+            inputs = (
+                [_walk(recipe.expression, label=expr.metric_recipe)] if recipe is not None else []
+            )
+            details = {"metric": expr.metric_recipe}
+            return add("metric_ref", "MetricRef", expr.metric_recipe, details, inputs)
+        if isinstance(expr, RatioExpr):
+            left = _walk(expr.numerator, label=f"{label}_numerator")
+            right = _walk(expr.denominator, label=f"{label}_denominator")
+            return add("post_calc", "PostAggregateCalc", label, {"op": "ratio"}, [left, right])
+        if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
+            left = _walk(expr.left, label=label)
+            right = _walk(expr.right, label=label)
+            return add("post_calc", "PostAggregateCalc", label, {"op": expr.op}, [left, right])
+        if isinstance(expr, EntityValueExpr):
+            child = _walk(expr.input, label=label)
+            details = {
+                "entity": expr.entity,
+                "value_filters": [dict(item) for item in expr.where],
+            }
+            return add("entity_rollup", "EntityRollup", label, details, [child])
+        if isinstance(expr, DistributionExpr):
+            child = _walk(expr.over, label=label)
+            details = {"function": expr.function, "parameters": dict(expr.parameters)}
+            if expr.p is not None:
+                details["p"] = expr.p
+            return add("distribution", "DistributionAggregate", label, details, [child])
+        if isinstance(expr, (BooleanExpr, CallExpr)):
+            child_ids = [_walk(arg, label=label) for arg in expr.args]
+            details = {"op": getattr(expr, "op", getattr(expr, "name", ""))}
+            return add("post_calc", "PostAggregateCalc", label, details, child_ids)
+        details = {"expression": expr_to_dict(expr)}
+        return add(expr_kind(expr).lower(), expr_kind(expr), label, details)
 
     for item in query.select:
         if item.expression is not None:

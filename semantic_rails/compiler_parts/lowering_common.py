@@ -37,8 +37,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RollingExpr,
     SemanticExpr,
     expr_to_dict,
@@ -80,6 +78,7 @@ from .bind import (
     earlier_settlement_applies,
 )
 from .dependencies import (
+    holding,
     plan_is_root,
 )
 from .empty_groups import (
@@ -107,6 +106,7 @@ from .paths import (
     _entity_in_terms_of_parent_relationship,
     _joins_for_paths,
     _leaf_time_role,
+    _path_selection,
     _resolve_dimension_expr,
     dimension_filter,
     rollup_held_lookups,
@@ -116,7 +116,6 @@ from .post_aggregation import (
 )
 from .temporal import (
     _fractional_second,
-    _time_bound_relationship_ids,
     window_total_refusal,
 )
 
@@ -319,11 +318,8 @@ def recording_stock_key_gaps() -> Iterator[list[dict[str, Any]]]:
     were a series; the runtime warns about each one the SQL actually reads.
     """
     gaps: list[dict[str, Any]] = []
-    token = _stock_key_gaps.set(gaps)
-    try:
+    with holding(_stock_key_gaps, gaps):
         yield gaps
-    finally:
-        _stock_key_gaps.reset(token)
 
 
 def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConfig) -> list[str]:
@@ -697,11 +693,8 @@ _owned_predicate_reads: ContextVar[dict[str, LeafScope] | None] = ContextVar(
 @contextmanager
 def _recording_owned_predicate_reads() -> Iterator[dict[str, LeafScope]]:
     reads: dict[str, LeafScope] = {}
-    token = _owned_predicate_reads.set(reads)
-    try:
+    with holding(_owned_predicate_reads, reads):
         yield reads
-    finally:
-        _owned_predicate_reads.reset(token)
 
 
 def _is_window_total_key(expr: Any, time_alias: str) -> bool:
@@ -841,9 +834,7 @@ def _expr_contains_distribution(expr: SemanticExpr, config: PackageConfig) -> bo
             or _expr_contains_distribution(item.then, config)
             for item in expr.whens
         ) or (expr.else_expr is not None and _expr_contains_distribution(expr.else_expr, config))
-    if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
-    ):
+    if isinstance(expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr)):
         return _expr_contains_distribution(expr.input, config)
     return False
 
@@ -931,25 +922,14 @@ def _anchor_path_selection(
     target_entity: str,
     purpose: str,
 ) -> PathSelection | None:
-    if start_entity == target_entity:
-        return None
-    query = normalize_query(plan.query)
-    chosen, candidates = resolve_path(config, start=start_entity, target=target_entity)
-    analysis = analyze_fanout(
-        config,
-        start_entity,
-        chosen,
-        time_bound_relationships=_time_bound_relationship_ids(query, config),
-    )
-    if analysis.get("status") != "ok":
-        return None
-    return PathSelection(
+    selection = _path_selection(
+        config=config,
+        query=normalize_query(plan.query),
+        start_entity=start_entity,
         target_entity=target_entity,
         purpose=purpose,
-        chosen_path=list(chosen),
-        candidate_paths=[list(path) for path in candidates],
-        analysis=analysis,
     )
+    return selection if selection is not None and selection.analysis.get("status") == "ok" else None
 
 
 def _anchor_route_agrees(

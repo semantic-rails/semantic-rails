@@ -33,8 +33,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RollingExpr,
     ScopedAggregateExpr,
     ShareExpr,
@@ -170,7 +168,6 @@ def _can_project_entity_key_from_source(
 _SUMMING_WRAPPERS = (
     CumulativeExpr,
     RollingExpr,
-    PeriodToDateExpr,
     OffsetWindowExpr,
     EntityValueExpr,
     DistributionExpr,
@@ -180,7 +177,7 @@ _SUMMING_WRAPPERS = (
 
 
 # Constructs whose result depends on a time axis, so a window without a grain can't collapse.
-_TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, PriorPeriodExpr, ConversionExpr)
+_TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, ConversionExpr)
 
 
 def _time_axis_kind(expr: Any, config: PackageConfig) -> str:
@@ -572,9 +569,7 @@ def _raise_non_additive_sum(
 _LOOKUP_TIME_EXPRS = (
     CumulativeExpr,
     RollingExpr,
-    PeriodToDateExpr,
     OffsetWindowExpr,
-    PriorPeriodExpr,
     ConversionExpr,
 )
 
@@ -1410,6 +1405,17 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
     data_type = str(getattr(dim, "data_type", "") or "").lower()
     if not data_type:
         return
+
+    def mismatch(expected: str, value: Any) -> SemanticLayerError:
+        return SemanticLayerError(
+            "INVALID_QUERY",
+            (
+                f"where filter on dimension {dim.id!r} expects a {expected} value but "
+                f"got {value!r} (type {type(value).__name__})."
+            ),
+            details={"dimension": dim.id, "data_type": data_type, "value": value, "op": item.op},
+        )
+
     for value in values:
         if value is None:
             continue
@@ -1419,54 +1425,15 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
             # A digit-string is acceptable; warehouses cast it cleanly.
             if isinstance(value, str) and value.strip().lstrip("-").replace(".", "", 1).isdigit():
                 continue
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                (
-                    f"where filter on dimension {dim.id!r} expects a numeric value but "
-                    f"got {value!r} (type {type(value).__name__})."
-                ),
-                details={
-                    "dimension": dim.id,
-                    "data_type": data_type,
-                    "value": value,
-                    "op": item.op,
-                },
-            )
-        if data_type == "string":
-            if isinstance(value, (str,)):
-                continue
-            if isinstance(value, (bool, int, float)):
-                raise SemanticLayerError(
-                    "INVALID_QUERY",
-                    (
-                        f"where filter on dimension {dim.id!r} expects a string value but "
-                        f"got {value!r} (type {type(value).__name__})."
-                    ),
-                    details={
-                        "dimension": dim.id,
-                        "data_type": data_type,
-                        "value": value,
-                        "op": item.op,
-                    },
-                )
+            raise mismatch("numeric", value)
+        if data_type == "string" and isinstance(value, (bool, int, float)):
+            raise mismatch("string", value)
         if data_type == "boolean":
             if isinstance(value, bool):
                 continue
             if isinstance(value, str) and value.lower() in {"true", "false"}:
                 continue
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                (
-                    f"where filter on dimension {dim.id!r} expects a boolean value but "
-                    f"got {value!r} (type {type(value).__name__})."
-                ),
-                details={
-                    "dimension": dim.id,
-                    "data_type": data_type,
-                    "value": value,
-                    "op": item.op,
-                },
-            )
+            raise mismatch("boolean", value)
 
 
 def _group_path(query: Any, group: ChildGroup) -> str:

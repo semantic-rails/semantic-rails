@@ -20,7 +20,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ._base import _object_text, _preferred_measure, _preferred_metric, _runtime_composition_terms
+from ._base import (
+    _NUMBER_WORDS,
+    _preferred_measure,
+    _preferred_metric,
+    _resolved,
+    _runtime_composition_terms,
+    _score,
+    _specificity_penalty,
+)
 from .generators import _target_focus_text
 from .groupings import _maybe_group_by, _time_spec
 from .qualifiers import (
@@ -261,6 +269,15 @@ _SUBJECT_STOPWORDS: frozenset[str] = frozenset(
         "yearly",
     }
 )
+
+# The words of a question's structure, not its subject, which an unresolved term never is: the
+# subject stopwords (less the question words a subject check reads: compile, describe, how,
+# no, not, when, where, why), plus all, least, top and the number words.
+_STRUCTURAL_WORDS = (
+    (_SUBJECT_STOPWORDS - {"compile", "describe", "how", "no", "not", "when", "where", "why"})
+    | {"all", "least", "top"}
+    | set(_NUMBER_WORDS)
+)
 # The measure words a question falls back to also skip "number": "number of
 # customers" asks for a count, like "how many".
 _FALLBACK_STOPWORDS = _SUBJECT_STOPWORDS | {"number"}
@@ -279,9 +296,6 @@ def _subject_candidates(
     (the legitimately weak top-3 for "compile the linux kernel"
     becomes empty here).
     """
-
-    from ._base import _score, _specificity_penalty  # local to avoid bloating module top.
-
     content_source = focus_terms or terms
     content_terms = {term for term in content_source if term not in _SUBJECT_STOPWORDS}
     if not content_terms:
@@ -290,20 +304,13 @@ def _subject_candidates(
     visible = set(
         visible_object_ids(config, (row.id for row in [*config.measures, *config.metric_recipes]))
     )
-    for row in config.measures:
-        if row.id not in visible:
-            continue
-        score = _score(row, content_terms) - _specificity_penalty(row, content_terms)
-        if score <= 0:
-            continue
-        raw.append((score, getattr(row, "label", ""), getattr(row, "id", ""), "measure"))
-    for row in config.metric_recipes:
-        if row.id not in visible:
-            continue
-        score = _score(row, content_terms) - _specificity_penalty(row, content_terms)
-        if score <= 0:
-            continue
-        raw.append((score, getattr(row, "label", ""), getattr(row, "id", ""), "metric"))
+    for object_type, rows in (("measure", config.measures), ("metric", config.metric_recipes)):
+        for row in rows:
+            if row.id not in visible:
+                continue
+            score = _score(row, content_terms) - _specificity_penalty(row, content_terms)
+            if score > 0:
+                raw.append((score, getattr(row, "label", ""), getattr(row, "id", ""), object_type))
     if not raw:
         return []
     top_score = max(item[0] for item in raw)
@@ -334,13 +341,7 @@ def _grouping_candidates(
         dim = next((row for row in visible_dimensions(config) if row.id == dim_id), None)
         if dim is None:
             continue
-        out.append(
-            ResolvedTerm(
-                id=getattr(dim, "id", ""),
-                object_type="dimension",
-                label=getattr(dim, "label", getattr(dim, "id", "")),
-            )
-        )
+        out.append(ResolvedTerm(**_resolved(dim, object_type="dimension")))
     return out
 
 
@@ -348,11 +349,7 @@ def _qualifying_entity_term(config: Any, terms: set[str], text: str) -> Resolved
     entity = _qualifying_entity(config, terms, text=text)
     if entity is None:
         return None
-    return ResolvedTerm(
-        id=getattr(entity, "id", ""),
-        object_type="entity",
-        label=getattr(entity, "label", getattr(entity, "id", "")),
-    )
+    return ResolvedTerm(**_resolved(entity, object_type="entity"))
 
 
 def _unresolved_tokens(
@@ -370,9 +367,7 @@ def _unresolved_tokens(
     """
 
     tokens = _runtime_composition_terms(text)
-    # Approximate "covered" set: anything that appears as a token in
-    # the resolved objects' searchable text. We reuse ``_object_text``
-    # via a tiny shim because ResolvedTerm doesn't carry the raw row.
+    # Approximate "covered" set: any token of a resolved object's label or id.
     covered: set[str] = set()
     for term in (*subjects, *grouping):
         covered.update(_runtime_composition_terms(term.label))
@@ -380,91 +375,11 @@ def _unresolved_tokens(
     if qualifying_entity is not None:
         covered.update(_runtime_composition_terms(qualifying_entity.label))
         covered.update(_runtime_composition_terms(qualifying_entity.id))
-    # Stop tokens we already strip in qualification parsing.
-    structural = {
-        "of",
-        "by",
-        "for",
-        "from",
-        "in",
-        "on",
-        "the",
-        "a",
-        "an",
-        "and",
-        "or",
-        "with",
-        "without",
-        "vs",
-        "versus",
-        "over",
-        "under",
-        "per",
-        "each",
-        "all",
-        "any",
-        "what",
-        "which",
-        "who",
-        "that",
-        "have",
-        "had",
-        "has",
-        "give",
-        "show",
-        "tell",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "do",
-        "does",
-        "did",
-        "this",
-        "these",
-        "those",
-        "many",
-        "much",
-        "some",
-        "more",
-        "less",
-        "than",
-        "least",
-        "most",
-        "at",
-        "to",
-        "as",
-        "between",
-        "top",
-        "one",
-        "two",
-        "three",
-        "four",
-        "five",
-        "six",
-        "seven",
-        "eight",
-        "nine",
-        "ten",
-        # time grains — already captured in ``time`` field
-        "day",
-        "week",
-        "month",
-        "quarter",
-        "year",
-        "monthly",
-        "daily",
-        "weekly",
-        "quarterly",
-        "yearly",
-    }
     unresolved: list[str] = []
     for token in tokens:
         if token.isdigit():
             continue
-        if token in structural:
+        if token in _STRUCTURAL_WORDS:
             continue
         if token in covered:
             continue
@@ -600,17 +515,3 @@ def compose_hints(intent_ir: IntentIR) -> dict[str, Any]:
         ),
         "aggregate_hints": list(intent_ir.aggregate_hints),
     }
-
-
-# Silence unused-import warnings — these are part of the public surface
-# of this module so other code in the package can use them.
-__all__ = [
-    "IntentIR",
-    "ResolvedTerm",
-    "compose_hints",
-    "parse_intent",
-]
-
-# Keep the helper imported so static analysis doesn't drop it; it's
-# wired into _maybe_group_by paths above.
-_ = _object_text

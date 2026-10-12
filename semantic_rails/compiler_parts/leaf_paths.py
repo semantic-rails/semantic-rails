@@ -101,62 +101,37 @@ def _leaf_path_selections(
             if conditional:
                 check_conditional_aggregate_path(measure, entity_id, selection.chosen_path, config)
             selections.append(selection)
+
+    def add(target_entity: str, purpose: str) -> None:
+        selection = _path_selection(
+            config=config,
+            query=query,
+            start_entity=measure.entity,
+            target_entity=target_entity,
+            purpose=purpose,
+        )
+        if selection is not None:
+            selections.append(selection)
+
+    def add_dimension(dimension_id: str, purpose: str) -> None:
+        entity = dimensions[dimension_id].entity
+        required_entities.add(entity)
+        if _direct_dimension_source_expr(measure.entity, dimension_id, config) is None:
+            add(entity, purpose)
+
+    def add_entity(entity: str, purpose: str) -> None:
+        required_entities.add(entity)
+        if not _can_project_entity_key_from_source(measure.entity, entity, config):
+            add(entity, purpose)
+
     for dim_id in query.group_by:
-        dim = dimensions[dim_id]
-        required_entities.add(dim.entity)
-        if _direct_dimension_source_expr(measure.entity, dim_id, config) is not None:
-            continue
-        selection = _path_selection(
-            config=config,
-            query=query,
-            start_entity=measure.entity,
-            target_entity=dim.entity,
-            purpose="group_by",
-        )
-        if selection is not None:
-            selections.append(selection)
+        add_dimension(dim_id, "group_by")
     if query.time is not None:
-        role = temporal_roles[_leaf_time_role(bound, query, config)]
-        time_entity = dimensions[role.dimension].entity
-        required_entities.add(time_entity)
-        if _direct_dimension_source_expr(measure.entity, role.dimension, config) is None:
-            selection = _path_selection(
-                config=config,
-                query=query,
-                start_entity=measure.entity,
-                target_entity=time_entity,
-                purpose="time",
-            )
-            if selection is not None:
-                selections.append(selection)
+        add_dimension(temporal_roles[_leaf_time_role(bound, query, config)].dimension, "time")
     for item in plain_filters(query.where):  # child groups route below
-        dim = dimensions[item.field]
-        required_entities.add(dim.entity)
-        if _direct_dimension_source_expr(measure.entity, item.field, config) is not None:
-            continue
-        selection = _path_selection(
-            config=config,
-            query=query,
-            start_entity=measure.entity,
-            target_entity=dim.entity,
-            purpose="where",
-        )
-        if selection is not None:
-            selections.append(selection)
+        add_dimension(item.field, "where")
     for bound_clause in _bound_filter_clauses(bound, config):
-        dim = dimensions[bound_clause["field"]]
-        required_entities.add(dim.entity)
-        if _direct_dimension_source_expr(measure.entity, bound_clause["field"], config) is not None:
-            continue
-        selection = _path_selection(
-            config=config,
-            query=query,
-            start_entity=measure.entity,
-            target_entity=dim.entity,
-            purpose="metric_filter",
-        )
-        if selection is not None:
-            selections.append(selection)
+        add_dimension(bound_clause["field"], "metric_filter")
     groups = child_groups(query.where)
     for group in groups:
         route, lookups = child_group_route(config, query, measure, group)
@@ -164,83 +139,43 @@ def _leaf_path_selections(
         required_entities.update(row.target_entity for row in lookups if row is not None)
         selections.append(route)
     for predicate in _bound_metric_predicates(bound):
-        required_entities.add(predicate.entity)
-        if _can_project_entity_key_from_source(measure.entity, predicate.entity, config):
-            continue
-        selection = _path_selection(
-            config=config,
-            query=query,
-            start_entity=measure.entity,
-            target_entity=predicate.entity,
-            purpose="metric_predicate",
-        )
-        if selection is not None:
-            selections.append(selection)
+        add_entity(predicate.entity, "metric_predicate")
     for metric_filter in query.metric_filters:
-        if metric_filter.expression is None or not isinstance(
-            metric_filter.expression, MetricPredicateExpr
-        ):
-            continue
-        required_entities.add(metric_filter.expression.entity)
-        if _can_project_entity_key_from_source(
-            measure.entity, metric_filter.expression.entity, config
-        ):
-            continue
-        selection = _path_selection(
-            config=config,
-            query=query,
-            start_entity=measure.entity,
-            target_entity=metric_filter.expression.entity,
-            purpose="metric_predicate",
-        )
-        if selection is not None:
-            selections.append(selection)
-
-    dedup: dict[tuple[str, str], PathSelection] = {}
-    for selection in selections:
-        dedup[(selection.target_entity, selection.purpose)] = selection
-    selections = list(dedup.values())
+        if isinstance(metric_filter.expression, MetricPredicateExpr):
+            add_entity(metric_filter.expression.entity, "metric_predicate")
+    selections = _unique_path_selections(selections)
 
     unsupported = [row for row in selections if row.analysis.get("status") != "ok"]
-    if unsupported:
-        # A child group is a filter: only the semi-join leaf applies it.
-        if not groups and all(
-            _entity_in_terms_of_rewrite_supported(
-                measure=measure, bound=bound, selection=row, config=config, query=query
-            )
-            for row in unsupported
-        ):
-            conditions = _hop_conditions(bound, unsupported, config, query)
-            if len(conditions) <= 1:
-                return selections, sorted(required_entities), "entity_in_terms_of"
-            why_invalid, row = _two_hop_conditions(conditions)
-            raise _mixed_grain_error(
-                target_entity=row.target_entity,
-                purpose=row.purpose,
-                chosen=list(row.chosen_path),
-                analysis=row.analysis,
-                config=config,
-                query=query,
-                bound_measures=[bound],
-                why_invalid=why_invalid,
-            )
+    if not unsupported:
+        return selections, sorted(required_entities), ""
+    # A child group is a filter: only the semi-join leaf applies it.
+    if not groups and all(
+        _entity_in_terms_of_rewrite_supported(
+            measure=measure, bound=bound, selection=row, config=config, query=query
+        )
+        for row in unsupported
+    ):
+        conditions = _hop_conditions(bound, unsupported, config, query)
+        if len(conditions) <= 1:
+            return selections, sorted(required_entities), "entity_in_terms_of"
+        why_invalid, row = _two_hop_conditions(conditions)
+    else:
         refusal = _fanout_dedup_refusal(
             measure=measure, bound=bound, selections=selections, config=config, query=query
         )
         if refusal is None:
             return selections, sorted(required_entities), "fanout_dedup"
         why_invalid, row = refusal
-        raise _mixed_grain_error(
-            target_entity=row.target_entity,
-            purpose=row.purpose,
-            chosen=list(row.chosen_path),
-            analysis=row.analysis,
-            config=config,
-            query=query,
-            bound_measures=[bound],
-            why_invalid=why_invalid,
-        )
-    return selections, sorted(required_entities), ""
+    raise _mixed_grain_error(
+        target_entity=row.target_entity,
+        purpose=row.purpose,
+        chosen=list(row.chosen_path),
+        analysis=row.analysis,
+        config=config,
+        query=query,
+        bound_measures=[bound],
+        why_invalid=why_invalid,
+    )
 
 
 def _mixed_grain_error(
@@ -322,6 +257,9 @@ def _checked_where_dimension(
     return dimensions[item.field]
 
 
+_SEPARATE_FAMILIES = "Independent fact families compiled as separate leaf aggregates and reconciled on final grain keys"
+
+
 def _root_path_summary(
     root_entity: str,
     bound_measures: list[BoundMeasure],
@@ -336,6 +274,20 @@ def _root_path_summary(
     candidate_paths: dict[str, list[list[str]]] = {}
     analyses: dict[str, dict[str, Any]] = {}
     rewrite_steps: list[RewriteStep] = []
+
+    def preaggregate(target_entity: str, reason: str, details: dict[str, Any]) -> None:
+        measure = next(
+            row for row in bound_measures if measures[row.measure_id].entity == target_entity
+        )
+        rewrite_steps.append(
+            RewriteStep(
+                kind="leaf_preaggregate_join",
+                status="applied",
+                measure_id=measure.measure_id,
+                reason=reason,
+                details=details,
+            )
+        )
 
     targets = {measures[row.measure_id].entity: "measure" for row in bound_measures}
     for dim_id in query.group_by:
@@ -368,21 +320,8 @@ def _root_path_summary(
             chosen, candidates = resolve_path(config, start=root_entity, target=target_entity)
         except SemanticLayerError as exc:
             if exc.code in {"PATH_NOT_FOUND", "AMBIGUOUS_PATH"} and purpose == "measure":
-                measure = next(
-                    row
-                    for row in bound_measures
-                    if measures[row.measure_id].entity == target_entity
-                )
                 analyses[target_entity] = {"status": "rewrite_required", "reason": exc.code.lower()}
-                rewrite_steps.append(
-                    RewriteStep(
-                        kind="leaf_preaggregate_join",
-                        status="applied",
-                        measure_id=measure.measure_id,
-                        reason="Independent fact families compiled as separate leaf aggregates and reconciled on final grain keys",
-                        details={"target_entity": target_entity},
-                    )
-                )
+                preaggregate(target_entity, _SEPARATE_FAMILIES, {"target_entity": target_entity})
                 continue
             if exc.code == "AMBIGUOUS_PATH":
                 # A calendar date reached through another fact's rows is not the question's
@@ -414,36 +353,22 @@ def _root_path_summary(
                 continue
             # No leaf joins the path to another measure's entity: each measure aggregates on
             # its own and is reconciled on the grain keys, whose own paths still refuse.
-            measure = next(
-                row for row in bound_measures if measures[row.measure_id].entity == target_entity
-            )
             analyses[target_entity] = {
                 "status": "rewrite_required",
                 "reason": exc.details["reason"],
             }
-            rewrite_steps.append(
-                RewriteStep(
-                    kind="leaf_preaggregate_join",
-                    status="applied",
-                    measure_id=measure.measure_id,
-                    reason="Independent fact families compiled as separate leaf aggregates and reconciled on final grain keys",
-                    details={"target_entity": target_entity, "path": list(chosen)},
-                )
+            preaggregate(
+                target_entity,
+                _SEPARATE_FAMILIES,
+                {"target_entity": target_entity, "path": list(chosen)},
             )
             continue
         analyses[target_entity] = analysis
         if analysis.get("status") == "rewrite_required" and purpose == "measure":
-            measure = next(
-                row for row in bound_measures if measures[row.measure_id].entity == target_entity
-            )
-            rewrite_steps.append(
-                RewriteStep(
-                    kind="leaf_preaggregate_join",
-                    status="applied",
-                    measure_id=measure.measure_id,
-                    reason="Mixed-grain measure compiled as an independent leaf aggregate and joined on final grain keys",
-                    details={"path": list(chosen), "analysis": analysis},
-                )
+            preaggregate(
+                target_entity,
+                "Mixed-grain measure compiled as an independent leaf aggregate and joined on final grain keys",
+                {"path": list(chosen), "analysis": analysis},
             )
         # A group_by or where path that needs a rewrite is left to each measure leaf, which
         # crosses it (and says so in a rewrite step) or refuses (see _leaf_path_selections).

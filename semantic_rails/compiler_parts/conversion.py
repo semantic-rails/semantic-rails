@@ -93,9 +93,9 @@ from .post_aggregation import (
 from .predicate import (
     _path_selection,
     _predicate_scope,
+    _predicate_set_fields,
+    _predicate_source_query,
     _predicate_where_condition,
-    _predicate_window_filters,
-    _public_time_spec,
     _require_predicate_over_rows,
 )
 
@@ -520,19 +520,7 @@ def _conversion_predicate_set_ctes(
     config: PackageConfig,
     scope: dict[str, Any],
 ) -> tuple[list[SqlCte], str, list[str]]:
-    mini_query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"expression": expr_to_dict(predicate.input), "as": "__predicate_value"}],
-        "group_by": list(scope["group_by_dims"]),
-    }
-    predicate_where_items = [asdict(item) for item in scope["filter_items"]]
-    if scope["time_spec"] is not None and scope["time_spec"].get("entity_only_window"):
-        predicate_where_items.extend(_predicate_window_filters(scope["time_spec"], config))
-    if predicate_where_items:
-        mini_query["where"] = predicate_where_items
-    if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
-        mini_query["time"] = _public_time_spec(scope["time_spec"])
-
+    mini_query = _predicate_source_query(predicate, scope, config)
     _require_predicate_over_rows(predicate, config, shape="a conversion metric")
     # Conversion leaves apply only query metric_filters predicates: whole-query cuts.
     with cut_owners():
@@ -544,21 +532,7 @@ def _conversion_predicate_set_ctes(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
     )
 
-    projected_keys = list(scope["group_by_dims"])
-    source_group_keys = list(scope["group_by_dims"])
-    select_fields = [
-        SqlField(SqlIdentifier(parts=["predicate_source", dim_id]), dim_id)
-        for dim_id in projected_keys
-    ]
-    if scope["time_alias"]:
-        select_fields.append(
-            SqlField(
-                SqlIdentifier(parts=["predicate_source", scope["source_time_alias"]]),
-                scope["time_alias"],
-            )
-        )
-        projected_keys.append(scope["time_alias"])
-        source_group_keys.append(scope["source_time_alias"])
+    select_fields, projected_keys = _predicate_set_fields(scope)
     # `source_cte` already produces one row per key combination, so re-grouping
     # is a no-op. `SELECT DISTINCT` reads as "set of qualifying ids" without
     # implying we need to dedup duplicate rows that don't exist.
@@ -571,7 +545,6 @@ def _conversion_predicate_set_ctes(
             distinct=True,
         ),
     )
-    _ = source_group_keys  # retained to make intent visible; no GROUP BY emitted
     return [source_cte, set_cte], set_name, projected_keys
 
 
@@ -848,108 +821,100 @@ def _conversion_leaf_cte(
         )
     )
 
-    if converted_side_group_dims:
-        base_group_dims = [
-            dim_id for dim_id in plan.group_by if dim_id not in converted_side_group_dim_set
-        ]
-        base_cte = _conversion_event_cte(
-            cte_name=base_cte_name,
-            source_entity=base_source["root_entity"],
-            event_time_role=base_source["time_role"],
-            match_entity=match_entity,
-            event_key_alias="__base_event_key",
-            time_alias="__base_event_time",
-            group_by=base_group_dims,
-            group_time_alias=group_time_alias,
-            group_time_expr=group_time_expr,
-            property_dimensions=property_dims,
-            extra_dimensions=predicate_dimensions,
-            operand_filters=list(base_source.get("filters") or []),
+    base_group_dims = [
+        dim_id for dim_id in plan.group_by if dim_id not in converted_side_group_dim_set
+    ]
+    base_cte = _conversion_event_cte(
+        cte_name=base_cte_name,
+        source_entity=base_source["root_entity"],
+        event_time_role=base_source["time_role"],
+        match_entity=match_entity,
+        event_key_alias="__base_event_key",
+        time_alias="__base_event_time",
+        group_by=base_group_dims,
+        group_time_alias=group_time_alias,
+        group_time_expr=group_time_expr,
+        property_dimensions=property_dims,
+        extra_dimensions=predicate_dimensions,
+        operand_filters=list(base_source.get("filters") or []),
+        config=config,
+        query=query,
+        where_items=base_group_where,
+    )
+    converted_cte = _conversion_event_cte(
+        cte_name=converted_cte_name,
+        source_entity=converted_source["root_entity"],
+        event_time_role=converted_source["time_role"],
+        match_entity=match_entity,
+        event_key_alias="__converted_event_key",
+        time_alias="__converted_event_time",
+        group_by=converted_side_group_dims,
+        group_time_alias="",
+        group_time_expr=None,
+        property_dimensions=property_dims,
+        allow_rewrite_dimension_ids=set(converted_side_group_dims),
+        operand_filters=list(converted_source.get("filters") or []),
+        config=config,
+        query=query,
+        where_items=converted_group_where,
+    )
+
+    predicate_ctes: list[SqlCte] = []
+    predicate_joins: list[SqlJoin] = []
+    for predicate_index, (predicate, scope) in enumerate(predicate_scopes):
+        ctes, set_name, join_keys = _conversion_predicate_set_ctes(
+            predicate,
+            index=predicate_index,
+            plan=plan,
             config=config,
-            query=query,
-            where_items=base_group_where,
+            scope=scope,
         )
-        converted_cte = _conversion_event_cte(
-            cte_name=converted_cte_name,
-            source_entity=converted_source["root_entity"],
-            event_time_role=converted_source["time_role"],
-            match_entity=match_entity,
-            event_key_alias="__converted_event_key",
-            time_alias="__converted_event_time",
-            group_by=converted_side_group_dims,
-            group_time_alias="",
-            group_time_expr=None,
-            property_dimensions=property_dims,
-            allow_rewrite_dimension_ids=set(converted_side_group_dims),
-            operand_filters=list(converted_source.get("filters") or []),
-            config=config,
-            query=query,
-            where_items=converted_group_where,
+        predicate_ctes.extend(ctes)
+        predicate_joins.append(
+            SqlJoin(
+                join_type="INNER",
+                table=SqlTableRef(name=set_name),
+                on=_join_condition(join_keys, "base_events", set_name, dialect=dialect),
+            )
         )
 
-        predicate_ctes: list[SqlCte] = []
-        predicate_joins: list[SqlJoin] = []
-        for predicate_index, (predicate, scope) in enumerate(predicate_scopes):
-            ctes, set_name, join_keys = _conversion_predicate_set_ctes(
-                predicate,
-                index=predicate_index,
-                plan=plan,
-                config=config,
-                scope=scope,
-            )
-            predicate_ctes.extend(ctes)
-            predicate_joins.append(
-                SqlJoin(
-                    join_type="INNER",
-                    table=SqlTableRef(name=set_name),
-                    on=_join_condition(join_keys, "base_events", set_name, dialect=dialect),
-                )
-            )
-
-        join_condition: Any = _conversion_window_condition(expr, dialect)
-        for key_alias, _ in _conversion_entity_key_fields(match_entity, config):
-            join_condition = SqlBinary(
-                join_condition,
-                "AND",
-                dialect.null_safe_eq(
-                    SqlIdentifier(parts=["base_events", key_alias]),
-                    SqlIdentifier(parts=["converted_events", key_alias]),
-                ),
-            )
-        for index_prop, _ in enumerate(property_dims):
-            prop_alias = f"__property_{index_prop + 1}"
-            join_condition = SqlBinary(
-                join_condition,
-                "AND",
-                dialect.null_safe_eq(
-                    SqlIdentifier(parts=["base_events", prop_alias]),
-                    SqlIdentifier(parts=["converted_events", prop_alias]),
-                ),
-            )
-
+    # Same entity key and same constant properties on both sides, inside the window.
+    join_condition: Any = _conversion_window_condition(expr, dialect)
+    for key_alias in [
+        *(key_alias for key_alias, _ in _conversion_entity_key_fields(match_entity, config)),
+        *(f"__property_{index_prop + 1}" for index_prop in range(len(property_dims))),
+    ]:
+        join_condition = SqlBinary(
+            join_condition,
+            "AND",
+            dialect.null_safe_eq(
+                SqlIdentifier(parts=["base_events", key_alias]),
+                SqlIdentifier(parts=["converted_events", key_alias]),
+            ),
+        )
+    order_terms = [
+        SqlOrderTerm(
+            expr=SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
+            direction="ASC",
+        ),
+        SqlOrderTerm(
+            expr=SqlIdentifier(parts=["converted_events", "__converted_event_key"]), direction="ASC"
+        ),
+    ]
+    if expr.matching_mode == "closest_converted_after_base":
         order_terms = [
             SqlOrderTerm(
-                expr=SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
-                direction="ASC",
-            ),
-            SqlOrderTerm(
-                expr=SqlIdentifier(parts=["converted_events", "__converted_event_key"]),
-                direction="ASC",
-            ),
-        ]
-        if expr.matching_mode == "closest_converted_after_base":
-            order_terms = [
-                SqlOrderTerm(
-                    expr=dialect.date_diff(
-                        expr.window_unit,
-                        SqlIdentifier(parts=["base_events", "__base_event_time"]),
-                        SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
-                    ),
-                    direction="ASC",
+                expr=dialect.date_diff(
+                    expr.window_unit,
+                    SqlIdentifier(parts=["base_events", "__base_event_time"]),
+                    SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
                 ),
-                *order_terms,
-            ]
+                direction="ASC",
+            ),
+            *order_terms,
+        ]
 
+    if converted_side_group_dims:
         base_keys = [*base_group_dims, *([group_time_alias] if group_time_alias else [])]
         output_keys = [*plan.group_by, *([group_time_alias] if group_time_alias else [])]
         matched_fields = [
@@ -1077,103 +1042,6 @@ def _conversion_leaf_cte(
                 joins=[denominator_join],
             ),
         )
-
-    base_cte = _conversion_event_cte(
-        cte_name=base_cte_name,
-        source_entity=base_source["root_entity"],
-        event_time_role=base_source["time_role"],
-        match_entity=match_entity,
-        event_key_alias="__base_event_key",
-        time_alias="__base_event_time",
-        group_by=list(plan.group_by),
-        group_time_alias=group_time_alias,
-        group_time_expr=group_time_expr,
-        property_dimensions=property_dims,
-        extra_dimensions=predicate_dimensions,
-        operand_filters=list(base_source.get("filters") or []),
-        config=config,
-        query=query,
-        where_items=base_group_where,
-    )
-    converted_cte = _conversion_event_cte(
-        cte_name=converted_cte_name,
-        source_entity=converted_source["root_entity"],
-        event_time_role=converted_source["time_role"],
-        match_entity=match_entity,
-        event_key_alias="__converted_event_key",
-        time_alias="__converted_event_time",
-        group_by=[],
-        group_time_alias="",
-        group_time_expr=None,
-        property_dimensions=property_dims,
-        extra_dimensions=[],
-        operand_filters=list(converted_source.get("filters") or []),
-        config=config,
-        query=query,
-        where_items=[],
-    )
-
-    predicate_ctes = []
-    predicate_joins = []
-    for predicate_index, (predicate, scope) in enumerate(predicate_scopes):
-        ctes, set_name, join_keys = _conversion_predicate_set_ctes(
-            predicate,
-            index=predicate_index,
-            plan=plan,
-            config=config,
-            scope=scope,
-        )
-        predicate_ctes.extend(ctes)
-        predicate_joins.append(
-            SqlJoin(
-                join_type="INNER",
-                table=SqlTableRef(name=set_name),
-                on=_join_condition(join_keys, "base_events", set_name, dialect=dialect),
-            )
-        )
-
-    join_condition = _conversion_window_condition(expr, dialect)
-    match_keys = _conversion_entity_key_fields(match_entity, config)
-    for key_alias, _ in match_keys:
-        join_condition = SqlBinary(
-            join_condition,
-            "AND",
-            dialect.null_safe_eq(
-                SqlIdentifier(parts=["base_events", key_alias]),
-                SqlIdentifier(parts=["converted_events", key_alias]),
-            ),
-        )
-    for index_prop, _ in enumerate(property_dims):
-        prop_alias = f"__property_{index_prop + 1}"
-        join_condition = SqlBinary(
-            join_condition,
-            "AND",
-            dialect.null_safe_eq(
-                SqlIdentifier(parts=["base_events", prop_alias]),
-                SqlIdentifier(parts=["converted_events", prop_alias]),
-            ),
-        )
-    order_terms = [
-        SqlOrderTerm(
-            expr=SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
-            direction="ASC",
-        ),
-        SqlOrderTerm(
-            expr=SqlIdentifier(parts=["converted_events", "__converted_event_key"]), direction="ASC"
-        ),
-    ]
-    if expr.matching_mode == "closest_converted_after_base":
-        order_terms = [
-            SqlOrderTerm(
-                expr=dialect.date_diff(
-                    expr.window_unit,
-                    SqlIdentifier(parts=["base_events", "__base_event_time"]),
-                    SqlIdentifier(parts=["converted_events", "__converted_event_time"]),
-                ),
-                direction="ASC",
-            ),
-            *order_terms,
-        ]
 
     matched_cte = SqlCte(
         name=matched_cte_name,

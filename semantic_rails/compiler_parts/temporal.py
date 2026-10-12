@@ -24,13 +24,10 @@ from ..expressions import (
     CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
-    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -45,6 +42,7 @@ from .indexes import (
     _dimension_index,
     _measure_index,
     _recipe_index,
+    _recipe_or_raise,
     _temporal_role_index,
     get_package_analysis,
 )
@@ -78,15 +76,9 @@ def _time_bound_relationship_ids(query: NormalizedQuery, config: PackageConfig) 
 
 def _requires_query_time(expr: SemanticExpr, config: PackageConfig) -> bool:
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _requires_query_time(recipe.expression, config)
-    if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
-    ):
+    if isinstance(expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr)):
         return True
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _requires_query_time(expr.left, config) or _requires_query_time(expr.right, config)
@@ -98,19 +90,13 @@ def _requires_query_time(expr: SemanticExpr, config: PackageConfig) -> bool:
         return _requires_query_time(expr.input, config)
     if isinstance(expr, DistributionExpr):
         return _requires_query_time(expr.over, config)
-    if isinstance(expr, BooleanExpr):
-        return any(_requires_query_time(arg, config) for arg in expr.args)
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         return any(_requires_query_time(arg, config) for arg in expr.args)
     if isinstance(expr, CaseExpr):
         return any(
             _requires_query_time(item.when, config) or _requires_query_time(item.then, config)
             for item in expr.whens
         ) or (expr.else_expr is not None and _requires_query_time(expr.else_expr, config))
-    if isinstance(expr, MetricPredicateExpr):
-        return False
-    if isinstance(expr, ConversionExpr):
-        return False
     return False
 
 
@@ -180,8 +166,6 @@ def _expr_compatible_temporal_roles(
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
         return _recipe_compatible_temporal_roles(recipe, config, query)
-    if isinstance(expr, LiteralExpr):
-        return set()
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _combine_temporal_roles(
             [
@@ -196,15 +180,9 @@ def _expr_compatible_temporal_roles(
                 _expr_compatible_temporal_roles(expr.denominator, config, query),
             ]
         )
-    if isinstance(expr, EntityValueExpr):
-        return _expr_compatible_temporal_roles(expr.input, config, query)
     if isinstance(expr, DistributionExpr):
         return _expr_compatible_temporal_roles(expr.over, config, query)
-    if isinstance(expr, BooleanExpr):
-        return _combine_temporal_roles(
-            _expr_compatible_temporal_roles(arg, config, query) for arg in expr.args
-        )
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         return _combine_temporal_roles(
             _expr_compatible_temporal_roles(arg, config, query) for arg in expr.args
         )
@@ -217,19 +195,9 @@ def _expr_compatible_temporal_roles(
             role_sets.append(_expr_compatible_temporal_roles(expr.else_expr, config, query))
         return _combine_temporal_roles(role_sets)
     if isinstance(
-        expr,
-        (
-            CumulativeExpr,
-            RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
-            OffsetWindowExpr,
-            ShareExpr,
-        ),
+        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
     ):
         return _expr_compatible_temporal_roles(expr.input, config, query)
-    if isinstance(expr, MetricPredicateExpr):
-        return set()
     if isinstance(expr, ConversionExpr):
         return _expr_compatible_temporal_roles(expr.base, config, query)
     return set()
@@ -240,7 +208,7 @@ def _window_measure_exprs(
 ) -> Iterator[MeasureRefExpr | AggregateExpr | ScopedAggregateExpr]:
     """Leaves filtered by an expression's period; conversions filter only base events."""
     if window_inputs and (
-        isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr))
+        isinstance(expr, (CumulativeExpr, RollingExpr))
         or isinstance(expr, OffsetWindowExpr)
         and (expr.kind != "cumulative" or expr.window_scope != "query_period")
     ):
@@ -250,11 +218,7 @@ def _window_measure_exprs(
         if not window_inputs:
             yield expr
     elif isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         yield from _window_measure_exprs(recipe.expression, config, window_inputs=window_inputs)
     elif isinstance(expr, ConversionExpr) and not window_inputs:
         yield from _window_measure_exprs(expr.base, config)
@@ -299,11 +263,7 @@ def _metric_ref_leaf_temporal_role_sets(
     query: NormalizedQuery,
     recipe_stack: tuple[str, ...],
 ) -> list[set[str]]:
-    recipe = _recipe_index(config).get(expr.metric_recipe)
-    if recipe is None:
-        raise SemanticLayerError(
-            "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-        )
+    recipe = _recipe_or_raise(config, expr.metric_recipe)
     if recipe.id in recipe_stack:
         cycle = (*recipe_stack[recipe_stack.index(recipe.id) :], recipe.id)
         raise SemanticLayerError(
@@ -339,29 +299,13 @@ def _expr_leaf_temporal_role_sets(
     if isinstance(expr, MetricRecipeRefExpr):
         return _metric_ref_leaf_temporal_role_sets(expr, config, query, recipe_stack)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return [
-            *visit(expr.left),
-            *visit(expr.right),
-        ]
+        return [*visit(expr.left), *visit(expr.right)]
     if isinstance(expr, RatioExpr):
-        return [
-            *visit(expr.numerator),
-            *visit(expr.denominator),
-        ]
-    if isinstance(expr, EntityValueExpr):
-        return visit(expr.input)
+        return [*visit(expr.numerator), *visit(expr.denominator)]
     if isinstance(expr, DistributionExpr):
         return visit(expr.over)
-    if isinstance(expr, BooleanExpr):
-        out: list[set[str]] = []
-        for arg in expr.args:
-            out.extend(visit(arg))
-        return out
-    if isinstance(expr, CallExpr):
-        call_out: list[set[str]] = []
-        for arg in expr.args:
-            call_out.extend(visit(arg))
-        return call_out
+    if isinstance(expr, (BooleanExpr, CallExpr)):
+        return [roles for arg in expr.args for roles in visit(arg)]
     if isinstance(expr, CaseExpr):
         case_out: list[set[str]] = []
         for item in expr.whens:
@@ -371,22 +315,11 @@ def _expr_leaf_temporal_role_sets(
             case_out.extend(visit(expr.else_expr))
         return case_out
     if isinstance(
-        expr,
-        (
-            CumulativeExpr,
-            RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
-            OffsetWindowExpr,
-            ShareExpr,
-        ),
+        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
     ):
         return visit(expr.input)
     if isinstance(expr, ConversionExpr):
-        return [
-            *visit(expr.base),
-            *visit(expr.converted),
-        ]
+        return [*visit(expr.base), *visit(expr.converted)]
     return []
 
 
@@ -511,7 +444,7 @@ def window_total_refusal(
 def series_grain(expr: SemanticExpr, config: PackageConfig) -> str:
     """The grain a window in ``expr`` answers at: its own unit, or days for a period to date."""
     lookback = _unsafe_windowed_lookback(expr, config) or {}
-    if lookback.get("kind") in {"PeriodToDateExpr", "OffsetWindowExpr[period_to_date]"}:
+    if lookback.get("kind") == "OffsetWindowExpr[period_to_date]":
         return "day"
     return str(lookback.get("unit") or "")
 
@@ -532,11 +465,7 @@ def _collect_conversion_bindings(
     recipe) is bound only by its base anchor's compatible temporal roles.
     """
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         _collect_conversion_bindings(
             recipe.expression, config, out, recipe_id=str(expr.metric_recipe)
         )
@@ -554,11 +483,7 @@ def _collect_conversion_bindings(
         _collect_conversion_bindings(expr.numerator, config, out, recipe_id=recipe_id)
         _collect_conversion_bindings(expr.denominator, config, out, recipe_id=recipe_id)
         return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _collect_conversion_bindings(arg, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _collect_conversion_bindings(arg, config, out, recipe_id=recipe_id)
         return
@@ -574,16 +499,12 @@ def _collect_conversion_bindings(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,
+            EntityValueExpr,
         ),
     ):
-        _collect_conversion_bindings(expr.input, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(expr, EntityValueExpr):
         _collect_conversion_bindings(expr.input, config, out, recipe_id=recipe_id)
         return
     if isinstance(expr, DistributionExpr):
@@ -782,73 +703,18 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
             )
 
 
-def _expr_contains_unsafe_bounded_cumulative(expr: SemanticExpr, config: PackageConfig) -> bool:
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
-        return _expr_contains_unsafe_bounded_cumulative(recipe.expression, config)
+def _cumulative_window(expr: SemanticExpr) -> bool | None:
+    """A cumulative window truncates under a bounded start unless it sums the query period."""
     if isinstance(expr, CumulativeExpr):
         return True
     if isinstance(expr, OffsetWindowExpr) and expr.kind == "cumulative":
         return expr.window_scope != "query_period"
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _expr_contains_unsafe_bounded_cumulative(
-            expr.left, config
-        ) or _expr_contains_unsafe_bounded_cumulative(expr.right, config)
-    if isinstance(expr, BooleanExpr):
-        return any(_expr_contains_unsafe_bounded_cumulative(arg, config) for arg in expr.args)
-    if isinstance(expr, CallExpr):
-        return any(_expr_contains_unsafe_bounded_cumulative(arg, config) for arg in expr.args)
-    if isinstance(expr, CaseExpr):
-        return any(
-            _expr_contains_unsafe_bounded_cumulative(item.when, config)
-            or _expr_contains_unsafe_bounded_cumulative(item.then, config)
-            for item in expr.whens
-        ) or (
-            expr.else_expr is not None
-            and _expr_contains_unsafe_bounded_cumulative(expr.else_expr, config)
-        )
-    if isinstance(
-        expr,
-        (RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr, MetricPredicateExpr),
-    ):
-        return _expr_contains_unsafe_bounded_cumulative(expr.input, config)
-    if isinstance(expr, RatioExpr):
-        return _expr_contains_unsafe_bounded_cumulative(
-            expr.numerator, config
-        ) or _expr_contains_unsafe_bounded_cumulative(expr.denominator, config)
-    if isinstance(expr, EntityValueExpr):
-        return _expr_contains_unsafe_bounded_cumulative(expr.input, config)
-    if isinstance(expr, DistributionExpr):
-        return _expr_contains_unsafe_bounded_cumulative(expr.over, config)
-    if isinstance(expr, ConversionExpr):
-        return _expr_contains_unsafe_bounded_cumulative(
-            expr.base, config
-        ) or _expr_contains_unsafe_bounded_cumulative(expr.converted, config)
-    return False
+    return None
 
 
-def _expr_contains_unsafe_bounded_windowed(expr: SemanticExpr, config: PackageConfig) -> bool:
-    """Walk the expression AST to find rolling/prior_period/period_to_date
-    nodes that would silently truncate when the leaf SQL applies a hard
-    `WHERE t >= start` filter.
-
-    This mirrors `_expr_contains_unsafe_bounded_cumulative` but covers the
-    three newer windowed kinds. `OffsetWindowExpr` with kind=='cumulative'
-    is already handled by the cumulative walker; here we cover its other
-    kinds (rolling, prior_period, period_to_date).
-    """
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
-        return _expr_contains_unsafe_bounded_windowed(recipe.expression, config)
-    if isinstance(expr, (RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+def _lookback_window(expr: SemanticExpr) -> bool | None:
+    """A rolling, prior-period or period-to-date window reads rows before its period."""
+    if isinstance(expr, RollingExpr):
         return True
     if isinstance(expr, OffsetWindowExpr) and expr.kind in {
         "rolling",
@@ -856,37 +722,42 @@ def _expr_contains_unsafe_bounded_windowed(expr: SemanticExpr, config: PackageCo
         "period_to_date",
     }:
         return True
+    return None
+
+
+def _expr_contains_unsafe_bounded(
+    expr: SemanticExpr, config: PackageConfig, window: Callable[[SemanticExpr], bool | None]
+) -> bool:
+    """Whether ``expr`` holds a window that would silently truncate when the leaf SQL applies
+    a hard ``WHERE t >= start``; ``window`` answers for a node, or ``None`` to look inside it."""
+    found = window(expr)
+    if found is not None:
+        return found
+
+    def walk(child: SemanticExpr) -> bool:
+        return _expr_contains_unsafe_bounded(child, config, window)
+
+    if isinstance(expr, MetricRecipeRefExpr):
+        return walk(_recipe_or_raise(config, expr.metric_recipe).expression)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _expr_contains_unsafe_bounded_windowed(
-            expr.left, config
-        ) or _expr_contains_unsafe_bounded_windowed(expr.right, config)
-    if isinstance(expr, BooleanExpr):
-        return any(_expr_contains_unsafe_bounded_windowed(arg, config) for arg in expr.args)
-    if isinstance(expr, CallExpr):
-        return any(_expr_contains_unsafe_bounded_windowed(arg, config) for arg in expr.args)
+        return walk(expr.left) or walk(expr.right)
+    if isinstance(expr, (BooleanExpr, CallExpr)):
+        return any(walk(arg) for arg in expr.args)
     if isinstance(expr, CaseExpr):
-        return any(
-            _expr_contains_unsafe_bounded_windowed(item.when, config)
-            or _expr_contains_unsafe_bounded_windowed(item.then, config)
-            for item in expr.whens
-        ) or (
-            expr.else_expr is not None
-            and _expr_contains_unsafe_bounded_windowed(expr.else_expr, config)
+        return any(walk(item.when) or walk(item.then) for item in expr.whens) or (
+            expr.else_expr is not None and walk(expr.else_expr)
         )
-    if isinstance(expr, (CumulativeExpr, MetricPredicateExpr, OffsetWindowExpr)):
-        return _expr_contains_unsafe_bounded_windowed(expr.input, config)
+    if isinstance(
+        expr,
+        (CumulativeExpr, RollingExpr, OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
+    ):
+        return walk(expr.input)
     if isinstance(expr, RatioExpr):
-        return _expr_contains_unsafe_bounded_windowed(
-            expr.numerator, config
-        ) or _expr_contains_unsafe_bounded_windowed(expr.denominator, config)
-    if isinstance(expr, EntityValueExpr):
-        return _expr_contains_unsafe_bounded_windowed(expr.input, config)
+        return walk(expr.numerator) or walk(expr.denominator)
     if isinstance(expr, DistributionExpr):
-        return _expr_contains_unsafe_bounded_windowed(expr.over, config)
+        return walk(expr.over)
     if isinstance(expr, ConversionExpr):
-        return _expr_contains_unsafe_bounded_windowed(
-            expr.base, config
-        ) or _expr_contains_unsafe_bounded_windowed(expr.converted, config)
+        return walk(expr.base) or walk(expr.converted)
     return False
 
 
@@ -896,7 +767,7 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
     ``WINDOWED_TIME_FILTER_UNSUPPORTED`` recovery hint can suggest a
     concrete widened ``query.time.start``. ``None`` when no offending
     node is found — callers should already have established that
-    ``_expr_contains_unsafe_bounded_windowed`` returned True.
+    ``_expr_contains_unsafe_bounded`` found a lookback window.
     """
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
@@ -908,20 +779,6 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
             "kind": "RollingExpr",
             "unit": str(expr.unit or ""),
             "value": int(expr.value or 0),
-        }
-    if isinstance(expr, PriorPeriodExpr):
-        return {
-            "kind": "PriorPeriodExpr",
-            "unit": str(expr.unit or ""),
-            "value": int(expr.value or 0),
-        }
-    if isinstance(expr, PeriodToDateExpr):
-        # Period-to-date looks back to the start of the period — one
-        # unit of the period grain is the safe minimum widening.
-        return {
-            "kind": "PeriodToDateExpr",
-            "unit": str(expr.period or ""),
-            "value": 1,
         }
     if isinstance(expr, OffsetWindowExpr) and expr.kind in {
         "rolling",
@@ -1056,8 +913,8 @@ def _validate_restrictive_time_semantics(
     ):
         if expr is None:
             continue
-        cumulative = _expr_contains_unsafe_bounded_cumulative(expr, config)
-        if not cumulative and not _expr_contains_unsafe_bounded_windowed(expr, config):
+        cumulative = _expr_contains_unsafe_bounded(expr, config, _cumulative_window)
+        if not cumulative and not _expr_contains_unsafe_bounded(expr, config, _lookback_window):
             continue
         # Preserve time.start/where precedence, then check only this window's population.
         details: dict[str, Any]
@@ -1116,10 +973,7 @@ def _validate_restrictive_time_semantics(
                 f"function depends on, producing silently wrong values. {remedy.capitalize()}"
                 + ending
             )
-            comparison = str((lookback or {}).get("kind", "")) in {
-                "PriorPeriodExpr",
-                "OffsetWindowExpr[prior_period]",
-            }
+            comparison = str((lookback or {}).get("kind", "")) == "OffsetWindowExpr[prior_period]"
             if comparison and query.time.named and "where_path" not in details:
                 # Period comparisons beside a named window ship later; the series answers now.
                 spelled = "last" if query.time.last_unit else "this" if query.time.this else "start"

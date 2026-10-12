@@ -17,8 +17,6 @@ from ..expressions import (
     EntityValueExpr,
     LiteralExpr,
     MetricPredicateExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -47,7 +45,7 @@ def _expr_kinds(expr: SemanticExpr) -> set[str]:
         if expr.else_expr is not None:
             kinds |= _expr_kinds(expr.else_expr)
         return kinds
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return kinds | _expr_kinds(expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return kinds | _expr_kinds(expr.input)
@@ -78,10 +76,10 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         or any(row.measure_class in {"semi_additive", "snapshot"} for row in config.measures),
         "rolling_windows": "RollingExpr" in expr_kinds
         or any("rolling_" in row for row in recipe_ids),
-        "prior_period_offsets": "PriorPeriodExpr" in expr_kinds
-        or any("prior_period" in row or "month_over_month" in row for row in recipe_ids),
-        "period_to_date_metrics": "PeriodToDateExpr" in expr_kinds
-        or any(
+        "prior_period_offsets": any(
+            "prior_period" in row or "month_over_month" in row for row in recipe_ids
+        ),
+        "period_to_date_metrics": any(
             row.endswith("_mtd") or row.endswith("_qtd") or row.endswith("_ytd")
             for row in recipe_ids
         ),

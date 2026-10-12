@@ -7,7 +7,9 @@ from typing import Any
 
 from ._base import (
     _TERM_SYNONYMS,
+    _grouped_dimensions,
     _last_token,
+    _matching,
     _object_by_id,
     _requested_grouping_spans,
     _singular,
@@ -248,11 +250,7 @@ def _lists_entity_rows(
     """
 
     chosen = set(caller.group_by)
-    grouped = [
-        row
-        for item in dict.fromkeys(query.group_by)
-        if (row := _object_by_id(config.dimensions, item)) is not None
-    ]
+    grouped = _grouped_dimensions(config, query)
 
     def keys_of(term: str) -> set[str]:
         stand_ins = _entity_grouping_dimensions(config, term) or set()
@@ -343,16 +341,5 @@ def _questions_answered(
         ]
         for subject in subjects
     ]
-    owner: dict[str, int] = {}
-
-    def assign(index: int, seen: set[str]) -> bool:
-        # A question takes a free select, or one whose question can take another.
-        for key in options[index]:
-            if key not in seen:
-                seen.add(key)
-                if key not in owner or assign(owner[key], seen):
-                    owner[key] = index
-                    return True
-        return False
-
-    return all(assign(index, set()) for index in range(len(subjects)))
+    # A question takes a free select, or one whose question can take another.
+    return all(_matching(options)[0])

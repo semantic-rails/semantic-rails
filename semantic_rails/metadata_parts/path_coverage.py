@@ -37,10 +37,6 @@ def _relationships_by_id(config: PackageConfig) -> dict[str, Any]:
     return {row.id: row for row in config.relationships}
 
 
-def _dimensions_by_id(config: PackageConfig) -> dict[str, Any]:
-    return {row.id: row for row in config.dimensions}
-
-
 def _path_availability(
     config: PackageConfig, root_entity: str, target_entity: str
 ) -> dict[str, Any]:
@@ -91,7 +87,7 @@ def _history_coverage_note(*, dimension: bool = False) -> str:
 def _dimension_history_coverage(
     config: PackageConfig, dimension_id: str, root_entity: str = ""
 ) -> tuple[list[str], str]:
-    dim = _dimensions_by_id(config)[dimension_id]
+    dim = {row.id: row for row in config.dimensions}[dimension_id]
     if root_entity:
         availability = _path_availability(config, root_entity, dim.entity)
         if _path_has_temporal_validity(config, availability.get("path", [])):

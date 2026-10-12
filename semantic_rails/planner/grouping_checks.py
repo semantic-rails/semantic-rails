@@ -8,7 +8,14 @@ from typing import Any
 
 from .. import operators
 from ..errors import SemanticLayerError
-from ._base import _NAME_CONNECTORS, _last_token, _object_by_id, _strip_leading_rank_count
+from ._base import (
+    _NAME_CONNECTORS,
+    _grouped_dimensions,
+    _last_token,
+    _matching,
+    _object_by_id,
+    _strip_leading_rank_count,
+)
 from .call import Call, Order, QueryBuilder
 from .generators import _grouping_term_matches
 from .groupings import (
@@ -18,6 +25,7 @@ from .groupings import (
     _is_temporal_grouping_term,
     _listed_grouping_terms,
     _named_run,
+    _names_a_grouping,
     _names_whole_entity,
     _term_matches_value_domain,
 )
@@ -42,15 +50,6 @@ def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
     lowered = str(text or "").lower()
     for start, end in _time_window(text).spans:
         lowered = lowered[:start] + "," + " " * (end - start - 1) + lowered[end:]
-
-    def named(term: str) -> bool:
-        return (
-            _is_temporal_grouping_term(term)
-            or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
-            or any(row.calendar_id and _names_time_axis(term, row.label) for row in config.entities)
-            or any(_grouping_matches(term, row) for row in config.dimensions)
-            or any(_grouping_matches(term, row, entity=True) for row in config.entities)
-        )
 
     spans: list[tuple[int, int]] = []
     # A grouping marker inside a declared value name ("Sends per account")
@@ -108,7 +107,7 @@ def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
             low = cursor + len(piece) - len(piece.lstrip())
             high = cursor + len(piece.rstrip())
             if low < high and set(re.findall(r"[^\W_]+", lowered[low:high])) - _NAME_CONNECTORS:
-                if after_comma and not named(lowered[low:high]):
+                if after_comma and not _names_a_grouping(lowered[low:high], config):
                     break
                 spans.append((low, high))
             if separator:
@@ -417,24 +416,17 @@ def _dropped_grouping_why(
     except SemanticLayerError:
         root = ""
     terms = _listed_dimension_terms(config, question, query)
-    grouped = [
-        row
-        for item in dict.fromkeys(query.group_by)
-        if (row := _object_by_id(config.dimensions, item)) is not None
-    ]
+    grouped = _grouped_dimensions(config, query)
     visible = visible_dimensions(config)
     stand_ins = [
         _entity_grouping_dimensions(replace(config, dimensions=visible), term) for term in terms
     ]
 
-    def reads(term: str, ids: set[str] | None, row: Any) -> bool:
-        return _grouping_matches(term, row) if ids is None else row.id in ids
-
     chosen = set(partial_query.group_by if partial_query else ())
 
     matches: list[list[Any]] = []
     for term, ids in zip(terms, stand_ins, strict=True):
-        named = [row for row in visible if row.groupable and reads(term, ids, row)]
+        named = [row for row in visible if row.groupable and _reads_grouping(term, ids, row)]
         if ids is None and not any(
             term.lower().replace("_", " ")
             in {
@@ -456,7 +448,7 @@ def _dropped_grouping_why(
         the caller's group_by doesn't say which: it names none, or the draft added one."""
 
         entities = {row.entity for row in named}
-        picked = {row.id for row in grouped if reads(term, ids, row)}
+        picked = {row.id for row in grouped if _reads_grouping(term, ids, row)}
         return len(entities) > 1 and root not in entities and not (picked and picked <= chosen)
 
     ambiguous = [
@@ -469,24 +461,13 @@ def _dropped_grouping_why(
             index
             for index, dimension in enumerate(grouped)
             if term not in ambiguous
-            and reads(term, ids, dimension)
+            and _reads_grouping(term, ids, dimension)
             and (not any(row.entity == root for row in named) or dimension.entity == root)
         ]
         for term, ids, named in zip(terms, stand_ins, matches, strict=True)
     ]
-    assigned: dict[int, int] = {}
-
-    def assign(term_index: int, seen: set[int]) -> bool:
-        for dimension_index in candidates[term_index]:
-            if dimension_index in seen:
-                continue
-            seen.add(dimension_index)
-            if dimension_index not in assigned or assign(assigned[dimension_index], seen):
-                assigned[dimension_index] = term_index
-                return True
-        return False
-
-    dropped = [term for index, term in enumerate(terms) if not assign(index, set())]
+    matched, assigned = _matching(candidates)
+    dropped = [term for term, found in zip(terms, matched, strict=True) if not found]
     named, inside = _named_groupings_unmet(config, question, query)
     held = list(dict.fromkeys(row["term"] for row in inside))
     dropped += [

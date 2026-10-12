@@ -362,33 +362,13 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
                         "predicate_sets": list(predicate_set_ids),
                     }
                 )
-        if len(conversion_node_ids) > 1:
-            nodes.append(
-                PhysicalPlanNode(
-                    id="align_conversions",
-                    kind="AlignFacts",
-                    inputs=conversion_node_ids,
-                    details={
-                        "keys": list(key_aliases),
-                        "join_type": "FULL OUTER",
-                        "reason": "multiple_independent_conversion_leaves",
-                    },
-                )
-            )
-            final_inputs = ["align_conversions"]
-        else:
-            final_inputs = list(conversion_node_ids)
-        nodes.append(
-            PhysicalPlanNode(
-                id="final_project",
-                kind="FinalProject",
-                inputs=final_inputs,
-                details={
-                    "outputs": list(plan.post_aggregation_exprs),
-                    "key_aliases": list(key_aliases),
-                    "projection_wrappers": "pruned_when_no_metric_filters_or_order_by",
-                },
-            )
+        _align_and_project(
+            nodes,
+            conversion_node_ids,
+            plan,
+            key_aliases,
+            align_id="align_conversions",
+            reason="multiple_independent_conversion_leaves",
         )
         optimizations.append(
             {"kind": "conversion_leaf_lowering", "status": "applied", "target": "final_project"}
@@ -660,23 +640,36 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
         for item in group:
             outputs[item.bound_measure.alias] = aggregate_id
 
-    if len(aggregate_node_ids) > 1:
-        nodes.append(
-            PhysicalPlanNode(
-                id="align_facts",
-                kind="AlignFacts",
-                inputs=aggregate_node_ids,
-                details={
-                    "keys": list(key_aliases),
-                    "join_type": "FULL OUTER",
-                    "reason": "multiple_independent_metric_leaves",
-                },
-            )
-        )
-        final_inputs = ["align_facts"]
-    else:
-        final_inputs = list(aggregate_node_ids)
+    _align_and_project(
+        nodes,
+        aggregate_node_ids,
+        plan,
+        key_aliases,
+        align_id="align_facts",
+        reason="multiple_independent_metric_leaves",
+    )
+    for alias in plan.post_aggregation_exprs:
+        outputs[alias] = "final_project"
+    return PhysicalPlan(version=1, nodes=nodes, outputs=outputs, optimizations=optimizations)
 
+
+def _align_and_project(
+    nodes: list[PhysicalPlanNode],
+    leaf_ids: list[str],
+    plan: LogicalPlan,
+    key_aliases: list[str],
+    *,
+    align_id: str,
+    reason: str,
+) -> None:
+    """Align several independent leaves on the keys (FULL OUTER), then project the outputs."""
+    final_inputs = list(leaf_ids)
+    if len(leaf_ids) > 1:
+        details = {"keys": list(key_aliases), "join_type": "FULL OUTER", "reason": reason}
+        nodes.append(
+            PhysicalPlanNode(id=align_id, kind="AlignFacts", inputs=leaf_ids, details=details)
+        )
+        final_inputs = [align_id]
     nodes.append(
         PhysicalPlanNode(
             id="final_project",
@@ -689,9 +682,6 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
             },
         )
     )
-    for alias in plan.post_aggregation_exprs:
-        outputs[alias] = "final_project"
-    return PhysicalPlan(version=1, nodes=nodes, outputs=outputs, optimizations=optimizations)
 
 
 _LARGE_PRIMITIVE_RELATION_HINTS = {

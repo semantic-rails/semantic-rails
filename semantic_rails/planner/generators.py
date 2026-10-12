@@ -59,7 +59,7 @@ def fallback_drafts(
     seen_ids: set[str] = set()
     seen_queries: set[str] = set()
 
-    primary = _choose_object_for_terms(runtime, intent, partial, prefer_metric=False)
+    primary = _choose_object_for_terms(runtime, intent, partial)
     if primary:
         draft = _draft_for_choice(runtime, intent=text, partial_query=partial, choice=primary)
         out.append((draft, "catalog_fallback"))
@@ -133,7 +133,6 @@ def _draft_for_choice(
     partial_query: Call | None,
     choice: dict[str, Any],
 ) -> RuntimeCompositionDraft:
-    from ..metadata_parts.object_metadata import _public_object_type  # noqa: WPS433
 
     config = runtime._config
     # The caller's order_by may name a column this draft doesn't add; the merge restores it.
@@ -151,7 +150,7 @@ def _draft_for_choice(
     resolved = [
         {
             "id": choice["id"],
-            "object_type": _public_object_type(choice["kind"]),
+            "object_type": choice["kind"],
             "label": choice["label"],
         }
     ]
@@ -237,9 +236,7 @@ def _normalize_value_filters(
     return builder.build()
 
 
-def _choose_object_for_terms(
-    runtime: Any, terms: str, partial_query: Call, *, prefer_metric: bool = False
-) -> dict[str, Any]:
+def _choose_object_for_terms(runtime: Any, terms: str, partial_query: Call) -> dict[str, Any]:
     """Pick the most plausible governed metric/measure for free-form terms."""
 
     from ..metadata import (  # noqa: WPS433 - shared metadata helpers
@@ -295,14 +292,13 @@ def _choose_object_for_terms(
     use_metric = bool(
         chosen_metric
         and (
-            prefer_metric
-            or any(word in lowered_target for word in metric_keywords)
+            any(word in lowered_target for word in metric_keywords)
             or per_metric_requested
             or not chosen_measure
             or chosen_metric["score"] >= chosen_measure["score"]
         )
     )
-    if use_metric and chosen_measure and not prefer_metric:
+    if use_metric and chosen_measure:
         assert chosen_metric is not None
         metric_title = " ".join(
             str(chosen_metric.get(key, "") or "") for key in ("id", "name", "label", "description")
@@ -522,18 +518,11 @@ def _grouping_term_matches(
     ]
 
 
-def _choose_group_dimensions(
-    runtime: Any, query: Call, text: str, chosen_group_dim: str = ""
-) -> list[str]:
+def _choose_group_dimensions(runtime: Any, query: Call, text: str) -> list[str]:
     from ..metadata import (  # noqa: WPS433 - shared metadata helpers
         _availability_for_object,
         _selection_context,
     )
-
-    if chosen_group_dim and chosen_group_dim in {
-        row.id for row in visible_dimensions(runtime._config)
-    }:
-        return [chosen_group_dim]
     from .groupings import _entity_grouping  # noqa: WPS433
 
     selection = _selection_context(runtime._config, discovery_query(runtime, query))

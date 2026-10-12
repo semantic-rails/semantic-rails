@@ -932,6 +932,11 @@ def _distinct_parent_group_conditions(
                 ),
             },
         )
+    return _child_conditions(group, config)
+
+
+def _child_conditions(group: ChildGroup, config: PackageConfig) -> list[Any]:
+    """A child group's conditions on one child row, read from the child's own columns first."""
     return [
         dimension_filter(
             (
@@ -958,19 +963,7 @@ def _child_group_condition(
     inner_joins = _joins_for_paths(
         group.child, found, config, measure_entity=None, time_spec=plan.time
     )
-    conditions = [
-        dimension_filter(
-            (
-                _direct_dimension_source_expr(group.child, condition.field, config)
-                or _resolve_dimension_expr(condition.field, config)
-            )[0],
-            condition.field,
-            condition.op,
-            condition.value,
-            config,
-        )
-        for condition in group.where
-    ]
+    conditions = _child_conditions(group, config)
     hops = _joins_for_paths(
         measure.entity, [route], config, measure_entity=measure.entity, time_spec=plan.time
     )
@@ -1286,6 +1279,17 @@ def _measure_leaf_select(
             _measure_dim_relation(measure, time_dim, entities), time_dim.column
         )
 
+    def path_joins() -> list[SqlJoin]:
+        """The leaf's joins along its paths; built in the branch that uses them, since building
+        records the routes they take."""
+        return _joins_for_paths(
+            measure.entity,
+            measure_plan.path_selections,
+            config,
+            measure_entity=measure.entity,
+            time_spec=plan.time,
+        )
+
     leaf_alias = measure_plan.bound_measure.alias
     if measure_plan.rewrite_strategy == "parent_lookup":
         return _parent_lookup_leaf_select(
@@ -1295,13 +1299,7 @@ def _measure_leaf_select(
             key_fields=select_fields,
             group_by=group_fields,
             joins=[
-                *_joins_for_paths(
-                    measure.entity,
-                    measure_plan.path_selections,
-                    config,
-                    measure_entity=measure.entity,
-                    time_spec=plan.time,
-                ),
+                *path_joins(),
                 *predicate_joins,
             ],
             where=where_clauses,
@@ -1321,13 +1319,7 @@ def _measure_leaf_select(
         )
     if measure_plan.rewrite_strategy == "fanout_dedup":
         where_clauses += _distinct_parent_group_conditions(plan, measure_plan, config, measure)
-        joins = _joins_for_paths(
-            measure.entity,
-            measure_plan.path_selections,
-            config,
-            measure_entity=measure.entity,
-            time_spec=plan.time,
-        )
+        joins = path_joins()
         return _fanout_dedup_leaf_select(
             measure_plan,
             config,
@@ -1353,13 +1345,7 @@ def _measure_leaf_select(
     if source_rollup is not None:
         return source_rollup
     joins = [
-        *_joins_for_paths(
-            measure.entity,
-            measure_plan.path_selections,
-            config,
-            measure_entity=measure.entity,
-            time_spec=plan.time,
-        ),
+        *path_joins(),
         *predicate_joins,
     ]
     if measure.measure_class == "semi_additive":
@@ -1541,11 +1527,6 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
         where_clauses.append(dimension_filter(expr, str(item.field), item.op, item.value, config))
 
     if plan.time:
-        time = dict(plan.time)
-        role = temporal_roles[str(time["temporal_role"])]
-        dim = dimensions[role.dimension]
-        raw_expr = _column_ref(entities[dim.entity].table, dim.column)
-        raw_expr = _apply_role_timezone(raw_expr, role, config)
         where_clauses.extend(_source_time_window(raw_expr, time, config))
 
     joins = list(

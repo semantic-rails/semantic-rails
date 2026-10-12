@@ -15,9 +15,7 @@ This module owns:
 * Tokenization / catalog-token-index helpers used as the relevance denominator.
 * The floor predicate (``_intent_passes_relevance_floor``).
 * The two structured refusal blocks (``_low_relevance_block``,
-  ``_no_viable_candidates_block``) and the convenience attacher
-  (``_maybe_attach_no_viable_signal``) that planner success paths call
-  to keep the gate fields consistent.
+  ``_no_viable_candidates_block``).
 """
 
 from __future__ import annotations
@@ -364,42 +362,3 @@ def _no_viable_candidates_block(
             "in the catalog (over MCP, `discover` with empty terms)."
         ),
     }
-
-
-def _maybe_attach_no_viable_signal(
-    payload: dict[str, Any],
-    *,
-    intent: str,
-) -> dict[str, Any]:
-    """Attach a top-level ``no_viable_candidates`` block to a planning
-    response when the request classified + cleared the relevance floor but
-    every candidate hit validation/path errors. Returns ``payload`` mutated
-    in-place. Idempotent: only attaches when ``candidates`` is empty,
-    ``blocked`` is non-empty, and no other gate block is already present."""
-    if payload.get("candidates"):
-        return payload
-    blocked_rows = list(payload.get("blocked", []) or [])
-    if not blocked_rows:
-        return payload
-    if (
-        payload.get("low_relevance")
-        or payload.get("out_of_scope")
-        or payload.get("no_viable_candidates")
-    ):
-        return payload
-    blocked_codes: list[str] = []
-    blocked_messages: list[str] = []
-    for row in blocked_rows:
-        why = dict(row.get("why_blocked", {}) or {})
-        code = str(why.get("code", "") or "")
-        message = str(why.get("message", "") or "")
-        if code and code not in blocked_codes:
-            blocked_codes.append(code)
-        if message:
-            blocked_messages.append(message)
-    payload["no_viable_candidates"] = _no_viable_candidates_block(
-        intent=intent,
-        blocked_codes=blocked_codes,
-        sample_blocked_messages=blocked_messages,
-    )
-    return payload

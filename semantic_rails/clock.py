@@ -17,8 +17,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .errors import SemanticLayerError
 
 UNITS: tuple[str, ...] = ("day", "week", "month", "quarter", "year")
-# Weeks start on Monday (ISO 8601), the same week every dialect's date_trunc uses.
-WEEK_START = "monday"
 
 
 def current_time() -> datetime:
@@ -279,22 +277,3 @@ def describe_window(window: Window, *, now: datetime, timezone: str = "UTC") -> 
     if unit == "day":
         return f"{names[unit]} so far"
     return f"{names[unit]} so far ({elapsed} of {total} days)"
-
-
-def range_bounds(range_payload: Any, *, now: Any, timezone: str = "UTC") -> dict[str, str]:
-    """``{start, end}`` for a planner draft's relative range ``{"last": {unit, value}}``."""
-    last = range_payload.get("last") if isinstance(range_payload, dict) else None
-    if not isinstance(last, dict) or last.get("unit") not in UNITS:
-        raise SemanticLayerError("INVALID_QUERY", "A relative range is {last: {unit, value}}")
-    try:
-        value = int(last.get("value"))  # type: ignore[arg-type]  # None raises TypeError
-    except (TypeError, ValueError) as exc:
-        raise SemanticLayerError("INVALID_QUERY", "last.value must be a positive integer") from exc
-    if value <= 0:
-        raise SemanticLayerError("INVALID_QUERY", "last.value must be a positive integer")
-    window = resolve_window(
-        {"last": {"unit": last["unit"], "value": value}},
-        now=parse_now(now),
-        timezone=timezone,
-    )
-    return {"start": str(window.start), "end": str(window.end)}

@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from ..query_call import TIME_AXIS
-from ._base import _NUMBER_WORDS, _best, _dimension, _entity, _object_text, _tokens
+from ._base import _NUMBER_WORDS, _account_entity, _best, _dimension, _entity, _tokens
 from .call import Condition, Order, QueryBuilder
 from .exclusions import exclusion_regions
 from .time_windows import _time_window
@@ -74,10 +74,7 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
             return "gte", {"kind": "percentile", "p": p}
     top_percent_match = re.search(r"top\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", lowered)
     if top_percent_match:
-        try:
-            n = float(top_percent_match.group(1))
-        except ValueError:
-            n = 0.0
+        n = float(top_percent_match.group(1))  # digits, so it parses
         if 0.0 < n < 100.0:
             return "gte", {"kind": "percentile", "p": round((100.0 - n) / 100.0, 4)}
     percentile_match = re.search(
@@ -85,10 +82,7 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
         lowered,
     )
     if percentile_match:
-        try:
-            n = float(percentile_match.group(1))
-        except ValueError:
-            n = 0.0
+        n = float(percentile_match.group(1))
         if 0.0 < n < 100.0:
             return "gt", {"kind": "percentile", "p": round(n / 100.0, 4)}
     percent_patterns = [
@@ -352,38 +346,21 @@ def _explicit_qualifying_entity_keyword(text: str) -> str:
 
 
 def _qualifying_entity(config: Any, terms: set[str], *, text: str = "") -> Any | None:
-    explicit = _explicit_qualifying_entity_keyword(text)
-    if explicit == "customer":
-        return _entity(config, ["customer"])
-    if explicit == "store":
-        return _entity(config, ["store"])
-    if explicit == "account":
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    if "store" in terms and "customer" in terms:
-        return _entity(config, ["store"])
-    if "account" in terms and "customer" in terms:
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    if "customer" in terms:
-        return _entity(config, ["customer"])
-    if "store" in terms:
-        return _entity(config, ["store"])
-    if bool({"entity", "entities", "child"} & terms) and "order" in terms and "rate" in terms:
-        return _entity(config, ["store"])
-    if "account" in terms:
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    return None
+    # The qualifying phrase names the entity; otherwise the first rule below whose words appear.
+    rules = (
+        ("store", "store" in terms and "customer" in terms),
+        ("account", "account" in terms and "customer" in terms),
+        ("customer", "customer" in terms),
+        ("store", "store" in terms),
+        ("store", bool({"entity", "entities", "child"} & terms) and {"order", "rate"} <= terms),
+        ("account", "account" in terms),
+    )
+    keyword = _explicit_qualifying_entity_keyword(text) or next(
+        (word for word, applies in rules if applies), ""
+    )
+    if not keyword:
+        return None
+    return _account_entity(config) if keyword == "account" else _entity(config, [keyword])
 
 
 _TOP_N_PATTERN = re.compile(r"\btop(?:\s+(\d+))?\b", re.IGNORECASE)
@@ -416,18 +393,10 @@ def _top_n_intent(text: str) -> tuple[bool, int]:
     match = _TOP_N_PATTERN.search(lowered)
     if match:
         raw = match.group(1)
-        if not raw:
-            return True, _DEFAULT_TOP_LIMIT
-        try:
-            return True, int(raw)
-        except ValueError:
-            return True, _DEFAULT_TOP_LIMIT
+        return True, int(raw) if raw else _DEFAULT_TOP_LIMIT
     for start, end in spans:
         lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     rank_match = _RANK_PATTERN.search(lowered)
     if rank_match:
-        try:
-            return True, int(rank_match.group(1))
-        except ValueError:
-            return True, _DEFAULT_TOP_LIMIT
+        return True, int(rank_match.group(1))
     return False, _DEFAULT_TOP_LIMIT

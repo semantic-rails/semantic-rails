@@ -139,15 +139,8 @@ def get_package_analysis(config: PackageConfig) -> PackageAnalysis:
     def _discard(_ref: Any, *, key: int = cache_key) -> None:
         _PACKAGE_ANALYSIS_CACHE.pop(key, None)
 
-    try:
-        config_ref: Any = weakref.ref(config, _discard)
-    except TypeError:
-
-        def config_ref() -> PackageConfig:
-            return config
-
     analysis = PackageAnalysis.from_config(config)
-    _PACKAGE_ANALYSIS_CACHE[cache_key] = (config_ref, analysis)
+    _PACKAGE_ANALYSIS_CACHE[cache_key] = (weakref.ref(config, _discard), analysis)
     return analysis
 
 
@@ -165,6 +158,13 @@ def _measure_index(config: PackageConfig) -> dict[str, MeasureConfig]:
 
 def _recipe_index(config: PackageConfig) -> dict[str, MetricConfig]:
     return binding_index(get_package_analysis(config).recipes, config)
+
+
+def _recipe_or_raise(config: PackageConfig, recipe_id: str) -> MetricConfig:
+    recipe = _recipe_index(config).get(recipe_id)
+    if recipe is None:
+        raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric recipe '{recipe_id}'")
+    return recipe
 
 
 def _temporal_role_index(config: PackageConfig) -> dict[str, TemporalRoleConfig]:

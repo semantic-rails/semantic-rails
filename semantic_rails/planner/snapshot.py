@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+from ..clock import shift_period
 from ..expressions import AggregateExpr
 from ._base import _balance_body, _object_by_id, _said_name
 from .call import Call, QueryBuilder, Time
@@ -191,14 +192,11 @@ def _names_one_period(bounds: dict[str, Any], phrase: str) -> bool:
     except (KeyError, ValueError):
         return False
 
-    def months_later(months: int) -> date:
-        index = start.month - 1 + months
-        return date(start.year + index // 12, index % 12 + 1, 1)
-
     return (start.weekday() == 0 and end - start == 7 * _DAY) or (
         start.day == 1
         and any(
-            end == months_later(months) and (start.month - 1) % months == 0 for months in (1, 3, 12)
+            end == shift_period(start, "month", months) and (start.month - 1) % months == 0
+            for months in (1, 3, 12)
         )
     )
 

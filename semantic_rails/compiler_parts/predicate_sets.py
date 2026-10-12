@@ -29,8 +29,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -126,8 +124,12 @@ from .post_aggregation import (
     _namespace_sql_select,
 )
 from .predicate import (
+    _inline_threshold_cte_and_where,
+    _predicate_includes_entities_without_rows,
     _predicate_time_alias,
     _predicate_time_spec,
+    _public_time_spec,
+    _require_predicate_over_rows,
 )
 from .time_series import _window_is_named
 
@@ -243,9 +245,6 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
                 specs.append(spec)
         return specs
 
-    if isinstance(expr, MetricPredicateExpr):
-        return _expression_scan_specs(expr.input, config)
-
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr, RatioExpr)):
         specs = _expression_scan_specs(
             expr.left if hasattr(expr, "left") else expr.numerator, config
@@ -277,15 +276,12 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             ShareExpr,
+            EntityValueExpr,
+            MetricPredicateExpr,
         ),
     ):
-        return _expression_scan_specs(expr.input, config)
-
-    if isinstance(expr, EntityValueExpr):
         return _expression_scan_specs(expr.input, config)
 
     if isinstance(expr, DistributionExpr):
@@ -301,8 +297,6 @@ def _predicate_physical_nodes(
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> tuple[list[PhysicalPlanNode], list[str]]:
-    from .predicate import _predicate_includes_entities_without_rows
-
     nodes: list[PhysicalPlanNode] = []
     predicate_set_ids: list[str] = []
     query = normalize_query(plan.query)
@@ -635,8 +629,6 @@ def _minimal_predicate_set_ctes(
     plan: LogicalPlan,
     config: PackageConfig,
 ) -> PredicateSetSql:
-    from .predicate import _require_predicate_over_rows
-
     query = normalize_query(plan.query)
     predicate = _predicate_expr_from_payload(predicate_payload)
     _require_predicate_over_rows(predicate, config, shape="an anchored entity-set ratio")
@@ -650,11 +642,7 @@ def _minimal_predicate_set_ctes(
     time_alias = ""
     source_time_alias = ""
     if time_spec is not None:
-        mini_query["time"] = {
-            key: value
-            for key, value in dict(time_spec).items()
-            if key in {"temporal_role", "grain", "start", "end", "fill"}
-        }
+        mini_query["time"] = _public_time_spec(time_spec)
         time_alias = _predicate_time_alias(
             str(time_spec.get("output_temporal_role") or time_spec["temporal_role"]),
             str(time_spec["grain"]),
@@ -676,17 +664,13 @@ def _minimal_predicate_set_ctes(
         SqlField(SqlIdentifier(parts=["predicate_source", dim_id]), dim_id)
         for dim_id in group_by_dims
     ]
-    group_keys = list(group_by_dims)
     if time_alias:
         select_fields.append(
             SqlField(SqlIdentifier(parts=["predicate_source", source_time_alias]), time_alias)
         )
-        group_keys.append(source_time_alias)
-    # Inline-threshold path (see ``_inline_threshold_cte_and_where`` in
-    # compiler.py): when ``predicate.value`` is the percentile-expr dict
-    # validated at parse time, emit a threshold CTE + CROSS JOIN.
-    from .predicate import _inline_threshold_cte_and_where
-
+    # Inline-threshold path (see ``_inline_threshold_cte_and_where``): when
+    # ``predicate.value`` is the percentile-expr dict validated at parse time, emit a
+    # threshold CTE + CROSS JOIN.
     extra_ctes, extra_joins, where_condition = _inline_threshold_cte_and_where(
         predicate=predicate,
         set_name=set_name,
@@ -707,7 +691,6 @@ def _minimal_predicate_set_ctes(
             distinct=True,
         ),
     )
-    _ = group_keys  # retained for naming clarity; no GROUP BY needed
     root_entity = _expression_root_entity(predicate.input, config)
     return PredicateSetSql(
         ctes=[source_cte, *extra_ctes, set_cte],

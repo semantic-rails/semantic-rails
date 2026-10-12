@@ -12,7 +12,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields, is_dataclass
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .operators import LIKE_ESCAPE
@@ -40,7 +40,6 @@ from .sql_ast import (
     SqlQuery,
     SqlSelect,
     SqlSetQuery,
-    SqlStar,
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
@@ -54,7 +53,9 @@ from .sql_ast import (
     normalize_sql_set_operator,
     normalize_sql_sort_direction,
     normalize_sql_window_frame,
+    sql_nodes,
 )
+from .sql_identifiers import quote_identifier
 
 if TYPE_CHECKING:
     from .dialects import SqlDialect
@@ -139,7 +140,7 @@ def _quote_ident(value: str) -> str:
     raw = str(value)
     if _IDENT_RE.match(raw) and raw.upper() not in _RESERVED_WORDS:
         return raw
-    return '"' + raw.replace('"', '""') + '"'
+    return quote_identifier(raw)
 
 
 # The answer's own column names (the outermost SELECT's aliases), and the names that qualify a
@@ -151,32 +152,15 @@ _OUTPUT_ALIASES: ContextVar[frozenset[str]] = ContextVar("output_aliases", defau
 _DERIVED: ContextVar[frozenset[str]] = ContextVar("derived_relations", default=frozenset())
 
 
-def _quoted(value: str) -> str:
-    return '"' + str(value).replace('"', '""') + '"'
-
-
 def _alias_name(value: str) -> str:
-    return _quoted(value) if value in _OUTPUT_ALIASES.get() else _quote_ident(value)
+    return quote_identifier(value) if value in _OUTPUT_ALIASES.get() else _quote_ident(value)
 
 
 def _derived_relations(query: SqlSelect) -> frozenset[str]:
     """Every CTE name in ``query``, and every alias a FROM or JOIN gives one."""
-    ctes: set[str] = set()
-    refs: list[SqlTableRef] = []
-
-    def walk(node: object) -> None:
-        if isinstance(node, SqlCte):
-            ctes.add(node.name)
-        if isinstance(node, SqlTableRef):
-            refs.append(node)
-        if isinstance(node, (list, tuple)):
-            for item in node:
-                walk(item)
-        elif is_dataclass(node) and not isinstance(node, type):
-            for item in fields(node):
-                walk(getattr(node, item.name))
-
-    walk(query)
+    nodes = list(sql_nodes(query))
+    ctes = {node.name for node in nodes if isinstance(node, SqlCte)}
+    refs = [node for node in nodes if isinstance(node, SqlTableRef)]
     return frozenset(ctes | {ref.alias for ref in refs if ref.name in ctes and ref.alias})
 
 
@@ -243,12 +227,8 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         if column in _OUTPUT_ALIASES.get() and (
             not qualifier or (len(qualifier) == 1 and qualifier[0] in _DERIVED.get())
         ):
-            names[-1] = _quoted(column)
+            names[-1] = quote_identifier(column)
         return ".".join(names)
-    if isinstance(expr, SqlStar):
-        if expr.qualifier:
-            return f"{_quote_ident(expr.qualifier)}.*"
-        return "*"
     if isinstance(expr, SqlParameter):
         return "?"
     if isinstance(expr, SqlLiteral):
@@ -405,22 +385,6 @@ def _render_table_ref(table: SqlTableRef | SqlTableFunction) -> str:
     return rendered
 
 
-def _select_without_ctes(query: SqlSelect) -> SqlSelect:
-    return SqlSelect(
-        select=query.select,
-        from_table=query.from_table,
-        joins=query.joins,
-        where=query.where,
-        group_by=query.group_by,
-        having=query.having,
-        qualify=query.qualify,
-        order_by=query.order_by,
-        limit=query.limit,
-        ctes=[],
-        distinct=getattr(query, "distinct", False),
-    )
-
-
 def _flatten_ctes(query: SqlSelect) -> SqlSelect:
     def _walk_query(node: SqlQuery) -> tuple[SqlQuery, list[SqlCte]]:
         if isinstance(node, SqlSetQuery):
@@ -441,22 +405,10 @@ def _flatten_ctes(query: SqlSelect) -> SqlSelect:
             cte_query, nested = _walk_query(cte.query)
             hoisted.extend(nested)
             hoisted.append(SqlCte(name=cte.name, query=cte_query))
-        return _select_without_ctes(node), hoisted
+        return replace(node, ctes=[]), hoisted
 
     root, ctes = _walk_select(query)
-    return SqlSelect(
-        select=root.select,
-        from_table=root.from_table,
-        joins=root.joins,
-        where=root.where,
-        group_by=root.group_by,
-        having=root.having,
-        qualify=root.qualify,
-        order_by=root.order_by,
-        limit=root.limit,
-        ctes=ctes,
-        distinct=getattr(root, "distinct", False),
-    )
+    return replace(root, ctes=ctes)
 
 
 def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:

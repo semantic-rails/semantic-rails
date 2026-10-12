@@ -29,20 +29,6 @@ from ..time_reference import time_policy_context
 from ._protocol import IntentPattern
 
 
-def _is_implicit_active_threshold(threshold: tuple[str, Any], target_terms: list[str]) -> bool:
-    """Return True when the threshold is the ``("gt", 0)`` fallback that
-    ``_threshold_from_text`` emits for the words "active" / "activity",
-    AND the resolved target measure already encodes that activeness
-    (e.g. ``active_menu_count_eop``). In that case the "threshold" is
-    really part of the measure name, not a qualification clause.
-    """
-
-    op, value = threshold
-    if op != "gt" or value != 0:
-        return False
-    return "active" in target_terms
-
-
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
     shift_grain = _period_shift_grain(text)
     if not shift_grain:
@@ -59,7 +45,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # ``active_menu_count_eop`` that's the measure name, not a
     # qualification threshold, so the period-shift pattern still applies.
     threshold = _threshold_from_text(text)
-    if threshold is not None and not _is_implicit_active_threshold(threshold, target_terms):
+    if threshold is not None and not (threshold == ("gt", 0) and "active" in target_terms):
         return None
     measure = _preferred_measure(runtime._config, target_terms, _tokens(_target_focus_text(text)))
     if measure is None or not measure.default_temporal_role:

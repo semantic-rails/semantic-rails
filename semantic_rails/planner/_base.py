@@ -8,7 +8,7 @@ need from this module and its siblings (``time_phrases``, ``time_windows``,
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -51,31 +51,22 @@ class RuntimeCompositionDraft:
     score: float = 1.0
 
 
+# Words read as another word; a word not listed reads as itself.
 _TERM_SYNONYMS = {
     "geography": "geo",
     "geographic": "geo",
     "region": "geo",
     "regions": "geo",
-    "customer": "customer",
     "customers": "customer",
-    "store": "store",
     "stores": "store",
-    "order": "order",
     "orders": "order",
     "purchase": "order",
     "purchases": "order",
     "ordered": "order",
-    "session": "session",
     "sessions": "session",
-    "signup": "signup",
     "signups": "signup",
-    "adoption": "adoption",
     "activation": "adoption",
-    "funnel": "funnel",
     "funnels": "funnel",
-    "menu": "menu",
-    "inventory": "inventory",
-    "snapshot": "snapshot",
     "snapshots": "snapshot",
     "sent": "received",
     "send": "received",
@@ -114,10 +105,7 @@ _NUMBER_WORDS = {
 @lru_cache(maxsize=8192)
 def _cached_tokens(text: str) -> tuple[str, ...]:
     raw = "".join(ch.lower() if ch.isalnum() else " " for ch in str(text or ""))
-    out: list[str] = []
-    for token in raw.split():
-        out.append(_TERM_SYNONYMS.get(token, token))
-    return tuple(out)
+    return tuple(_TERM_SYNONYMS.get(token, token) for token in raw.split())
 
 
 def _tokens(text: str) -> tuple[str, ...]:
@@ -171,9 +159,10 @@ def _best(
     rows: Iterable[Any],
     terms: Iterable[str],
     *,
-    require_all: bool = False,
     exclude: Iterable[str] = (),
+    bonus: Callable[[Any], int] | None = None,
 ) -> Any | None:
+    """The row the terms score highest (``bonus`` adds to a matching row), ties by label, id."""
     term_list = [term for term in terms if term]
     excluded = set(exclude)
     ranked = []
@@ -181,9 +170,8 @@ def _best(
         if getattr(row, "id", "") in excluded:
             continue
         row_score = _score(row, term_list)
-        if require_all and row_score < len(set(term_list)):
-            continue
         if row_score > 0:
+            row_score += bonus(row) if bonus is not None else 0
             ranked.append((row_score, getattr(row, "label", ""), getattr(row, "id", ""), row))
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
     return ranked[0][3] if ranked else None
@@ -234,6 +222,12 @@ def _entity(config: Any, terms: Iterable[str], *, exclude: Iterable[str] = ()) -
     return _best(config.entities, terms, exclude=exclude)
 
 
+def _account_entity(config: Any) -> Any | None:
+    """The account entity, never a parent account."""
+    exclude = [row.id for row in config.entities if "parent" in _object_text(row)]
+    return _entity(config, ["account"], exclude=exclude)
+
+
 def _measure(config: Any, terms: Iterable[str]) -> Any | None:
     return _best(config.measures, terms)
 
@@ -244,6 +238,32 @@ def _metric(config: Any, terms: Iterable[str]) -> Any | None:
 
 def _object_by_id(rows: Iterable[Any], object_id: str) -> Any | None:
     return next((row for row in rows if getattr(row, "id", "") == object_id), None)
+
+
+def _matching(options: list[list[Any]]) -> tuple[list[bool], dict[Any, int]]:
+    """Give each row one of its options, no option twice (augmenting paths): whether each row
+    got one, and the row that holds each option."""
+    owner: dict[Any, int] = {}
+
+    def assign(index: int, seen: set[Any]) -> bool:
+        for option in options[index]:
+            if option not in seen:
+                seen.add(option)
+                if option not in owner or assign(owner[option], seen):
+                    owner[option] = index
+                    return True
+        return False
+
+    return [assign(index, set()) for index in range(len(options))], owner
+
+
+def _grouped_dimensions(config: Any, query: Any) -> list[Any]:
+    """The dimensions a draft groups by, each once, in its order."""
+    return [
+        row
+        for item in dict.fromkeys(query.group_by)
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
 
 
 def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[list[Any], Any]:
@@ -523,16 +543,10 @@ def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
 
 
 def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False) -> Any | None:
-    candidates = []
-    for row in visible_dimensions(config):
-        row_score = _score(row, terms)
-        if row_score <= 0:
-            continue
-        if prefer_parent and "parent" in _object_text(row):
-            row_score += 2
-        candidates.append((row_score, getattr(row, "label", ""), getattr(row, "id", ""), row))
-    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return candidates[0][3] if candidates else None
+    def parent_bonus(row: Any) -> int:
+        return 2 if "parent" in _object_text(row) else 0
+
+    return _best(visible_dimensions(config), terms, bonus=parent_bonus if prefer_parent else None)
 
 
 def _runtime_composition_terms(text: str) -> set[str]:

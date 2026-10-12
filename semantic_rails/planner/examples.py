@@ -3,7 +3,7 @@ whitespace aside)."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from typing import Any
 
 from ..errors import SemanticLayerError
@@ -11,21 +11,11 @@ from ..expressions import collect_object_references
 from ..visible_view import pinned_view
 from ._base import RuntimeCompositionDraft
 from .call import Call
+from .coverage import _strings
 from .intent_ir import IntentIR, ResolvedTerm, compose_hints
 from .plan_query import _merge_partial_query, _trim_why_errors, _validate_query
 from .plan_trace import _slim_best
 from .time_reference import time_policy_context
-
-
-def _strings(node: Any) -> Iterator[str]:
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for value in node.values():
-            yield from _strings(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _strings(value)
 
 
 def _references(query: dict[str, Any]) -> set[str] | None:

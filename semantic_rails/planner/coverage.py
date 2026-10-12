@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from .. import operators
-from ..errors import SemanticLayerError
 from .call import Call, Time
 from .visibility import visible_dimensions, visible_value_domains
 
@@ -109,17 +107,6 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     }
 
 
-def _filter_word(row: Mapping[str, Any]) -> tuple[str, Any]:
-    """A filter's operator word and canonical value; ``("", value)`` for an unreadable op."""
-
-    try:
-        return operators.normalize_condition(
-            row.get("op", "is"), row.get("value"), path="where", internal=True
-        )
-    except SemanticLayerError:
-        return "", row.get("value")
-
-
 def _engine_query(runtime: Any, query: Call) -> dict[str, Any]:
     """The draft in the engine's own form, for the binder and catalog reads."""
     from .time_reference import time_policy_context  # noqa: WPS433
@@ -206,6 +193,18 @@ def _expression_nodes(query: Call):
         yield from _dict_nodes(item.expression)
 
 
+def _strings(node: Any) -> Iterator[str]:
+    """Every string in a nested dict/list payload."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+
+
 def _dict_nodes(value: Any):
     if isinstance(value, dict):
         yield value
@@ -218,18 +217,9 @@ def _dict_nodes(value: Any):
 
 
 def _query_contains_prior_period(runtime: Any, query: Call) -> bool:
-    from ..expressions import PriorPeriodExpr  # local import keeps planner startup light
-
-    if any(
+    return any(
         str(node.get("kind", "") or "").casefold() == "prior_period"
         for node in _expression_nodes(query)
-    ):
-        return True
-    metric_ids = {ref for item in query.select for ref in item.references()}
-    return any(
-        str(getattr(recipe, "id", "") or "") in metric_ids
-        and isinstance(getattr(recipe, "expression", None), PriorPeriodExpr)
-        for recipe in getattr(runtime._config, "metric_recipes", []) or []
     )
 
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict
 from typing import Any
 
@@ -52,12 +52,9 @@ from .expressions import (
     CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
-    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -79,7 +76,6 @@ from .metadata_parts.object_metadata import (
     _comparison_metadata,
     _example_test_metadata,
     _operational_metadata,
-    _public_object_type,
     _review_metadata,
     _time_contract_metadata,
 )
@@ -107,7 +103,7 @@ from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
-from .segments import build_segment_query, normalize_segment
+from .segments import _config_maps, build_segment_query, normalize_segment
 from .temporal_support import require_temporal_support, validate_temporal_support
 from .visible_view import base_of
 
@@ -124,24 +120,8 @@ def _query_state(query: dict[str, Any], config: PackageConfig) -> dict[str, Any]
     return state
 
 
-def _config_maps(config: PackageConfig) -> dict[str, dict[str, Any]]:
-    return {
-        "entities": {row.id: row for row in config.entities},
-        "dimensions": {row.id: row for row in config.dimensions},
-        "temporal_roles": {row.id: row for row in config.temporal_roles},
-        "measures": {row.id: row for row in config.measures},
-        "metric_recipes": {row.id: row for row in config.metric_recipes},
-        "segments": {row.id: row for row in config.segments},
-        "value_domains": {row.id: row for row in config.value_domains},
-    }
-
-
-def _relationship_index(config: PackageConfig) -> dict[str, Any]:
-    return {row.id: row for row in config.relationships}
-
-
 def _relationship_card_payload(config: PackageConfig, relationship_id: str) -> dict[str, Any]:
-    relationships = _relationship_index(config)
+    relationships = {row.id: row for row in config.relationships}
     rel = relationships.get(relationship_id)
     if rel is None:
         raise SemanticLayerError(
@@ -195,14 +175,8 @@ def _compatible_temporal_roles_for_expr(config: PackageConfig, expr: SemanticExp
         return _compatible_temporal_roles_for_expr(config, expr.input)
     if isinstance(expr, DistributionExpr):
         return _compatible_temporal_roles_for_expr(config, expr.over)
-    if isinstance(expr, BooleanExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         current: set[str] = set()
-        for index, arg in enumerate(expr.args):
-            roles = set(_compatible_temporal_roles_for_expr(config, arg))
-            current = roles if index == 0 else current & roles
-        return sorted(current)
-    if isinstance(expr, CallExpr):
-        current = set()
         for index, arg in enumerate(expr.args):
             roles = set(_compatible_temporal_roles_for_expr(config, arg))
             current = roles if index == 0 else current & roles
@@ -221,7 +195,7 @@ def _compatible_temporal_roles_for_expr(config: PackageConfig, expr: SemanticExp
         for row in role_sets[1:]:
             current &= row
         return sorted(current)
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return _compatible_temporal_roles_for_expr(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return []
@@ -242,9 +216,7 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         if expr.metric_recipe not in recipes:
             raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric '{expr.metric_recipe}'")
         return _first_root_entity(config, recipes[expr.metric_recipe].expression)
-    if isinstance(expr, ArithmeticExpr):
-        return _first_root_entity(config, expr.left)
-    if isinstance(expr, ComparisonExpr):
+    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _first_root_entity(config, expr.left)
     if isinstance(expr, RatioExpr):
         return _first_root_entity(config, expr.numerator)
@@ -252,13 +224,7 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         return _first_root_entity(config, expr.input)
     if isinstance(expr, DistributionExpr):
         return _first_root_entity(config, expr.over)
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            entity = _first_root_entity(config, arg)
-            if entity:
-                return entity
-        return ""
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             entity = _first_root_entity(config, arg)
             if entity:
@@ -273,14 +239,12 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
             if entity:
                 return entity
         return _first_root_entity(config, expr.else_expr) if expr.else_expr is not None else ""
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return _first_root_entity(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return expr.entity
     if isinstance(expr, ConversionExpr):
         return expr.entity or _first_root_entity(config, expr.base)
-    if isinstance(expr, LiteralExpr):
-        return ""
     return ""
 
 
@@ -342,10 +306,6 @@ def _expr_summary(config: PackageConfig, expr: SemanticExpr) -> str:
         # (The ruff/mypy pass on mainline landed a parallel fix using
         # bare attribute access; this defensive form supersedes it.)
         return f"rolling {expr.value or ''}-{expr.unit or ''} {_expr_summary(config, expr.input)}"
-    if isinstance(expr, PriorPeriodExpr):
-        return f"prior-period {_expr_summary(config, expr.input)}"
-    if isinstance(expr, PeriodToDateExpr):
-        return f"{expr.period} to date {_expr_summary(config, expr.input)}"
     if isinstance(expr, MetricPredicateExpr):
         scope = {"contextual": "contextual", "entity_period": "per period"}.get(
             expr.scope_mode, "entity-only"
@@ -482,7 +442,7 @@ def _compact_summary_from_card(
 ) -> dict[str, Any]:
     row = {
         "id": card.get("id", ""),
-        "object_type": _public_object_type(str(card.get("kind", ""))),
+        "object_type": str(card.get("kind", "")),
         "kind": card.get("kind", ""),
         "name": card.get("name", ""),
         "label": card.get("label", ""),
@@ -718,22 +678,16 @@ def _predicate_exprs_from_expr(
             *_predicate_exprs_from_expr(config, expr.left, seen_metric_ids=seen_metric_ids),
             *_predicate_exprs_from_expr(config, expr.right, seen_metric_ids=seen_metric_ids),
         ]
-    if isinstance(expr, BooleanExpr):
-        predicates: list[MetricPredicateExpr] = []
-        for arg in expr.args:
-            predicates.extend(
-                _predicate_exprs_from_expr(config, arg, seen_metric_ids=seen_metric_ids)
+    if isinstance(expr, (BooleanExpr, CallExpr)):
+        return [
+            predicate
+            for arg in expr.args
+            for predicate in _predicate_exprs_from_expr(
+                config, arg, seen_metric_ids=seen_metric_ids
             )
-        return predicates
-    if isinstance(expr, CallExpr):
-        predicates = []
-        for arg in expr.args:
-            predicates.extend(
-                _predicate_exprs_from_expr(config, arg, seen_metric_ids=seen_metric_ids)
-            )
-        return predicates
+        ]
     if isinstance(expr, CaseExpr):
-        predicates = []
+        predicates: list[MetricPredicateExpr] = []
         for item in expr.whens:
             predicates.extend(
                 _predicate_exprs_from_expr(config, item.when, seen_metric_ids=seen_metric_ids)
@@ -746,7 +700,7 @@ def _predicate_exprs_from_expr(
                 _predicate_exprs_from_expr(config, expr.else_expr, seen_metric_ids=seen_metric_ids)
             )
         return predicates
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return _predicate_exprs_from_expr(config, expr.input, seen_metric_ids=seen_metric_ids)
     if isinstance(expr, ConversionExpr):
         return [
@@ -870,7 +824,7 @@ def _object_card(
     payload.update(_metric_object_payload(config, object_id, obj.kind))
     base = {
         "id": obj.id,
-        "object_type": _public_object_type(obj.kind),
+        "object_type": obj.kind,
         "kind": obj.kind,
         "name": payload.get("name", obj.canonical_name),
         "label": payload.get("label", obj.display_name),
@@ -1067,17 +1021,12 @@ def _summary_row(
     # default) the catalog is for browsing — agents should
     # ``inspect`` an id to get the payload, not pull every measure's
     # payload in one shot.
-    if obj["kind"] == "measure" and verbosity == "full":
-        row["payload"] = payload
-        row["operational"] = dict(card.get("operational", {}) or {})
     if obj["kind"] == "metric":
         row["executable"] = payload.get("executable", True)
         row["unsupported_reason"] = payload.get("unsupported_reason", "")
-        if verbosity == "full":
-            row["payload"] = payload
-            row["operational"] = dict(card.get("operational", {}) or {})
-    if obj["kind"] == "segment" and verbosity == "full":
+    if obj["kind"] in {"measure", "metric"} and verbosity == "full":
         row["payload"] = payload
+        row["operational"] = dict(card.get("operational", {}) or {})
     if obj["kind"] == "temporal_role":
         # Surface temporal_class so agents and discovery surfaces can
         # reason about role semantics (event_time, calendar_time,
@@ -1134,16 +1083,6 @@ def catalog_payload(
 ) -> dict[str, Any]:
     catalog = runtime.catalog()
     supported_capabilities, unsupported_capabilities = _capability_payload(runtime._config)
-    grouped: dict[str, Any] = {
-        "entities": [],
-        "dimensions": [],
-        "measures": [],
-        "segments": [],
-        "temporal_roles": [],
-        "relationships": [],
-        "value_domains": [],
-        "metrics": [],
-    }
     kind_map = {
         "entity": "entities",
         "dimension": "dimensions",
@@ -1154,6 +1093,7 @@ def catalog_payload(
         "value_domain": "value_domains",
         "metric": "metrics",
     }
+    grouped: dict[str, Any] = {bucket: [] for bucket in kind_map.values()}
     aliases: dict[str, list[str]] = {}
     alias_index: dict[str, list[str]] = {}
     search_norm = normalize_search_value(search)
@@ -1181,8 +1121,6 @@ def catalog_payload(
         bucket = kind_map.get(str(row["kind"]))
         if not bucket:
             continue
-        if view == "summary" and verbosity != "full":
-            row = dict(row)
         grouped[bucket].append(row)
         aliases[row["id"]] = list(row.get("aliases", []) or [])
         for alias in [
@@ -1814,6 +1752,17 @@ def _dimension_builder_score(
     return score, list(dict.fromkeys(reasons))
 
 
+_DISCOVER_BUCKETS = (
+    "measures",
+    "metrics",
+    "segments",
+    "dimensions",
+    "dimension_values",
+    "entities",
+    "blocked",
+)
+
+
 @runtime_request_scope
 def discover_payload(
     runtime: Runtime,
@@ -1846,8 +1795,9 @@ def discover_payload(
     # Internal guided flows leave ``enforce_scope=False`` so builder and
     # planner candidate generation can keep working with partial context.
     if enforce_scope and str(terms or "").strip():
-        classification = classify_question(str(terms))
-        if classification.category != "data_query":
+
+        def gated(key: str, block: dict[str, Any]) -> dict[str, Any]:
+            """The empty answer to a question the gate stops, with the gate's block."""
             return {
                 "terms": terms,
                 "stage": stage,
@@ -1858,40 +1808,21 @@ def discover_payload(
                     "selected_measure_ids": [],
                     "selected_metric_recipe_ids": [],
                 },
-                "measures": [],
-                "metrics": [],
-                "segments": [],
-                "dimensions": [],
-                "dimension_values": [],
-                "entities": [],
-                "blocked": [],
-                "out_of_scope": _scope_block_payload(str(terms), classification),
+                **{bucket: [] for bucket in _DISCOVER_BUCKETS},
+                key: block,
             }
+
+        classification = classify_question(str(terms))
+        if classification.category != "data_query":
+            return gated("out_of_scope", _scope_block_payload(str(terms), classification))
         catalog_tokens = _catalog_token_index(config, search_index=search_index)
         passes, overlap = _intent_passes_relevance_floor(str(terms), catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]
-            return {
-                "terms": terms,
-                "stage": stage,
-                "verbosity": verbosity,
-                "query_state": _query_state(partial_query, runtime._config),
-                "selection_context": {
-                    "root_entity": "",
-                    "selected_measure_ids": [],
-                    "selected_metric_recipe_ids": [],
-                },
-                "measures": [],
-                "metrics": [],
-                "segments": [],
-                "dimensions": [],
-                "dimension_values": [],
-                "entities": [],
-                "blocked": [],
-                "low_relevance": _low_relevance_block(
-                    str(terms), overlap_tokens=overlap, catalog_token_sample=sample
-                ),
-            }
+            block = _low_relevance_block(
+                str(terms), overlap_tokens=overlap, catalog_token_sample=sample
+            )
+            return gated("low_relevance", block)
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
     stage = _infer_stage(partial_query, stage, terms)
@@ -2264,17 +2195,9 @@ def discover_payload(
                     if _is_real_match(row_proxy):
                         per_token_dimval_scores[tok][row["id"]] = (score, reasons)
             # Intersect the per-token matcher sets.
-            shared_ids = (
-                set.intersection(*(set(per_token_scores[tok].keys()) for tok in unique_tokens))
-                if unique_tokens
-                else set()
-            )
-            shared_dimval_ids = (
-                set.intersection(
-                    *(set(per_token_dimval_scores[tok].keys()) for tok in unique_tokens)
-                )
-                if unique_tokens
-                else set()
+            shared_ids = set.intersection(*(set(per_token_scores[tok]) for tok in unique_tokens))
+            shared_dimval_ids = set.intersection(
+                *(set(per_token_dimval_scores[tok]) for tok in unique_tokens)
             )
             if shared_ids or shared_dimval_ids:
                 fallback_token_match_reason = (
@@ -2388,7 +2311,6 @@ def discover_payload(
     # this deliberately with terms="").
     if not str(terms or "").strip():
         payload["warnings"] = [
-            *list(payload.get("warnings", []) or []),
             {
                 "code": "DISCOVER_NO_TERMS",
                 "message": (
@@ -2403,11 +2325,7 @@ def discover_payload(
                 ),
             },
         ]
-    if verbosity == "full":
-        return payload
-    if verbosity == "minimal":
-        return _slim_discover_minimal(payload)
-    return payload
+    return _slim_discover_minimal(payload) if verbosity == "minimal" else payload
 
 
 _MINIMAL_DISCOVER_RECORD_KEYS = (
@@ -2658,44 +2576,36 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
 
-    valid_dimensions: list[dict[str, Any]] = []
-    disabled_dimensions: list[dict[str, Any]] = []
-    for dim in config.dimensions:
-        availability = _path_availability(config, root_entity, dim.entity)
-        row = {**asdict(dim), **availability}
-        (valid_dimensions if availability["available"] else disabled_dimensions).append(row)
+    def partition(
+        rows: Iterable[Any], entity_of: Callable[[Any], str | None]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Each row with its path availability from the root, split into valid and disabled."""
+        valid: list[dict[str, Any]] = []
+        disabled: list[dict[str, Any]] = []
+        for item in rows:
+            entity = entity_of(item)
+            availability = (
+                _path_availability(config, root_entity, entity)
+                if entity is not None
+                else {
+                    "available": False,
+                    "reason": "temporal role does not have a queryable backing dimension",
+                    "path": [],
+                    "candidates": [],
+                }
+            )
+            row = {**asdict(item), **availability}
+            (valid if availability["available"] else disabled).append(row)
+        return valid, disabled
 
-    valid_temporal_roles: list[dict[str, Any]] = []
-    disabled_temporal_roles: list[dict[str, Any]] = []
-    for role in config.temporal_roles:
+    def role_entity(role: Any) -> str | None:
         dim = next((d for d in config.dimensions if d.id == role.dimension), None)
-        if dim is None:
-            row = {
-                **asdict(role),
-                "available": False,
-                "reason": "temporal role does not have a queryable backing dimension",
-                "path": [],
-                "candidates": [],
-            }
-            disabled_temporal_roles.append(row)
-            continue
-        availability = _path_availability(config, root_entity, dim.entity)
-        row = {**asdict(role), **availability}
-        (valid_temporal_roles if availability["available"] else disabled_temporal_roles).append(row)
+        return dim.entity if dim is not None else None
 
-    valid_measures: list[dict[str, Any]] = []
-    disabled_measures: list[dict[str, Any]] = []
-    for measure in config.measures:
-        availability = _path_availability(config, root_entity, measure.entity)
-        row = {**asdict(measure), **availability}
-        (valid_measures if availability["available"] else disabled_measures).append(row)
-
-    valid_entities: list[dict[str, Any]] = []
-    disabled_entities: list[dict[str, Any]] = []
-    for entity in config.entities:
-        availability = _path_availability(config, root_entity, entity.id)
-        row = {**asdict(entity), **availability}
-        (valid_entities if availability["available"] else disabled_entities).append(row)
+    valid_dimensions, disabled_dimensions = partition(config.dimensions, lambda row: row.entity)
+    valid_temporal_roles, disabled_temporal_roles = partition(config.temporal_roles, role_entity)
+    valid_measures, disabled_measures = partition(config.measures, lambda row: row.entity)
+    valid_entities, disabled_entities = partition(config.entities, lambda row: row.id)
 
     valid_metric_constructs = [
         {"kind": "aggregate", "available": True, "reason": ""},
@@ -3284,66 +3194,26 @@ def _metric_min_window_unit(expression: Any) -> str:
     day grain raises REWRITE_NOT_SUPPORTED."""
     if expression is None:
         return ""
-    if isinstance(expression, dict):
-        units: list[str] = []
-        for key in ("offset", "window"):
-            spec = expression.get(key)
-            if isinstance(spec, dict):
-                unit = str(spec.get("unit", "")).strip().lower()
-                if unit:
-                    units.append(unit)
-        for child_key in (
-            "input",
-            "left",
-            "right",
-            "numerator",
-            "denominator",
-            "base",
-            "converted",
-        ):
-            units.append(_metric_min_window_unit(expression.get(child_key)))
-        for arg in expression.get("args", []) or []:
-            units.append(_metric_min_window_unit(arg))
-        order = ["year", "quarter", "month", "week", "day"]
-        coarsest = ""
-        for unit in units:
-            if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
-                coarsest = unit
-        return coarsest
-    # carry `.unit` directly; ``RollingExpr`` also carries `.unit` and
-    # `.value` directly (no `.window` attribute exists on the
-    # dataclass — see ``semantic_rails/expressions.py:RollingExpr``).
-    # The ``window`` branch below only fires for IR payloads that
-    # still carry a raw dict (``offset`` and ``window`` map keys on
-    # parsed but un-typed expressions).
     units = []
     direct_unit = getattr(expression, "unit", "")
     if isinstance(direct_unit, str) and direct_unit:
         units.append(direct_unit.lower())
     for attr in ("offset", "window"):
-        if hasattr(expression, attr):
-            spec = getattr(expression, attr)
-            if isinstance(spec, dict):
-                unit = str(spec.get("unit", "")).strip().lower()
-                if unit:
-                    units.append(unit)
+        spec = getattr(expression, attr, None)
+        if isinstance(spec, dict):
+            unit = str(spec.get("unit", "")).strip().lower()
+            if unit:
+                units.append(unit)
     for attr in ("input", "left", "right", "numerator", "denominator", "base", "converted"):
         if hasattr(expression, attr):
             units.append(_metric_min_window_unit(getattr(expression, attr)))
-    if hasattr(expression, "args"):
-        for arg in expression.args or []:
-            units.append(_metric_min_window_unit(arg))
+    for arg in getattr(expression, "args", None) or []:
+        units.append(_metric_min_window_unit(arg))
     order = ["year", "quarter", "month", "week", "day"]
-    coarsest = ""
-    for unit in units:
-        if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
-            coarsest = unit
-    return coarsest
+    return min((unit for unit in units if unit in order), key=order.index, default="")
 
 
 def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
-    from .temporal_support import require_temporal_support
-
     require_temporal_support(runtime._config)
     role_id = str(recipe.temporal_role or "").strip()
     if not role_id:

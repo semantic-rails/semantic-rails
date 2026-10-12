@@ -32,8 +32,6 @@ from .expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -329,34 +327,6 @@ class PartialQueryState:
     time: TimeSpec | None = None
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "version": self.version,
-            "select": [
-                {
-                    "expression": expr_to_dict(item.expression)
-                    if item.expression is not None
-                    else {},
-                    "as": item.as_,
-                }
-                for item in self.select
-            ],
-            "group_by": list(self.group_by),
-            "where": [asdict(item) for item in self.where],
-            "metric_filters": [
-                {
-                    "expression": expr_to_dict(item.expression)
-                    if item.expression is not None
-                    else {},
-                    "op": item.op,
-                    "value": item.value,
-                }
-                for item in self.metric_filters
-            ],
-            "time": asdict(self.time) if self.time else None,
-            "temporal_role_overrides": dict(self.temporal_role_overrides),
-        }
-
 
 def _validate_query_expr(expr: SemanticExpr) -> None:
     if isinstance(
@@ -367,9 +337,6 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         _validate_query_expr(expr.numerator)
         _validate_query_expr(expr.denominator)
         return
-    if isinstance(expr, EntityValueExpr):
-        _validate_query_expr(expr.input)
-        return
     if isinstance(expr, DistributionExpr):
         _validate_query_expr(expr.over)
         return
@@ -377,11 +344,7 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         _validate_query_expr(expr.left)
         _validate_query_expr(expr.right)
         return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _validate_query_expr(arg)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _validate_query_expr(arg)
         return
@@ -397,15 +360,12 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             ShareExpr,
+            EntityValueExpr,
+            MetricPredicateExpr,
         ),
     ):
-        _validate_query_expr(expr.input)
-        return
-    if isinstance(expr, MetricPredicateExpr):
         _validate_query_expr(expr.input)
         return
     if isinstance(expr, ConversionExpr):

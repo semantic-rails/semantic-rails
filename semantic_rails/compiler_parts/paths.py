@@ -23,8 +23,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -33,6 +31,7 @@ from ..expressions import (
     expr_kind,
 )
 from ..fanout import (
+    analyze_fanout,
     enters_validity_window,
     record_route_choice,
     resolve_path,
@@ -52,23 +51,53 @@ from ..sql_ast import (
     SqlTableRef,
     build_filter_condition,
 )
-from .dependencies import record_bound_object
+from .dependencies import holding, record_bound_object
 from .indexes import (
     _default_temporal_role,
     _dimension_index,
     _entity_index,
     _measure_index,
-    _recipe_index,
+    _recipe_or_raise,
     _relationship_index,
     _temporal_role_index,
     get_package_analysis,
     rollup_dimension_entities,
 )
-from .temporal import _allows_coarse_snapshot_alignment, _validate_leaf_window_clock
+from .temporal import (
+    _allows_coarse_snapshot_alignment,
+    _time_bound_relationship_ids,
+    _validate_leaf_window_clock,
+)
 
 
 def _column_ref(table: str, column: str) -> SqlIdentifier:
     return SqlIdentifier(parts=[*str(table).split("."), column])
+
+
+def _path_selection(
+    *,
+    config: PackageConfig,
+    query: NormalizedQuery,
+    start_entity: str,
+    target_entity: str,
+    purpose: str,
+) -> PathSelection | None:
+    if target_entity == start_entity:
+        return None
+    chosen, candidates = resolve_path(config, start=start_entity, target=target_entity)
+    analysis = analyze_fanout(
+        config,
+        start_entity,
+        chosen,
+        time_bound_relationships=_time_bound_relationship_ids(query, config),
+    )
+    return PathSelection(
+        target_entity=target_entity,
+        purpose=purpose,
+        chosen_path=list(chosen),
+        candidate_paths=[list(path) for path in candidates],
+        analysis=analysis,
+    )
 
 
 def _split_column_ref(value: str) -> tuple[str, str]:
@@ -317,19 +346,13 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
             raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{expr.measure}'")
         return measure.entity
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _expression_root_entity(recipe.expression, config)
     if isinstance(
         expr,
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,
@@ -545,11 +568,8 @@ def inner_lookups() -> Iterator[None]:
     """Join every lookup INNER while a metric predicate's own query or a distribution's
     per-entity values lower: each holds the entities that have rows, never a NULL key for rows
     that have none."""
-    token = _inner_lookups.set(True)
-    try:
+    with holding(_inner_lookups, True):
         yield
-    finally:
-        _inner_lookups.reset(token)
 
 
 def rollup_held_lookups(
@@ -724,20 +744,17 @@ def _joins_for_paths(
     return joins
 
 
-def _join_condition(
-    keys: list[str], left_alias: str, right_alias: str, *, dialect: Any | None = None
-) -> Any:
+def _join_condition(keys: list[str], left_alias: str, right_alias: str, *, dialect: Any) -> Any:
     if not keys:
         return SqlLiteral(True)
-    active_dialect = dialect or dialect_for_warehouse("")
-    current: Any = active_dialect.null_safe_eq(
+    current: Any = dialect.null_safe_eq(
         SqlIdentifier(parts=[left_alias, keys[0]]), SqlIdentifier(parts=[right_alias, keys[0]])
     )
     for key in keys[1:]:
         current = SqlBinary(
             current,
             "AND",
-            active_dialect.null_safe_eq(
+            dialect.null_safe_eq(
                 SqlIdentifier(parts=[left_alias, key]), SqlIdentifier(parts=[right_alias, key])
             ),
         )

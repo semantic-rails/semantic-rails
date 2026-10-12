@@ -104,18 +104,12 @@ def _select_key(config: Any, item: Select) -> str:
     return json.dumps(expression, sort_keys=True, default=str)
 
 
-def _append_unique_dicts(
-    existing: list[dict[str, Any]], additions: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    out = list(existing)
-    seen = {json.dumps(row, sort_keys=True, default=str) for row in out}
-    for row in additions:
-        key = json.dumps(row, sort_keys=True, default=str)
-        if key in seen:
-            continue
-        out.append(row)
-        seen.add(key)
-    return out
+def _unique_dicts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each row once, by content, in first-seen order."""
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        unique.setdefault(json.dumps(row, sort_keys=True, default=str), row)
+    return list(unique.values())
 
 
 def _validate_query(runtime: Any, query: Call, partial_query: Call | None = None) -> dict[str, Any]:
@@ -129,15 +123,13 @@ def _validate_query(runtime: Any, query: Call, partial_query: Call | None = None
     rendered as an error so the agent still gets a structured signal.
     """
 
-    # Cheap structural pre-check — skip the full validate (which
-    # compiles the call) when the draft is obviously malformed.
-    structural = _structural_precheck(query)
-    if structural is not None:
-        return {
-            "ok": False,
-            "errors": [structural],
-            "recovery_hints": [],
+    # A draft that selects nothing is malformed: skip the full validate, which compiles it.
+    if not query.select:
+        error = {
+            "code": "STRUCTURAL_EMPTY_SELECT",
+            "message": "Pattern emitted a draft with no select columns.",
         }
+        return {"ok": False, "errors": [error], "recovery_hints": []}
 
     context = dict(time_policy_context() or {})
     now = context.pop("now", None)
@@ -161,20 +153,6 @@ def _validate_query(runtime: Any, query: Call, partial_query: Call | None = None
         "warnings": list(report.get("warnings") or []),
         "recovery_hints": list(report.get("recovery_hints") or []),
     }
-
-
-def _structural_precheck(query: Call) -> dict[str, Any] | None:
-    """Return a structured error if the draft is obviously bad: it selects nothing.
-
-    Returning ``None`` means the call is plausible and the full validator should run.
-    """
-
-    if not query.select:
-        return {
-            "code": "STRUCTURAL_EMPTY_SELECT",
-            "message": "Pattern emitted a draft with no select columns.",
-        }
-    return None
 
 
 # Maximum number of validation errors surfaced inline under ``why``.

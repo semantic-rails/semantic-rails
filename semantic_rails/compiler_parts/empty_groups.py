@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -50,9 +50,10 @@ from ..sql_ast import (
     SqlSelect,
     SqlTableRef,
     SqlWindow,
+    sql_nodes,
 )
 from .bind import _parse_public_expr, earlier_settlement_applies, is_conditional_case
-from .dependencies import plan_is_root
+from .dependencies import holding, plan_is_root
 from .indexes import _measure_index, _recipe_index
 from .temporal import _source_filter_refusals
 
@@ -184,11 +185,8 @@ _leaf_scopes: ContextVar[dict[str, LeafScope] | None] = ContextVar("leaf_scopes"
 @contextmanager
 def recording_leaf_scopes() -> Iterator[dict[str, LeafScope]]:
     scopes: dict[str, LeafScope] = {}
-    token = _leaf_scopes.set(scopes)
-    try:
+    with holding(_leaf_scopes, scopes):
         yield scopes
-    finally:
-        _leaf_scopes.reset(token)
 
 
 def record_leaf_scope(alias: str, scope: LeafScope) -> None:
@@ -221,11 +219,8 @@ _dataset_observation: ContextVar[bool] = ContextVar("dataset_observation", defau
 @contextmanager
 def observing(query: Mapping[str, Any], config: PackageConfig) -> Iterator[None]:
     """While the request's own query lowers, its guard judges observation as it says."""
-    token = _dataset_observation.set(observed_outside_filters(query, config))
-    try:
+    with holding(_dataset_observation, observed_outside_filters(query, config)):
         yield
-    finally:
-        _dataset_observation.reset(token)
 
 
 def observes_dataset() -> bool:
@@ -481,11 +476,8 @@ _coverage_clock: ContextVar[CoverageClock | None] = ContextVar("coverage_clock",
 def capping_at(now: datetime) -> Iterator[CoverageClock]:
     """While a request lowers, its coverage counts rows at or before its ``now``."""
     clock = CoverageClock(now)
-    token = _coverage_clock.set(clock)
-    try:
+    with holding(_coverage_clock, clock):
         yield clock
-    finally:
-        _coverage_clock.reset(token)
 
 
 def _now_literal(dialect: Any) -> Any:
@@ -569,17 +561,6 @@ def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:
     )
 
 
-def sql_nodes(node: Any) -> Iterator[Any]:
-    """Every node of a SQL AST, found generically so no node type can hide a read."""
-    if isinstance(node, list | tuple):
-        for item in node:
-            yield from sql_nodes(item)
-    elif is_dataclass(node) and not isinstance(node, type):
-        yield node
-        for item in fields(node):
-            yield from sql_nodes(getattr(node, item.name))
-
-
 def base_reads(expr: Any) -> set[str]:
     """The aliases an output expression reads from ``base``."""
     return {
@@ -598,11 +579,8 @@ def recording_balance_edges() -> Iterator[dict[str, Any]]:
     read only to say where the balance's data ends (``NO_DATA_YET``). A balance reads NULL
     in a period without a snapshot either way, so its coverage never changes a value."""
     edges: dict[str, Any] = {"ctes": {}, "leaves": {}, "outputs": []}
-    token = _balance_edges.set(edges)
-    try:
+    with holding(_balance_edges, edges):
         yield edges
-    finally:
-        _balance_edges.reset(token)
 
 
 def record_balance_scope(alias: str, scope: LeafScope, dialect: Any) -> None:
@@ -638,11 +616,8 @@ _zero_outputs: ContextVar[list[dict[str, Any]] | None] = ContextVar("zero_output
 def recording_zero_outputs() -> Iterator[list[dict[str, Any]]]:
     """Record guarded outputs, including nested compiles, for runtime scope warnings."""
     outputs: list[dict[str, Any]] = []
-    token = _zero_outputs.set(outputs)
-    try:
+    with holding(_zero_outputs, outputs):
         yield outputs
-    finally:
-        _zero_outputs.reset(token)
 
 
 def record_zero_output(output: str, measure_ids: Iterable[str]) -> None:

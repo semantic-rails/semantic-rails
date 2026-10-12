@@ -22,6 +22,7 @@ from .coverage import (
     _projected_subject_ids,
     _query_contains_prior_period,
     _referenced_ids,
+    _strings,
     _time_block,
 )
 from .time_phrases import _BOUNDARY_BEFORE_RE, _FISCAL_RE, _QUANTITY_AFTER_RE
@@ -328,16 +329,6 @@ def _reached_entities(config: Any, query: Call) -> set[str]:
     for measure_id in ids & set(measures):
         reached |= _reachable_entities(config, measures[measure_id].entity)
     return reached
-
-
-def _strings(node: Any) -> set[str]:
-    if isinstance(node, str):
-        return {node}
-    if isinstance(node, dict):
-        return set().union(*(_strings(value) for value in node.values()))
-    if isinstance(node, list):
-        return set().union(*(_strings(value) for value in node))
-    return set()
 
 
 def _fiscal_calendar_gaps(config: Any, text: str, query: Call) -> list[CoverageGap]:

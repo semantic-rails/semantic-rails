@@ -18,14 +18,11 @@ from typing import Any
 
 from .. import operators
 from ..clock import Window, resolve_window
+from ..naming import last_token
 from ..query_call import EXPRESSION_KEYS, REFERENCE_PREFIXES, TIME_AXIS, refusal
 
 # The window keys of a time block; ``last`` and ``this`` read relative to ``now``.
 WINDOW_KEYS = ("last", "this", "start", "end")
-
-
-def _last_segment(ref: str) -> str:
-    return str(ref).split(".")[-1]
 
 
 @dataclass(frozen=True)
@@ -61,7 +58,7 @@ class Select:
         return _expression_refs(self.expression)
 
     def to_call(self) -> Any:
-        if isinstance(self.expression, str) and self.alias == _last_segment(self.expression):
+        if isinstance(self.expression, str) and self.alias == last_token(self.expression):
             return self.expression
         return {"expression": _plain(self.expression), "as": self.alias}
 
@@ -276,7 +273,7 @@ class Call:
         select = []
         for index, item in enumerate(raw.get("select") or []):
             if isinstance(item, str):
-                select.append(Select(item.strip(), _last_segment(item.strip())))
+                select.append(Select(item.strip(), last_token(item.strip())))
                 continue
             expression = item.get("expression")
             expression = expression.strip() if isinstance(expression, str) else expression
@@ -317,9 +314,9 @@ class Call:
 
 def _default_alias(expression: Any, index: int) -> str:
     if isinstance(expression, str):
-        return _last_segment(expression)
+        return last_token(expression)
     if isinstance(expression, Mapping) and expression.get("kind") == "measure":
-        return _last_segment(str(expression.get("measure") or ""))
+        return last_token(str(expression.get("measure") or ""))
     return f"expr_{index + 1}"
 
 

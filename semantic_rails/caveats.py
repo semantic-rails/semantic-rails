@@ -8,11 +8,12 @@ which caveats are relevant enough to surface as structured warnings.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 from . import operators
 from .ast import child_groups, every_filter
+from .clock import shift_period
 from .diagnostics import semantic_issue
 from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
@@ -572,23 +573,4 @@ def _shift_iso(value: str, amount: int, unit: str) -> str:
     current = _parse_date(value)
     if current is None or unit not in _VALID_GRAINS:
         return ""
-    if unit == "day":
-        return (current + timedelta(days=amount)).isoformat()
-    if unit == "week":
-        return (current + timedelta(weeks=amount)).isoformat()
-    months = amount
-    if unit == "quarter":
-        months *= 3
-    elif unit == "year":
-        months *= 12
-    total = current.year * 12 + (current.month - 1) + months
-    year = total // 12
-    month = (total % 12) + 1
-    day = min(current.day, _last_day(year, month))
-    return date(year, month, day).isoformat()
-
-
-def _last_day(year: int, month: int) -> int:
-    if month == 12:
-        return 31
-    return (date(year, month + 1, 1) - timedelta(days=1)).day
+    return shift_period(current, unit, amount).isoformat()

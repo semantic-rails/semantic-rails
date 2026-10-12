@@ -32,8 +32,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -59,12 +57,13 @@ from ..sql_ast import (
     build_comparison_condition,
     build_negation,
 )
-from .dependencies import binding_cut, measure_cut_owners, measure_objects
+from .dependencies import binding_cut, holding, measure_cut_owners, measure_objects
 from .indexes import (
     _dimension_index,
     _entity_index,
     _measure_index,
     _recipe_index,
+    _recipe_or_raise,
     _relationship_index,
     _resolve_table_entity,
 )
@@ -106,11 +105,8 @@ def earlier_settlement(enabled: bool = True) -> Iterator[None]:
     does a metric predicate's source over several measures under a threshold that 0 passes
     (``_predicate_ctes_and_join``). It is off by default, and a nested block never turns it
     off."""
-    token = _earlier_settlement.set(enabled or _earlier_settlement.get())
-    try:
+    with holding(_earlier_settlement, enabled or _earlier_settlement.get()):
         yield
-    finally:
-        _earlier_settlement.reset(token)
 
 
 def earlier_settlement_applies() -> bool:
@@ -848,14 +844,10 @@ def _collect_measure_refs(
         out.append(_bind_scoped_aggregate(expr, config, query))
         return
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         _collect_measure_refs(recipe.expression, config, query, out)
         return
-    if isinstance(expr, ArithmeticExpr):
+    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         _collect_measure_refs(expr.left, config, query, out)
         _collect_measure_refs(expr.right, config, query, out)
         return
@@ -863,21 +855,10 @@ def _collect_measure_refs(
         _collect_measure_refs(expr.numerator, config, query, out)
         _collect_measure_refs(expr.denominator, config, query, out)
         return
-    if isinstance(expr, EntityValueExpr):
-        _collect_measure_refs(expr.input, config, query, out)
-        return
     if isinstance(expr, DistributionExpr):
         _collect_measure_refs(expr.over, config, query, out)
         return
-    if isinstance(expr, ComparisonExpr):
-        _collect_measure_refs(expr.left, config, query, out)
-        _collect_measure_refs(expr.right, config, query, out)
-        return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _collect_measure_refs(arg, config, query, out)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _collect_measure_refs(arg, config, query, out)
         return
@@ -889,23 +870,11 @@ def _collect_measure_refs(
             _collect_measure_refs(expr.else_expr, config, query, out)
         return
     if isinstance(
-        expr,
-        (
-            CumulativeExpr,
-            RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
-            OffsetWindowExpr,
-            ShareExpr,
-        ),
+        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
     ):
         _collect_measure_refs(expr.input, config, query, out)
         return
-    if isinstance(expr, MetricPredicateExpr):
-        return
-    if isinstance(expr, ConversionExpr):
-        return
-    if isinstance(expr, (LiteralExpr, ColumnRefExpr)):
+    if isinstance(expr, (MetricPredicateExpr, ConversionExpr, LiteralExpr, ColumnRefExpr)):
         return
     raise SemanticLayerError(
         "INVALID_QUERY", f"Unsupported expression kind '{expr_to_dict(expr)['kind']}'"
@@ -931,17 +900,10 @@ def _collect_conversion_exprs(
         _collect_conversion_exprs(expr.numerator, config, out)
         _collect_conversion_exprs(expr.denominator, config, out)
         return
-    if isinstance(expr, EntityValueExpr):
-        _collect_conversion_exprs(expr.input, config, out)
-        return
     if isinstance(expr, DistributionExpr):
         _collect_conversion_exprs(expr.over, config, out)
         return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _collect_conversion_exprs(arg, config, out)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _collect_conversion_exprs(arg, config, out)
         return
@@ -957,11 +919,10 @@ def _collect_conversion_exprs(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             MetricPredicateExpr,
             OffsetWindowExpr,
             ShareExpr,
+            EntityValueExpr,
         ),
     ):
         _collect_conversion_exprs(expr.input, config, out)
@@ -1427,8 +1388,6 @@ def _rewrite_conditional_aggregates(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
         ),

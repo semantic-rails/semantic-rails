@@ -23,18 +23,7 @@ from ..policies import (
 )
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
-from ..runtime_parts.limits import (
-    MAX_VALID_VALUES_LIMIT as MAX_VALID_VALUES_LIMIT,
-)
-from ..runtime_parts.limits import (
-    MAX_VALID_VALUES_OFFSET as MAX_VALID_VALUES_OFFSET,
-)
-from ..runtime_parts.limits import (
-    max_valid_values_limit as max_valid_values_limit,
-)
-from ..runtime_parts.limits import (
-    max_valid_values_offset as max_valid_values_offset,
-)
+from ..runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
 from ..schema import MeasureConfig, PackageConfig
 from ..temporal_support import validate_temporal_support
 from .path_coverage import (

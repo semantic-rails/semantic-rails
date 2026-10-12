@@ -58,7 +58,6 @@ from .cache import (
     CompiledSqlCache,
     LruCompiledSqlCache,
     compilation_cache_key,
-    package_fingerprint,
 )
 from .catalog_search import CatalogSearchIndex
 from .clock import format_now, parse_now
@@ -78,9 +77,7 @@ from .compiler_parts.empty_groups import (
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
-    get_package_config,
     get_package_path,
-    load_package_config,
     package_root_for_source,
     project_managed_source,
     repo_root,
@@ -88,12 +85,9 @@ from .config import (
     semantic_rails_home,
 )
 from .db import (
-    Database,
     WarehouseAdapter,
     build_seed_database,
     create_warehouse_adapter,
-    load_csv_dir_to_duckdb,
-    seed_db,
     seed_digest,
 )
 from .db_parts.base import query_with_limits, reject_parameters
@@ -106,17 +100,15 @@ from .diagnostics import (
     filter_value_miss,
     lean_issue,
     provenance_summary,
-    rewrite_warning_payload,
     semantic_issue,
 )
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
-from .expressions import collect_object_references, expr_to_dict
+from .expressions import collect_object_references
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import (
     enforce_query_policies,
-    query_policy_effects,
     row_filters_for_context,
     withheld_rank_order,
 )
@@ -156,51 +148,6 @@ from .segments import build_segment_query, normalize_segment, strip_segment_prev
 from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
 from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
-
-__all__ = [
-    "CachedCompilation",
-    "CompiledSqlCache",
-    "Database",
-    "LruCompiledSqlCache",
-    "Registry",
-    "Runtime",
-    "SemanticLayerError",
-    "ValidationReport",
-    "WarehouseAdapter",
-    "apply_response_verbosity",
-    "build_segment_query",
-    "classify_question",
-    "compilation_cache_key",
-    "compile_query",
-    "compile_response_metadata",
-    "context_from_policy_context",
-    "create_warehouse_adapter",
-    "dialect_for_warehouse",
-    "enforce_query_policies",
-    "enrich_object_not_found",
-    "exception_issue",
-    "expr_to_dict",
-    "get_package_config",
-    "get_package_path",
-    "load_csv_dir_to_duckdb",
-    "load_package_config",
-    "normalize_query",
-    "normalize_segment",
-    "package_fingerprint",
-    "package_root_for_source",
-    "provenance_summary",
-    "query_policy_effects",
-    "repo_root",
-    "request_context_payload",
-    "runtime_request_scope",
-    "resolve_repo_path",
-    "resolve_sql_profile",
-    "resolve_verbosity",
-    "rewrite_warning_payload",
-    "seed_db",
-    "semantic_issue",
-    "strip_segment_preview_metric",
-]
 
 
 def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveRefusal:
@@ -1701,18 +1648,7 @@ class Runtime:
             refusal = _scope_refusal(payload)
             if refusal is not None:
                 raise refusal
-            binding = self._bind(payload, policy_context)
-            object_ids = binding.object_ids
-            policy_effects = enforce_query_policies(
-                self.package_config,
-                object_ids,
-                environment=str(policy_context.get("environment", "")),
-                audience=str(policy_context.get("audience", "")),
-                roles=policy_context.get("roles", []),
-                query=payload,
-                binding=binding,
-            )
-            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
+            policy_effects, compiled = self._enforced_compile(payload, policy_context)
             report = ValidationReport(
                 version=2,
                 ok=True,
@@ -1769,7 +1705,7 @@ class Runtime:
             report = ValidationReport(
                 version=2,
                 ok=False,
-                errors=[issue],  # type: ignore[list-item]  # exception_issue returns dict; asdict serializes either shape
+                errors=[issue],
                 disabled_options=list(exc.details.get("disabled_options", [])),
             )
             out = asdict(report)
@@ -1807,18 +1743,7 @@ class Runtime:
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
         try:
-            binding = self._bind(payload, policy_context)
-            object_ids = binding.object_ids
-            policy_effects = enforce_query_policies(
-                self.package_config,
-                object_ids,
-                environment=str(policy_context.get("environment", "")),
-                audience=str(policy_context.get("audience", "")),
-                roles=policy_context.get("roles", []),
-                query=payload,
-                binding=binding,
-            )
-            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
+            policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
@@ -1866,18 +1791,7 @@ class Runtime:
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
         try:
-            binding = self._bind(payload, policy_context)
-            object_ids = binding.object_ids
-            policy_effects = enforce_query_policies(
-                self.package_config,
-                object_ids,
-                environment=str(policy_context.get("environment", "")),
-                audience=str(policy_context.get("audience", "")),
-                roles=policy_context.get("roles", []),
-                query=payload,
-                binding=binding,
-            )
-            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
+            policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
@@ -2158,6 +2072,25 @@ class Runtime:
         out["assumptions"].extend(call_assumptions(self._config, compiled, payload or {}, hidden))
         return out
 
+    def _enforced_compile(
+        self, payload: dict[str, Any], policy_context: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Bind the query, enforce the package's policies on every object it reads, then compile
+        it: the policy effects and the compiled query."""
+        binding = self._bind(payload, policy_context)
+        policy_effects = enforce_query_policies(
+            self.package_config,
+            binding.object_ids,
+            environment=str(policy_context.get("environment", "")),
+            audience=str(policy_context.get("audience", "")),
+            roles=policy_context.get("roles", []),
+            query=payload,
+            binding=binding,
+        )
+        return policy_effects, self._compile(
+            payload, policy_context=policy_context, binding=binding
+        )
+
     def _bind(self, payload: dict[str, Any], policy_context: dict[str, Any]) -> BoundQuery:
         """Bind the caller's query on their view; row filters and policies read the base."""
         filters = row_filters_for_context(self.package_config, policy_context)
@@ -2214,25 +2147,7 @@ class Runtime:
         started = time.perf_counter()
         context = context_from_policy_context(policy_context).to_policy_context()
         try:
-            normalized = normalize_segment(self._config, segment_id)
-            segment_policy_effects = self._segment_policy_effects(normalized.id, context)
-            derived_query = build_segment_query(normalized, include_preview_dimensions=True)
-            if context:
-                derived_query["policy_context"] = context
-            validation = self.validate_internal(derived_query)
-            validation.update(
-                {
-                    "segment": {
-                        "id": normalized.id,
-                        "entity": normalized.entity,
-                        "basis_metric": normalized.basis_metric,
-                    },
-                    "normalized_segment": normalized.to_dict(),
-                    "derived_query": without_trusted_attributes(derived_query),
-                    "segment_policy_effects": segment_policy_effects,
-                    "request_context": request_context_payload(context),
-                }
-            )
+            normalized, validation = self._segment_call(segment_id, context, self.validate_internal)
             # Validation type-checks booleans and numbers only; for text, ids, dates and times only
             # the warehouse can say a value fits its column (text for a BOOLEAN column fails there).
             typed = {"boolean", "integer", "number"}
@@ -2267,8 +2182,7 @@ class Runtime:
             report = ValidationReport(
                 version=2,
                 ok=False,
-                # raw dict instead of ValidationIssue; asdict serializes either shape
-                errors=[issue],  # type: ignore[list-item]
+                errors=[issue],
             )
             out = asdict(report)
             out["segment"] = {"id": segment_id}
@@ -2282,13 +2196,23 @@ class Runtime:
         self, segment_id: str, *, policy_context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         context = context_from_policy_context(policy_context).to_policy_context()
+        return self._segment_call(segment_id, context, self.compile_internal)[1]
+
+    def _segment_call(
+        self,
+        segment_id: str,
+        context: dict[str, Any],
+        run: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> tuple[Any, dict[str, Any]]:
+        """Run the segment's query (with its preview dimensions) through ``run``, and say which
+        segment it is and the policies that apply to it."""
         normalized = normalize_segment(self._config, segment_id)
         segment_policy_effects = self._segment_policy_effects(normalized.id, context)
         derived_query = build_segment_query(normalized, include_preview_dimensions=True)
         if context:
             derived_query["policy_context"] = context
-        explained = self.compile_internal(derived_query)
-        explained.update(
+        out = run(derived_query)
+        out.update(
             {
                 "segment": {
                     "id": normalized.id,
@@ -2301,7 +2225,7 @@ class Runtime:
                 "request_context": request_context_payload(context),
             }
         )
-        return explained
+        return normalized, out
 
     @runtime_request_scope
     def segment_preview(

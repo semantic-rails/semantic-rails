@@ -56,7 +56,7 @@ from .intent_holds import (
     _unresolved_time_why,
     _with_time_gap,
 )
-from .intent_ir import IntentIR, compose_hints, parse_intent
+from .intent_ir import compose_hints, parse_intent
 from .orchestrator import compose
 from .plan_query import (
     _merge_partial_query,
@@ -183,7 +183,7 @@ def plan_payload(
     # A question asking several things that one plan can't answer is planned part by part.
     split = (
         split_question(intent, catalog_config)
-        if payload["status"] not in {"ok", "out_of_scope"} and _caller_sets_no_query(caller)
+        if payload["status"] not in {"ok", "out_of_scope"} and caller is None
         else None
     )
     # When the engine refuses a part on its own, the whole question's hold stays.
@@ -259,12 +259,8 @@ def _question_payload(
     if intent_str:
         classification = classify_question(intent_str)
         if classification.category != "data_query":
-            payload = _out_of_scope_envelope(
-                intent=intent,
-                intent_ir=parse_intent(runtime, intent),
-                out_of_scope=scope_block_payload(intent_str, classification),
-            )
-            return finish(payload)
+            why = scope_block_payload(intent_str, classification)
+            return finish(_out_of_scope_envelope(runtime, intent, why))
         catalog_tokens = _catalog_token_index(
             catalog_config,
             search_index=(
@@ -274,14 +270,10 @@ def _question_payload(
         passes, overlap = _intent_passes_relevance_floor(intent_str, catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]
-            payload = _out_of_scope_envelope(
-                intent=intent,
-                intent_ir=parse_intent(runtime, intent),
-                low_relevance=_low_relevance_block(
-                    intent_str, overlap_tokens=overlap, catalog_token_sample=sample
-                ),
+            why = _low_relevance_block(
+                intent_str, overlap_tokens=overlap, catalog_token_sample=sample
             )
-            return finish(payload)
+            return finish(_out_of_scope_envelope(runtime, intent, why))
         grounded, _strong = _intent_passes_grounding_floor(
             intent_str,
             catalog_tokens,
@@ -289,18 +281,14 @@ def _question_payload(
         )
         if not grounded:
             sample = sorted(catalog_tokens)[:30]
-            payload = _out_of_scope_envelope(
-                intent=intent,
-                intent_ir=parse_intent(runtime, intent),
-                low_relevance=_weak_grounding_block(
-                    intent_str, overlap_tokens=overlap, catalog_token_sample=sample
-                ),
+            why = _weak_grounding_block(
+                intent_str, overlap_tokens=overlap, catalog_token_sample=sample
             )
-            return finish(payload)
+            return finish(_out_of_scope_envelope(runtime, intent, why))
 
     collision_why = named_subject_why(runtime, intent_str, partial_query)
     if collision_why is not None:
-        payload = {
+        payload: dict[str, Any] = {
             "plan_version": _VERSION,
             "intent": intent,
             "intent_ir": parse_intent(runtime, intent).to_dict(),
@@ -732,7 +720,8 @@ def _planned_row(
     caller_time = partial_query.time if partial_query is not None else None
     if (
         not validation["ok"]
-        and _codes(validation) & _LOOKBACK_TIME_CODES
+        and _LOOKBACK_TIME_CODES
+        & {str(row.get("code", "")) for row in validation["errors"] if isinstance(row, dict)}
         and time_spec is not None
         and time_spec.start
         and not (caller_time is not None and caller_time.start)
@@ -950,14 +939,6 @@ def _missing_group_by(validation: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
-def _codes(validation: dict[str, Any]) -> set[str]:
-    return {
-        str(issue.get("code", ""))
-        for issue in list(validation.get("errors") or [])
-        if isinstance(issue, dict)
-    }
-
-
 def _query_key(query: Call) -> str:
     import json
 
@@ -985,32 +966,22 @@ def _valid_values_next_steps(query: Call) -> list[dict[str, Any]]:
     return [{"dimension_id": field_id} for field_id in fields]
 
 
-def _out_of_scope_envelope(
-    *,
-    intent: str,
-    intent_ir: IntentIR,
-    out_of_scope: dict[str, Any] | None = None,
-    low_relevance: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Unified return shape for the two scope-gate failures.
+def _out_of_scope_envelope(runtime: Any, intent: str, why: dict[str, Any]) -> dict[str, Any]:
+    """The answer to a question a scope gate stops, with the gate's ``why``.
 
     The IR is still attached so the agent has *something* to work with
     when it wants to suggest a related in-scope intent to the user.
     """
 
-    envelope: dict[str, Any] = {
+    return {
         "plan_version": _VERSION,
         "intent": intent,
-        "intent_ir": intent_ir.to_dict(),
+        "intent_ir": parse_intent(runtime, intent).to_dict(),
         "status": "out_of_scope",
         "best": None,
         "next": {},
+        "why": why,
     }
-    if out_of_scope is not None:
-        envelope["why"] = out_of_scope
-    elif low_relevance is not None:
-        envelope["why"] = low_relevance
-    return envelope
 
 
 # A caller's partial query merges into every draft, so a question is split only when the caller
@@ -1037,10 +1008,6 @@ _PART_HOLDS = {
         "part states is meant for every part."
     ),
 }
-
-
-def _caller_sets_no_query(partial_query: Call | None) -> bool:
-    return partial_query is None
 
 
 def _parts_payload(
