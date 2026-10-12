@@ -84,31 +84,6 @@ def _patch_orders_times(
     orders_yml.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
 
-def test_column_timezone_wraps_raw_expr_with_convert_timezone(
-    package_config_factory,
-) -> None:
-    """jaffle_shop is a DuckDB package, so the emitted rewrite must be
-    DuckDB's. This previously asserted Snowflake's CONVERT_TIMEZONE — which
-    the base dialect emitted for all nine warehouses, and which DuckDB
-    rejects at execute time with `Scalar Function with name
-    convert_timezone does not exist!`."""
-    _, package_path = package_config_factory("jaffle_shop")
-    _patch_orders_times(
-        package_path,
-        timezone="America/New_York",
-        column_timezone="UTC",
-    )
-    config = load_package_config(str(package_path))  # reload after YAML mutation
-
-    compiled = compile_query(config, Registry(config), _query())
-    rendered = compiled["sql"]
-
-    assert "TIMEZONE('America/New_York', TIMEZONE('UTC'" in rendered, rendered
-    assert "CONVERT_TIMEZONE" not in rendered, rendered
-    # The wrap goes inside DATE_TRUNC — truncation happens in the target zone.
-    assert "DATE_TRUNC('month', CAST(TIMEZONE(" in rendered, rendered
-
-
 def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory) -> None:
     """Compile-time success meant nothing before: the old rewrite produced
     ok:true and then died at execute time on the reference warehouse."""
@@ -122,11 +97,14 @@ def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory)
     )
     config = load_package_config(str(package_path))
     rendered = compile_query(config, Registry(config), _query())["sql"]
+    assert "TIMEZONE('America/New_York', TIMEZONE('UTC'" in rendered, rendered
+    assert "CONVERT_TIMEZONE" not in rendered, rendered
+    assert "DATE_TRUNC('month', CAST(TIMEZONE(" in rendered, rendered
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE jaffle_order (order_id VARCHAR, ordered_at TIMESTAMP)")
-    con.execute("INSERT INTO jaffle_order VALUES ('o1', TIMESTAMP '2024-01-15 12:00:00')")
-    rows = con.execute(rendered).fetchall()
+    with duckdb.connect() as con:
+        con.execute("CREATE TABLE jaffle_order (order_id VARCHAR, ordered_at TIMESTAMP)")
+        con.execute("INSERT INTO jaffle_order VALUES ('o1', TIMESTAMP '2024-01-15 12:00:00')")
+        rows = con.execute(rendered).fetchall()
     assert rows, rendered
     # 12:00 UTC is 07:00 in New York, so the row truncates into January.
     assert str(rows[0][0]).startswith("2024-01-01")
@@ -173,32 +151,16 @@ def test_unknown_warehouse_refuses_the_rewrite_instead_of_guessing() -> None:
     assert exc.value.details["rewrite"] == "convert_timezone"
 
 
-def test_no_column_timezone_emits_no_convert_timezone(
+@pytest.mark.parametrize("column_timezone", [None, "UTC"], ids=["absent", "equal"])
+def test_no_conversion_when_source_zone_is_absent_or_equal(
     package_config_factory,
-) -> None:
-    _, package_path = package_config_factory("jaffle_shop")
-    # Leave column_timezone empty; timezone may default to UTC.
-    _patch_orders_times(
-        package_path,
-        timezone="UTC",
-        column_timezone=None,
-    )
-    config = load_package_config(str(package_path))  # reload after YAML mutation
-
-    compiled = compile_query(config, Registry(config), _query())
-    rendered = compiled["sql"]
-
-    assert "CONVERT_TIMEZONE" not in rendered, rendered
-
-
-def test_column_timezone_equal_to_timezone_emits_no_convert_timezone(
-    package_config_factory,
+    column_timezone,
 ) -> None:
     _, package_path = package_config_factory("jaffle_shop")
     _patch_orders_times(
         package_path,
         timezone="UTC",
-        column_timezone="UTC",
+        column_timezone=column_timezone,
     )
     config = load_package_config(str(package_path))  # reload after YAML mutation
 

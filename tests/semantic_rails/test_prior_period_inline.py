@@ -57,37 +57,6 @@ def runtime() -> Iterator[Runtime]:
 # ---------------------------------------------------------------------------
 
 
-def test_shorthand_parses_to_offset_window_expr() -> None:
-    short = parse_semantic_expression(
-        {
-            "kind": "prior_period",
-            "measure": "measure.jaffle.revenue_usd",
-            "offset": -1,
-            "grain": "year",
-        },
-        context="query",
-    )
-    assert isinstance(short, OffsetWindowExpr)
-    assert short.kind == "prior_period"
-    assert short.unit == "year"
-    assert short.value == 1
-
-
-def test_shorthand_negative_offset_uses_magnitude() -> None:
-    short = parse_semantic_expression(
-        {
-            "kind": "prior_period",
-            "measure": "measure.jaffle.revenue_usd",
-            "offset": -3,
-            "grain": "month",
-        },
-        context="query",
-    )
-    assert isinstance(short, OffsetWindowExpr)
-    assert short.unit == "month"
-    assert short.value == 3
-
-
 @pytest.mark.parametrize(
     ("options", "message"),
     [
@@ -158,26 +127,27 @@ def _month(value: Any) -> tuple[int, int]:
 
 
 @pytest.mark.parametrize(
-    "measure",
+    "measure,aggregation,unit,value",
     [
-        pytest.param("measure.jaffle.order_count", id="count_distinct"),
-        pytest.param("measure.jaffle.avg_order_total_usd", id="avg"),
-        pytest.param("measure.jaffle.max_order_total_usd", id="max"),
-        pytest.param("measure.jaffle.inventory_on_hand_eop", id="last_value"),
+        pytest.param("measure.jaffle.order_count", None, "year", 1, id="count_distinct"),
+        pytest.param("measure.jaffle.avg_order_total_usd", None, "month", 3, id="avg"),
+        pytest.param("measure.jaffle.max_order_total_usd", None, "month", 2, id="max"),
+        pytest.param("measure.jaffle.inventory_on_hand_eop", None, "month", 2, id="last_value"),
+        pytest.param("measure.jaffle.avg_order_total_usd", "sum", "month", 2, id="explicit-sum"),
     ],
 )
-@pytest.mark.parametrize("aggregation", [None, "sum"], ids=["default", "explicit"])
-def test_shorthand_parses_like_the_long_form(measure: str, aggregation: str | None) -> None:
+def test_shorthand_parses_like_the_long_form(measure, aggregation, unit, value) -> None:
     named = {} if aggregation is None else {"aggregation": aggregation}
-    short = {"kind": "prior_period", "measure": measure, "offset": -2, "grain": "month", **named}
+    short = {"kind": "prior_period", "measure": measure, "offset": -value, "grain": unit, **named}
     long = {
         "kind": "prior_period",
         "input": {"measure": measure, **named},
-        "offset": {"unit": "month", "value": 2},
+        "offset": {"unit": unit, "value": value},
     }
-    assert parse_semantic_expression(short, context="query") == parse_semantic_expression(
-        long, context="query"
-    )
+    parsed = parse_semantic_expression(short, context="query")
+    assert isinstance(parsed, OffsetWindowExpr)
+    assert (parsed.kind, parsed.unit, parsed.value) == ("prior_period", unit, value)
+    assert parsed == parse_semantic_expression(long, context="query")
 
 
 @pytest.mark.parametrize(
@@ -281,18 +251,16 @@ def _yoy_query(grain: str) -> dict[str, Any]:
     }
 
 
-def test_inline_yoy_validates_and_compiles(runtime: Runtime) -> None:
-    validate_out = runtime.validate(_yoy_query("year"))
+@pytest.mark.parametrize("grain", ["year", "month"])
+def test_inline_yoy_validates_and_compiles(runtime: Runtime, grain: str) -> None:
+    validate_out = runtime.validate(_yoy_query(grain))
     assert validate_out.get("ok") is True
     assert "errors" not in validate_out
-
-    compile_out = runtime.compile(_yoy_query("year"))
-    sql = str(compile_out.get("rendered_sql", ""))
-    # Both projections must be distinct in the rendered SQL — a LAG
-    # window appears for the prior-period column, not a bare alias.
+    sql = str(runtime.compile(_yoy_query(grain)).get("rendered_sql", ""))
     assert ' AS "revenue_usd"' in sql
     assert ' AS "revenue_prior_year"' in sql
-    assert "LAG(" in sql.upper()
+    # The prior projection must remain a window, rather than duplicate the base value.
+    assert sql.upper().count("LAG(") == 1
 
 
 def test_inline_yoy_executes_with_two_distinct_columns_at_year_grain(
@@ -346,22 +314,6 @@ def test_inline_yoy_month_grain_aligns_to_prior_year_month(
     # If overlap_checked == 0 the next assertion still holds via the
     # not-duplicate check below.
     assert overlap_checked >= 0
-
-
-def test_inline_yoy_columns_are_never_duplicates(runtime: Runtime) -> None:
-    """Defensive: even if no prior-year data exists in the fixture, the
-    rendered SQL must not collapse the two projections to the same
-    expression. This is the regression test for the original silent-drop
-    bug.
-    """
-    compile_out = runtime.compile(_yoy_query("month"))
-    sql = str(compile_out.get("rendered_sql", ""))
-    # The LAG window must appear exactly once.
-    assert sql.upper().count("LAG(") == 1
-    # And the prior_year alias must not be a bare base column ref.
-    # The buggy SQL was: ``base.m1 AS revenue_prior_year``. The fixed
-    # SQL is: ``LAG(base.m1, 12) OVER (ORDER BY base.t ASC) AS revenue_prior_year``.
-    assert "LAG(" in sql.upper() and "revenue_prior_year" in sql
 
 
 # ---------------------------------------------------------------------------

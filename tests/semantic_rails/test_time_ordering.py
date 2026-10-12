@@ -6,8 +6,17 @@ import pytest
 
 from semantic_rails.compiler import _compile_query_sql_ast, compile_query, lower_to_sql
 from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.config import load_package_config
 from semantic_rails.dialects import dialect_for_warehouse, supported_warehouses
 from semantic_rails.errors import SemanticLayerError
+from tests.semantic_rails.conftest import copy_package_config
+
+
+@pytest.fixture(scope="module")
+def config(tmp_path_factory):
+    package = copy_package_config(tmp_path_factory.mktemp("ordering"), "jaffle_shop")
+    return load_package_config(str(package))
+
 
 ROLE = "temporal_role.jaffle_order_time"
 TIME = "period"
@@ -33,10 +42,7 @@ def _query(*, fill=False, groups=(), **extra):
 @pytest.mark.parametrize(
     "groups", [[], GROUPS, GROUPS[::-1]], ids=["time-only", "groups", "reversed"]
 )
-def test_default_order_is_time_then_authored_groups(
-    package_config_factory, warehouse, fill, groups
-):
-    config, _ = package_config_factory("jaffle_shop")
+def test_default_order_is_time_then_authored_groups(config, warehouse, fill, groups):
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     if _refuses_fill(warehouse, fill):
         with pytest.raises(SemanticLayerError, match="no implicit calendar"):
@@ -64,10 +70,7 @@ def test_default_order_is_time_then_authored_groups(
 @pytest.mark.parametrize("fill", [False, True])
 @pytest.mark.parametrize("field", ["time", "orders", GROUPS[0]])
 @pytest.mark.parametrize("warehouse", supported_warehouses())
-def test_explicit_order_wins_without_extra_tiebreakers(
-    package_config_factory, fill, field, warehouse
-):
-    config, _ = package_config_factory("jaffle_shop")
+def test_explicit_order_wins_without_extra_tiebreakers(config, fill, field, warehouse):
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     query = _query(fill=fill, groups=GROUPS, order_by=[{"field": field, "direction": "DESC"}])
     if _refuses_fill(warehouse, fill):
@@ -80,14 +83,12 @@ def test_explicit_order_wins_without_extra_tiebreakers(
 
 
 @pytest.mark.parametrize("order_by", [None, []])
-def test_empty_explicit_order_uses_the_default(package_config_factory, order_by):
-    config, _ = package_config_factory("jaffle_shop")
+def test_empty_explicit_order_uses_the_default(config, order_by):
     compiled = compile_query(config, None, _query(order_by=order_by))
     assert compiled["sql"].endswith(f'\nORDER BY\n  "{TIME}" ASC')
 
 
-def test_raw_time_axis_is_ordered(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
+def test_raw_time_axis_is_ordered(config):
     query = _query(groups=GROUPS)
     del query["time"]["grain"]
     compiled = compile_query(config, None, query)
@@ -95,8 +96,7 @@ def test_raw_time_axis_is_ordered(package_config_factory):
 
 
 @pytest.mark.parametrize("shape", ["combined", "distinct", "metric-filter", "anchored"])
-def test_default_order_covers_alternate_lowering_paths(package_config_factory, shape):
-    config, _ = package_config_factory("jaffle_shop")
+def test_default_order_covers_alternate_lowering_paths(config, shape):
     query = _query(groups=GROUPS)
     if shape == "combined":
         query["select"].append(
@@ -147,13 +147,26 @@ def test_default_order_covers_alternate_lowering_paths(package_config_factory, s
     ]
 
 
-@pytest.mark.parametrize("warehouse", supported_warehouses())
-@pytest.mark.parametrize("explicit", [False, True])
+# Exercise every lowering shape on DuckDB and each dialect's outer ordering on
+# one distribution. Nested ORDER BY suppression is independent of SQL rendering.
+# Nested PostgreSQL distributions also exercise long generated CTE identifiers.
 @pytest.mark.parametrize(
-    "shape", ["distribution", "branches", "nested-distribution", "predicate", "metric-filter"]
+    "warehouse,shape",
+    [
+        ("duckdb", shape)
+        for shape in (
+            "distribution",
+            "branches",
+            "nested-distribution",
+            "predicate",
+            "metric-filter",
+        )
+    ]
+    + [(warehouse, "distribution") for warehouse in supported_warehouses() if warehouse != "duckdb"]
+    + [("postgres", "nested-distribution")],
 )
-def test_only_the_request_result_is_ordered(package_config_factory, warehouse, explicit, shape):
-    config, _ = package_config_factory("jaffle_shop")
+@pytest.mark.parametrize("explicit", [False, True])
+def test_only_the_request_result_is_ordered(config, warehouse, explicit, shape):
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     query = _query(groups=GROUPS[:1])
     measure = {"measure": "measure.jaffle.order_count"}
@@ -206,8 +219,7 @@ def test_only_the_request_result_is_ordered(package_config_factory, warehouse, e
 
 
 @pytest.mark.parametrize("explicit", [False, True])
-def test_nested_query_preserves_only_explicit_order(package_config_factory, explicit):
-    config, _ = package_config_factory("jaffle_shop")
+def test_nested_query_preserves_only_explicit_order(config, explicit):
     query = _query(limit=3)
     if explicit:
         query["order_by"] = [{"field": "time", "direction": "DESC"}]
@@ -220,8 +232,7 @@ def test_nested_query_preserves_only_explicit_order(package_config_factory, expl
 
 
 @pytest.mark.parametrize("missing", [TIME, GROUPS[0]])
-def test_missing_default_order_key_is_refused(package_config_factory, monkeypatch, missing):
-    config, _ = package_config_factory("jaffle_shop")
+def test_missing_default_order_key_is_refused(config, monkeypatch, missing):
     compiled = compile_query(config, None, _query(groups=GROUPS))
     select = compiled["sql_ast"]
     monkeypatch.setattr(
@@ -235,8 +246,7 @@ def test_missing_default_order_key_is_refused(package_config_factory, monkeypatc
 
 
 @pytest.mark.parametrize("window", [False, True], ids=["no-time", "window-total"])
-def test_without_a_time_axis_no_default_order_is_added(package_config_factory, window):
-    config, _ = package_config_factory("jaffle_shop")
+def test_without_a_time_axis_no_default_order_is_added(config, window):
     query = _query(groups=GROUPS)
     if window:
         query["time"] = {"temporal_role": ROLE, "start": "2017-04-01", "end": "2017-05-01"}
