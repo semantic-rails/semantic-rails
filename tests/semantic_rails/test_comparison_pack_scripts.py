@@ -102,7 +102,7 @@ def _question(qid: str, status: str = "matched") -> dict[str, Any]:
     }
 
 
-def _report(items: list[dict[str, Any]]) -> dict[str, Any]:
+def _report(items: list[dict[str, Any]], stale: dict[str, Any] | None = None) -> dict[str, Any]:
     counts = {status: 0 for status in ("matched", "mismatched", "not_comparable")}
     by_slice: dict[str, dict[str, Any]] = {}
     for item in items:
@@ -120,7 +120,7 @@ def _report(items: list[dict[str, Any]]) -> dict[str, Any]:
         "summary": counts,
         "summary_by_slice": by_slice,
         "questions": items,
-        "stale_layers": {},
+        "stale_layers": stale or {},
     }
 
 
@@ -130,14 +130,8 @@ def _claims(
     stale: dict[str, Any] | None = None,
     layer_fields: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
-    questions = [
-        {
-            "id": item["question_id"],
-            "title": item["question_id"],
-            "bypass_columns": BYPASS.get(item["question_id"], []),
-        }
-        for item in items
-    ]
+    ids = [item["question_id"] for item in items]
+    questions = [{"id": qid, "title": qid, "bypass_columns": BYPASS.get(qid, [])} for qid in ids]
     slice_ids: dict[str, list[str]] = {}
     for item in items:
         slice_ids.setdefault(item["slice"], []).append(item["question_id"])
@@ -149,18 +143,13 @@ def _claims(
             "dataset": "stale" if layer in (stale or {}) else "current",
             **(layer_fields or {}).get(layer, {}),
             "questions": [
-                {
-                    "question_id": item["question_id"],
-                    "support_status": (labels or {}).get(layer, "precomputed"),
-                }
-                for item in items
+                {"question_id": qid, "support_status": (labels or {}).get(layer, "precomputed")}
+                for qid in ids
             ],
         }
         for layer in LAYERS
     ]
-    report = _report(items)
-    report["stale_layers"] = stale or {}
-    return generator.claim_findings(report, questions, slice_ids, layers)
+    return generator.claim_findings(_report(items, stale), questions, slice_ids, layers)
 
 
 def test_agreement_groups_agree_pairwise_despite_non_transitive_tolerance() -> None:
