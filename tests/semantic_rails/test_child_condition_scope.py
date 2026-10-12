@@ -723,118 +723,58 @@ DISTRIBUTION = {
     "as": "orders_per_customer",
 }
 CREDIT_NOT_ON_BEVERAGES = {
-    "kind": "aggregate",
-    "measure": "measure.scope.credit",
-    "aggregation": "sum",
-    "filter": {"all": [NOT_BEVERAGE]},
+    "expression": {
+        "kind": "aggregate",
+        "measure": "measure.scope.credit",
+        "aggregation": "sum",
+        "filter": {"all": [NOT_BEVERAGE]},
+    },
+    "as": "credit",
 }
 
-# (query, code, details it carries, words its why_invalid names)
-REFUSALS = {
-    "lookup_only_child": (
-        _query([{"entity": "entity.scope_region", "any": [NORTH]}]),
-        "INVALID_QUERY",
-        {"path": "where[0].entity"},
-        "",
-    ),
-    "own_entity": (
-        _query([{"entity": "entity.scope_customer", "any": [NORTH]}]),
-        "INVALID_QUERY",
-        {"path": "where[0].entity"},
-        "",
-    ),
-    "condition_off_the_child": (
-        _query([_any(WEB)]),
-        "INVALID_QUERY",
-        {"path": "where[0].entity"},
-        "",
-    ),
-    "nested_group": (
-        _query([_any(_any(BEVERAGE))]),
-        "INVALID_QUERY",
-        {"path": "where[0].any[0]"},
-        "",
-    ),
-    "unknown_match": (
-        _query([{"entity": ITEM, "all": [BEVERAGE]}]),
-        "INVALID_QUERY",
-        {"path": "where[0].all"},
-        "",
-    ),
-    "missing_match": (_query([{"entity": ITEM}]), "INVALID_QUERY", {"path": "where[0]"}, ""),
-    "empty_group": (_query([_any()]), "INVALID_QUERY", {"path": "where[0].any"}, ""),
-    "group_and_filter_keys": (
-        _query([{**_any(BEVERAGE), "field": TYPE}]),
-        "INVALID_QUERY",
-        {"path": "where[0].field"},
-        "",
-    ),
-    # For an order measure, a lookup from the item to its order would bind the orders table
-    # inside EXISTS to the lookup's row and part it from the order being counted.
-    "group_reads_the_parent_back": (
-        _query(
-            [
-                _any(
-                    BEVERAGE, {"field": "dimension.scope_order_customer_id", "op": "is", "value": 1}
-                )
-            ],
-            "order_count",
-        ),
-        "INVALID_QUERY",
-        {"tables": ["orders"]},
-        "",
-    ),
-    "unknown_child": (
-        _query([{"entity": "entity.scope_nothing", "any": [BEVERAGE]}]),
-        "OBJECT_NOT_FOUND",
-        {},
-        "",
-    ),
-    "unknown_dimension": (
-        _query([_any({"field": "dimension.nope", "op": "is", "value": 1})]),
-        "OBJECT_NOT_FOUND",
-        {},
-        "",
-    ),
-    "wrong_value_type": (_query([_any({**OVER_5, "value": "five"})]), "INVALID_QUERY", {}, ""),
+# Malformed entity filters: (where, the path the refusal names). A lookup with no child, the
+# measure's own entity, a condition off the child, a nested group, an unknown match, no match,
+# an empty group, and group and filter keys together.
+MALFORMED = [
+    ([{"entity": "entity.scope_region", "any": [NORTH]}], "where[0].entity"),
+    ([{"entity": "entity.scope_customer", "any": [NORTH]}], "where[0].entity"),
+    ([_any(WEB)], "where[0].entity"),
+    ([_any(_any(BEVERAGE))], "where[0].any[0]"),
+    ([{"entity": ITEM, "all": [BEVERAGE]}], "where[0].all"),
+    ([{"entity": ITEM}], "where[0]"),
+    ([_any()], "where[0].any"),
+    ([{**_any(BEVERAGE), "field": TYPE}], "where[0].field"),
+]
+# Groups that cannot answer: (query, code, words its why_invalid names).
+UNSUPPORTED = [
+    (_query([{"entity": "entity.scope_nothing", "any": [BEVERAGE]}]), "OBJECT_NOT_FOUND", ""),
+    (_query([_any({"field": "dimension.nope", "op": "is", "value": 1})]), "OBJECT_NOT_FOUND", ""),
+    (_query([_any({**OVER_5, "value": "five"})]), "INVALID_QUERY", ""),
     # Item revenue is at the child's grain: a group of its own entity is a plain where.
-    "child_grain_measure_beside_a_group": (
-        _query(SAME_ROW, "customer_count", "item_revenue"),
-        "INVALID_QUERY",
-        {},
-        "",
-    ),
-    "grouped_by_a_child_dimension": (
-        {**_query(SEPARATE_ROWS), "group_by": [TYPE]},
-        "MIXED_GRAIN_INVALID",
-        {},
-        "child group",
-    ),
-    "no_measure": ({"group_by": [REGION], "where": SAME_ROW}, "INVALID_QUERY", {}, ""),
+    (_query(SAME_ROW, "customer_count", "item_revenue"), "INVALID_QUERY", ""),
+    ({**_query(SEPARATE_ROWS), "group_by": [TYPE]}, "MIXED_GRAIN_INVALID", "child group"),
+    ({"group_by": [REGION], "where": SAME_ROW}, "INVALID_QUERY", ""),
     # Scopes inside a measure's own filter are not offered.
-    "measure_filter": (
-        {"select": [{"expression": CREDIT_NOT_ON_BEVERAGES, "as": "credit"}]},
-        "MIXED_GRAIN_INVALID",
-        {},
-        "",
-    ),
+    ({"select": [CREDIT_NOT_ON_BEVERAGES]}, "MIXED_GRAIN_INVALID", ""),
     # Per-entity values across the group's hop are refused, as under a flat child filter.
-    "distribution_beside_a_group": (
-        {"select": [DISTRIBUTION], "where": SAME_ROW},
-        "MIXED_GRAIN_INVALID",
-        {},
-        "distribution",
-    ),
-}
+    ({"select": [DISTRIBUTION], "where": SAME_ROW}, "MIXED_GRAIN_INVALID", "distribution"),
+]
 
 
 def test_every_malformed_or_unsupported_group_is_refused(package: Path) -> None:
-    for case, (query, code, details, why) in REFUSALS.items():
+    for where, path in MALFORMED:
+        error = _refusal(package, _query(where))
+        assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path), where
+    for query, code, why in UNSUPPORTED:
         error = _refusal(package, query)
-        assert error["code"] == code, case
-        assert details.items() <= error.get("details", {}).items(), case
-        assert "clarification" not in error.get("details", {}), case
-        assert why in error.get("why_invalid", ""), case
+        assert error["code"] == code, query
+        assert "clarification" not in error.get("details", {}), query
+        assert why in error.get("why_invalid", ""), query
+    # For an order measure, a lookup from the item to its order would bind the orders table
+    # inside EXISTS to the lookup's row and part it from the order being counted.
+    buyer = {"field": "dimension.scope_order_customer_id", "op": "is", "value": 1}
+    error = _refusal(package, _query([_any(BEVERAGE, buyer)], "order_count"))
+    assert (error["code"], error["details"]["tables"]) == ("INVALID_QUERY", ["orders"])
     assert _run(package, {"select": [DISTRIBUTION]}, validate=True)["ok"] is True
 
 
