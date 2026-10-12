@@ -488,9 +488,9 @@ What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full
 ```
 
 - **NULL with `NO_DATA_YET`** after the data's edge: the last week has orders through Thursday
-  2017-08-31 and nothing loaded after it, so Friday to Sunday read NULL, never 0.
-  `window.data_through` is that edge: the date, in the clock's zone, of the last row at or before
-  `now`.
+  2017-08-31 and nothing says the data is loaded past that last row, so Friday to Sunday read
+  NULL, never 0. `window.data_through` is that edge: the date, in the clock's zone, of the last
+  row at or before `now`.
 
 ```json
 {"select": ["measure.jaffle.order_count"], "time": {"last": {"unit": "week", "value": 1}, "grain": "day"}}
@@ -506,8 +506,8 @@ What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full
           {"period": "2017-09-03", "period_partial": false, "order_count": null}],
  "window": {"start": "2017-08-28", "end": "2017-09-04", "now": "2017-09-04T12:00:00Z", "partial": false, "data_through": "2017-08-31"},
  "warnings": [{"code": "NO_DATA_YET",
-   "message": "No data yet for measure.jaffle.order_count after the day of 2017-08-31, the last day with data, so later days read NULL, not 0.",
-   "details": {"outputs": ["order_count"], "measures": [{"id": "measure.jaffle.order_count", "edge": "2017-08-31", "edge_source": "last_bucket"}]}}]}
+   "message": "No data yet for measure.jaffle.order_count: its last row is dated 2017-08-31. Nothing says this data is loaded past it, so later days read NULL, not 0.",
+   "details": {"outputs": ["order_count"], "measures": [{"id": "measure.jaffle.order_count", "edge": "2017-08-31", "edge_source": "last_row"}]}}]}
 ```
 
 - **NULL** before the first row: the days before 2016-09-01 read NULL.
@@ -969,9 +969,9 @@ empty period inside the base relation's loaded range reads `0`; one before its f
 row or after its last row at or before `now` reads `NULL`. Coverage reads the
 whole base relation under policy row filters, ignoring measure and call filters, and is
 reported as `window.data_through`. Populated sums and positive counts always survive, including
-future-dated rows. `NO_DATA_YET` names each affected output and measure with its `edge` and
-`edge_source` (`last_bucket`: the last period with data; `before_window`: the data ends before
-the window starts). Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+future-dated rows. `NO_DATA_YET` names each affected output and measure with its `edge`, the
+date of the measure's last row, and `edge_source` `last_row`: nothing says the data is loaded
+past that row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).

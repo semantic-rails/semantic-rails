@@ -53,8 +53,12 @@ def test_days_after_the_last_order_say_no_data_yet(shop: Runtime) -> None:
     ]
     (warning,) = [w for w in result["warnings"] if w["code"] == "NO_DATA_YET"]
     assert warning["details"]["measures"] == [
-        {"id": ORDERS, "edge": "2024-08-01", "edge_source": "last_bucket"}
+        {"id": ORDERS, "edge": "2024-08-01", "edge_source": "last_row"}
     ]
+    assert warning["message"] == (
+        f"No data yet for {ORDERS}: its last row is dated 2024-08-01. Nothing says this data is "
+        "loaded past it, so later days read NULL, not 0."
+    )
     # The output columns list the flag right after the period.
     fields = [column["field"] for column in result["output_columns"]]
     assert fields[:2] == ["period", "period_partial"]
@@ -115,14 +119,14 @@ def test_a_balance_after_its_last_snapshot_says_no_data_yet(shop: Runtime) -> No
     (warning,) = [w for w in result.get("warnings", []) if w["code"] == "NO_DATA_YET"]
     assert warning["details"]["outputs"] == ["seats"]
     assert warning["details"]["measures"] == [
-        {"id": SEATS, "edge": "2024-01-01", "edge_source": "last_bucket"}
+        {"id": SEATS, "edge": "2024-01-15", "edge_source": "last_row"}
     ]
     # A window total after the data reads NULL; one that reaches the edge reads its closing day.
     after = {"select": [SEATS], "time": {"last": {"unit": "week", "value": 1}}}
     result = shop.query(after, now="2024-03-10T12:00:00Z")
     assert result["rows"] == [{"seats": None}]
     assert _no_data_yet(result) == [
-        [{"id": SEATS, "edge": "2024-02-26", "edge_source": "before_window"}]
+        [{"id": SEATS, "edge": "2024-01-15", "edge_source": "last_row"}]
     ]
     straddle = {"select": [SEATS], "time": {"start": "2024-01-10", "end": "2024-02-10"}}
     result = shop.query(straddle, now="2024-03-10T12:00:00Z")
@@ -159,7 +163,7 @@ def test_a_balance_says_where_its_data_ends_where_only_a_named_window_reads_cove
     assert [row["seats"] for row in result["rows"]] == [220, None, None]
     assert result["window"]["data_through"] == "2024-01-15"
     assert _no_data_yet(result) == [
-        [{"id": SEATS, "edge": "2024-01-01", "edge_source": "last_bucket"}]
+        [{"id": SEATS, "edge": "2024-01-15", "edge_source": "last_row"}]
     ]
 
 

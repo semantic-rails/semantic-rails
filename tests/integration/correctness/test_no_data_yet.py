@@ -198,11 +198,12 @@ def test_past_coverage_names_its_bucket_without_changing_sql_or_rows(
     query = _query(grain=grain)
     result = rt.query(query, verbosity=verbosity, now=NOW)
     warning = _warning(result)
-    edge = {"week": "2026-09-07", "day": "2026-09-12", "": "2026-09-21"}[grain]
-    source = "last_bucket" if grain else "before_window"
     assert warning["details"]["outputs"] == ["value"]
-    assert warning["details"]["measures"] == [{"id": MEASURE, "edge": edge, "edge_source": source}]
-    assert MEASURE in warning["message"] and edge in warning["message"]
+    assert warning["details"]["measures"] == [
+        {"id": MEASURE, "edge": "2026-09-12", "edge_source": "last_row"}
+    ]
+    assert f"{MEASURE}: its last row is dated 2026-09-12." in warning["message"]
+    assert "Nothing says this data is loaded past it" in warning["message"]
     assert "loaded through" not in warning["message"]
     assert probes == []
     assert _rows(rt, f"SELECT COUNT(*) FROM {loads}") == [(30,)]
@@ -227,9 +228,9 @@ def test_past_coverage_names_its_bucket_without_changing_sql_or_rows(
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("grain,days", [("week", [12, 13]), ("", [12, 13, 20])])
-def test_moving_an_event_within_the_bucket_has_identical_warning(sparse_runtime, grain, days):
-    """A series names the last bucket with data; a window total, whose bucket is the time
-    before the window, names the last day with data, as its window's data_through does."""
+def test_the_warning_names_the_last_row_as_data_through_does(sparse_runtime, grain, days):
+    """Series or window total, the edge is the last row's day, as the window's data_through
+    says; moving that row changes only the date."""
     rt, events, _ = sparse_runtime
     warnings = []
     for day in days:
@@ -237,10 +238,9 @@ def test_moving_an_event_within_the_bucket_has_identical_warning(sparse_runtime,
         result = rt.query(_query(grain=grain), now=NOW)
         assert result["window"]["data_through"] == f"2026-09-{day}"
         warning = _warning(result)
-        if not grain:
-            assert f"runs through 2026-09-{day}," in warning["message"]
-            warning["message"] = warning["message"].replace(f"2026-09-{day}", "<day>")
-        warnings.append(json.dumps(warning, sort_keys=True))
+        assert warning["details"]["measures"][0]["edge"] == f"2026-09-{day}"
+        assert f"its last row is dated 2026-09-{day}." in warning["message"]
+        warnings.append(json.dumps(warning, sort_keys=True).replace(f"2026-09-{day}", "<day>"))
     assert len(set(warnings)) == 1
 
 
@@ -271,7 +271,7 @@ def test_a_series_straddling_the_edge_warns_even_with_a_populated_bucket(sparse_
     rt, _, _ = sparse_runtime
     result = rt.query(_query(start="2026-09-07"), now=NOW)
     assert [row["value"] for row in result["rows"]] == [1, None, None]
-    assert _warning(result)["details"]["measures"][0]["edge"] == "2026-09-07"
+    assert _warning(result)["details"]["measures"][0]["edge"] == "2026-09-12"
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -306,14 +306,14 @@ def test_a_row_filtered_week_after_the_callers_data_reads_no_data_yet(sparse_run
     """Each caller's edge is its own last visible row: the week after it reads NULL."""
     rt, events, _ = sparse_runtime
     _mutate(rt, f"INSERT INTO {events} VALUES (2, 'late', TIMESTAMP '2026-09-23', NULL)")
-    for caller, day, week in [("early", "12", "07"), ("late", "23", "21")]:
+    for caller, day in [("early", "12"), ("late", "23")]:
         query = _query(start="2026-09-28", end="2026-10-05")
         query["select"][0]["expression"] = _counting_callers_but("never")
         result = rt.query(query, context=_caller(caller), now=NOW)
         assert result["rows"] == [{"period": "2026-09-28", "period_partial": False, "value": None}]
         assert result["window"]["data_through"] == f"2026-09-{day}"
         assert _warning(result)["details"]["measures"] == [
-            {"id": MEASURE, "edge": f"2026-09-{week}", "edge_source": "last_bucket"}
+            {"id": MEASURE, "edge": f"2026-09-{day}", "edge_source": "last_row"}
         ]
 
 

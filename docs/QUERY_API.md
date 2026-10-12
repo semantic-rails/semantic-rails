@@ -214,8 +214,8 @@ HTTP and hosted MCP with `IDENTITY_CLAIM_REFUSED`.
 `NO_DATA_YET` fires for guarded `NULL` series buckets beyond their visible coverage,
 empty totals with coverage proven before the window, or no visible coverage.
 `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`:
-`last_bucket` names a SQL bucket key, `before_window` names the resolved window start,
-and both `edge` and `edge_source` are null with no visible coverage. It replaces
+`edge` is the date of the measure's last visible row (`edge_source` `last_row`), and both
+are null with no visible coverage. It replaces
 `EMPTY_RESULT_WINDOW` and excludes covered outputs from `NO_DATA_IN_SCOPE`. It is granted
 only when every named measure is granted.
 
@@ -1132,9 +1132,8 @@ The response `warnings` array can carry these non-error signals:
 - `NO_DATA_YET` — fires on `execute` for guarded `NULL` series buckets beyond visible
   coverage, empty totals whose coverage is proven before the window, or no visible
   coverage. `details.outputs` lists output aliases; `details.measures` lists
-  `{id, edge, edge_source}`. `last_bucket` names a SQL bucket key (a date for day or
-  coarser grains, a full ISO timestamp for sub-day grains); `before_window` names the
-  resolved window start. Both `edge` and `edge_source` are null with no visible coverage.
+  `{id, edge, edge_source}`: `edge` is the date, in the clock's zone, of the measure's last
+  visible row, with `edge_source` `last_row`. Both are null with no visible coverage.
   An empty series with dated coverage keeps existing warnings. `NO_DATA_YET` replaces
   `EMPTY_RESULT_WINDOW`, and covered outputs are excluded from `NO_DATA_IN_SCOPE`.
   Resource grants expose it only when every named measure is granted.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from .. import visible_view
@@ -486,8 +486,6 @@ def _requested_window(compiled, payload):
 
 def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excluded_outputs=()):
     """Disclose only edges proven by the same coverage that guarded the answer's NULLs."""
-    from datetime import date
-
     from ..compiler_parts.aliasing import AliasRegistry
 
     time = compiled["logical_plan"].time
@@ -518,7 +516,6 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
     time_key = time_output_alias(time)
     affected: list[str] = []
     measures: list[dict[str, Any]] = []
-    last_rows: dict[str, str] = {}
     for output, item in outputs.items():
         for measure in item["measures"]:
             names = set(item.get("probes", ())) or set().union(
@@ -534,7 +531,6 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
             if not names:
                 continue
             edges = [coverage[f"{p}__loaded_to"] for p in sorted(names)]
-            edge, source = None, None
             if time.get("window_total") and any(
                 coverage.get(f"{p}__loaded_from") == 1 for p in names
             ):
@@ -544,10 +540,6 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
             elif time.get("window_total"):
                 if not window["start"] or not all(value == -1 for value in edges):
                     continue
-                edge, source = window["start"], "before_window"
-                through = [coverage.get(f"{p}__data_through") for p in names]
-                if all(isinstance(value, datetime) for value in through):
-                    last_rows[measure] = local_date(max(through), zone)
             else:
                 # Require every mapped leaf to have a dated edge before claiming one.
                 if not rows or any(value is None for value in edges):
@@ -563,16 +555,15 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
                     )
                 ):
                     continue
-                latest = max(edges)
-                if not any(bucket > latest for bucket in buckets):
+                if not any(bucket > max(edges) for bucket in buckets):
                     continue
-                edge = (
-                    latest.date().isoformat()
-                    if type(latest) is datetime
-                    and time.get("grain") in {"day", "week", "month", "quarter", "year"}
-                    else latest.isoformat()
-                )
-                source = "last_bucket"
+            edge, source = None, None
+            if any(value is not None for value in edges):
+                # The edge is the last row's day, read by the same coverage on every leaf.
+                through = [coverage.get(f"{p}__data_through") for p in names]
+                if not all(isinstance(value, datetime) for value in through):
+                    continue
+                edge, source = local_date(max(through), zone), "last_row"
             detail = {"id": measure, "edge": edge, "edge_source": source}
             if detail not in measures:
                 measures.append(detail)
@@ -580,18 +571,18 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
                 affected.append(output)
     if not affected:
         return []
-    messages = []
-    grain = str(time.get("grain") or "day")
-    for item in measures:
-        if item["edge_source"] == "before_window":
-            last = last_rows.get(item["id"])
-            ends = f"its data runs through {last}, " if last else "its data ends "
-            reason = f"in this window: {ends}before {item['edge']}, the window start, so the total reads NULL, not 0"
-        elif item["edge"] is not None:
-            reason = f"after the {grain} of {item['edge']}, the last {grain} with data, so later {grain}s read NULL, not 0"
-        else:
-            reason = "with no dated coverage edge, so it reads NULL, not 0"
-        messages.append(f"No data yet for {item['id']} {reason}.")
+    later = (
+        f"the window starting {window['start']} reads NULL"
+        if time.get("window_total")
+        else f"later {time.get('grain') or 'period'}s read NULL"
+    )
+    messages = [
+        f"No data yet for {item['id']}: its last row is dated {item['edge']}. Nothing says "
+        f"this data is loaded past it, so {later}, not 0."
+        if item["edge"] is not None
+        else f"No data yet for {item['id']}, with no dated coverage edge, so it reads NULL, not 0."
+        for item in measures
+    ]
     return [
         semantic_issue(
             code="NO_DATA_YET",

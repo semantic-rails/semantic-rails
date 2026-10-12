@@ -27,10 +27,14 @@ def total(package_config_factory):
     return compile_query(config, Registry(config), query), query
 
 
+# The last row the same coverage read: the edge a dated disclosure names.
+LAST_ROW = datetime(2026, 9, 13, 23, 30)
+
+
 @pytest.mark.parametrize(
     "loaded_from,loaded_to,start,expected",
     [
-        (-1, -1, "2026-09-21", "before_window"),
+        (-1, -1, "2026-09-21", "last_row"),
         (-1, 0, "2026-09-21", None),
         (-1, 1, "2026-09-21", None),
         (1, 1, "2026-09-21", None),
@@ -54,6 +58,7 @@ def test_window_total_markers_only_disclose_proven_edges(
     coverage = {
         "coverage_1__loaded_from": loaded_from,
         "coverage_1__loaded_to": loaded_to,
+        "coverage_1__data_through": None if loaded_to is None else LAST_ROW,
     }
     warnings = _no_data_yet_warnings(compiled, [], query, coverage)
     assert bool(warnings) is (expected is not None)
@@ -61,21 +66,32 @@ def test_window_total_markers_only_disclose_proven_edges(
         assert warnings[0]["details"]["measures"] == [
             {
                 "id": REVENUE,
-                "edge": start if expected == "before_window" else None,
+                "edge": "2026-09-13" if expected == "last_row" else None,
                 "edge_source": None if expected == "undated" else expected,
             }
         ]
 
 
-def test_relative_window_total_names_the_normalized_start(total, monkeypatch):
+def test_relative_window_total_names_the_last_row_and_the_normalized_start(total, monkeypatch):
     compiled, query = total
     query["time"] = {"temporal_role": ROLE, "last_unit": "week", "last_value": 1}
     coverage = {
         "coverage_1__loaded_from": -1,
         "coverage_1__loaded_to": -1,
+        "coverage_1__data_through": LAST_ROW,
     }
     warning = _no_data_yet_warnings(compiled, [], query, coverage)[0]
-    assert warning["details"]["measures"][0]["edge"] == "2026-09-21"
+    assert warning["details"]["measures"][0]["edge"] == "2026-09-13"
+    assert warning["message"] == (
+        f"No data yet for {REVENUE}: its last row is dated 2026-09-13. Nothing says this data "
+        "is loaded past it, so the window starting 2026-09-21 reads NULL, not 0."
+    )
+
+
+def test_a_dated_edge_needs_the_last_row_on_every_leaf(total):
+    compiled, query = total
+    coverage = {"coverage_1__loaded_from": -1, "coverage_1__loaded_to": -1}
+    assert _no_data_yet_warnings(compiled, [], query, coverage) == []
 
 
 @pytest.mark.parametrize("rows,excluded", [([{"value": 1}], ()), ([{"value": None}], ("value",))])
@@ -114,19 +130,17 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
     coverage = {
         "coverage_1__loaded_from": -1 if window_total else datetime(2026, 9, 7),
         "coverage_1__loaded_to": -1 if window_total else datetime(2026, 9, 7),
+        "coverage_1__data_through": LAST_ROW,
         "coverage_2__loaded_from": None,
         "coverage_2__loaded_to": None,
+        "coverage_2__data_through": None,
     }
     rows = [] if window_total else [{"period": datetime(2026, 9, 21), "money": None, "count": None}]
     warnings = _no_data_yet_warnings(compiled, rows, query, coverage)
     assert len(warnings) == 1
     assert warnings[0]["details"]["outputs"] == ["money", "count"]
     assert warnings[0]["details"]["measures"] == [
-        {
-            "id": REVENUE,
-            "edge": "2026-09-21" if window_total else "2026-09-07",
-            "edge_source": "before_window" if window_total else "last_bucket",
-        },
+        {"id": REVENUE, "edge": "2026-09-13", "edge_source": "last_row"},
         {"id": ORDERS, "edge": None, "edge_source": None},
     ]
 
@@ -136,15 +150,15 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
     [
         ("week", [datetime(2024, 9, 16)], [], None),
         ("day", [datetime(2024, 9, 21)], [], None),
-        ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 11)], "2024-09-21T10:00:00"),
+        ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 11)], "2024-09-21"),
         ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 10)], None),
         ("day", [date(2024, 9, 21)], [date(2024, 9, 22)], "2024-09-21"),
-        ("week", [datetime(2024, 9, 16)], [datetime(2024, 9, 23)], "2024-09-16"),
+        ("week", [datetime(2024, 9, 16)], [datetime(2024, 9, 23)], "2024-09-21"),
         (
             "hour",
             [datetime(2024, 9, 21, 10, 0, 0, 123456, tzinfo=UTC)],
             [datetime(2024, 9, 21, 7, tzinfo=timezone(timedelta(hours=-4)))],
-            "2024-09-21T10:00:00.123456+00:00",
+            "2024-09-21",
         ),
         ("day", [date(2024, 9, 21)], [datetime(2024, 9, 22)], None),
         ("day", [datetime(2024, 9, 21)], [date(2024, 9, 22)], None),
@@ -207,6 +221,9 @@ def test_series_compares_only_compatible_sql_bucket_keys(
         ),
     )
     coverage = {f"coverage_{i}__loaded_to": edge for i, edge in enumerate(edges, 1)}
+    # Each leaf's last row: on the Saturday its bucket holds.
+    last_row = None if edges == [None] else datetime(2024, 9, 21, 10, 30)
+    coverage.update({f"coverage_{i}__data_through": last_row for i in range(1, len(edges) + 1)})
     rows = [{"period": bucket, "value": None} for bucket in buckets]
     warnings = _no_data_yet_warnings(compiled, rows, query, coverage)
     assert bool(warnings) is (expected is not None)
@@ -215,6 +232,6 @@ def test_series_compares_only_compatible_sql_bucket_keys(
             {
                 "id": REVENUE,
                 "edge": None if expected == "undated" else expected,
-                "edge_source": None if expected == "undated" else "last_bucket",
+                "edge_source": None if expected == "undated" else "last_row",
             }
         ]
