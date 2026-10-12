@@ -19,7 +19,15 @@ import pytest
 
 from semantic_rails import compiler
 from semantic_rails.compiler import compile_query
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import (
+    distribution,
+    leaves,
+    lowering_common,
+    planning,
+    row_counts,
+    sql_lowering,
+    time_series,
+)
 from semantic_rails.compiler_parts.empty_groups import resolves_to_zero, sql_nodes
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.errors import SemanticLayerError
@@ -432,14 +440,17 @@ def test_a_settle_path_that_skips_the_observation_scope_is_refused(
 
 
 @pytest.mark.parametrize(
-    ("shape", "patched"),
-    [("single_measure", "zero_aliases"), ("beside_a_distribution", "zero_outputs")],
+    ("shape", "module", "patched"),
+    [
+        ("single_measure", sql_lowering, "zero_aliases"),
+        ("beside_a_distribution", distribution, "zero_outputs"),
+    ],
 )
 def test_a_lowering_path_that_skips_the_guard_is_refused(
-    config: Any, monkeypatch: pytest.MonkeyPatch, shape: str, patched: str
+    config: Any, monkeypatch: pytest.MonkeyPatch, shape: str, module: Any, patched: str
 ) -> None:
     """Force the bypass: lowering builds no guard, and the check that works it out again refuses."""
-    monkeypatch.setattr(sql_lowering, patched, lambda *args: {})
+    monkeypatch.setattr(module, patched, lambda *args: {})
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
@@ -460,7 +471,8 @@ def test_a_leaf_that_skips_the_row_count_is_refused(
 ) -> None:
     """Force the bypass: no leaf counts its rows, so the guard can't tell a group with no rows
     from one whose values are all unknown, and refuses rather than read 0."""
-    monkeypatch.setattr(sql_lowering, "_row_markers", lambda *args: [])
+    for module in (leaves, row_counts):
+        monkeypatch.setattr(module, "_row_markers", lambda *args: [])
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
@@ -596,7 +608,7 @@ def test_a_window_total_observes_conditional_counts_outside_its_bounds(
 def test_a_window_total_refuses_a_missing_time_scope(
     shop: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(sql_lowering, "_record_time_scope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(leaves, "_record_time_scope", lambda *args, **kwargs: None)
     with pytest.raises(SemanticLayerError) as raised:
         shop.query(
             {
@@ -700,7 +712,8 @@ def test_a_window_total_without_its_loaded_bucket_check_never_settles_from_sourc
 ) -> None:
     """Force the bypass: lowering emits no loaded-bucket check for the total. The guard then
     can't settle the never-matched operand from source rows, so it holds NULL and warns."""
-    monkeypatch.setattr(sql_lowering, "_emits_time_coverage", lambda plan, config: False)
+    for module in (lowering_common, sql_lowering, time_series):
+        monkeypatch.setattr(module, "_emits_time_coverage", lambda plan, config: False)
     a = {"kind": "measure", "measure": "measure.shop.store_a_orders"}
     b = {"kind": "measure", "measure": "measure.shop.store_b_orders"}
     # A runtime of its own, so no compilation cached before the patch is reused.
@@ -1472,11 +1485,12 @@ def test_a_row_count_named_like_another_column_is_refused(
     config: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Force the bypass: name the row count like the query's output, and the check refuses."""
-    monkeypatch.setattr(
-        sql_lowering,
-        "_row_count_names",
-        lambda plan, taken: {row.bound_measure.alias: "Revenue" for row in plan.measure_plans},
-    )
+    for module in (row_counts, sql_lowering):
+        monkeypatch.setattr(
+            module,
+            "_row_count_names",
+            lambda plan, taken: {row.bound_measure.alias: "Revenue" for row in plan.measure_plans},
+        )
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), {"version": 1, **SHAPES["single_measure"]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
@@ -1724,7 +1738,7 @@ def test_a_nested_case_forced_onto_a_rollup_is_refused(
 ) -> None:
     config = _case_under_arithmetic_config(shop_package)
     monkeypatch.setattr(
-        compiler,
+        planning,
         "_select_aggregate_relation",
         lambda *args, **kwargs: (config.aggregate_relations[0].id, {}),
     )
@@ -2124,7 +2138,8 @@ def test_a_rollup_leaf_without_a_row_count_is_refused(
     shop_package: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Force the bypass on the routed path: its leaf counts no rows, and the guard refuses."""
-    monkeypatch.setattr(sql_lowering, "reads_every_row", lambda measure: False)
+    for module in (leaves, lowering_common):
+        monkeypatch.setattr(module, "reads_every_row", lambda measure: False)
     config = load_package_config(str(shop_package))
     query = {"select": _select(revenue=SHOP_REVENUE), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
     with pytest.raises(SemanticLayerError) as raised:
@@ -2145,7 +2160,7 @@ def test_clickhouse_statements_set_join_use_nulls(config: Any, warehouse: str) -
 
 
 def test_a_plain_time_leaf_cannot_bypass_scope_recording(config, monkeypatch):
-    monkeypatch.setattr(sql_lowering, "record_leaf_scope", lambda *args: None)
+    monkeypatch.setattr(lowering_common, "record_leaf_scope", lambda *args: None)
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(
             config,

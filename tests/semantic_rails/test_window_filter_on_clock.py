@@ -26,7 +26,7 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails import compiler
+from semantic_rails.compiler_parts import binding
 from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
@@ -1000,7 +1000,7 @@ def test_clock_policy_still_refuses_if_the_scan_gate_is_bypassed(
     runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CLOCK_LABEL)))
     query = _query(CUMULATIVE, [])
     reader = RequestContext(audience="reader", attributes={"visible": "2026-09-15 10:00:00"})
-    monkeypatch.setattr(compiler, "apply_row_filters", lambda sql, filters: (sql, ()))
+    monkeypatch.setattr(binding, "apply_row_filters", lambda sql, filters: (sql, ()))
     try:
         with pytest.raises(SemanticLayerError) as caught:
             runtime.compile(query, context=reader)

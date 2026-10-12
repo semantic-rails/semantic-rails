@@ -243,7 +243,7 @@ def test_recent_observation_uses_the_roles_current_instant(changed_runtime, vari
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("expressions", [(REVENUE,), (REVENUE, ORDERS)])
 def test_routed_values_survive_shorter_raw_retention(changed_runtime, expressions, monkeypatch):
-    from semantic_rails.compiler_parts import sql_lowering
+    from semantic_rails.compiler_parts import lowering_common
 
     rt = changed_runtime(
         insert="DELETE FROM orders WHERE ordered_at < TIMESTAMP '2024-01-01'", routed=True
@@ -252,7 +252,7 @@ def test_routed_values_survive_shorter_raw_retention(changed_runtime, expression
     def no_shadow(*args):
         pytest.fail("A routed plan must not lower or record a shadow raw leaf")
 
-    monkeypatch.setattr(sql_lowering, "record_leaf_scope", no_shadow)
+    monkeypatch.setattr(lowering_common, "record_leaf_scope", no_shadow)
     # An open window routes; a named one bounds its zeros by the base's loaded data instead.
     result = rt.query(
         _ask(

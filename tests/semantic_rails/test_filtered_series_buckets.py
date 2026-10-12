@@ -8,7 +8,7 @@ import duckdb
 import pytest
 
 from semantic_rails.compiler import compile_query
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import leaves
 from semantic_rails.compiler_parts.empty_groups import LeafScope, guard_empty_groups
 from semantic_rails.config import load_package_config
 from semantic_rails.dialects import dialect_for_warehouse
@@ -349,7 +349,7 @@ def test_a_warehouse_without_coverage_retains_nothing(series, warehouse):
 
 
 def test_forcing_a_conditional_operand_bypass_refuses(series, monkeypatch):
-    monkeypatch.setattr(sql_lowering, "_filtered_series_operand", lambda value, conditions: value)
+    monkeypatch.setattr(leaves, "_filtered_series_operand", lambda value, conditions: value)
     with pytest.raises(SemanticLayerError) as exc:
         series.compile(_query("sum", start="2025-01-06", end="2025-01-07"))
     assert exc.value.code == "EMPTY_GROUPS_UNSETTLED"

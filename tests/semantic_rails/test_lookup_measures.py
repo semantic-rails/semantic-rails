@@ -905,9 +905,9 @@ def test_a_plan_that_skipped_the_guard_is_refused_at_its_leaf(runtime: Runtime) 
 
 
 def test_a_lookup_read_outside_its_leaf_is_refused(runtime: Runtime, monkeypatch) -> None:
-    from semantic_rails.compiler_parts import sql_lowering
+    from semantic_rails.compiler_parts import lowering_common
 
-    monkeypatch.setattr(sql_lowering, "_foldable_leaf_signature", lambda *args: ("folded",))
+    monkeypatch.setattr(lowering_common, "_foldable_leaf_signature", lambda *args: ("folded",))
     payload = {
         **_query(),
         "select": [

@@ -17,7 +17,7 @@ from semantic_rails.compiler import (
     lower_to_sql,
     plan_query,
 )
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import predicate_sets
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr, parse_semantic_expression
@@ -714,13 +714,13 @@ def test_anchored_ratio_cannot_bypass_override_refusal(warehouse, monkeypatch):
         (datetime(2025, 1, 6), 0),
     ]
     built = []
-    build = sql_lowering._minimal_predicate_set_ctes
+    build = predicate_sets._minimal_predicate_set_ctes
 
     def spy(*args, **kwargs):
         built.append(kwargs["index"])
         return build(*args, **kwargs)
 
-    monkeypatch.setattr(sql_lowering, "_minimal_predicate_set_ctes", spy)
+    monkeypatch.setattr(predicate_sets, "_minimal_predicate_set_ctes", spy)
     sql = compile_query(config, None, _share_query(override=False))["sql"]
     assert conn.execute(sql).fetchall() == expected
     assert len(built) == 1
