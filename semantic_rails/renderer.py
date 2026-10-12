@@ -40,7 +40,6 @@ from .sql_ast import (
     SqlQuery,
     SqlSelect,
     SqlSetQuery,
-    SqlStar,
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
@@ -245,10 +244,6 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         ):
             names[-1] = _quoted(column)
         return ".".join(names)
-    if isinstance(expr, SqlStar):
-        if expr.qualifier:
-            return f"{_quote_ident(expr.qualifier)}.*"
-        return "*"
     if isinstance(expr, SqlParameter):
         return "?"
     if isinstance(expr, SqlLiteral):

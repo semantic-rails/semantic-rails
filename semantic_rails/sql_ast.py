@@ -310,11 +310,6 @@ class SqlParameter:
 
 
 @dataclass(frozen=True)
-class SqlStar:
-    qualifier: str = ""
-
-
-@dataclass(frozen=True)
 class SqlCall:
     name: str
     args: list[SqlExpr] = field(default_factory=list)
@@ -509,7 +504,6 @@ SqlExpr = (
     SqlIdentifier
     | SqlLiteral
     | SqlParameter
-    | SqlStar
     | SqlCall
     | SqlBinary
     | SqlLike
