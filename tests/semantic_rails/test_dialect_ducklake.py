@@ -272,7 +272,7 @@ def test_create_adapter_entry_point_and_factory(monkeypatch: pytest.MonkeyPatch,
     with pytest.raises(SemanticLayerError) as exc:
         create_adapter(replace(package, connection=ConnectionSpec(kind="duckdb_native")))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "Unsupported DuckLake connection kind" in str(exc.value)
+    assert exc.value.details["connection_kind"] == "duckdb_native"
 
 
 # ---------------------------------------------------------------------------

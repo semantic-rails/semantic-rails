@@ -393,7 +393,7 @@ def test_create_warehouse_adapter_selects_postgres_native():
         with pytest.raises(SemanticLayerError) as exc:
             create_adapter(_package(kind))
         assert exc.value.code == "INVALID_CONFIG"
-        assert kind in str(exc.value)
+        assert exc.value.details["connection_kind"] == kind
 
 
 # ---------------------------------------------------------------------------
