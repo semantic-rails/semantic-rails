@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict
 from typing import Any
 
@@ -2592,44 +2592,36 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
 
-    valid_dimensions: list[dict[str, Any]] = []
-    disabled_dimensions: list[dict[str, Any]] = []
-    for dim in config.dimensions:
-        availability = _path_availability(config, root_entity, dim.entity)
-        row = {**asdict(dim), **availability}
-        (valid_dimensions if availability["available"] else disabled_dimensions).append(row)
+    def partition(
+        rows: Iterable[Any], entity_of: Callable[[Any], str | None]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Each row with its path availability from the root, split into valid and disabled."""
+        valid: list[dict[str, Any]] = []
+        disabled: list[dict[str, Any]] = []
+        for item in rows:
+            entity = entity_of(item)
+            availability = (
+                _path_availability(config, root_entity, entity)
+                if entity is not None
+                else {
+                    "available": False,
+                    "reason": "temporal role does not have a queryable backing dimension",
+                    "path": [],
+                    "candidates": [],
+                }
+            )
+            row = {**asdict(item), **availability}
+            (valid if availability["available"] else disabled).append(row)
+        return valid, disabled
 
-    valid_temporal_roles: list[dict[str, Any]] = []
-    disabled_temporal_roles: list[dict[str, Any]] = []
-    for role in config.temporal_roles:
+    def role_entity(role: Any) -> str | None:
         dim = next((d for d in config.dimensions if d.id == role.dimension), None)
-        if dim is None:
-            row = {
-                **asdict(role),
-                "available": False,
-                "reason": "temporal role does not have a queryable backing dimension",
-                "path": [],
-                "candidates": [],
-            }
-            disabled_temporal_roles.append(row)
-            continue
-        availability = _path_availability(config, root_entity, dim.entity)
-        row = {**asdict(role), **availability}
-        (valid_temporal_roles if availability["available"] else disabled_temporal_roles).append(row)
+        return dim.entity if dim is not None else None
 
-    valid_measures: list[dict[str, Any]] = []
-    disabled_measures: list[dict[str, Any]] = []
-    for measure in config.measures:
-        availability = _path_availability(config, root_entity, measure.entity)
-        row = {**asdict(measure), **availability}
-        (valid_measures if availability["available"] else disabled_measures).append(row)
-
-    valid_entities: list[dict[str, Any]] = []
-    disabled_entities: list[dict[str, Any]] = []
-    for entity in config.entities:
-        availability = _path_availability(config, root_entity, entity.id)
-        row = {**asdict(entity), **availability}
-        (valid_entities if availability["available"] else disabled_entities).append(row)
+    valid_dimensions, disabled_dimensions = partition(config.dimensions, lambda row: row.entity)
+    valid_temporal_roles, disabled_temporal_roles = partition(config.temporal_roles, role_entity)
+    valid_measures, disabled_measures = partition(config.measures, lambda row: row.entity)
+    valid_entities, disabled_entities = partition(config.entities, lambda row: row.id)
 
     valid_metric_constructs = [
         {"kind": "aggregate", "available": True, "reason": ""},
