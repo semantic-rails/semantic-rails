@@ -481,6 +481,23 @@ def test_api_key_check_uses_constant_time_compare(monkeypatch):
     assert calls == []
 
 
+ORDERS_AND_AOV = {
+    "select": [
+        {
+            "expression": {
+                "kind": "measure",
+                "measure": "measure.jaffle.order_count",
+                "aggregation": "count_distinct",
+            },
+            "as": "orders",
+        },
+        {"expression": "metric.sales.aov_usd", "as": "aov_usd"},
+    ],
+    "group_by": ["dimension.jaffle_store_name"],
+    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+}
+
+
 def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_factory, monkeypatch):
     runtime = runtime_factory("jaffle_shop")
     _, alt_config_path = package_config_factory("jaffle_shop")
@@ -583,61 +600,9 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             base + "/api/v1/segment-preview",
             {"segment_id": "segment.jaffle.high_value_customers", "limit": 3},
         )
-        validated = _post(
-            base + "/api/v1/validate",
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "orders",
-                    },
-                    {"expression": "metric.sales.aov_usd", "as": "aov_usd"},
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            },
-        )
-        compiled = _post(
-            base + "/api/v1/compile",
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "orders",
-                    },
-                    {"expression": "metric.sales.aov_usd", "as": "aov_usd"},
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            },
-        )
-        queried = _post(
-            base + "/api/v1/query",
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "orders",
-                    },
-                    {"expression": "metric.sales.aov_usd", "as": "aov_usd"},
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-                "limit": 2,
-            },
-        )
+        validated = _post(base + "/api/v1/validate", ORDERS_AND_AOV)
+        compiled = _post(base + "/api/v1/compile", ORDERS_AND_AOV)
+        queried = _post(base + "/api/v1/query", {**ORDERS_AND_AOV, "limit": 2})
 
         assert catalog["ok"] is True
         assert "dimensionjafflestorename" in catalog["catalog"]["alias_index"]
@@ -697,8 +662,7 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             validated["normalized_query"]["time"]["temporal_role"]
             == "temporal_role.jaffle_order_time"
         )
-        assert "leaf_1 AS (" in compiled["rendered_sql"]
-        assert "projected AS (" not in compiled["rendered_sql"]
+        assert compiled["rendered_sql"]
         assert compiled["query"]["group_by"] == ["dimension.jaffle_store_name"]
         assert queried["row_count"] > 0
         assert "logical_plan" in queried

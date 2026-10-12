@@ -97,145 +97,136 @@ _AVAILABILITY_HINTS = {
 }
 
 
-@pytest.mark.parametrize("code", sorted(_MCP_TRIGGERED_CODES.keys()))
-def test_mcp_advertised_error_codes_produce_structured_envelopes(runtime_factory, code) -> None:
+@pytest.fixture()
+def runtime(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
-    try:
-        adapter = SemanticLayerMCPAdapter(runtime)
-        result = _MCP_TRIGGERED_CODES[code](adapter)
-        assert result is not None, f"trigger for {code} produced None"
-        assert result.get("ok") is False, f"trigger for {code} returned ok=True"
-        errors = list(result.get("errors", []) or [])
-        assert errors, f"trigger for {code} returned no errors"
-        # Each trigger must preserve its advertised boundary code.
-        first = errors[0]
-        _assert_envelope_shape(first)
-        assert result["error"] == {key: first[key] for key in ("code", "message")}
-        assert "recovery_hints" not in result
-        serialized = json.dumps(result)
-        for issue in errors:
-            assert "recovery_hints" not in issue.get("details", {})
-            for hint in issue["recovery_hints"]:
-                assert serialized.count(json.dumps(hint["message"])) == 1
-        assert first["code"] == code, (
-            f"expected code={code}, got {first['code']}: {first.get('message')}"
-        )
-        if code in _AVAILABILITY_HINTS:
-            kind, available = _AVAILABILITY_HINTS[code]
-            hint = first["recovery_hints"][0]
-            assert hint["kind"] == kind
-            assert hint[available]
-            if code == "UNKNOWN_MCP_TOOL":
-                assert {"discover", "plan"} <= set(hint[available])
-    finally:
-        runtime.close()
+    yield runtime
+    runtime.close()
 
 
-def test_mcp_handler_bare_exception_surfaces_as_internal_error(runtime_factory) -> None:
+@pytest.mark.parametrize("code", sorted(_MCP_TRIGGERED_CODES.keys()))
+def test_mcp_advertised_error_codes_produce_structured_envelopes(runtime, code) -> None:
+    adapter = SemanticLayerMCPAdapter(runtime)
+    result = _MCP_TRIGGERED_CODES[code](adapter)
+    assert result is not None, f"trigger for {code} produced None"
+    assert result.get("ok") is False, f"trigger for {code} returned ok=True"
+    errors = list(result.get("errors", []) or [])
+    assert errors, f"trigger for {code} returned no errors"
+    # Each trigger must preserve its advertised boundary code.
+    first = errors[0]
+    _assert_envelope_shape(first)
+    assert result["error"] == {key: first[key] for key in ("code", "message")}
+    assert "recovery_hints" not in result
+    serialized = json.dumps(result)
+    for issue in errors:
+        assert "recovery_hints" not in issue.get("details", {})
+        for hint in issue["recovery_hints"]:
+            assert serialized.count(json.dumps(hint["message"])) == 1
+    assert first["code"] == code, (
+        f"expected code={code}, got {first['code']}: {first.get('message')}"
+    )
+    if code in _AVAILABILITY_HINTS:
+        kind, available = _AVAILABILITY_HINTS[code]
+        hint = first["recovery_hints"][0]
+        assert hint["kind"] == kind
+        assert hint[available]
+        if code == "UNKNOWN_MCP_TOOL":
+            assert {"discover", "plan"} <= set(hint[available])
+
+
+def test_mcp_handler_bare_exception_surfaces_as_internal_error(runtime) -> None:
     """A bare KeyError thrown inside a handler must be wrapped in a
     structured INTERNAL_ERROR envelope, not surfaced as a raw
     traceback."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        adapter = SemanticLayerMCPAdapter(runtime)
+    adapter = SemanticLayerMCPAdapter(runtime)
 
-        # Replace the handler with one that routes through `_guarded`
-        # — the safety net we are testing — and raises a bare
-        # KeyError inside the inner closure. Bypassing `_guarded` would
-        # also bypass the bare-exception trap, which is not what
-        # production callers see.
-        def _exploding_handler(arguments):
-            def _inner(args):
-                raise KeyError("missing_field")
+    # Replace the handler with one that routes through `_guarded`
+    # — the safety net we are testing — and raises a bare
+    # KeyError inside the inner closure. Bypassing `_guarded` would
+    # also bypass the bare-exception trap, which is not what
+    # production callers see.
+    def _exploding_handler(arguments):
+        def _inner(args):
+            raise KeyError("missing_field")
 
-            return adapter._guarded(arguments, _inner)  # noqa: SLF001
+        return adapter._guarded(arguments, _inner)  # noqa: SLF001
 
-        adapter._tool_handlers["discover"] = _exploding_handler  # noqa: SLF001
-        result = adapter.call_tool("discover", {})
-        assert result["ok"] is False
-        errors = list(result.get("errors", []) or [])
-        assert errors
-        first = errors[0]
-        assert first["code"] == "INTERNAL_ERROR"
-        # Fixed engine text: the exception text goes to the server log only.
-        assert first["message"] == UNEXPECTED_ERROR_MESSAGE
-        assert first["details"] == {"exception_type": "KeyError"}
-        hints = list(first.get("recovery_hints", []) or [])
-        assert hints, "INTERNAL_ERROR envelope must carry recovery_hints"
-        # Hint must point at the bug tracker so the surface is at
-        # least actionable.
-        joined = " ".join(str(h.get("message", "")) for h in hints).lower()
-        assert "bug" in joined or "issues" in joined
-    finally:
-        runtime.close()
+    adapter._tool_handlers["discover"] = _exploding_handler  # noqa: SLF001
+    result = adapter.call_tool("discover", {})
+    assert result["ok"] is False
+    errors = list(result.get("errors", []) or [])
+    assert errors
+    first = errors[0]
+    assert first["code"] == "INTERNAL_ERROR"
+    # Fixed engine text: the exception text goes to the server log only.
+    assert first["message"] == UNEXPECTED_ERROR_MESSAGE
+    assert first["details"] == {"exception_type": "KeyError"}
+    hints = list(first.get("recovery_hints", []) or [])
+    assert hints, "INTERNAL_ERROR envelope must carry recovery_hints"
+    # Hint must point at the bug tracker so the surface is at
+    # least actionable.
+    joined = " ".join(str(h.get("message", "")) for h in hints).lower()
+    assert "bug" in joined or "issues" in joined
 
 
-def test_mcp_jsonrpc_bare_exception_surfaces_as_structured_envelope(runtime_factory) -> None:
+def test_mcp_jsonrpc_bare_exception_surfaces_as_structured_envelope(runtime) -> None:
     """The JSON-RPC bare-exception path must wrap leaks in a structured
     `data` envelope. Before this fix it shipped a raw
     `MCP error -32603: '<repr>'` with no recovery hints."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        adapter = SemanticLayerMCPAdapter(runtime)
+    adapter = SemanticLayerMCPAdapter(runtime)
 
-        # Patch a tool to raise a bare exception mid-flight. The
-        # adapter wraps it as INTERNAL_ERROR; if that envelope
-        # were missing, the JSON-RPC path would be the one shipping
-        # the bare leak.
-        def _exploding_handler(arguments):
-            def _inner(args):
-                raise AttributeError("nope")
+    # Patch a tool to raise a bare exception mid-flight. The
+    # adapter wraps it as INTERNAL_ERROR; if that envelope
+    # were missing, the JSON-RPC path would be the one shipping
+    # the bare leak.
+    def _exploding_handler(arguments):
+        def _inner(args):
+            raise AttributeError("nope")
 
-            return adapter._guarded(arguments, _inner)  # noqa: SLF001
+        return adapter._guarded(arguments, _inner)  # noqa: SLF001
 
-        adapter._tool_handlers["discover"] = _exploding_handler  # noqa: SLF001
-        message = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": "discover", "arguments": {"terms": "revenue"}},
-        }
-        response = handle_jsonrpc_message(adapter, message)
-        assert response is not None
-        # The adapter returns a successful result wrapping a tool
-        # output whose `isError` flag is True. Inspect the structured
-        # content.
-        result = response.get("result")
-        assert isinstance(result, dict)
-        structured = dict(result.get("structuredContent", {}) or {})
-        assert structured.get("ok") is False
-        errors = list(structured.get("errors", []) or [])
-        assert errors
-        first = errors[0]
-        assert first["code"] == "INTERNAL_ERROR"
-        assert first["message"] == UNEXPECTED_ERROR_MESSAGE
-        assert "nope" not in json.dumps(response)
-        hints = list(first.get("recovery_hints", []) or [])
-        assert hints
-    finally:
-        runtime.close()
+    adapter._tool_handlers["discover"] = _exploding_handler  # noqa: SLF001
+    message = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "discover", "arguments": {"terms": "revenue"}},
+    }
+    response = handle_jsonrpc_message(adapter, message)
+    assert response is not None
+    # The adapter returns a successful result wrapping a tool
+    # output whose `isError` flag is True. Inspect the structured
+    # content.
+    result = response.get("result")
+    assert isinstance(result, dict)
+    structured = dict(result.get("structuredContent", {}) or {})
+    assert structured.get("ok") is False
+    errors = list(structured.get("errors", []) or [])
+    assert errors
+    first = errors[0]
+    assert first["code"] == "INTERNAL_ERROR"
+    assert first["message"] == UNEXPECTED_ERROR_MESSAGE
+    assert "nope" not in json.dumps(response)
+    hints = list(first.get("recovery_hints", []) or [])
+    assert hints
 
 
-def test_http_bare_exception_surfaces_as_structured_internal_error(runtime_factory) -> None:
+def test_http_bare_exception_surfaces_as_structured_internal_error(runtime) -> None:
     """HTTP boundary's `exception_payload` must wrap bare exceptions
     in a structured INTERNAL_ERROR envelope."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        service = SemanticHTTPService(runtime)
-        result, status = service.exception_payload(KeyError("missing_column"), stage="http")
-        assert status == 500
-        error = dict(result.get("error", {}) or {})
-        assert error.get("code") == "INTERNAL_ERROR"
-        assert error["message"] == UNEXPECTED_ERROR_MESSAGE
-        assert "missing_column" not in json.dumps(result)
-        hints = list(result.get("recovery_hints", []) or [])
-        assert hints, "HTTP INTERNAL_ERROR must carry recovery_hints"
-        joined = " ".join(str(h.get("message", "")) for h in hints).lower()
-        assert "bug" in joined or "issues" in joined
-        details = dict(error.get("details", {}) or {})
-        assert details.get("exception_type") == "KeyError"
-    finally:
-        runtime.close()
+    service = SemanticHTTPService(runtime)
+    result, status = service.exception_payload(KeyError("missing_column"), stage="http")
+    assert status == 500
+    error = dict(result.get("error", {}) or {})
+    assert error.get("code") == "INTERNAL_ERROR"
+    assert error["message"] == UNEXPECTED_ERROR_MESSAGE
+    assert "missing_column" not in json.dumps(result)
+    hints = list(result.get("recovery_hints", []) or [])
+    assert hints, "HTTP INTERNAL_ERROR must carry recovery_hints"
+    joined = " ".join(str(h.get("message", "")) for h in hints).lower()
+    assert "bug" in joined or "issues" in joined
+    details = dict(error.get("details", {}) or {})
+    assert details.get("exception_type") == "KeyError"
 
 
 def test_error_codes_module_is_self_consistent() -> None:

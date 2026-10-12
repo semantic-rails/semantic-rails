@@ -1,17 +1,6 @@
-"""MCP tool descriptions — must be agent guidance, not URL stubs.
+"""MCP tool descriptions are agent guidance: when to call, a gotcha, a bounded length.
 
-Audit finding I4: every tool description used to be a one-liner ending
-in 'Equivalent to POST /api/v1/X.' That's an HTTP-SDK stencil, not
-agent-first guidance. An LLM ranking tools by description had no signal
-about which tool to call first, no input-shape note, no gotcha. The
-workflow itself is stated once, in the server instructions
-(``MCP_SERVER_INSTRUCTIONS``; see test_mcp_instructions.py). This test pins
-three constraints:
-
-  1. Each description says when to use its tool (after/before/first/step).
-  2. Each description names a concrete gotcha or call-shape note.
-  3. Each description is non-trivial in length (>= 200 chars) so it
-     can't silently regress to a one-liner.
+The workflow itself is stated once, in the server instructions (see test_mcp_instructions.py).
 """
 
 from __future__ import annotations
@@ -21,73 +10,24 @@ import copy
 from semantic_rails.mcp import list_tool_definitions
 
 LOOP_KEYWORDS = ("after", "before", "step", "first")
-GOTCHA_KEYWORDS = (
-    "gotcha",
-    "must be",
-    "do not",
-    "don't",
-    "skip",
-    "only after",
-    "cost",
-    "needs no",
-)
+GOTCHA_KEYWORDS = ("gotcha", "must be", "do not", "don't", "skip", "only after", "cost", "needs no")
 
 
-def test_every_tool_description_says_when_to_use_it():
-    for tool in list_tool_definitions():
-        desc = tool["description"].lower()
-        assert any(kw in desc for kw in LOOP_KEYWORDS), (tool["name"], tool["description"])
-
-
-def test_every_tool_description_names_a_gotcha_or_call_shape():
-    tools = list_tool_definitions()
-    for tool in tools:
-        desc = tool["description"].lower()
-        assert any(kw in desc for kw in GOTCHA_KEYWORDS), (
-            f"tool {tool['name']!r} description should name a gotcha or "
-            f"call-shape note; got: {tool['description']!r}"
-        )
-
-
-def test_every_tool_description_is_non_trivial():
-    tools = list_tool_definitions()
-    for tool in tools:
-        desc = tool["description"]
-        assert len(desc) >= 200, (
-            f"tool {tool['name']!r} description is too short ({len(desc)} chars); "
-            f"agent-first descriptions need at least a what + when + gotcha. "
-            f"Got: {desc!r}"
-        )
-        # Catch the old URL-stub regression: descriptions that are ONLY
-        # the http equivalence sentence.
-        without_http = desc.split("Equivalent to POST")[0].strip()
-        assert len(without_http) >= 150, (
-            f"tool {tool['name']!r} description is mostly the HTTP-equivalence "
-            f"sentence; add what/when/gotcha. Got: {desc!r}"
-        )
-
-
-def test_every_tool_description_stays_scannable():
-    """Upper bound so descriptions stay scannable in tools/list."""
-    tools = list_tool_definitions()
-    for tool in tools:
-        desc = tool["description"]
-        assert len(desc) <= (850 if tool["name"] == "execute" else 700), (
-            f"tool {tool['name']!r} description is too long ({len(desc)} chars); "
-            f"keep agent-rated descriptions scannable."
-        )
-
-
-def test_plan_description_mentions_out_of_scope_branch():
-    """Fix 1 added 'out_of_scope' / 'low_relevance' blocks. The plan
-    description must teach the agent to branch on them so the LLM doesn't
-    blindly trust ``best`` when both fields are present."""
-    tools = list_tool_definitions()
-    plan = next(t for t in tools if t["name"] == "plan")
-    desc = plan["description"].lower()
-    assert "out_of_scope" in desc or "low_relevance" in desc, (
-        f"plan description should mention the empty-result blocks; got: {plan['description']!r}"
-    )
+def test_every_tool_description_says_when_and_how_to_call_it():
+    tools = {tool["name"]: tool["description"] for tool in list_tool_definitions()}
+    for name, description in tools.items():
+        lowered = description.lower()
+        assert any(kw in lowered for kw in LOOP_KEYWORDS), (name, description)
+        assert any(kw in lowered for kw in GOTCHA_KEYWORDS), (name, description)
+        # Non-trivial, never only an HTTP-equivalence stub, and still scannable.
+        assert len(description) >= 200, (name, description)
+        assert len(description.split("Equivalent to POST")[0].strip()) >= 150, (name, description)
+        assert len(description) <= (850 if name == "execute" else 700), name
+    # plan teaches the agent to branch on its empty-result blocks.
+    assert "out_of_scope" in tools["plan"] or "low_relevance" in tools["plan"]
+    # The positional item shapes are taught once, on execute.
+    for marker in ("select", "group_by", "where/having [{field, op, value}]", "order_by"):
+        assert marker in tools["execute"], marker
 
 
 def test_execute_schema_is_the_call_and_empty_select_lists_rows(runtime_factory):
@@ -175,58 +115,9 @@ def test_last_query_schema_describes_object_shape():
     assert last["additionalProperties"] is False
 
 
-def test_expression_shapes_examples_parse(runtime_factory):
-    """Every shipped example reads through the call's front door, so shape edits stay
-    self-consistent (a rolling window is ``{unit, value}``, never an int)."""
-    from semantic_rails.query_call import EXPRESSION_SHAPES, read_call
-
-    for shape in EXPRESSION_SHAPES:
-        # Deep copy: the placeholder swap must not edit the shared shapes.
-        example = copy.deepcopy({"expression": shape["example"], "as": "x"})
-        _replace_placeholder_ids(example)
-        # read_call raises SemanticLayerError on a shape problem.
-        read_call({"select": [example]}, partial=True)
-
-
-def _replace_placeholder_ids(node):
-    """Walk an example dict and replace `measure.<id>`-style placeholders
-    with concrete jaffle_shop ids that exist. The parser does not check
-    these against the package, but downstream identifiers like
-    `entity.<id>` raise on validation. Keep it light."""
-    placeholders = {
-        "measure.<id>": "measure.jaffle.revenue_usd",
-        "measure.<num>": "measure.jaffle.revenue_usd",
-        "measure.<den>": "measure.jaffle.order_count",
-        "measure.<start>": "measure.jaffle.session_count",
-        "measure.<end>": "measure.jaffle.order_count",
-        "metric.<id>": "metric.sales.aov_usd",
-        "entity.<id>": "entity.jaffle_order",
-    }
-    if isinstance(node, dict):
-        for key, value in list(node.items()):
-            if isinstance(value, str) and value in placeholders:
-                node[key] = placeholders[value]
-            else:
-                _replace_placeholder_ids(value)
-    elif isinstance(node, list):
-        for item in node:
-            _replace_placeholder_ids(item)
-
-
 def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
-    """Round-eight: the slim MCP tool descriptions point agents at
-    ``capabilities.expression_shapes[].example`` as the rescue path
-    for advanced kinds (prior_period, rolling, ...). Parsing the
-    example is necessary but not sufficient — the agent will wrap it
-    in ``{select: [{expression: <example>, as: ...}]}`` and call
-    ``validate``. If validate rejects the wrapped form with a
-    shape-related error, the rescue path is broken.
-
-    Wrap each shape's example, replace placeholder ids with concrete
-    jaffle_shop ids, and assert validate does not return shape errors
-    (errors whose path points INTO ``select`` or whose code names a
-    structural problem with the expression).
-    """
+    """Each shipped expression example, wrapped as a select item with placeholder ids
+    replaced, validates without a shape error: it is the rescue path for advanced kinds."""
     from semantic_rails.mcp import SemanticLayerMCPAdapter
     from semantic_rails.query_call import EXPRESSION_SHAPES
 
@@ -317,9 +208,6 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
 
 
 def test_capabilities_payload_ships_expression_shapes(runtime_factory):
-    """Companion structured surface for F4: capabilities exposes the
-    expression shapes as a queryable list of {name, description, example}
-    dicts. Lets agents introspect at runtime without parsing description text."""
     from semantic_rails.metadata_parts.capabilities import capabilities_payload
 
     runtime = runtime_factory("jaffle_shop")

@@ -77,30 +77,8 @@ def _request(
     )
 
 
-def test_streamable_http_initializes_latest_protocol():
-    response = _request(
-        RecordingAdapter(),
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {"protocolVersion": MCP_PROTOCOL_VERSION},
-        },
-    )
-
-    assert response.status == 200
-    assert response.headers["MCP-Protocol-Version"] == MCP_PROTOCOL_VERSION
-    assert response.payload
-    assert response.payload["result"]["protocolVersion"] == MCP_PROTOCOL_VERSION
-    assert response.payload["result"]["capabilities"] == {
-        "tools": {},
-        "resources": {},
-        "prompts": {},
-    }
-
-
-@pytest.mark.parametrize("version", ["2025-06-18", "2025-03-26"])
-def test_streamable_http_initializes_an_earlier_supported_protocol(version: str):
+@pytest.mark.parametrize("version", [MCP_PROTOCOL_VERSION, "2025-06-18", "2025-03-26"])
+def test_streamable_http_initializes_each_supported_protocol(version: str):
     response = _request(
         RecordingAdapter(),
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": version}},
@@ -108,8 +86,10 @@ def test_streamable_http_initializes_an_earlier_supported_protocol(version: str)
     )
 
     assert response.status == 200
-    assert response.payload
-    assert response.payload["result"]["protocolVersion"] == version
+    assert response.headers["MCP-Protocol-Version"] == MCP_PROTOCOL_VERSION
+    result = response.payload["result"]
+    assert result["protocolVersion"] == version
+    assert result["capabilities"] == {"tools": {}, "resources": {}, "prompts": {}}
 
 
 def test_streamable_http_notification_returns_202_without_body():

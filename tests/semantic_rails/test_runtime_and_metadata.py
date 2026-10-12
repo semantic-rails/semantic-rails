@@ -23,6 +23,13 @@ from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.result_helpers import held_candidate
 
 
+@pytest.fixture()
+def runtime(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    yield runtime
+    runtime.close()
+
+
 @pytest.fixture(scope="module")
 def jaffle_snapshot(tmp_path_factory):
     package = copy_package_config(
@@ -335,142 +342,99 @@ def _write_generic_planning_package(package_dir: Path) -> None:
     )
 
 
-def test_validate_compile_and_query_happy_path_on_jaffle_shop(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
+def test_validate_compile_and_query_happy_path_on_jaffle_shop(runtime):
     runtime.query = _fake_query_result
-    try:
-        # `verbosity="full"` keeps `physical_plan` on the compile envelope
-        # — the new compact default drops it.
-        query = {
-            "select": [
-                {
-                    "expression": {
-                        "kind": "measure",
-                        "measure": "measure.jaffle.order_count",
-                        "aggregation": "count_distinct",
-                    },
-                    "as": "orders",
+    query = {
+        "select": [
+            {
+                "expression": {
+                    "kind": "measure",
+                    "measure": "measure.jaffle.order_count",
+                    "aggregation": "count_distinct",
                 },
-                "metric.sales.aov_usd",
-            ],
-            "group_by": ["dimension.jaffle_store_name"],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "order_by": [{"field": "orders", "direction": "desc"}],
-            "limit": 5,
-        }
+                "as": "orders",
+            },
+            "metric.sales.aov_usd",
+        ],
+        "group_by": ["dimension.jaffle_store_name"],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+        "order_by": [{"field": "orders", "direction": "desc"}],
+        "limit": 5,
+    }
 
-        validated = runtime.validate(query, verbosity="full")
-        compiled = runtime.compile(query, verbosity="full")
-        result = runtime.query(query, verbosity="full")
+    validated = runtime.validate(query, verbosity="full")
+    compiled = runtime.compile(query, verbosity="full")
+    result = runtime.query(query, verbosity="full")
 
-        assert validated["ok"] is True
-        assert validated["query"] == query
-        assert validated["normalized_query"]["group_by"] == ["dimension.jaffle_store_name"]
-        assert (
-            validated["normalized_query"]["time"]["temporal_role"]
-            == "temporal_role.jaffle_order_time"
-        )
-        assert validated["logical_plan"]["root_entity"] == "entity.jaffle_order"
-        # `projected` passthrough CTE is inlined when there are no metric filters.
-        assert "projected AS (" not in compiled["rendered_sql"]
-        assert 'AS "aov_usd"' in compiled["rendered_sql"]
-        assert compiled["physical_plan"]["nodes"]
-        assert compiled["query"] == query
-        assert result["row_count"] > 0
-        assert "dimension.jaffle_store_name" in result["rows"][0]
-        assert result["rows"][0]["orders"] >= 0
-        assert result["rows"][0]["aov_usd"] >= 0
-    finally:
-        runtime.close()
+    assert validated["ok"] is True
+    assert validated["query"] == query
+    assert validated["normalized_query"]["group_by"] == ["dimension.jaffle_store_name"]
+    assert (
+        validated["normalized_query"]["time"]["temporal_role"] == "temporal_role.jaffle_order_time"
+    )
+    assert validated["logical_plan"]["root_entity"] == "entity.jaffle_order"
+    assert 'AS "aov_usd"' in compiled["rendered_sql"]
+    assert compiled["physical_plan"]["nodes"]
+    assert compiled["query"] == query
+    assert result["row_count"] > 0
+    assert "dimension.jaffle_store_name" in result["rows"][0]
+    assert result["rows"][0]["orders"] >= 0
+    assert result["rows"][0]["aov_usd"] >= 0
 
 
-def test_validate_uses_compiled_plan_cache(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # `verbosity="full"` keeps `compile_stats` at the top level —
-        # the new compact default drops it.
-        query = {
-            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "limit": 3,
-        }
+def test_compile_cache_is_not_mutated_by_returned_compilation(runtime):
+    query = {
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+        "limit": 3,
+    }
 
-        first = runtime.validate(query, verbosity="full")
-        second = runtime.validate(query, verbosity="full")
+    payload = runtime.engine_payload(query)
+    first = runtime._compile(payload, policy_context={})
+    original_sql = first["sql"]
+    first["sql"] = "select mutated"
+    first["logical_plan"].measure_plans.clear()
 
-        assert first["ok"] is True
-        assert first["compile_stats"]["cache_hit"] is False
-        assert second["ok"] is True
-        assert second["compile_stats"]["cache_hit"] is True
-        assert second["explain"]["physical_plan"]["nodes"]
-    finally:
-        runtime.close()
+    second = runtime._compile(payload, policy_context={})
+
+    assert second["compile_stats"]["cache_hit"] is True
+    assert second["sql"] == original_sql
+    assert second["logical_plan"].measure_plans
 
 
-def test_compile_cache_is_not_mutated_by_returned_compilation(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        query = {
-            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "limit": 3,
-        }
+def test_runtime_cached_responses_are_defensive_copies(runtime):
+    catalog = runtime.catalog()
+    catalog["package"]["name"] = "mutated"
+    catalog["objects"][0]["id"] = "mutated"
 
-        payload = runtime.engine_payload(query)
-        first = runtime._compile(payload, policy_context={})
-        original_sql = first["sql"]
-        first["sql"] = "select mutated"
-        first["logical_plan"].measure_plans.clear()
+    resolved = runtime.resolve("median_item_revenue", kind="metric")
+    resolved["object"]["payload"]["compatible_temporal_roles"].append("mutated")
 
-        second = runtime._compile(payload, policy_context={})
-
-        assert second["compile_stats"]["cache_hit"] is True
-        assert second["sql"] == original_sql
-        assert second["logical_plan"].measure_plans
-    finally:
-        runtime.close()
+    assert runtime.catalog()["package"]["name"] == "jaffle_shop"
+    assert runtime.catalog()["objects"][0]["id"] != "mutated"
+    assert (
+        "mutated"
+        not in runtime.resolve("median_item_revenue", kind="metric")["object"]["payload"][
+            "compatible_temporal_roles"
+        ]
+    )
 
 
-def test_runtime_cached_responses_are_defensive_copies(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        catalog = runtime.catalog()
-        catalog["package"]["name"] = "mutated"
-        catalog["objects"][0]["id"] = "mutated"
+def test_runtime_compile_cache_supports_basic_concurrent_use(runtime):
+    query = {
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+        "limit": 3,
+    }
 
-        resolved = runtime.resolve("median_item_revenue", kind="metric")
-        resolved["object"]["payload"]["compatible_temporal_roles"].append("mutated")
+    first = runtime.validate(query, verbosity="full")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: runtime.validate(query, verbosity="full"), range(16)))
 
-        assert runtime.catalog()["package"]["name"] == "jaffle_shop"
-        assert runtime.catalog()["objects"][0]["id"] != "mutated"
-        assert (
-            "mutated"
-            not in runtime.resolve("median_item_revenue", kind="metric")["object"]["payload"][
-                "compatible_temporal_roles"
-            ]
-        )
-    finally:
-        runtime.close()
-
-
-def test_runtime_compile_cache_supports_basic_concurrent_use(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # `verbosity="full"` keeps `compile_stats` at the top level —
-        # the new compact default drops it.
-        query = {
-            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "limit": 3,
-        }
-
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            results = list(pool.map(lambda _: runtime.validate(query, verbosity="full"), range(16)))
-
-        assert all(result["ok"] is True for result in results)
-        assert any(result["compile_stats"]["cache_hit"] is True for result in results)
-    finally:
-        runtime.close()
+    assert first["ok"] is True and first["compile_stats"]["cache_hit"] is False
+    assert all(result["ok"] is True for result in results)
+    assert all(result["compile_stats"]["cache_hit"] is True for result in results)
+    assert results[0]["explain"]["physical_plan"]["nodes"]
 
 
 def test_valid_values_supports_value_domains_and_filtered_duckdb(runtime_factory):
@@ -524,169 +488,140 @@ def test_valid_values_supports_value_domains_and_filtered_duckdb(runtime_factory
         jaffle.close()
 
 
-def test_metadata_cards_catalog_and_build_options_do_not_live_query_values(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
+def test_metadata_cards_catalog_and_build_options_do_not_live_query_values(runtime):
 
     def _raise_live_query(*args, **kwargs):
         raise AssertionError("metadata endpoint opened a live query path")
 
     runtime.query = _raise_live_query
     runtime._get_adapter = _raise_live_query
-    try:
-        query = {
-            "select": [
-                {
-                    "expression": {
-                        "kind": "measure",
-                        "measure": "measure.jaffle.order_count",
-                        "aggregation": "count_distinct",
-                    },
-                    "as": "orders",
-                }
-            ],
-        }
+    query = {
+        "select": [
+            {
+                "expression": {
+                    "kind": "measure",
+                    "measure": "measure.jaffle.order_count",
+                    "aggregation": "count_distinct",
+                },
+                "as": "orders",
+            }
+        ],
+    }
 
-        compact_catalog = catalog_payload(runtime, verbosity="compact")
-        full_catalog = catalog_payload(runtime, verbosity="full")
-        declared_card = inspect_payload(
-            runtime, object_id="dimension.jaffle_item_product_type", partial_query=query
-        )["card"]
-        open_card = inspect_payload(
-            runtime, object_id="dimension.jaffle_order_customer_id", partial_query=query
-        )["card"]
-        discovered = discover_payload(
-            runtime, terms="customer", kinds=["dimension"], partial_query=query, limit=3
-        )
-        filter_options = build_options_payload(
-            runtime,
-            partial_query=query,
-            step="filter_value",
-            focus_object_id="dimension.jaffle_order_customer_id",
-            limit=5,
-        )
+    compact_catalog = catalog_payload(runtime, verbosity="compact")
+    full_catalog = catalog_payload(runtime, verbosity="full")
+    declared_card = inspect_payload(
+        runtime, object_id="dimension.jaffle_item_product_type", partial_query=query
+    )["card"]
+    open_card = inspect_payload(
+        runtime, object_id="dimension.jaffle_order_customer_id", partial_query=query
+    )["card"]
+    discovered = discover_payload(
+        runtime, terms="customer", kinds=["dimension"], partial_query=query, limit=3
+    )
+    filter_options = build_options_payload(
+        runtime,
+        partial_query=query,
+        step="filter_value",
+        focus_object_id="dimension.jaffle_order_customer_id",
+        limit=5,
+    )
 
-        assert compact_catalog["meta"]["verbosity"] == "compact"
-        assert full_catalog["meta"]["verbosity"] == "full"
-        assert [row["value"] for row in declared_card["sample_values"]] == ["jaffle", "beverage"]
-        assert declared_card["valid_values_lookup_required"] is False
-        assert open_card["sample_values"] == []
-        assert open_card["top_values"] == []
-        assert open_card["valid_values_lookup_required"] is True
-        assert "valid-values" in open_card["valid_values_hint"]
-        assert discovered["dimensions"]
-        assert filter_options["recommended"] == []
-        assert filter_options["available"] == []
-        assert filter_options["query_patches"] == []
-    finally:
-        runtime.close()
+    assert compact_catalog["meta"]["verbosity"] == "compact"
+    assert full_catalog["meta"]["verbosity"] == "full"
+    assert [row["value"] for row in declared_card["sample_values"]] == ["jaffle", "beverage"]
+    assert declared_card["valid_values_lookup_required"] is False
+    assert open_card["sample_values"] == []
+    assert open_card["top_values"] == []
+    assert open_card["valid_values_lookup_required"] is True
+    assert "valid-values" in open_card["valid_values_hint"]
+    assert discovered["dimensions"]
+    assert filter_options["recommended"] == []
+    assert filter_options["available"] == []
+    assert filter_options["query_patches"] == []
 
 
-def test_valid_values_defaults_to_declared_domains_without_live_query(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
+def test_valid_values_defaults_to_declared_domains_without_live_query(runtime):
 
     def _raise_live_query(*args, **kwargs):
         raise AssertionError("valid-values should require allow_live_query for warehouse lookup")
 
     runtime.query = _raise_live_query
     runtime._get_adapter = _raise_live_query
-    try:
-        query = {
-            "where": [
-                {
-                    "field": "dimension.jaffle_order_ordered_date",
-                    "op": "gte",
-                    "value": "2016-09-01",
-                }
-            ],
-        }
+    query = {
+        "where": [
+            {
+                "field": "dimension.jaffle_order_ordered_date",
+                "op": "gte",
+                "value": "2016-09-01",
+            }
+        ],
+    }
 
-        declared = valid_values_payload(
-            runtime, dimension_id="dimension.jaffle_item_product_type", query=query
-        )
-        empty = valid_values_payload(
-            runtime, dimension_id="dimension.jaffle_order_customer_id", query=query
-        )
+    declared = valid_values_payload(
+        runtime, dimension_id="dimension.jaffle_item_product_type", query=query
+    )
+    empty = valid_values_payload(
+        runtime, dimension_id="dimension.jaffle_order_customer_id", query=query
+    )
 
-        assert declared["source"] == "value_domain"
-        assert declared["value_source_type"] == "declared_domain"
-        assert [row["value"] for row in declared["values"]] == ["jaffle", "beverage"]
-        assert empty["ok"] is False
-        assert empty["status"] == "needs_live_query"
-        assert "next_call" not in empty
-        assert empty["values"] == []
-        assert empty["total_count"] == 0
-        assert empty["source"] == "none"
-        assert empty["value_source_type"] == "none"
-        assert empty["estimated_cost"] == "none"
-        assert empty["valid_values_lookup_required"] is True
-        assert "allow_live_query=true" in empty["valid_values_hint"]
-    finally:
-        runtime.close()
+    assert declared["source"] == "value_domain"
+    assert declared["value_source_type"] == "declared_domain"
+    assert [row["value"] for row in declared["values"]] == ["jaffle", "beverage"]
+    assert empty["ok"] is False
+    assert empty["status"] == "needs_live_query"
+    assert "next_call" not in empty
+    assert empty["values"] == []
+    assert empty["total_count"] == 0
+    assert empty["source"] == "none"
+    assert empty["value_source_type"] == "none"
+    assert empty["estimated_cost"] == "none"
+    assert empty["valid_values_lookup_required"] is True
+    assert "allow_live_query=true" in empty["valid_values_hint"]
 
 
-def test_catalog_temporal_roles_surface_temporal_class(runtime_factory):
-    """Regression test for MEDIUM #1: every entry in catalog.temporal_roles
-    used to return temporal_class: None even though models declared
-    `class: state_time`, etc. The data was in the YAML; the catalog
-    endpoint wasn't propagating it."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        catalog = catalog_payload(runtime)
-        assert catalog["temporal_roles"], "expected at least one temporal role in catalog"
-        # No row should have a falsy temporal_class — every role is
-        # declared with one of event_time / calendar_time / as_of_time /
-        # state_time.
-        valid = {"event_time", "calendar_time", "as_of_time", "state_time"}
-        observed = {row.get("temporal_class") for row in catalog["temporal_roles"]}
-        assert all(row.get("temporal_class") in valid for row in catalog["temporal_roles"]), (
-            f"some temporal roles are missing temporal_class: {observed}"
-        )
-        # The recently-added `state_time` class must surface end-to-end.
-        assert "state_time" in observed
-    finally:
-        runtime.close()
-
-
-def test_catalog_payload_groups_objects_by_kind(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # ``verbosity="full"`` is required for ``payload`` inspection —
-        # compact (the default) strips it for envelope budget. The
-        # grouping / alias-index assertions stay verbosity-agnostic.
-        catalog = catalog_payload(runtime, verbosity="full")
-        assert "entities" in catalog
-        assert "dimensions" in catalog
-        assert "temporal_roles" in catalog
-        assert "measures" in catalog
-        assert any(row["id"] == "entity.jaffle_order" for row in catalog["entities"])
-        assert "dimensionjafflestorename" in catalog["alias_index"]
-        assert "dimension.jaffle_store_name" in catalog["alias_index"]["dimensionjafflestorename"]
-        capability_kinds = {row["kind"] for row in catalog["capabilities"]}
-        assert "dense_fill" in capability_kinds
-        assert "historical_joins" in capability_kinds
-        assert "alternate_calendars" not in capability_kinds  # refused in this release
-        assert "metric_predicates" in capability_kinds
-        assert "percentile_metrics" in capability_kinds
-        assert "conversion_metrics" in capability_kinds
-        # `metric.sales.orders` was a wrapper that got dropped. AOV is the
-        # canonical order-rooted governed metric in the curated catalog —
-        # it carries the same default temporal role and grouping entities.
-        aov = next(row for row in catalog["metrics"] if row["id"] == "metric.sales.aov_usd")
-        assert aov["payload"]["default_temporal_role"] == "temporal_role.jaffle_order_time"
-        assert any(
-            entity["id"] == "entity.jaffle_store"
-            for entity in aov["payload"]["valid_grouping_entities"]
-        )
-        repeat_customer_orders = next(
-            row for row in catalog["metrics"] if row["id"] == "metric.sales.repeat_customer_orders"
-        )
-        assert any(
-            entity["id"] == "entity.jaffle_customer_history"
-            for entity in repeat_customer_orders["payload"]["disabled_grouping_entities"]
-            + repeat_customer_orders["payload"]["valid_grouping_entities"]
-        )
-    finally:
-        runtime.close()
+def test_catalog_payload_groups_objects_by_kind(runtime):
+    catalog = catalog_payload(runtime, verbosity="full")
+    assert "entities" in catalog
+    assert "dimensions" in catalog
+    assert "temporal_roles" in catalog
+    assert "measures" in catalog
+    assert any(row["id"] == "entity.jaffle_order" for row in catalog["entities"])
+    # Every temporal role carries the class its model declares.
+    classes = [row.get("temporal_class") for row in catalog["temporal_roles"]]
+    assert classes and set(classes) <= {
+        "event_time",
+        "calendar_time",
+        "as_of_time",
+        "state_time",
+    }
+    assert "state_time" in classes
+    assert "dimensionjafflestorename" in catalog["alias_index"]
+    assert "dimension.jaffle_store_name" in catalog["alias_index"]["dimensionjafflestorename"]
+    capability_kinds = {row["kind"] for row in catalog["capabilities"]}
+    assert "dense_fill" in capability_kinds
+    assert "historical_joins" in capability_kinds
+    assert "alternate_calendars" not in capability_kinds  # refused in this release
+    assert "metric_predicates" in capability_kinds
+    assert "percentile_metrics" in capability_kinds
+    assert "conversion_metrics" in capability_kinds
+    # `metric.sales.orders` was a wrapper that got dropped. AOV is the
+    # canonical order-rooted governed metric in the curated catalog —
+    # it carries the same default temporal role and grouping entities.
+    aov = next(row for row in catalog["metrics"] if row["id"] == "metric.sales.aov_usd")
+    assert aov["payload"]["default_temporal_role"] == "temporal_role.jaffle_order_time"
+    assert any(
+        entity["id"] == "entity.jaffle_store"
+        for entity in aov["payload"]["valid_grouping_entities"]
+    )
+    repeat_customer_orders = next(
+        row for row in catalog["metrics"] if row["id"] == "metric.sales.repeat_customer_orders"
+    )
+    assert any(
+        entity["id"] == "entity.jaffle_customer_history"
+        for entity in repeat_customer_orders["payload"]["disabled_grouping_entities"]
+        + repeat_customer_orders["payload"]["valid_grouping_entities"]
+    )
 
 
 def test_operational_metadata_is_exposed_on_inspect_and_full_catalog_only(
@@ -752,356 +687,316 @@ def test_operational_metadata_is_exposed_on_inspect_and_full_catalog_only(
         runtime.close()
 
 
-def test_runtime_resolve_enriches_metric_time_metadata(runtime_factory):
+def test_runtime_resolve_enriches_metric_time_metadata(runtime):
     """Resolve enriches the resolved object with default + compatible temporal
     roles. Originally tested against metric.sales.orders, but `orders` is now
     queryable as the underlying measure (metric was a pure aggregate wrapper).
     For governed metrics that survive curation, the test verifies the same
     enrichment behavior — here using `median_item_revenue` (kind: semi_additive)
     which carries explicit time-axis semantics."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # Measures are first-class — resolve "orders" against the measure index.
-        orders_measure = runtime.resolve("orders", kind="measure")
-        assert orders_measure["object"]["id"] == "measure.jaffle.order_count"
-        assert (
-            "temporal_role.jaffle_order_time"
-            in orders_measure["object"]["payload"]["compatible_temporal_roles"]
-        )
-        # Governed metric resolution: temporal-aware semi_additive metric.
-        median = runtime.resolve("median_item_revenue", kind="metric")
-        assert median["object"]["id"] == "metric.sales.median_item_revenue"
-        assert (
-            median["object"]["payload"]["default_temporal_role"]
-            == "temporal_role.jaffle_daily_metric_day"
-        )
-    finally:
-        runtime.close()
+    orders_measure = runtime.resolve("orders", kind="measure")
+    assert orders_measure["object"]["id"] == "measure.jaffle.order_count"
+    assert (
+        "temporal_role.jaffle_order_time"
+        in orders_measure["object"]["payload"]["compatible_temporal_roles"]
+    )
+    # Governed metric resolution: temporal-aware semi_additive metric.
+    median = runtime.resolve("median_item_revenue", kind="metric")
+    assert median["object"]["id"] == "metric.sales.median_item_revenue"
+    assert (
+        median["object"]["payload"]["default_temporal_role"]
+        == "temporal_role.jaffle_daily_metric_day"
+    )
 
 
-def test_discover_surfaces_relevant_measures_metrics_and_dimension_values(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        drinks = discover_payload(runtime, terms="drinks", stage="initial", limit=5)
-        assert drinks["measures"]
-        assert drinks["metrics"]
-        assert drinks["dimension_values"]
-        assert drinks["stage"] == "initial"
-        assert drinks["measures"][0]["object_type"] == "measure"
-        assert any(
-            row["id"] in {"measure.jaffle.drink_order_count", "measure.jaffle.drink_revenue_usd"}
-            for row in drinks["measures"][:2]
-        )
-        assert any(row["id"] == "metric.sales.drink_revenue_share" for row in drinks["metrics"])
-        assert any(
-            row["dimension_id"] == "dimension.jaffle_item_product_type"
-            and row["value"] == "beverage"
-            for row in drinks["dimension_values"]
-        )
-    finally:
-        runtime.close()
+def test_discover_surfaces_relevant_measures_metrics_and_dimension_values(runtime):
+    drinks = discover_payload(runtime, terms="drinks", stage="initial", limit=5)
+    assert drinks["measures"]
+    assert drinks["metrics"]
+    assert drinks["dimension_values"]
+    assert drinks["stage"] == "initial"
+    assert drinks["measures"][0]["object_type"] == "measure"
+    assert any(
+        row["id"] in {"measure.jaffle.drink_order_count", "measure.jaffle.drink_revenue_usd"}
+        for row in drinks["measures"][:2]
+    )
+    assert any(row["id"] == "metric.sales.drink_revenue_share" for row in drinks["metrics"])
+    assert any(
+        row["dimension_id"] == "dimension.jaffle_item_product_type" and row["value"] == "beverage"
+        for row in drinks["dimension_values"]
+    )
 
 
-def test_discover_sales_prioritizes_core_revenue_measure(runtime_factory):
+def test_discover_sales_prioritizes_core_revenue_measure(runtime):
     """Searching for `sales` should surface the canonical revenue primitive
     near the top. With auto-publish gone, that primitive is the underlying
     `measure.jaffle.revenue_usd` rather than a wrapper metric of the same
     name."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        discovered = discover_payload(runtime, terms="sales", stage="initial", limit=12)
-        measure_ids = [row["id"] for row in discovered["measures"]]
-        # The canonical revenue measure should appear in the top results.
-        assert "measure.jaffle.revenue_usd" in measure_ids[:5], (
-            f"expected revenue_usd in top 5 measures, got {measure_ids[:5]!r}"
-        )
-    finally:
-        runtime.close()
+    discovered = discover_payload(runtime, terms="sales", stage="initial", limit=12)
+    measure_ids = [row["id"] for row in discovered["measures"]]
+    # The canonical revenue measure should appear in the top results.
+    assert "measure.jaffle.revenue_usd" in measure_ids[:5], (
+        f"expected revenue_usd in top 5 measures, got {measure_ids[:5]!r}"
+    )
 
 
-def test_inspect_exposes_measure_and_dimension_cards(runtime_factory):
+def test_inspect_exposes_measure_and_dimension_cards(runtime):
     """Inspect cards expose the right shape for each kind: measure cards
     show aggregation defaults and recommended dimensions; metric cards show
     temporal-role defaults; dimension cards show sample values."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        measure_card = inspect_payload(runtime, object_id="measure.jaffle.order_count")["card"]
-        # Use the surviving delivered measure (metric was a wrapper of it).
-        delivered_measure_card = inspect_payload(
-            runtime, object_id="measure.jaffle.delivered_revenue_usd"
-        )["card"]
-        # Use a surviving governed metric for the metric-card check.
-        metric_card = inspect_payload(runtime, object_id="metric.sales.aov_usd")["card"]
-        dimension_card = inspect_payload(runtime, object_id="dimension.jaffle_item_product_type")[
-            "card"
-        ]
+    measure_card = inspect_payload(runtime, object_id="measure.jaffle.order_count")["card"]
+    # Use the surviving delivered measure (metric was a wrapper of it).
+    delivered_measure_card = inspect_payload(
+        runtime, object_id="measure.jaffle.delivered_revenue_usd"
+    )["card"]
+    # Use a surviving governed metric for the metric-card check.
+    metric_card = inspect_payload(runtime, object_id="metric.sales.aov_usd")["card"]
+    dimension_card = inspect_payload(runtime, object_id="dimension.jaffle_item_product_type")[
+        "card"
+    ]
 
-        assert measure_card["default_aggregation"] == "count_distinct"
-        assert "count_distinct" in measure_card["allowed_aggregations"]
-        assert measure_card["usage_summary"]["default_aggregation"] == "count_distinct"
-        # ``recommended_dimensions``/``preferred_dimensions`` were dropped
-        # with the removal of the ``related_dimensions`` authoring field.
-        assert "recommended_dimensions" not in measure_card
-        assert "preferred_dimensions" not in measure_card
-        assert measure_card["comparison_family"] in {"", "order_volume"}
+    assert measure_card["default_aggregation"] == "count_distinct"
+    assert "count_distinct" in measure_card["allowed_aggregations"]
+    assert measure_card["usage_summary"]["default_aggregation"] == "count_distinct"
+    # ``recommended_dimensions``/``preferred_dimensions`` were dropped
+    # with the removal of the ``related_dimensions`` authoring field.
+    assert "recommended_dimensions" not in measure_card
+    assert "preferred_dimensions" not in measure_card
+    assert measure_card["comparison_family"] in {"", "order_volume"}
 
-        # Delivered-revenue measure: anchored to lifecycle_delivered_at.
-        assert delivered_measure_card["default_aggregation"] == "sum"
+    # Delivered-revenue measure: anchored to lifecycle_delivered_at.
+    assert delivered_measure_card["default_aggregation"] == "sum"
 
-        # Governed metric: aov_usd is a ratio, value_type currency.
-        assert metric_card["value_type"] == "currency"
+    # Governed metric: aov_usd is a ratio, value_type currency.
+    assert metric_card["value_type"] == "currency"
 
-        assert dimension_card["kind_semantics"] == "categorical"
-        # `preferred_filter_ops` was dropped in v1 — metadata-only, no planner gating.
-        assert "preferred_filter_ops" not in dimension_card
-        assert dimension_card["value_domain_summary"]["value_count"] == 2
-        assert dimension_card["sample_values"]
-        assert any(row["label"] == "Drink" for row in dimension_card["top_values"])
-    finally:
-        runtime.close()
+    assert dimension_card["kind_semantics"] == "categorical"
+    # `preferred_filter_ops` was dropped in v1 — metadata-only, no planner gating.
+    assert "preferred_filter_ops" not in dimension_card
+    assert dimension_card["value_domain_summary"]["value_count"] == 2
+    assert dimension_card["sample_values"]
+    assert any(row["label"] == "Drink" for row in dimension_card["top_values"])
 
 
-def test_plan_exposes_contextual_and_lifetime_metric_predicate_semantics(runtime_factory):
+def test_plan_exposes_contextual_and_lifetime_metric_predicate_semantics(runtime):
     """Inspect the lifetime-cohort metric (`repeat_customer_orders`) to confirm
     it carries entity_only scope semantics, then plan two queries that
     request a contextual cohort filter (re-evaluated per query window). The
     contextual predicate's input ref may resolve to either a measure or a
     metric depending on which surface the planner scores highest — both
     are valid v1 outcomes."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        lifetime_card = inspect_payload(runtime, object_id="metric.sales.repeat_customer_orders")[
-            "card"
-        ]
-        # ``verbosity="full"`` retains the heavy ``validation.logical_plan``
-        # payload this test inspects (compact strips it for envelope budget).
-        contextual = plan_candidate_envelope(
-            runtime,
-            intent="monthly order volume by store for customers that made more than 10 purchases in that month",
-            limit=2,
-            verbosity="full",
-        )
-        daily_contextual = plan_candidate_envelope(
-            runtime,
-            intent="daily order volume from customers who made more than 10 purchases in that month",
-            limit=2,
-            verbosity="full",
-        )
+    lifetime_card = inspect_payload(runtime, object_id="metric.sales.repeat_customer_orders")[
+        "card"
+    ]
+    # ``verbosity="full"`` retains the heavy ``validation.logical_plan``
+    # payload this test inspects (compact strips it for envelope budget).
+    contextual = plan_candidate_envelope(
+        runtime,
+        intent="monthly order volume by store for customers that made more than 10 purchases in that month",
+        limit=2,
+        verbosity="full",
+    )
+    daily_contextual = plan_candidate_envelope(
+        runtime,
+        intent="daily order volume from customers who made more than 10 purchases in that month",
+        limit=2,
+        verbosity="full",
+    )
 
-        assert lifetime_card["predicate_scope_mode"] == "entity_only"
-        assert lifetime_card["predicate_entity"] == "entity.jaffle_customer"
-        assert lifetime_card["predicate_time_grain"] == ""
-        assert lifetime_card["predicate_context_entities"] == []
-        assert lifetime_card["predicate_filter_inheritance"] == "none"
+    assert lifetime_card["predicate_scope_mode"] == "entity_only"
+    assert lifetime_card["predicate_entity"] == "entity.jaffle_customer"
+    assert lifetime_card["predicate_time_grain"] == ""
+    assert lifetime_card["predicate_context_entities"] == []
+    assert lifetime_card["predicate_filter_inheritance"] == "none"
 
-        # "In that month" qualifies each customer by its orders in each period: one entity
-        # filter over the period, beside the store grouping, ready to run.
-        [candidate] = contextual["candidates"][:1]
-        contextual_query = candidate["candidate_ir"]
-        assert candidate["validation"]["ok"] is True
-        assert contextual_query["where"] == [
-            {
-                "entity": "entity.jaffle_customer",
-                "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
-                "over": "period",
-            }
-        ]
-        assert contextual_query["group_by"] == [
-            "dimension.jaffle_store_id",
-            "dimension.jaffle_store_name",
-        ]
-        assert contextual_query["time"]["grain"] == "month"
+    # "In that month" qualifies each customer by its orders in each period: one entity
+    # filter over the period, beside the store grouping, ready to run.
+    [candidate] = contextual["candidates"][:1]
+    contextual_query = candidate["candidate_ir"]
+    assert candidate["validation"]["ok"] is True
+    assert contextual_query["where"] == [
+        {
+            "entity": "entity.jaffle_customer",
+            "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
+            "over": "period",
+        }
+    ]
+    assert contextual_query["group_by"] == [
+        "dimension.jaffle_store_id",
+        "dimension.jaffle_store_name",
+    ]
+    assert contextual_query["time"]["grain"] == "month"
 
-        # Each day's orders from customers qualified over a month: no call reads a month
-        # inside a day, so the draft is held.
-        assert not daily_contextual["candidates"]
-        assert daily_contextual["blocked"]
-    finally:
-        runtime.close()
+    # Each day's orders from customers qualified over a month: no call reads a month
+    # inside a day, so the draft is held.
+    assert not daily_contextual["candidates"]
+    assert daily_contextual["blocked"]
 
 
-def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
+def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime):
     intents = [
         "revenue by store last month",
         "monthly average order value by customer type",
         "end-of-month inventory levels by store",
         "monthly revenue from customers with at least 10 orders by store",
     ]
-    try:
-        for intent in intents:
-            # Wider candidate window: as the metric registry grew (direct
-            # rolling/prior_period/period_to_date/derived demos), nearby
-            # share/ratio metrics get ranked alongside more candidates.
-            # Bumping limit keeps the ≥3 invariant without weakening it.
-            result = plan_candidate_envelope(
-                runtime,
-                intent=intent,
-                partial_query={"policy_context": {"now": "2026-05-04"}},
-                limit=20,
-            )
-            holds = {
-                "end-of-month inventory levels by store": "PLAN_INTENT_COVERAGE_GAP",
-                # Per month or over each customer's every order: plan asks which.
-                "monthly revenue from customers with at least 10 orders by store": "ENTITY_FILTER_PERIOD_UNSTATED",
-            }
-            if intent in holds:
-                held_candidate(result, holds[intent])
-                continue
-            candidates = list(result.get("candidates", []) or [])
-            assert len(candidates) >= 3, intent
-            assert any(
-                candidate.get("validation", {}).get("ok") is True for candidate in candidates
-            ), intent
-    finally:
-        runtime.close()
-
-
-def test_build_options_ranks_recommended_dimensions_and_stock_aggregations(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        orders_options = build_options_payload(
+    for intent in intents:
+        # Wider candidate window: as the metric registry grew (direct
+        # rolling/prior_period/period_to_date/derived demos), nearby
+        # share/ratio metrics get ranked alongside more candidates.
+        # Bumping limit keeps the ≥3 invariant without weakening it.
+        result = plan_candidate_envelope(
             runtime,
-            partial_query={
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "orders",
-                    }
-                ],
-            },
-            focus_terms="orders by store",
-            focus_object_id="measure.jaffle.order_count",
-            stage="post_measure",
-            limit=5,
+            intent=intent,
+            partial_query={"policy_context": {"now": "2026-05-04"}},
+            limit=20,
         )
-        stock_options = build_options_payload(
-            runtime,
-            partial_query={"version": 1, "select": []},
-            focus_object_id="measure.jaffle.inventory_on_hand_eop",
-            step="aggregation",
-            limit=10,
-        )
-
-        assert orders_options["recommended"]
-        assert orders_options["stage"] == "post_measure"
-        assert orders_options["builder_step"] == "group_by"
-        assert orders_options["recommended"][0]["id"] == "dimension.jaffle_store_name"
-        assert orders_options["recommended"][0]["object_type"] == "dimension"
-        assert orders_options["recommended"][0]["query_patch"]["group_by"] == [
-            "dimension.jaffle_store_name"
-        ]
-
-        stock_aggs = {
-            row["id"]: row
-            for row in [
-                *stock_options["recommended"],
-                *stock_options["available"],
-                *stock_options["blocked"],
-            ]
+        holds = {
+            "end-of-month inventory levels by store": "PLAN_INTENT_COVERAGE_GAP",
+            # Per month or over each customer's every order: plan asks which.
+            "monthly revenue from customers with at least 10 orders by store": "ENTITY_FILTER_PERIOD_UNSTATED",
         }
-        assert stock_aggs["last_value"]["available"] is True
-        assert stock_aggs["first_value"]["available"] is True
-        assert stock_aggs["sum"]["available"] is True
-        assert stock_aggs["percentile"]["available"] is True
-    finally:
-        runtime.close()
-
-
-def test_valid_values_supports_search_paging_and_selection_context(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = valid_values_payload(
-            runtime,
-            dimension_id="dimension.jaffle_item_product_type",
-            search="drink",
-            limit=1,
-            offset=0,
-        )
-        assert payload["source"] == "value_domain"
-        assert payload["selection_context"]["dimension_id"] == "dimension.jaffle_item_product_type"
-        assert payload["total_count"] == 1
-        assert payload["has_more"] is False
-        assert payload["value_source_type"] == "declared_domain"
-        assert payload["estimated_cost"] == "none"
-        assert payload["values"][0]["value"] == "beverage"
-    finally:
-        runtime.close()
-
-
-def test_plan_supports_guided_query_building(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        planned = plan_candidate_envelope(
-            runtime, intent="new customer orders over time", limit=2, verbosity="full"
-        )
-        conversion = plan_candidate_envelope(
-            runtime,
-            intent="session to order conversion rate (7d)",
-            limit=2,
-            verbosity="full",
-        )
-        contextual = plan_candidate_envelope(
-            runtime,
-            intent="monthly order volume for customers that made more than 10 purchases in that month",
-            limit=2,
-            verbosity="full",
-        )
-        revenue_qualified = plan_candidate_envelope(
-            runtime,
-            intent="monthly revenue from customers with at least 10 orders by store",
-            limit=2,
-            verbosity="full",
-        )
-        daily_qualified = plan_candidate_envelope(
-            runtime,
-            intent="daily order volume from customers with at least 10 orders in that month",
-            limit=2,
-            verbosity="full",
+        if intent in holds:
+            held_candidate(result, holds[intent])
+            continue
+        candidates = list(result.get("candidates", []) or [])
+        assert len(candidates) >= 3, intent
+        assert any(candidate.get("validation", {}).get("ok") is True for candidate in candidates), (
+            intent
         )
 
-        assert planned["candidates"]
-        candidate_query = planned["candidates"][0]["candidate_ir"]
-        assert candidate_query["time"]["grain"] == "month"
-        assert planned["candidates"][0]["validation"]["ok"] is True
-        assert planned["candidates"][0]["resolved"]
-        assert "assumptions" in planned["candidates"][0]
-        # Each month's orders from customers with more than 10 purchases that month.
-        [candidate] = contextual["candidates"][:1]
-        assert contextual["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-        assert candidate["validation"]["ok"] is True
-        assert candidate["candidate_ir"]["where"] == [
-            {
-                "entity": "entity.jaffle_customer",
-                "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
-                "over": "period",
-            }
+
+def test_build_options_ranks_recommended_dimensions_and_stock_aggregations(runtime):
+    orders_options = build_options_payload(
+        runtime,
+        partial_query={
+            "version": 1,
+            "select": [
+                {
+                    "expression": {
+                        "measure": "measure.jaffle.order_count",
+                        "aggregation": "count_distinct",
+                    },
+                    "as": "orders",
+                }
+            ],
+        },
+        focus_terms="orders by store",
+        focus_object_id="measure.jaffle.order_count",
+        stage="post_measure",
+        limit=5,
+    )
+    stock_options = build_options_payload(
+        runtime,
+        partial_query={"version": 1, "select": []},
+        focus_object_id="measure.jaffle.inventory_on_hand_eop",
+        step="aggregation",
+        limit=10,
+    )
+
+    assert orders_options["recommended"]
+    assert orders_options["stage"] == "post_measure"
+    assert orders_options["builder_step"] == "group_by"
+    assert orders_options["recommended"][0]["id"] == "dimension.jaffle_store_name"
+    assert orders_options["recommended"][0]["object_type"] == "dimension"
+    assert orders_options["recommended"][0]["query_patch"]["group_by"] == [
+        "dimension.jaffle_store_name"
+    ]
+
+    stock_aggs = {
+        row["id"]: row
+        for row in [
+            *stock_options["recommended"],
+            *stock_options["available"],
+            *stock_options["blocked"],
         ]
-        # "With at least 10 orders" beside "monthly" doesn't say over which rows: plan asks.
-        held_candidate(revenue_qualified, "ENTITY_FILTER_PERIOD_UNSTATED")
-        revenue_query = revenue_qualified["blocked"][0]["candidate_ir"]
-        assert revenue_qualified["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-        assert revenue_query["select"] == ["measure.jaffle.revenue_usd"]
-        [cohort] = revenue_query["where"]
-        assert cohort["entity"] == "entity.jaffle_customer"
-        assert cohort["having"] == [
-            {"field": "measure.jaffle.order_count", "op": "gte", "value": 10}
-        ]
-        assert revenue_query["group_by"] == [
-            "dimension.jaffle_store_id",
-            "dimension.jaffle_store_name",
-        ]
-        # A month's qualification inside each day is held.
-        assert not daily_qualified["candidates"]
-        assert daily_qualified["blocked"]
-        assert conversion["candidates"]
-        assert conversion["candidates"][0]["validation"]["ok"] is True
-    finally:
-        runtime.close()
+    }
+    assert stock_aggs["last_value"]["available"] is True
+    assert stock_aggs["first_value"]["available"] is True
+    assert stock_aggs["sum"]["available"] is True
+    assert stock_aggs["percentile"]["available"] is True
+
+
+def test_valid_values_supports_search_paging_and_selection_context(runtime):
+    payload = valid_values_payload(
+        runtime,
+        dimension_id="dimension.jaffle_item_product_type",
+        search="drink",
+        limit=1,
+        offset=0,
+    )
+    assert payload["source"] == "value_domain"
+    assert payload["selection_context"]["dimension_id"] == "dimension.jaffle_item_product_type"
+    assert payload["total_count"] == 1
+    assert payload["has_more"] is False
+    assert payload["value_source_type"] == "declared_domain"
+    assert payload["estimated_cost"] == "none"
+    assert payload["values"][0]["value"] == "beverage"
+
+
+def test_plan_supports_guided_query_building(runtime):
+    planned = plan_candidate_envelope(
+        runtime, intent="new customer orders over time", limit=2, verbosity="full"
+    )
+    conversion = plan_candidate_envelope(
+        runtime,
+        intent="session to order conversion rate (7d)",
+        limit=2,
+        verbosity="full",
+    )
+    contextual = plan_candidate_envelope(
+        runtime,
+        intent="monthly order volume for customers that made more than 10 purchases in that month",
+        limit=2,
+        verbosity="full",
+    )
+    revenue_qualified = plan_candidate_envelope(
+        runtime,
+        intent="monthly revenue from customers with at least 10 orders by store",
+        limit=2,
+        verbosity="full",
+    )
+    daily_qualified = plan_candidate_envelope(
+        runtime,
+        intent="daily order volume from customers with at least 10 orders in that month",
+        limit=2,
+        verbosity="full",
+    )
+
+    assert planned["candidates"]
+    candidate_query = planned["candidates"][0]["candidate_ir"]
+    assert candidate_query["time"]["grain"] == "month"
+    assert planned["candidates"][0]["validation"]["ok"] is True
+    assert planned["candidates"][0]["resolved"]
+    assert "assumptions" in planned["candidates"][0]
+    # Each month's orders from customers with more than 10 purchases that month.
+    [candidate] = contextual["candidates"][:1]
+    assert contextual["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
+    assert candidate["validation"]["ok"] is True
+    assert candidate["candidate_ir"]["where"] == [
+        {
+            "entity": "entity.jaffle_customer",
+            "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
+            "over": "period",
+        }
+    ]
+    # "With at least 10 orders" beside "monthly" doesn't say over which rows: plan asks.
+    held_candidate(revenue_qualified, "ENTITY_FILTER_PERIOD_UNSTATED")
+    revenue_query = revenue_qualified["blocked"][0]["candidate_ir"]
+    assert revenue_qualified["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
+    assert revenue_query["select"] == ["measure.jaffle.revenue_usd"]
+    [cohort] = revenue_query["where"]
+    assert cohort["entity"] == "entity.jaffle_customer"
+    assert cohort["having"] == [{"field": "measure.jaffle.order_count", "op": "gte", "value": 10}]
+    assert revenue_query["group_by"] == [
+        "dimension.jaffle_store_id",
+        "dimension.jaffle_store_name",
+    ]
+    # A month's qualification inside each day is held.
+    assert not daily_qualified["candidates"]
+    assert daily_qualified["blocked"]
+    assert conversion["candidates"]
+    assert conversion["candidates"][0]["validation"]["ok"] is True
 
 
 def test_plan_generic_multi_dimension_and_current_month_bounds(tmp_path: Path):
@@ -1154,272 +1049,238 @@ def test_plan_generic_q4_bounds_and_paying_filter_not_group_by(tmp_path: Path):
         runtime.close()
 
 
-def test_plan_avoids_irrelevant_value_filters(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
+def test_plan_avoids_irrelevant_value_filters(runtime):
     runtime._package_examples = []  # Exercise generic value-filter inference.
-    try:
-        top_stores = plan_candidate_envelope(
-            runtime, intent="top stores by revenue", limit=2, verbosity="full"
-        )
-        new_customer_trend = plan_candidate_envelope(
-            runtime,
-            intent="new customer orders over time",
-            limit=2,
-            verbosity="full",
-        )
+    top_stores = plan_candidate_envelope(
+        runtime, intent="top stores by revenue", limit=2, verbosity="full"
+    )
+    new_customer_trend = plan_candidate_envelope(
+        runtime,
+        intent="new customer orders over time",
+        limit=2,
+        verbosity="full",
+    )
 
-        assert top_stores["candidates"]
-        assert "where" not in top_stores["candidates"][0]["candidate_ir"]
-        assert new_customer_trend["candidates"]
-        assert "where" not in new_customer_trend["candidates"][0]["candidate_ir"]
-    finally:
-        runtime.close()
+    assert top_stores["candidates"]
+    assert "where" not in top_stores["candidates"][0]["candidate_ir"]
+    assert new_customer_trend["candidates"]
+    assert "where" not in new_customer_trend["candidates"][0]["candidate_ir"]
 
 
-def test_plan_does_not_invent_generic_dimension_value_filters(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
+def test_plan_does_not_invent_generic_dimension_value_filters(runtime):
     runtime._package_examples = []  # Exercise generic value-filter inference.
-    try:
-        planned = plan_candidate_envelope(
-            runtime, intent="top stores by revenue", limit=2, verbosity="full"
-        )
-        assert planned["candidates"]
-        candidate_query = planned["candidates"][0]["candidate_ir"]
-        assert "where" not in candidate_query or candidate_query["where"] == []
-        assert candidate_query["group_by"] == [
-            "dimension.jaffle_store_id",
-            "dimension.jaffle_store_name",
-        ]
-    finally:
-        runtime.close()
+    planned = plan_candidate_envelope(
+        runtime, intent="top stores by revenue", limit=2, verbosity="full"
+    )
+    assert planned["candidates"]
+    candidate_query = planned["candidates"][0]["candidate_ir"]
+    assert "where" not in candidate_query or candidate_query["where"] == []
+    assert candidate_query["group_by"] == [
+        "dimension.jaffle_store_id",
+        "dimension.jaffle_store_name",
+    ]
 
 
-def test_plan_supports_comparison_candidates_and_legal_alternatives(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        food_vs_drink = plan_candidate_envelope(
-            runtime, intent="food vs drink revenue share by month", limit=3
-        )
-        ordered_vs_delivered = plan_candidate_envelope(
-            runtime, intent="ordered vs delivered revenue by month", limit=3
-        )
+def test_plan_supports_comparison_candidates_and_legal_alternatives(runtime):
+    food_vs_drink = plan_candidate_envelope(
+        runtime, intent="food vs drink revenue share by month", limit=3
+    )
+    ordered_vs_delivered = plan_candidate_envelope(
+        runtime, intent="ordered vs delivered revenue by month", limit=3
+    )
 
-        assert food_vs_drink["candidates"] or food_vs_drink["blocked"]
-        if food_vs_drink["candidates"]:
-            select = food_vs_drink["candidates"][0]["candidate_ir"]["select"]
-            assert len(select) == 2
+    assert food_vs_drink["candidates"] or food_vs_drink["blocked"]
+    if food_vs_drink["candidates"]:
+        select = food_vs_drink["candidates"][0]["candidate_ir"]["select"]
+        assert len(select) == 2
 
-        # Orders and deliveries each read their own clock: no single call compares them, so
-        # the draft is held, never offered.
-        assert not ordered_vs_delivered["candidates"]
-        assert ordered_vs_delivered["blocked"]
-    finally:
-        runtime.close()
+    # Orders and deliveries each read their own clock: no single call compares them, so
+    # the draft is held, never offered.
+    assert not ordered_vs_delivered["candidates"]
+    assert ordered_vs_delivered["blocked"]
 
 
-def test_build_options_prefers_human_readable_business_dimensions(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        store_groups = build_options_payload(
-            runtime,
-            partial_query={
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
-                ],
-            },
-            step="group_by",
-            focus_terms="top stores by revenue",
-            limit=5,
-        )
-        aov_groups = build_options_payload(
-            runtime,
-            partial_query={
-                "version": 1,
-                "select": [
-                    {"expression": {"metric": "metric.sales.aov_usd"}, "as": "Average order value"}
-                ],
-            },
-            step="group_by",
-            focus_terms="average order value by customer type",
-            limit=5,
-        )
-        history_groups = build_options_payload(
-            runtime,
-            partial_query={
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
-                ],
-            },
-            step="group_by",
-            focus_terms="historical revenue by customer segment",
-            limit=5,
-        )
+def test_build_options_prefers_human_readable_business_dimensions(runtime):
+    store_groups = build_options_payload(
+        runtime,
+        partial_query={
+            "version": 1,
+            "select": [
+                {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
+            ],
+        },
+        step="group_by",
+        focus_terms="top stores by revenue",
+        limit=5,
+    )
+    aov_groups = build_options_payload(
+        runtime,
+        partial_query={
+            "version": 1,
+            "select": [
+                {"expression": {"metric": "metric.sales.aov_usd"}, "as": "Average order value"}
+            ],
+        },
+        step="group_by",
+        focus_terms="average order value by customer type",
+        limit=5,
+    )
+    history_groups = build_options_payload(
+        runtime,
+        partial_query={
+            "version": 1,
+            "select": [
+                {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
+            ],
+        },
+        step="group_by",
+        focus_terms="historical revenue by customer segment",
+        limit=5,
+    )
 
-        assert store_groups["recommended"][0]["id"] == "dimension.jaffle_store_name"
-        assert any(
-            row["id"] == "dimension.jaffle_customer_type" for row in aov_groups["recommended"]
-        )
-        assert history_groups["recommended"][0]["id"] == "dimension.jaffle_customer_history_segment"
-        assert store_groups["query_patches"][0]["group_by"] == ["dimension.jaffle_store_name"]
-    finally:
-        runtime.close()
+    assert store_groups["recommended"][0]["id"] == "dimension.jaffle_store_name"
+    assert any(row["id"] == "dimension.jaffle_customer_type" for row in aov_groups["recommended"])
+    assert history_groups["recommended"][0]["id"] == "dimension.jaffle_customer_history_segment"
+    assert store_groups["query_patches"][0]["group_by"] == ["dimension.jaffle_store_name"]
 
 
-def test_build_options_time_prefers_metric_default_temporal_role(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = build_options_payload(
-            runtime,
-            partial_query={
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {"measure": "measure.jaffle.delivered_revenue_usd"},
-                        "as": "Delivered revenue",
-                    }
-                ],
-            },
-            step="time",
-            focus_terms="delivered revenue by delivered month",
-            focus_object_id="measure.jaffle.delivered_revenue_usd",
-            limit=5,
-        )
+def test_build_options_time_prefers_metric_default_temporal_role(runtime):
+    payload = build_options_payload(
+        runtime,
+        partial_query={
+            "version": 1,
+            "select": [
+                {
+                    "expression": {"measure": "measure.jaffle.delivered_revenue_usd"},
+                    "as": "Delivered revenue",
+                }
+            ],
+        },
+        step="time",
+        focus_terms="delivered revenue by delivered month",
+        focus_object_id="measure.jaffle.delivered_revenue_usd",
+        limit=5,
+    )
 
-        assert payload["recommended"]
-        assert payload["recommended"][0]["id"] == "temporal_role.jaffle_lifecycle_delivered_at"
-        assert payload["recommended"][0]["query_patch"]["time"] == {
-            "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-            "grain": "month",
-        }
-        assert all(
-            row["id"].startswith("temporal_role.jaffle_lifecycle_")
-            for row in payload["recommended"] + payload["available"]
-        )
-    finally:
-        runtime.close()
+    assert payload["recommended"]
+    assert payload["recommended"][0]["id"] == "temporal_role.jaffle_lifecycle_delivered_at"
+    assert payload["recommended"][0]["query_patch"]["time"] == {
+        "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
+        "grain": "month",
+    }
+    assert all(
+        row["id"].startswith("temporal_role.jaffle_lifecycle_")
+        for row in payload["recommended"] + payload["available"]
+    )
 
 
-def test_history_backed_queries_emit_null_preserving_caveats(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        query = {
-            "select": [{"expression": "measure.jaffle.revenue_usd", "as": "Revenue (USD)"}],
-            "group_by": ["dimension.jaffle_customer_history_segment"],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-        }
+def test_history_backed_queries_emit_null_preserving_caveats(runtime):
+    query = {
+        "select": [{"expression": "measure.jaffle.revenue_usd", "as": "Revenue (USD)"}],
+        "group_by": ["dimension.jaffle_customer_history_segment"],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+    }
 
-        inspected = inspect_payload(
-            runtime,
-            object_id="dimension.jaffle_customer_history_segment",
-            partial_query=runtime.engine_payload({"select": query["select"]}, partial=True),
-        )
-        validated = runtime.validate(query)
-        compiled = runtime.compile(query)
-        queried = runtime.query(query)
+    inspected = inspect_payload(
+        runtime,
+        object_id="dimension.jaffle_customer_history_segment",
+        partial_query=runtime.engine_payload({"select": query["select"]}, partial=True),
+    )
+    validated = runtime.validate(query)
+    compiled = runtime.compile(query)
+    queried = runtime.query(query)
 
-        assert inspected["card"]["null_bucket_meaning"]
-        assert any(row["code"] == "NULL_PRESERVING_HISTORY" for row in validated["warnings"])
-        assert any(row["code"] == "NULL_PRESERVING_HISTORY" for row in compiled["warnings"])
-        assert any(row["code"] == "NULL_PRESERVING_HISTORY" for row in queried["warnings"])
-    finally:
-        runtime.close()
+    assert inspected["card"]["null_bucket_meaning"]
+    assert any(row["code"] == "NULL_PRESERVING_HISTORY" for row in validated["warnings"])
+    assert any(row["code"] == "NULL_PRESERVING_HISTORY" for row in compiled["warnings"])
+    assert any(row["code"] == "NULL_PRESERVING_HISTORY" for row in queried["warnings"])
 
 
-def test_query_request_limits_clip_rows_for_duckdb(runtime_factory):
+def test_query_request_limits_clip_rows_for_duckdb(runtime):
     """The `limits.max_rows` field on the request envelope must clip
     DuckDB results during cursor fetch. The `statement_timeout_ms` field is
     accepted (no-op on DuckDB) without raising.
     """
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        query = {
-            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-            "group_by": ["dimension.jaffle_store_name"],
-        }
+    query = {
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+        "group_by": ["dimension.jaffle_store_name"],
+    }
 
-        # No limits: baseline row count.
-        baseline = runtime.query(query)
-        baseline_rows = list(baseline["rows"])
-        assert len(baseline_rows) > 1
-        assert baseline["truncated"] is False
+    # No limits: baseline row count.
+    baseline = runtime.query(query)
+    baseline_rows = list(baseline["rows"])
+    assert len(baseline_rows) > 1
+    assert baseline["truncated"] is False
 
-        # max_rows clips the result.
-        clipped = runtime.query(query, limits={"max_rows": 1})
-        assert len(clipped["rows"]) == 1
-        assert clipped["truncated"] is True
+    # max_rows clips the result.
+    clipped = runtime.query(query, limits={"max_rows": 1})
+    assert len(clipped["rows"]) == 1
+    assert clipped["truncated"] is True
 
-        # statement_timeout_ms is enforced by DuckDB's interrupt watchdog.
-        timed = runtime.query(query, limits={"statement_timeout_ms": 60_000})
-        assert len(timed["rows"]) == len(baseline_rows)
-        timeout_warnings = [
-            w
-            for w in timed.get("warnings", []) or []
-            if dict(w).get("code") == "STATEMENT_TIMEOUT_NOT_HONORED"
-        ]
-        assert timeout_warnings == []
+    # statement_timeout_ms is enforced by DuckDB's interrupt watchdog.
+    timed = runtime.query(query, limits={"statement_timeout_ms": 60_000})
+    assert len(timed["rows"]) == len(baseline_rows)
+    timeout_warnings = [
+        w
+        for w in timed.get("warnings", []) or []
+        if dict(w).get("code") == "STATEMENT_TIMEOUT_NOT_HONORED"
+    ]
+    assert timeout_warnings == []
 
-        # When limits don't include statement_timeout_ms, no warning fires.
-        only_rows = runtime.query(query, limits={"max_rows": 1})
-        assert not [
-            w
-            for w in only_rows.get("warnings", []) or []
-            if dict(w).get("code") == "STATEMENT_TIMEOUT_NOT_HONORED"
-        ]
+    # When limits don't include statement_timeout_ms, no warning fires.
+    only_rows = runtime.query(query, limits={"max_rows": 1})
+    assert not [
+        w
+        for w in only_rows.get("warnings", []) or []
+        if dict(w).get("code") == "STATEMENT_TIMEOUT_NOT_HONORED"
+    ]
 
-        # Invalid limits values are silently ignored.
-        ignored = runtime.query(query, limits={"max_rows": "not-an-int"})
-        assert len(ignored["rows"]) == len(baseline_rows)
+    # Invalid limits values are silently ignored.
+    ignored = runtime.query(query, limits={"max_rows": "not-an-int"})
+    assert len(ignored["rows"]) == len(baseline_rows)
 
-        # Limits in the wrong shape don't blow up.
-        wrong_shape = runtime.query(query, limits=[1, 2, 3])
-        assert len(wrong_shape["rows"]) == len(baseline_rows)
-    finally:
-        runtime.close()
+    # Limits in the wrong shape don't blow up.
+    wrong_shape = runtime.query(query, limits=[1, 2, 3])
+    assert len(wrong_shape["rows"]) == len(baseline_rows)
 
 
-def test_legacy_adapter_without_limits_kwarg_still_works(runtime_factory, monkeypatch):
+def test_legacy_adapter_without_limits_kwarg_still_works(runtime, monkeypatch):
     """A custom warehouse adapter with the legacy ``query(sql)`` signature
     must keep working even though the runtime now passes per-request
     limits. Third-party hosting integrations rely on this — we cannot
     break their adapters by silently growing the call signature.
     """
-    runtime = runtime_factory("jaffle_shop")
-    try:
 
-        class _LegacyAdapter:
-            engine = "duckdb"
-            supports_statement_timeout = False
+    class _LegacyAdapter:
+        engine = "duckdb"
+        supports_statement_timeout = False
 
-            def __init__(self, real):
-                self._real = real
-                self.calls: list[str] = []
+        def __init__(self, real):
+            self._real = real
+            self.calls: list[str] = []
 
-            def query(self, sql):  # noqa: D401 — legacy signature, no `limits=`
-                self.calls.append(sql)
-                return list(self._real.query(sql))
+        def query(self, sql):  # noqa: D401 — legacy signature, no `limits=`
+            self.calls.append(sql)
+            return list(self._real.query(sql))
 
-            def close(self) -> None:
-                return None
+        def close(self) -> None:
+            return None
 
-        real_adapter = runtime._get_adapter()
-        legacy = _LegacyAdapter(real_adapter)
-        monkeypatch.setattr(runtime, "_get_adapter", lambda: legacy)
+    real_adapter = runtime._get_adapter()
+    legacy = _LegacyAdapter(real_adapter)
+    monkeypatch.setattr(runtime, "_get_adapter", lambda: legacy)
 
-        result = runtime.query(
-            {
-                "select": [
-                    {"expression": "measure.jaffle.order_count", "as": "orders"},
-                ],
-                "limit": 1,
-            },
-            limits={"max_rows": 1, "statement_timeout_ms": 5_000},
-        )
-        assert result["rows"], result
-        assert legacy.calls, "legacy adapter should have been queried"
-    finally:
-        runtime.close()
+    result = runtime.query(
+        {
+            "select": [
+                {"expression": "measure.jaffle.order_count", "as": "orders"},
+            ],
+            "limit": 1,
+        },
+        limits={"max_rows": 1, "statement_timeout_ms": 5_000},
+    )
+    assert result["rows"], result
+    assert legacy.calls, "legacy adapter should have been queried"
 
 
 def test_snowflake_adapter_query_signatures_accept_limits():
@@ -1799,73 +1660,50 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
         runtime.close()
 
 
-def test_build_options_empty_query_ranks_by_review_priority(runtime_factory):
-    """Empty-query, empty-terms used to give every candidate the same
-    flat rank (the per-kind stage bonus) with rationale
-    "default ordering" — pure noise. With no scoring context, rank by
-    `review_priority` and surface a topic-based rationale so the rank
-    field actually differentiates candidates."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = build_options_payload(runtime, partial_query={})
-        recommended = list(payload.get("recommended", []) or [])
-        assert recommended, "expected recommended candidates"
-        ranks = sorted({float(row.get("rank", 0.0) or 0.0) for row in recommended})
-        assert len(ranks) >= 2, (
-            f"expected rank to differentiate candidates on empty query; got ranks={ranks}"
-        )
-        for row in recommended:
-            why = str(row.get("why_recommended", "") or "")
-            assert why and why != "default ordering", (
-                f"expected a meaningful why_recommended on empty query; row={row.get('id')} got {why!r}"
-            )
-    finally:
-        runtime.close()
-
-
-def test_build_options_ships_next_legal_steps(runtime_factory):
+def test_build_options_ships_next_legal_steps(runtime):
     """Blind-agent UX: build-options must enumerate the remaining legal
     builder steps, not just the next single step. ``review`` is always
     the tail."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        empty = build_options_payload(runtime, partial_query={})
-        assert empty["next_legal_steps"] == [
-            "measure",
-            "group_by",
-            "filter_dimension",
-            "time",
-            "review",
-        ]
-        assert empty["builder_step"] == "measure"
+    empty = build_options_payload(runtime, partial_query={})
+    # With no scoring context, review priority ranks the candidates, each with a reason.
+    recommended = empty["recommended"]
+    assert len({float(row.get("rank", 0.0) or 0.0) for row in recommended}) >= 2
+    for row in recommended:
+        assert row.get("why_recommended") not in ("", None, "default ordering"), row["id"]
+    assert empty["next_legal_steps"] == [
+        "measure",
+        "group_by",
+        "filter_dimension",
+        "time",
+        "review",
+    ]
+    assert empty["builder_step"] == "measure"
 
-        with_select = build_options_payload(
-            runtime,
-            partial_query={
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
-                ],
-            },
-        )
-        # measure satisfied — first remaining is group_by, review still tails.
-        assert with_select["next_legal_steps"][0] == "group_by"
-        assert with_select["next_legal_steps"][-1] == "review"
-        assert "measure" not in with_select["next_legal_steps"]
+    with_select = build_options_payload(
+        runtime,
+        partial_query={
+            "version": 1,
+            "select": [
+                {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
+            ],
+        },
+    )
+    # measure satisfied — first remaining is group_by, review still tails.
+    assert with_select["next_legal_steps"][0] == "group_by"
+    assert with_select["next_legal_steps"][-1] == "review"
+    assert "measure" not in with_select["next_legal_steps"]
 
-        fully_specified = build_options_payload(
-            runtime,
-            partial_query={
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-                "where": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "anywhere"}],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            },
-        )
-        # Everything satisfied — review only.
-        assert fully_specified["next_legal_steps"] == ["review"]
-    finally:
-        runtime.close()
+    fully_specified = build_options_payload(
+        runtime,
+        partial_query={
+            "version": 1,
+            "select": [
+                {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "Revenue (USD)"}
+            ],
+            "group_by": ["dimension.jaffle_store_name"],
+            "where": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "anywhere"}],
+            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+        },
+    )
+    # Everything satisfied — review only.
+    assert fully_specified["next_legal_steps"] == ["review"]

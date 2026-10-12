@@ -46,27 +46,41 @@ def package_config_factory(tmp_path_factory):
     return build
 
 
-@pytest.mark.parametrize("aggregation", ["count", "percentile", "unknown", None])
-def test_unsupported_aggregation_hint_uses_measure_allowlist(package_config_factory, aggregation):
+def _hint_call(message: str) -> dict:
+    """The call a hint's message suggests, as written between its braces."""
+    return json.loads(message[message.index("{") : message.rindex("}") + 1])
+
+
+@pytest.mark.parametrize(
+    ("aggregation", "default"),
+    [("count", "count"), ("percentile", "count"), ("unknown", "count"), (None, "count")]
+    + [("count", "sum"), ("count", "avg")],
+)
+def test_unsupported_aggregation_hint_uses_measure_allowlist(
+    package_config_factory, aggregation, default
+):
     config, _ = package_config_factory("jaffle_shop")
     measure = replace(
-        config.measures[0], allowed_aggregations=["sum", "avg"], default_aggregation="count"
+        config.measures[0], allowed_aggregations=["sum", "avg"], default_aggregation=default
     )
     config = replace(config, measures=[measure])
     query = normalize_query(
-        {"select": [{"expression": {"kind": "measure", "measure": measure.id}, "as": "value"}]}
+        {"select": [{"expression": {"kind": "measure", "measure": measure.id}}]}
     )
     with pytest.raises(SemanticLayerError) as raised:
         _bind_measure(MeasureRefExpr(measure=measure.id, aggregation=aggregation), config, query)
 
     issue = exception_issue(raised.value, stage="bind")
+    received = aggregation or default
     assert issue["code"] == "UNSUPPORTED_AGGREGATION"
-    assert issue["details"]["aggregation"] == (aggregation or "count")
+    assert issue["details"]["aggregation"] == received
     hint = issue["recovery_hints"][0]
-    assert hint["kind"] == "use_supported_aggregation"
-    assert hint["aggregation_received"] == (aggregation or "count")
+    assert (hint["kind"], hint["aggregation_received"]) == ("use_supported_aggregation", received)
     assert hint["allowed"] == issue["details"]["allowed"] == ["sum", "avg"]
-    assert hint["message"] == "Use one of this measure's aggregations: sum, avg."
+    # The hint names the measure's default only when the measure allows it.
+    assert (f"({default})" in hint["message"]) is (default in hint["allowed"])
+    for allowed in hint["allowed"]:
+        _bind_measure(MeasureRefExpr(measure=measure.id, aggregation=allowed), config, query)
 
 
 def test_unknown_aggregation_hint_does_not_invent_allowed_values():
@@ -82,23 +96,8 @@ def test_filter_operator_guidance_keeps_other_expression_positions_unchanged(pat
     assert raised.value.code == "INVALID_QUERY"
     assert raised.value.details["path"] == f"{path}.op"
     [hint] = raised.value.details["recovery_hints"]
-    assert hint["message"] == 'Write {"op": "missing", "value": true}.'
+    assert _hint_call(hint["message"]) == {"op": "missing", "value": True}
     assert "expression_position" not in raised.value.details
-
-
-@pytest.mark.parametrize("default", ["sum", "avg", "max"])
-def test_unsupported_aggregation_hint_names_the_actual_default(package_config_factory, default):
-    config, _ = package_config_factory("jaffle_shop")
-    measure = replace(
-        config.measures[0], allowed_aggregations=["sum", "avg", "max"], default_aggregation=default
-    )
-    config = replace(config, measures=[measure])
-    query = normalize_query({"select": [{"expression": {"measure": measure.id}}]})
-    with pytest.raises(SemanticLayerError) as raised:
-        _bind_measure(MeasureRefExpr(measure=measure.id, aggregation="count"), config, query)
-    hint = exception_issue(raised.value, stage="bind")["recovery_hints"][0]
-    assert f"; omit `aggregation` for the default ({default})." in hint["message"]
-    assert hint["allowed"] == ["sum", "avg", "max"]
 
 
 @pytest.mark.parametrize("missing_kind", ["metric", "measure"])
@@ -197,18 +196,18 @@ def test_a_typo_near_a_hidden_object_is_not_answered_with_it(package_config_fact
     assert hidden in json.dumps(visible)
 
 
+# ``prefilled`` starts the hint from stale targets the enrichment must replace.
 @pytest.mark.parametrize(
-    ("directions", "hop_limit", "diamond", "pinned", "target", "expected"),
+    ("directions", "hop_limit", "diamond", "pinned", "target", "expected", "prefilled"),
     [
-        (["forward"], 3, False, False, "D", ["B", "C"]),
-        (["reverse"], 3, False, False, "B", []),
-        (["forward"], 1, False, False, "C", ["B"]),
-        (["forward"], 3, True, False, "E", ["B", "C"]),
-        (["forward"], 3, True, True, "E", ["B", "C", "D"]),
+        (["forward"], 3, False, False, "D", ["B", "C"], False),
+        (["reverse"], 3, False, False, "B", [], True),
+        (["forward"], 1, False, False, "C", ["B"], False),
+        (["forward"], 3, True, False, "E", ["B", "C"], True),
+        (["forward"], 3, True, True, "E", ["B", "C", "D"], False),
     ],
     ids=["forward-only", "reverse-only", "hop-limit", "ambiguous-route", "pinned-route"],
 )
-@pytest.mark.parametrize("prefilled", [False, True], ids=["raw", "stale-targets"])
 def test_path_hint_targets_pass_the_shared_resolver(
     package_config_factory, directions, hop_limit, diamond, pinned, target, expected, prefilled
 ):
@@ -264,8 +263,10 @@ def test_path_hint_targets_pass_the_shared_resolver(
         resolve_path(config, start="A", target=node)
 
 
-@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
-@pytest.mark.parametrize("preference", ["none", "unrelated", "applicable"])
+@pytest.mark.parametrize(
+    ("preference", "warm"),
+    [("none", False), ("unrelated", True), ("applicable", False), ("applicable", True)],
+)
 def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
     package_config_factory, monkeypatch, warm, preference
 ):
@@ -488,10 +489,8 @@ def test_a_null_entity_aggregate_points_at_zero_not_missing(runtime_factory, op)
     try:
         (issue,) = runtime.validate(query)["errors"]
         assert issue["details"]["path"] == "where[0].having[0].value"
-        assert issue["recovery_hints"][0]["message"] == (
-            'For an entity with none, write {"op": "is", "value": 0}.'
-        )
-        having.update(op="is", value=0)
+        having.update(_hint_call(issue["recovery_hints"][0]["message"]))
+        assert having["value"] == 0
         assert runtime.validate(query)["ok"]
     finally:
         runtime.close()

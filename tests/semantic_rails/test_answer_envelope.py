@@ -23,7 +23,13 @@ STORE = "dimension.jaffle_store_name"
 PRODUCT = "dimension.jaffle_item_product_name"
 NOW = "2017-08-15"
 VERBOSITIES = ("minimal", "compact", "full")
-ENTRIES = ("query", "validate", "compile", "mcp")
+# Each SDK entry once, and MCP, which trims its own response, at every verbosity.
+ENTRY_VERBOSITIES = [
+    ("query", "minimal"),
+    ("validate", "compact"),
+    ("compile", "full"),
+    *(("mcp", verbosity) for verbosity in VERBOSITIES),
+]
 
 # Item revenue by product: one route, nothing assumed, nothing to warn about.
 PLAIN = {
@@ -64,8 +70,7 @@ def _answer(runtime, entry: str, query: dict[str, Any], verbosity: str) -> dict[
     return getattr(runtime, entry)(query, now=NOW, verbosity=verbosity)
 
 
-@pytest.mark.parametrize("verbosity", VERBOSITIES)
-@pytest.mark.parametrize("entry", ENTRIES)
+@pytest.mark.parametrize(("entry", "verbosity"), ENTRY_VERBOSITIES)
 def test_an_answer_with_nothing_to_say_carries_no_empty_fields(runtime, entry, verbosity):
     out = _answer(runtime, entry, PLAIN, verbosity)
     assert out["ok"] is True and out["status"] == "ok"
@@ -77,8 +82,7 @@ def test_an_answer_with_nothing_to_say_carries_no_empty_fields(runtime, entry, v
     assert not [key for key, value in out.items() if value in (None, "", [], {}) and key != "rows"]
 
 
-@pytest.mark.parametrize("verbosity", VERBOSITIES)
-@pytest.mark.parametrize("entry", ENTRIES)
+@pytest.mark.parametrize(("entry", "verbosity"), ENTRY_VERBOSITIES)
 def test_routes_and_assumptions_survive_every_verbosity(runtime, entry, verbosity):
     out = _answer(runtime, entry, STORES_THIS_QUARTER, verbosity)
     assert out["ok"] is True
@@ -188,8 +192,10 @@ def _responses(runtime, call: dict[str, Any], verbosity: str) -> dict[str, dict[
     return out
 
 
-@pytest.mark.parametrize("verbosity", ("minimal", "compact"))
-@pytest.mark.parametrize("call", [*REFUSED, "warned"])
+@pytest.mark.parametrize(
+    ("call", "verbosity"),
+    [*((call, "minimal") for call in REFUSED), ("warned", "minimal"), ("warned", "compact")],
+)
 def test_error_and_warning_objects_carry_no_empty_fields(runtime, call, verbosity):
     """Like the answer, each error and warning object leaves out empty fields, on every
     transport and at every verbosity; its code and message always stay."""

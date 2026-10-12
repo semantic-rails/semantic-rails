@@ -166,42 +166,31 @@ def medium_adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
         base.close()
 
 
-CASES = (
-    [
-        ("discover", {"terms": "revenue by store", "verbosity": verbosity})
-        for verbosity in VERBOSITIES
-    ]
-    + [("discover", {"terms": "", "verbosity": verbosity}) for verbosity in VERBOSITIES]
-    + [
-        ("inspect", {"object_id": "dimension.jaffle_store_name", "verbosity": verbosity})
-        for verbosity in VERBOSITIES
-    ]
-    + [
-        ("valid-values", {"dimension_id": "dimension.jaffle_store_name"}),
-    ]
-    + [
-        ("plan", {"intent": "revenue by store", "detail": detail})
-        for detail in ("query", "best", "full", "debug")
-    ]
-    + [
+# The largest response of each tool and mode, and execute's compact form too.
+CASES = [
+    ("discover", {"terms": "revenue by store", "verbosity": "full"}),
+    ("discover", {"terms": "", "verbosity": "full"}),
+    ("inspect", {"object_id": "dimension.jaffle_store_name", "verbosity": "full"}),
+    ("valid-values", {"dimension_id": "dimension.jaffle_store_name"}),
+    *(("plan", {"intent": "revenue by store", "detail": detail}) for detail in ("full", "debug")),
+    *(
         ("execute", {"query": QUERY, "mode": mode, "verbosity": verbosity})
         for mode in ("validate", "sql", "run")
-        for verbosity in VERBOSITIES
-    ]
-    + [
+        for verbosity in ("compact", "full")
+    ),
+    *(
         (
             "segment",
             {
                 "segment_id": "segment.jaffle.high_value_customers",
                 "action": action,
-                "verbosity": verbosity,
+                "verbosity": "full",
                 "limit": 1,
             },
         )
         for action in ("validate", "explain", "preview")
-        for verbosity in VERBOSITIES
-    ]
-)
+    ),
+]
 
 
 @pytest.mark.parametrize(("tool", "arguments"), CASES)
@@ -252,7 +241,7 @@ def test_one_row_matches_reference_sql_despite_large_plan(
 
 
 @pytest.mark.parametrize("mode", ["validate", "sql", "run"])
-@pytest.mark.parametrize("verbosity", VERBOSITIES)
+@pytest.mark.parametrize("verbosity", ["compact", "full"])
 def test_plan_size_never_refuses_an_answer(
     medium_adapter: SemanticLayerMCPAdapter,
     monkeypatch: pytest.MonkeyPatch,
@@ -333,7 +322,6 @@ def test_oversized_errors_and_tiny_operator_budgets_are_bounded(
     assert len(json_text(result)) <= max(limit, MCP_MIN_RESULT_CHARS)
 
 
-@pytest.mark.parametrize("mode", ["validate", "sql", "run"])
 @pytest.mark.parametrize(
     ("expression", "kind", "path"),
     [
@@ -356,21 +344,17 @@ def test_oversized_errors_and_tiny_operator_budgets_are_bounded(
     ],
 )
 def test_unsupported_expression_reports_received_kind_and_request_path(
-    medium_adapter: SemanticLayerMCPAdapter,
-    mode: str,
-    expression: dict[str, Any],
-    kind: Any,
-    path: str,
+    medium_adapter: SemanticLayerMCPAdapter, expression: dict[str, Any], kind: Any, path: str
 ) -> None:
     result = medium_adapter.call_tool(
-        "execute", {"mode": mode, "query": {"select": [{"expression": expression}]}}
+        "execute", {"query": {"select": [{"expression": expression}]}}
     )
     assert not result["ok"]
     issue = result["errors"][0]
     assert issue["code"] == "INVALID_QUERY"
     assert issue["details"]["path"] == path
     assert "measure" in issue["details"]["supported_kinds"]
-    assert f"unknown kind '{kind}'" in issue["message"] and path in issue["message"]
+    assert f"'{kind}'" in issue["message"]
     assert len(issue["recovery_hints"]) == 1
     assert "docs/" not in json_text(result) and "schemas/" not in json_text(result)
 

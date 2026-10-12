@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Iterator
-from copy import deepcopy
 from typing import Any
 
 import pytest
@@ -331,18 +330,13 @@ def test_changed_arguments_get_no_hint(
         _no_hints(result)
 
 
-@pytest.mark.parametrize("tool,arguments", [(t, a) for _, t, a in V2_PROBES])
+# Each tool's first probe.
+@pytest.mark.parametrize(
+    "tool,arguments", list({t: a for _, t, a in reversed(V2_PROBES)}.items())[::-1]
+)
 def test_first_call_bytes_match_without_a_session(
-    adapter: SemanticLayerMCPAdapter,
-    tool: str,
-    arguments: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
+    adapter: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
 ) -> None:
-    # Preview's unordered warehouse sample can differ even within one runtime.
-    # Freeze that input so this comparison measures only the MCP boundary.
-    if tool == "segment" and arguments.get("action") == "preview":
-        preview = adapter.runtime.segment_preview(arguments["segment_id"])
-        monkeypatch.setattr(adapter.runtime, "segment_preview", lambda *_a, **_k: deepcopy(preview))
     arguments = {**arguments, "request_id": "first-call"}
     if tool == "execute":
         # The answer echoes the instant it resolved against: pin it, so both calls read one.

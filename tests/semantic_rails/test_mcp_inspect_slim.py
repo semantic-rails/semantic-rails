@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from semantic_rails.http_core import SemanticHTTPService
-from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import _slim_inspect_card
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
@@ -41,13 +41,6 @@ def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
         yield mcp
     finally:
         mcp.close()
-
-
-def test_inspect_advertises_minimal_default_and_whole_card_opt_in() -> None:
-    inspect = next(tool for tool in list_tool_definitions() if tool["name"] == "inspect")
-    verbosity = inspect["inputSchema"]["properties"]["verbosity"]
-    assert verbosity["default"] == "minimal"
-    assert verbosity["enum"] == ["minimal", "compact", "full"]
 
 
 @pytest.mark.parametrize("object_id", OBJECTS)

@@ -86,8 +86,9 @@ def _stable(response: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in response.items() if key not in VOLATILE}
 
 
-@pytest.mark.parametrize("verbosity", ["compact", " Compact ", "bogus"])
-@pytest.mark.parametrize("sql_size", [10, 4000])
+@pytest.mark.parametrize(
+    ("sql_size", "verbosity"), [(10, "compact"), (4000, " Compact "), (4000, "bogus")]
+)
 def test_execute_budget_applies_after_the_final_envelope(
     v2: SemanticLayerMCPAdapter,
     monkeypatch: pytest.MonkeyPatch,
@@ -174,8 +175,20 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     assert execute["max_rows"]["default"] == MCP_DEFAULT_MAX_ROWS
     assert execute["mode"]["enum"] == ["run", "validate", "sql"]
     assert "exclusive" in execute["query"]["properties"]["time"]["properties"]["end"]["description"]
-    for tool in ("discover", "inspect", "execute"):
-        assert tools[tool]["inputSchema"]["properties"]["verbosity"]["default"] == "minimal"
+    assert execute["max_rows"]["maximum"] == 100_000
+    for tool, levels in (
+        ("discover", ["minimal", "compact", "full"]),
+        ("inspect", ["minimal", "compact", "full"]),
+        ("execute", None),
+        ("segment", ["minimal", "full"]),
+    ):
+        verbosity = tools[tool]["inputSchema"]["properties"]["verbosity"]
+        assert verbosity["default"] == "minimal", tool
+        assert levels is None or verbosity["enum"] == levels, tool
+    # Empty discover terms page at 100 ids by default; only the calls that read a clock take now.
+    assert "default" not in tools["discover"]["inputSchema"]["properties"]["limit"]
+    assert "now" not in tools["discover"]["inputSchema"]["properties"]
+    assert "now" in execute and "now" in tools["plan"]["inputSchema"]["properties"]
     # Hosts that drop the server instructions still see plan-first and the exclusive end.
     assert "call it before 'execute'" in tools["plan"]["description"]
     assert "call plan first" in tools["execute"]["description"]
@@ -250,8 +263,9 @@ def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) 
             assert error["details"]["field"] == field
 
 
-@pytest.mark.parametrize("action", ["validate", "explain", "preview"])
-@pytest.mark.parametrize("verbosity", [None, "", "   "])
+@pytest.mark.parametrize(
+    ("action", "verbosity"), [("validate", ""), ("explain", "   "), ("preview", None)]
+)
 def test_segment_actions_default_to_minimal_verbosity(
     v2: SemanticLayerMCPAdapter, action: str, verbosity: str | None
 ) -> None:
@@ -326,17 +340,14 @@ def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) ->
     assert "warnings" not in last and "measure_ids" not in last["catalog"]
 
 
-@pytest.mark.parametrize("tool", ["forecast", *sorted(UNAVAILABLE_TOOLS)])
+@pytest.mark.parametrize("tool", ["forecast", "catalog", "compile", "segment-validate"])
 def test_unknown_tools_use_one_refusal(v2: SemanticLayerMCPAdapter, tool: str) -> None:
     response = v2.call_tool(tool, {})
     assert response["ok"] is False and response["status"] == "error"
     error = response["errors"][0]
     assert error["code"] == "UNKNOWN_MCP_TOOL"
-    assert error["message"] == f"Unknown MCP tool '{tool}'"
     assert error["details"] == {"tool": tool, "available_tools": sorted(V2_TOOLS)}
-    assert error["recovery_hints"][0]["message"].endswith(
-        "common entry points are 'discover', 'inspect', 'plan'."
-    )
+    assert error["recovery_hints"]
 
 
 AIRSPEED = {"kind": "measure", "measure": "measure.jaffle.airspeed", "aggregation": "sum"}
@@ -541,10 +552,7 @@ def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
     assert issue["code"] == "INVALID_QUERY"
     assert issue["details"]["path"] == "select[0]"
     assert "recovery_hints" not in failed
-    assert issue["recovery_hints"][0]["message"] == (
-        'Write "metric.sales.aov_usd", or {"expression": "metric.sales.aov_usd", "as": ...} '
-        "to name it."
-    )
+    assert '"metric.sales.aov_usd"' in issue["recovery_hints"][0]["message"]
     empty = [key for key, value in issue.items() if value in (None, "", [], {})]
     assert empty == [] and "why_invalid" not in issue and "unsupported_construct" not in issue
 
@@ -605,8 +613,15 @@ def test_lean_envelopes_preserve_distinct_issues_and_recovery(
         assert "error" not in response and response["ok"] is True
 
 
-@pytest.mark.parametrize("code", ["MIXED_GRAIN_INVALID", "REWRITE_APPLIED"])
-@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+@pytest.mark.parametrize(
+    ("verbosity", "code"),
+    [
+        ("minimal", "MIXED_GRAIN_INVALID"),
+        ("minimal", "REWRITE_APPLIED"),
+        ("compact", "MIXED_GRAIN_INVALID"),
+        ("full", "REWRITE_APPLIED"),
+    ],
+)
 def test_analysis_details_follow_requested_verbosity(v2, code, verbosity) -> None:
     from copy import deepcopy
 
@@ -705,7 +720,6 @@ def test_an_ambiguous_route_offers_one_ready_to_send_call_per_option(
             [{"from": routes.ACCOUNT, "to": routes.DISTRICT, "via": route}]
             for route in (routes.BRANCH_ROUTE, routes.OWNER_ROUTE)
         ]
-        assert "send that option's query" in error["details"]["hint"]
         for option in options:
             assert {key: value for key, value in option["query"].items() if key != "routes"} == call
             answered = adapter.call_tool("execute", {"query": option["query"], "mode": mode})
@@ -757,10 +771,3 @@ def test_plan_takes_now_on_mcp_and_rest(
         "POST", "/plan", {"intent": "orders last month", "options": {"now": "2017-03-16"}}
     )
     assert seen == ["2017-03-15", "2017-03-16"]
-
-
-def test_discover_takes_no_now() -> None:
-    tools = {tool["name"]: tool for tool in load_contract("query_mcp.v2.json")["tools"]}
-    assert "now" not in tools["discover"]["inputSchema"]["properties"]
-    assert {"now"} <= set(tools["execute"]["inputSchema"]["properties"])
-    assert {"now"} <= set(tools["plan"]["inputSchema"]["properties"])

@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -62,13 +62,6 @@ def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
         yield mcp
     finally:
         mcp.close()
-
-
-def test_segment_tool_advertises_minimal_default_and_full_opt_in() -> None:
-    definition = next(item for item in list_tool_definitions() if item["name"] == "segment")
-    verbosity = definition["inputSchema"]["properties"]["verbosity"]
-    assert verbosity["default"] == "minimal"
-    assert verbosity["enum"] == ["minimal", "full"]
 
 
 @pytest.mark.parametrize("action", ACTIONS)
