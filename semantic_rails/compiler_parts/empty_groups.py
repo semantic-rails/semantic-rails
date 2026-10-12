@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -50,6 +50,7 @@ from ..sql_ast import (
     SqlSelect,
     SqlTableRef,
     SqlWindow,
+    sql_nodes,
 )
 from .bind import _parse_public_expr, earlier_settlement_applies, is_conditional_case
 from .dependencies import holding, plan_is_root
@@ -558,17 +559,6 @@ def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:
         "0. This is an engine defect, not a query error.",
         details=dict(details),
     )
-
-
-def sql_nodes(node: Any) -> Iterator[Any]:
-    """Every node of a SQL AST, found generically so no node type can hide a read."""
-    if isinstance(node, list | tuple):
-        for item in node:
-            yield from sql_nodes(item)
-    elif is_dataclass(node) and not isinstance(node, type):
-        yield node
-        for item in fields(node):
-            yield from sql_nodes(getattr(node, item.name))
 
 
 def base_reads(expr: Any) -> set[str]:

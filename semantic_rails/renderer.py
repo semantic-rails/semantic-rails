@@ -12,7 +12,6 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields, is_dataclass
 from typing import TYPE_CHECKING
 
 from .operators import LIKE_ESCAPE
@@ -53,7 +52,9 @@ from .sql_ast import (
     normalize_sql_set_operator,
     normalize_sql_sort_direction,
     normalize_sql_window_frame,
+    sql_nodes,
 )
+from .sql_identifiers import quote_identifier
 
 if TYPE_CHECKING:
     from .dialects import SqlDialect
@@ -138,7 +139,7 @@ def _quote_ident(value: str) -> str:
     raw = str(value)
     if _IDENT_RE.match(raw) and raw.upper() not in _RESERVED_WORDS:
         return raw
-    return '"' + raw.replace('"', '""') + '"'
+    return quote_identifier(raw)
 
 
 # The answer's own column names (the outermost SELECT's aliases), and the names that qualify a
@@ -150,32 +151,15 @@ _OUTPUT_ALIASES: ContextVar[frozenset[str]] = ContextVar("output_aliases", defau
 _DERIVED: ContextVar[frozenset[str]] = ContextVar("derived_relations", default=frozenset())
 
 
-def _quoted(value: str) -> str:
-    return '"' + str(value).replace('"', '""') + '"'
-
-
 def _alias_name(value: str) -> str:
-    return _quoted(value) if value in _OUTPUT_ALIASES.get() else _quote_ident(value)
+    return quote_identifier(value) if value in _OUTPUT_ALIASES.get() else _quote_ident(value)
 
 
 def _derived_relations(query: SqlSelect) -> frozenset[str]:
     """Every CTE name in ``query``, and every alias a FROM or JOIN gives one."""
-    ctes: set[str] = set()
-    refs: list[SqlTableRef] = []
-
-    def walk(node: object) -> None:
-        if isinstance(node, SqlCte):
-            ctes.add(node.name)
-        if isinstance(node, SqlTableRef):
-            refs.append(node)
-        if isinstance(node, (list, tuple)):
-            for item in node:
-                walk(item)
-        elif is_dataclass(node) and not isinstance(node, type):
-            for item in fields(node):
-                walk(getattr(node, item.name))
-
-    walk(query)
+    nodes = list(sql_nodes(query))
+    ctes = {node.name for node in nodes if isinstance(node, SqlCte)}
+    refs = [node for node in nodes if isinstance(node, SqlTableRef)]
     return frozenset(ctes | {ref.alias for ref in refs if ref.name in ctes and ref.alias})
 
 
@@ -242,7 +226,7 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         if column in _OUTPUT_ALIASES.get() and (
             not qualifier or (len(qualifier) == 1 and qualifier[0] in _DERIVED.get())
         ):
-            names[-1] = _quoted(column)
+            names[-1] = quote_identifier(column)
         return ".".join(names)
     if isinstance(expr, SqlParameter):
         return "?"

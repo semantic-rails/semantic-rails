@@ -12,7 +12,8 @@ dialect-portable and inspectable.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
 from . import operators
@@ -718,3 +719,14 @@ def build_negation(arg: SqlExpr) -> SqlExpr:
     if is_null_literal(arg):
         return SqlCast(SqlLiteral(None), "BOOLEAN")
     return SqlBinary(SqlLiteral(False), "=", arg)
+
+
+def sql_nodes(node: Any) -> Iterator[Any]:
+    """Every node of a SQL AST, found generically so no node type can hide a read."""
+    if isinstance(node, list | tuple):
+        for item in node:
+            yield from sql_nodes(item)
+    elif is_dataclass(node) and not isinstance(node, type):
+        yield node
+        for item in fields(node):
+            yield from sql_nodes(getattr(node, item.name))
