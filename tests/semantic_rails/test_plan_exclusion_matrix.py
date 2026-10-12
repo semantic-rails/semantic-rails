@@ -63,9 +63,9 @@ def _open(tmp_path: Path, values: list[ValueDomainValue], seed: str = "") -> Run
     return runtime
 
 
-@pytest.fixture()
-def shop(tmp_path):
-    runtime = _open(tmp_path, _values())
+@pytest.fixture(scope="module")
+def shop(tmp_path_factory):
+    runtime = _open(tmp_path_factory.mktemp("exclusions"), _values())
     try:
         yield runtime
     finally:
