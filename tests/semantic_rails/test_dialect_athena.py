@@ -40,7 +40,20 @@ def _ident(*parts: str) -> SqlIdentifier:
 # ---------------------------------------------------------------------------
 
 
-def test_athena_registry_entry_uses_athena_dialect():
+def _expected_exact_percentile(p: float, x: str = "x") -> str:
+    # Exact linear interpolation over a sorted array (Trino arrays are
+    # 1-based; COUNT skips NULLs and ASC sorts NULLS LAST, so positions
+    # 1..n are exactly the sorted non-NULL values). Validated live on
+    # Athena engine v3 against DuckDB QUANTILE_CONT (incl. NULL-mixed,
+    # all-NULL, single-element, and p=0/p=1 inputs). Empty (or all-NULL)
+    # input yields NULL through the CASE guard, not an arr[0] index error.
+    pos = f"{p} * (COUNT({x}) - 1)"
+    lo = f"(ARRAY_AGG({x} ORDER BY {x} ASC))[CAST(FLOOR({pos}) AS BIGINT) + 1]"
+    hi = f"(ARRAY_AGG({x} ORDER BY {x} ASC))[CAST(CEIL({pos}) AS BIGINT) + 1]"
+    return f"CASE WHEN COUNT({x}) > 0 THEN {lo} + ({hi} - {lo}) * ({pos} - FLOOR({pos})) END"
+
+
+def test_athena_registry_entry_renders_trino_forms():
     connector = warehouse_connector("athena")
     assert connector is not None
     assert isinstance(connector.dialect, AthenaDialect)
@@ -48,100 +61,44 @@ def test_athena_registry_entry_uses_athena_dialect():
     assert connector.adapter == "semantic_rails.db_parts.athena:create_adapter"
     assert isinstance(dialect_for_warehouse("athena"), AthenaDialect)
 
-
-def _expected_exact_percentile(p: float, x: str = "x") -> str:
-    # Exact linear interpolation over a sorted array (Trino arrays are
-    # 1-based; COUNT skips NULLs and ASC sorts NULLS LAST, so positions
-    # 1..n are exactly the sorted non-NULL values). Validated live on
-    # Athena engine v3 against DuckDB QUANTILE_CONT (incl. NULL-mixed,
-    # all-NULL, single-element, and p=0/p=1 inputs).
-    pos = f"{p} * (COUNT({x}) - 1)"
-    lo = f"(ARRAY_AGG({x} ORDER BY {x} ASC))[CAST(FLOOR({pos}) AS BIGINT) + 1]"
-    hi = f"(ARRAY_AGG({x} ORDER BY {x} ASC))[CAST(CEIL({pos}) AS BIGINT) + 1]"
-    return f"CASE WHEN COUNT({x}) > 0 THEN {lo} + ({hi} - {lo}) * ({pos} - FLOOR({pos})) END"
-
-
-def test_athena_percentile_cont_renders_exact_array_interpolation():
-    rendered = render_expr(DIALECT.percentile_cont(_ident("x"), 0.95))
-    assert rendered == _expected_exact_percentile(0.95)
-    # The t-digest sketch must be gone — exactness is the contract.
-    assert "APPROX_PERCENTILE" not in rendered
-
-
-def test_athena_median_renders_exact_percentile_half():
-    rendered = render_expr(DIALECT.median(_ident("x")))
-    assert rendered == _expected_exact_percentile(0.5)
-    assert "APPROX_PERCENTILE" not in rendered
-
-
-def test_athena_percentile_guards_empty_input_with_case():
-    # Empty (or all-NULL) input must yield NULL, not an arr[0] index
-    # error: floor(p * (0 - 1)) + 1 == 0 and Trino arrays are 1-based.
-    rendered = render_expr(DIALECT.percentile_cont(_ident("x"), 0.8))
-    assert rendered.startswith("CASE WHEN COUNT(x) > 0 THEN ")
-    assert rendered.endswith(" END")
-
-
-def test_athena_first_value_renders_min_by():
-    rendered = render_expr(DIALECT.first_value(_ident("x"), _ident("t")))
-    assert rendered == "MIN_BY(x, t)"
-
-
-def test_athena_last_value_renders_max_by():
-    rendered = render_expr(DIALECT.last_value(_ident("x"), _ident("t")))
-    assert rendered == "MAX_BY(x, t)"
-
-
-def test_athena_date_add_renders_trino_unit_literal_form():
-    # Trino: DATE_ADD('unit', value, ts) — NOT the INTERVAL form.
-    rendered = render_expr(DIALECT.date_add("day", SqlLiteral(7), _ident("ts")))
-    assert rendered == "DATE_ADD('day', 7, ts)"
-    assert "INTERVAL" not in rendered
-
-
-def test_athena_date_add_keeps_unit_lowercase_for_all_compiler_units():
-    # Units the compiler emits (expressions.py window/offset units).
-    for unit in ("minute", "hour", "day", "week", "month", "quarter", "year"):
-        rendered = render_expr(DIALECT.date_add(unit, SqlLiteral(1), _ident("ts")))
-        assert rendered == f"DATE_ADD('{unit}', 1, ts)"
-
-
-def test_athena_date_diff_is_trino_form_with_lowercase_unit():
-    # The portable default IS Trino's form — verify it stays that way
-    # and the unit literal arrives lowercase ('day', not 'DAY').
-    for unit in ("minute", "hour", "day", "week", "month", "quarter", "year"):
-        rendered = render_expr(DIALECT.date_diff(unit, _ident("s"), _ident("e")))
-        assert rendered == (f"DATE_DIFF('{unit}', CAST(s AS TIMESTAMP), CAST(e AS TIMESTAMP))")
-
-
-def test_athena_date_trunc_is_portable_trino_form():
-    rendered = render_expr(DIALECT.date_trunc("month", _ident("ts")))
-    assert rendered == "DATE_TRUNC('month', CAST(ts AS TIMESTAMP))"
-
-
-def test_athena_null_safe_eq_uses_is_not_distinct_from():
-    expr = DIALECT.null_safe_eq(_ident("a"), _ident("b"))
-    assert isinstance(expr, SqlBinary)
-    assert render_expr(expr) == "a IS NOT DISTINCT FROM b"
-
-
-def test_athena_conditional_aggregate_uses_portable_case_form():
     condition = SqlBinary(_ident("x"), ">", SqlLiteral(1))
-    assert (
-        render_expr(DIALECT.conditional_aggregate("count", condition, None))
-        == "COUNT(CASE WHEN x > 1 THEN 1 END)"
-    )
-    assert (
-        render_expr(DIALECT.conditional_aggregate("sum", condition, _ident("v")))
-        == "SUM(CASE WHEN x > 1 THEN v END)"
-    )
-
-
-def test_athena_timestamp_type_is_plain_timestamp():
+    null_safe = DIALECT.null_safe_eq(_ident("a"), _ident("b"))
+    assert isinstance(null_safe, SqlBinary)
+    rendered = [
+        # The t-digest sketch (APPROX_PERCENTILE) is gone — exactness is the contract.
+        (DIALECT.percentile_cont(_ident("x"), 0.95), _expected_exact_percentile(0.95)),
+        (DIALECT.median(_ident("x")), _expected_exact_percentile(0.5)),
+        (DIALECT.first_value(_ident("x"), _ident("t")), "MIN_BY(x, t)"),
+        (DIALECT.last_value(_ident("x"), _ident("t")), "MAX_BY(x, t)"),
+        # Trino: DATE_ADD('unit', value, ts) — NOT the INTERVAL form.
+        (DIALECT.date_add("day", SqlLiteral(7), _ident("ts")), "DATE_ADD('day', 7, ts)"),
+        (DIALECT.date_trunc("month", _ident("ts")), "DATE_TRUNC('month', CAST(ts AS TIMESTAMP))"),
+        (null_safe, "a IS NOT DISTINCT FROM b"),
+        (
+            DIALECT.conditional_aggregate("count", condition, None),
+            "COUNT(CASE WHEN x > 1 THEN 1 END)",
+        ),
+        (
+            DIALECT.conditional_aggregate("sum", condition, _ident("v")),
+            "SUM(CASE WHEN x > 1 THEN v END)",
+        ),
+    ]
+    # Units the compiler emits (expressions.py window/offset units) stay lowercase; the
+    # portable DATE_DIFF default IS Trino's form ('day', not 'DAY').
+    for unit in ("minute", "hour", "day", "week", "month", "quarter", "year"):
+        rendered.append(
+            (DIALECT.date_add(unit, SqlLiteral(1), _ident("ts")), f"DATE_ADD('{unit}', 1, ts)")
+        )
+        rendered.append(
+            (
+                DIALECT.date_diff(unit, _ident("s"), _ident("e")),
+                f"DATE_DIFF('{unit}', CAST(s AS TIMESTAMP), CAST(e AS TIMESTAMP))",
+            )
+        )
+    for expr, expected in rendered:
+        assert render_expr(expr) == expected
     assert DIALECT.timestamp_type_name() == "TIMESTAMP"
 
-
-def test_athena_capabilities_document_exact_percentiles():
     capabilities = DIALECT.capabilities()
     assert capabilities["percentile_exact"] is True
     assert capabilities["median_exact"] is True
@@ -225,27 +182,44 @@ def test_athena_adapter_normalizes_options_and_disables_statement_timeout():
     assert adapter.engine == "athena"
     assert adapter.connection_kind == "athena_native"
 
+    package = PackageMeta(
+        package_id="athena_demo",
+        name="athena_demo",
+        description="athena demo",
+        warehouse="athena",
+        connection=ConnectionSpec(
+            kind="athena_native",
+            options={
+                "region_env": "AWS_REGION",
+                "s3_staging_dir_env": "SR_ATHENA_S3_STAGING_DIR",
+                "database": "sr_jaffle",
+            },
+        ),
+    )
+    adapter = create_warehouse_adapter(package)
+    assert isinstance(adapter, AthenaAdapter)
+    assert adapter.options["database"] == "sr_jaffle"
+    assert create_adapter(package).options == adapter.options
 
-def test_athena_adapter_rejects_unsupported_options():
+
+def test_athena_adapter_rejects_unsupported_and_literal_secret_options():
     with pytest.raises(SemanticLayerError) as exc:
         AthenaAdapter({"host": "example.com"})
     assert exc.value.code == "INVALID_CONFIG"
     assert "unsupported package.connection option 'host'" in str(exc.value)
 
-
-@pytest.mark.parametrize(
-    "secret_key", ["password", "token", "secret", "api_key", "credentials", "private_key"]
-)
-def test_athena_adapter_rejects_literal_secret_options(secret_key: str):
     # AWS credentials must come from the ambient boto3 chain — any
     # literal credential-looking option is rejected outright.
-    with pytest.raises(SemanticLayerError) as exc:
-        AthenaAdapter({secret_key: "hunter2"})
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "hunter2" not in str(exc.value)
+    for secret_key in ["password", "token", "secret", "api_key", "credentials", "private_key"]:
+        with pytest.raises(SemanticLayerError) as exc:
+            AthenaAdapter({secret_key: "hunter2"})
+        assert exc.value.code == "INVALID_CONFIG"
+        assert "hunter2" not in str(exc.value)
 
 
-def test_athena_adapter_reports_missing_env_without_values(monkeypatch: pytest.MonkeyPatch):
+def test_athena_adapter_reports_missing_env_and_options_without_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+):
     log: dict[str, Any] = {}
     _install_fake_pyathena(monkeypatch, log)
     monkeypatch.delenv("SR_TEST_ATHENA_REGION", raising=False)
@@ -265,65 +239,77 @@ def test_athena_adapter_reports_missing_env_without_values(monkeypatch: pytest.M
         "SR_TEST_ATHENA_REGION",
         "SR_TEST_ATHENA_STAGING",
     ]
-    assert "connect_kwargs" not in log
-
-
-def test_athena_adapter_requires_region_and_staging_dir(monkeypatch: pytest.MonkeyPatch):
-    log: dict[str, Any] = {}
-    _install_fake_pyathena(monkeypatch, log)
-    adapter = AthenaAdapter({"database": "sr_jaffle"})
 
     with pytest.raises(SemanticLayerError) as exc:
-        adapter.query("select 1")
+        AthenaAdapter({"database": "sr_jaffle"}).query("select 1")
 
     assert exc.value.code == "INVALID_CONFIG"
     assert exc.value.details["missing_options"] == ["region", "s3_staging_dir"]
+    assert "connect_kwargs" not in log
 
 
-@pytest.mark.parametrize(
-    ("timeouts", "connect_timeout", "read_timeout"),
-    [({}, 10, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45)],
-)
 def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
-    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    log: dict[str, Any] = {}
-    _install_fake_pyathena(monkeypatch, log)
     monkeypatch.setenv("SR_TEST_ATHENA_REGION", "eu-central-1")
     monkeypatch.setenv("SR_TEST_ATHENA_STAGING", "s3://sr-bucket/athena-results/")
-    adapter = AthenaAdapter(
-        {
-            "region_env": "SR_TEST_ATHENA_REGION",
-            "s3_staging_dir_env": "SR_TEST_ATHENA_STAGING",
-            "database": "sr_jaffle",
-            "workgroup": "primary",
-            **timeouts,
-        }
-    )
-
-    rows = adapter.query("select 1")
-    adapter.close()
-
-    assert rows == [{"ONE": 1, "TWO": "x"}]
-    assert log["sql"] == "select 1"
-    assert {
-        key: value
-        for key, value in log["connect_kwargs"].items()
-        if key not in {"config", "on_poll"}
-    } == {
+    from_env = {
+        "region_env": "SR_TEST_ATHENA_REGION",
+        "s3_staging_dir_env": "SR_TEST_ATHENA_STAGING",
+        "database": "sr_jaffle",
+        "workgroup": "primary",
+    }
+    # Namespace defaults from connection options so unqualified table names
+    # (jaffle_order, …) resolve; without them the schema is "default" and no workgroup.
+    env_kwargs = {
         "s3_staging_dir": "s3://sr-bucket/athena-results/",
         "region_name": "eu-central-1",
-        # Namespace defaults from connection options so unqualified
-        # table names (jaffle_order, …) resolve.
         "schema_name": "sr_jaffle",
         "work_group": "primary",
     }
-    assert log["connect_kwargs"]["config"].connect_timeout == connect_timeout
-    assert log["connect_kwargs"]["config"].read_timeout == read_timeout
-    assert "on_poll" not in log["connect_kwargs"]
-    assert callable(log["cursor_kwargs"]["on_poll"])
-    assert log["cursor_closed"] is True
-    assert log["connection_closed"] is True
+    literal_kwargs = {
+        "s3_staging_dir": "s3://sr-bucket/results",
+        "region_name": "us-east-1",
+        "schema_name": "default",
+        "work_group": None,
+    }
+    for options, expected_kwargs, connect_timeout, read_timeout in [
+        (from_env, env_kwargs, 10, 65),
+        (
+            {**from_env, "connect_timeout_seconds": "7", "read_timeout_seconds": "45"},
+            env_kwargs,
+            7,
+            45,
+        ),
+        (
+            {"region": "us-east-1", "s3_staging_dir": "s3://sr-bucket/results"},
+            literal_kwargs,
+            10,
+            65,
+        ),
+    ]:
+        log: dict[str, Any] = {}
+        _install_fake_pyathena(monkeypatch, log)
+        adapter = AthenaAdapter(options)
+
+        rows = adapter.query("SELECT a / NULLIF(b, 0) FROM t WHERE ts >= '2016-09-01'")
+        adapter.close()
+
+        assert rows == [{"ONE": 1, "TWO": "x"}]
+        # The ratio guard is prepared exactly once on the way to the driver.
+        assert log["sql"] == (
+            "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) FROM t WHERE ts >= '2016-09-01'"
+        )
+        connect_kwargs = log["connect_kwargs"]
+        assert {
+            key: value for key, value in connect_kwargs.items() if key not in {"config", "on_poll"}
+        } == expected_kwargs
+        assert connect_kwargs["config"].connect_timeout == connect_timeout
+        assert connect_kwargs["config"].read_timeout == read_timeout
+        assert "on_poll" not in connect_kwargs
+        assert callable(log["cursor_kwargs"]["on_poll"])
+        assert log["cursor_closed"] is True
+        assert log["connection_closed"] is True
 
 
 @pytest.mark.parametrize("timeout_ms, deadline", [(None, 3), (120000, 125)])
@@ -404,17 +390,6 @@ def test_athena_installed_driver_calls_poll_hook_and_cancels(monkeypatch):
     connection.close()
 
 
-def test_athena_adapter_defaults_schema_and_omits_workgroup(monkeypatch: pytest.MonkeyPatch):
-    log: dict[str, Any] = {}
-    _install_fake_pyathena(monkeypatch, log)
-    adapter = AthenaAdapter({"region": "us-east-1", "s3_staging_dir": "s3://sr-bucket/results"})
-
-    adapter.query("select 1")
-
-    assert log["connect_kwargs"]["schema_name"] == "default"
-    assert log["connect_kwargs"]["work_group"] is None
-
-
 def test_athena_adapter_redacts_driver_errors(monkeypatch: pytest.MonkeyPatch):
     log: dict[str, Any] = {}
     _install_fake_pyathena(
@@ -440,29 +415,6 @@ def test_athena_adapter_redacts_driver_errors(monkeypatch: pytest.MonkeyPatch):
     assert "SYNTAX_ERROR" not in str(exc.value)
 
 
-def test_create_warehouse_adapter_selects_athena(monkeypatch: pytest.MonkeyPatch):
-    package = PackageMeta(
-        package_id="athena_demo",
-        name="athena_demo",
-        description="athena demo",
-        warehouse="athena",
-        connection=ConnectionSpec(
-            kind="athena_native",
-            options={
-                "region_env": "AWS_REGION",
-                "s3_staging_dir_env": "SR_ATHENA_S3_STAGING_DIR",
-                "database": "sr_jaffle",
-            },
-        ),
-    )
-
-    adapter = create_warehouse_adapter(package)
-
-    assert isinstance(adapter, AthenaAdapter)
-    assert adapter.options["database"] == "sr_jaffle"
-    assert create_adapter(package).options == adapter.options
-
-
 # ---------------------------------------------------------------------------
 # (b1) Compatibility pass — Trino integer/decimal division truncates, so
 #      the compiler's `x / NULLIF(y, 0)` ratio guard is cast to DOUBLE
@@ -470,74 +422,47 @@ def test_create_warehouse_adapter_selects_athena(monkeypatch: pytest.MonkeyPatch
 # ---------------------------------------------------------------------------
 
 
-def _prepare(sql: str) -> str:
-    return DIALECT.prepare_query(sql).sql
+def test_athena_prepare_casts_nullif_ratio_guards_to_double_and_leaves_literals():
+    for sql, expected in [
+        (
+            "SELECT a / NULLIF(b, 0) AS ratio FROM t",
+            "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) AS ratio FROM t",
+        ),
+        (
+            "SELECT x / NULLIF(y / NULLIF(z, 0), 0) FROM t",
+            "SELECT x / CAST(NULLIF(y / CAST(NULLIF(z, 0) AS DOUBLE), 0) AS DOUBLE) FROM t",
+        ),
+        # Typing is the renderer's (SqlLiteral.temporal): a string compare stays one.
+        (
+            "SELECT 1 FROM t WHERE dt = '2026-01-01' AND ts >= '2016-09-01'",
+            "SELECT 1 FROM t WHERE dt = '2026-01-01' AND ts >= '2016-09-01'",
+        ),
+    ]:
+        assert DIALECT.prepare_query(sql).sql == expected
 
 
-def test_athena_prepare_casts_nullif_ratio_guard_to_double():
-    sql = "SELECT a / NULLIF(b, 0) AS ratio FROM t"
-    assert _prepare(sql) == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) AS ratio FROM t"
-
-
-def test_athena_prepare_rewrites_nested_nullif_divisions():
-    sql = "SELECT x / NULLIF(y / NULLIF(z, 0), 0) FROM t"
-    assert _prepare(sql) == (
-        "SELECT x / CAST(NULLIF(y / CAST(NULLIF(z, 0) AS DOUBLE), 0) AS DOUBLE) FROM t"
-    )
-
-
-def test_athena_prepare_skips_string_literals():
-    sql = "SELECT 'a / NULLIF(b, 0)' AS doc, c / NULLIF(d, 0) FROM t"
-    assert _prepare(sql) == (
-        "SELECT 'a / NULLIF(b, 0)' AS doc, c / CAST(NULLIF(d, 0) AS DOUBLE) FROM t"
-    )
-
-
-def test_athena_prepare_handles_quotes_and_parens_inside_guard():
-    sql = "SELECT a / NULLIF(SUM(CASE WHEN s = ')''(' THEN n END), 0) FROM t"
-    assert _prepare(sql) == (
-        "SELECT a / CAST(NULLIF(SUM(CASE WHEN s = ')''(' THEN n END), 0) AS DOUBLE) FROM t"
-    )
-
-
-def test_athena_prepare_leaves_unbalanced_tail_and_plain_division_alone():
-    for sql in ("SELECT a / NULLIF(b, 0", "SELECT a / b, NULLIF(c, 0) FROM t"):
-        assert _prepare(sql) == sql
-
-
-def test_athena_prepare_leaves_literals_alone():
-    # Typing is the renderer's (SqlLiteral.temporal): a string compare stays one.
-    sql = "SELECT 1 FROM t WHERE dt = '2026-01-01' AND ts >= '2016-09-01'"
-    assert _prepare(sql) == sql
-
-
-@pytest.mark.parametrize("op", ["=", "<", ">", "<=", ">="])
-@pytest.mark.parametrize(
-    ("value", "literal"),
-    [
-        ("2016-09-01", "TIMESTAMP '2016-09-01'"),
-        ("2016-09-01 12:30:00.123", "TIMESTAMP '2016-09-01 12:30:00.123'"),
-        # Trino's TIMESTAMP literal takes a space between date and time, never ISO's T.
-        ("2016-09-01T12:30:00", "TIMESTAMP '2016-09-01 12:30:00'"),
-        ("2016-09-01T12:30:00.123456", "TIMESTAMP '2016-09-01 12:30:00.123456'"),
-    ],
-)
-def test_athena_types_temporal_literals(op, value, literal):
-    temporal = SqlBinary(_ident("t", "ts"), op, SqlLiteral(value, temporal=True))
-    text = SqlBinary(_ident("t", "dt"), op, SqlLiteral(value))
+def test_athena_types_iso_temporal_literals_only():
     with use_dialect(DIALECT):
-        assert render_expr(temporal) == f"t.ts {op} {literal}"
-        assert render_expr(text) == f"t.dt {op} '{value}'"
+        for op, value, literal in [
+            ("=", "2016-09-01", "TIMESTAMP '2016-09-01'"),
+            ("<", "2016-09-01 12:30:00.123", "TIMESTAMP '2016-09-01 12:30:00.123'"),
+            # Trino's TIMESTAMP literal takes a space between date and time, never ISO's T.
+            (">", "2016-09-01T12:30:00", "TIMESTAMP '2016-09-01 12:30:00'"),
+            ("<=", "2016-09-01T12:30:00.123456", "TIMESTAMP '2016-09-01 12:30:00.123456'"),
+            (">=", "2016-09-01", "TIMESTAMP '2016-09-01'"),
+            # Text that is not an ISO date or timestamp stays untyped.
+            (">=", "2016-09", "'2016-09'"),
+            (">=", "2016-09-011", "'2016-09-011'"),
+            (">=", "last week", "'last week'"),
+        ]:
+            temporal = SqlBinary(_ident("t", "ts"), op, SqlLiteral(value, temporal=True))
+            text = SqlBinary(_ident("t", "dt"), op, SqlLiteral(value))
+            assert render_expr(temporal) == f"t.ts {op} {literal}"
+            assert render_expr(text) == f"t.dt {op} '{value}'"
 
 
-@pytest.mark.parametrize("value", ["2016-09", "2016-09-011", "last week"])
-def test_athena_leaves_non_iso_temporal_text_untyped(value):
-    expr = SqlBinary(_ident("t", "ts"), ">=", SqlLiteral(value, temporal=True))
-    with use_dialect(DIALECT):
-        assert render_expr(expr) == f"t.ts >= '{value}'"
-
-
-def test_athena_filters_type_only_date_and_timestamp_dimensions():
+@pytest.fixture(scope="module")
+def athena_runtime():
     from semantic_rails.config import load_package_config
     from tests.integration.harness import PACKAGE_DIR
 
@@ -545,7 +470,12 @@ def test_athena_filters_type_only_date_and_timestamp_dimensions():
     runtime = Runtime.from_config(
         _athena_config(config), source_path=str(PACKAGE_DIR), package_id="jaffle_shop"
     )
-    sql = runtime.compile(
+    yield runtime
+    runtime.close()
+
+
+def test_athena_filters_and_now_type_only_date_and_timestamp_values(athena_runtime):
+    sql = athena_runtime.compile(
         {
             "select": ["measure.jaffle.order_count"],
             "where": [
@@ -565,6 +495,14 @@ def test_athena_filters_type_only_date_and_timestamp_dimensions():
     assert "IN (TIMESTAMP '2016-09-01', TIMESTAMP '2016-09-02')" in sql
     assert "TIMESTAMP '2026-01-01'" not in sql
 
+    # A `this` window ends at `now`, an instant with a time of day.
+    sql = athena_runtime.compile(
+        {"select": ["measure.jaffle.order_count"], "time": {"this": "month", "grain": "day"}},
+        now="2017-08-03T12:30:00Z",
+    )["rendered_sql"]
+    assert "< TIMESTAMP '2017-08-03 12:30:00'" in sql
+    assert "TIMESTAMP '2017-08-03T" not in sql
+
 
 def _order(column: str) -> dict[str, Any]:
     return {"kind": "column", "column": column, "entity": "entity.jaffle_order"}
@@ -583,121 +521,82 @@ def _compares(left: dict[str, Any], op: str = ">=") -> dict[str, Any]:
     return {"kind": "comparison", "op": op, "left": left, "right": _TEXT}
 
 
-@pytest.mark.parametrize(
-    ("condition", "rendered"),
-    [
-        (_compares(_order("ordered_at")), "jaffle_order.ordered_at >= TIMESTAMP '2016-09-01'"),
-        (
-            {"kind": "comparison", "op": ">", "left": _TEXT, "right": _order("ordered_at")},
-            "TIMESTAMP '2016-09-01' > jaffle_order.ordered_at",
-        ),
-        (
-            {"kind": "in", "expr": _order("ordered_at"), "values": ["2016-09-01"]},
-            "jaffle_order.ordered_at IN (TIMESTAMP '2016-09-01')",
-        ),
-        (
-            {"kind": "in", "expr": _TEXT, "values": [_order("ordered_at")]},
-            "TIMESTAMP '2016-09-01' IN (jaffle_order.ordered_at)",
-        ),
-        (
-            _compares(_LATER),
-            "DATE_ADD('day', 1, jaffle_order.ordered_at) >= TIMESTAMP '2016-09-01'",
-        ),
-        (
-            _compares(
-                _call("DATE_TRUNC", {"kind": "literal", "value": "month"}, _order("ordered_at"))
-            ),
-            "DATE_TRUNC('month', jaffle_order.ordered_at) >= TIMESTAMP '2016-09-01'",
-        ),
-        (
-            _compares(_call("COALESCE", _order("ordered_at"), _LATER)),
-            ", 1, jaffle_order.ordered_at)) >= TIMESTAMP '2016-09-01'",
-        ),
-        (
-            _compares(_call("NULLIF", _order("ordered_at"), _LATER)),
-            ", 1, jaffle_order.ordered_at)) >= TIMESTAMP '2016-09-01'",
-        ),
-        (
-            _compares(
-                {
-                    "kind": "case",
-                    "whens": [{"when": _IN_STORE_A, "then": _order("ordered_at")}],
-                    "else": _LATER,
-                }
-            ),  # fmt: skip
-            "END >= TIMESTAMP '2016-09-01'",
-        ),
-        # Text compared with text stays text, whatever it looks like.
-        (_compares(_order("store_id"), "="), "jaffle_order.store_id = '2016-09-01'"),
-        (
-            _compares(_call("CAST", _order("ordered_at"), {"kind": "literal", "value": "VARCHAR"})),
-            "CAST(jaffle_order.ordered_at AS VARCHAR) >= '2016-09-01'",
-        ),
-        (
-            _compares(
-                _call("COALESCE", _order("store_id"), {"kind": "literal", "value": "x"}), "="
-            ),
-            "COALESCE(jaffle_order.store_id, 'x') = '2016-09-01'",
-        ),
-        (
-            _compares(
-                {
-                    "kind": "case",
-                    "whens": [{"when": _IN_STORE_A, "then": _order("store_id")}],
-                    "else": _TEXT,
-                },
-                "=",
-            ),  # fmt: skip
-            "END = '2016-09-01'",
-        ),
-    ],
-    ids=[
-        "column",
-        "reversed",
-        "in",
-        "in_text_operand",
-        "date_add",
-        "date_trunc",
-        "coalesce",
-        "nullif",
-        "case_result",
-        "string_column",
-        "cast_varchar",
-        "string_coalesce",
-        "string_case",
-    ],
-)
-def test_athena_expressions_type_text_compared_only_with_temporal_values(condition, rendered):
-    """Text compared with a date or timestamp, a column or an expression whose result is one,
-    is a TIMESTAMP literal (Trino refuses a timestamp compared with varchar); text compared with
-    text stays text."""
-    from semantic_rails.config import load_package_config
-    from tests.integration.harness import PACKAGE_DIR
+# Text compared with a date or timestamp, a column or an expression whose result is one, is a
+# TIMESTAMP literal (Trino refuses a timestamp compared with varchar); text compared with text
+# stays text, whatever it looks like.
+TEXT_COMPARISONS = [
+    (_compares(_order("ordered_at")), "jaffle_order.ordered_at >= TIMESTAMP '2016-09-01'"),
+    (
+        {"kind": "comparison", "op": ">", "left": _TEXT, "right": _order("ordered_at")},
+        "TIMESTAMP '2016-09-01' > jaffle_order.ordered_at",
+    ),
+    (
+        {"kind": "in", "expr": _order("ordered_at"), "values": ["2016-09-01"]},
+        "jaffle_order.ordered_at IN (TIMESTAMP '2016-09-01')",
+    ),
+    (
+        {"kind": "in", "expr": _TEXT, "values": [_order("ordered_at")]},
+        "TIMESTAMP '2016-09-01' IN (jaffle_order.ordered_at)",
+    ),
+    (
+        _compares(_LATER),
+        "DATE_ADD('day', 1, jaffle_order.ordered_at) >= TIMESTAMP '2016-09-01'",
+    ),
+    (
+        _compares(_call("DATE_TRUNC", {"kind": "literal", "value": "month"}, _order("ordered_at"))),
+        "DATE_TRUNC('month', jaffle_order.ordered_at) >= TIMESTAMP '2016-09-01'",
+    ),
+    (
+        _compares(_call("COALESCE", _order("ordered_at"), _LATER)),
+        ", 1, jaffle_order.ordered_at)) >= TIMESTAMP '2016-09-01'",
+    ),
+    (
+        _compares(_call("NULLIF", _order("ordered_at"), _LATER)),
+        ", 1, jaffle_order.ordered_at)) >= TIMESTAMP '2016-09-01'",
+    ),
+    (
+        _compares(
+            {
+                "kind": "case",
+                "whens": [{"when": _IN_STORE_A, "then": _order("ordered_at")}],
+                "else": _LATER,
+            }
+        ),  # fmt: skip
+        "END >= TIMESTAMP '2016-09-01'",
+    ),
+    # Text compared with text stays text, whatever it looks like.
+    (_compares(_order("store_id"), "="), "jaffle_order.store_id = '2016-09-01'"),
+    (
+        _compares(_call("CAST", _order("ordered_at"), {"kind": "literal", "value": "VARCHAR"})),
+        "CAST(jaffle_order.ordered_at AS VARCHAR) >= '2016-09-01'",
+    ),
+    (
+        _compares(_call("COALESCE", _order("store_id"), {"kind": "literal", "value": "x"}), "="),
+        "COALESCE(jaffle_order.store_id, 'x') = '2016-09-01'",
+    ),
+    (
+        _compares(
+            {
+                "kind": "case",
+                "whens": [{"when": _IN_STORE_A, "then": _order("store_id")}],
+                "else": _TEXT,
+            },
+            "=",
+        ),  # fmt: skip
+        "END = '2016-09-01'",
+    ),
+]
 
-    config = load_package_config(str(PACKAGE_DIR))
-    runtime = Runtime.from_config(
-        _athena_config(config), source_path=str(PACKAGE_DIR), package_id="jaffle_shop"
-    )
+
+def test_athena_expressions_type_text_compared_only_with_temporal_values(athena_runtime):
     aggregate = {"kind": "aggregate_if", "aggregation": "count", "value": _order("order_id")}
-    try:
-        sql = runtime.compile(
+    for condition, rendered in TEXT_COMPARISONS:
+        sql = athena_runtime.compile(
             {"select": [{"as": "n", "expression": {**aggregate, "condition": condition}}]},
             now="2026-10-01T00:00:00Z",
         )["rendered_sql"]
-    finally:
-        runtime.close()
-    assert rendered in sql
-    assert ("TIMESTAMP '2016-09-01'" in sql) is ("TIMESTAMP" in rendered)
-
-
-def test_athena_adapter_query_prepares_once(monkeypatch: pytest.MonkeyPatch):
-    log: dict[str, Any] = {}
-    _install_fake_pyathena(monkeypatch, log)
-    adapter = AthenaAdapter({"region": "us-east-1", "s3_staging_dir": "s3://sr-bucket/results"})
-
-    adapter.query("SELECT a / NULLIF(b, 0) FROM t WHERE ts >= '2016-09-01'")
-
-    assert log["sql"] == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) FROM t WHERE ts >= '2016-09-01'"
+        assert rendered in sql
+        assert ("TIMESTAMP '2016-09-01'" in sql) is ("TIMESTAMP" in rendered), rendered
 
 
 # ---------------------------------------------------------------------------
@@ -874,20 +773,13 @@ def _athena_config(config):
     )
 
 
-def test_athena_compiles_entire_battery_to_non_empty_sql():
-    from semantic_rails.config import load_package_config
-    from tests.integration.harness import PACKAGE_DIR, load_battery
+def test_athena_compiles_entire_battery_to_non_empty_sql(athena_runtime):
+    from tests.integration.harness import load_battery
 
-    config = load_package_config(str(PACKAGE_DIR))
-    runtime = Runtime.from_config(
-        _athena_config(config),
-        source_path=str(PACKAGE_DIR),
-        package_id=config.package.package_id,
-    )
     cases = load_battery()
     assert cases, "battery is empty — harness misconfigured"
     for case in cases:
-        compiled = runtime.compile(case.payload)
+        compiled = athena_runtime.compile(case.payload)
         sql = str(compiled.get("rendered_sql") or "")
         assert sql.strip(), f"{case.name}: compiled to empty rendered SQL"
         # DuckDB-only forms must never leak into Athena SQL, and the
@@ -903,23 +795,3 @@ def test_athena_compiles_entire_battery_to_non_empty_sql():
             assert forbidden not in sql, f"{case.name}: forbidden {forbidden} in SQL"
         # Trino rejects the portable INTERVAL date_add form.
         assert "INTERVAL (" not in sql, f"{case.name}: INTERVAL form leaked into SQL"
-
-
-def test_athena_window_end_at_now_is_a_trino_timestamp_literal():
-    # A `this` window ends at `now`, an instant with a time of day.
-    from semantic_rails.config import load_package_config
-    from tests.integration.harness import PACKAGE_DIR
-
-    config = load_package_config(str(PACKAGE_DIR))
-    runtime = Runtime.from_config(
-        _athena_config(config), source_path=str(PACKAGE_DIR), package_id="jaffle_shop"
-    )
-    try:
-        sql = runtime.compile(
-            {"select": ["measure.jaffle.order_count"], "time": {"this": "month", "grain": "day"}},
-            now="2017-08-03T12:30:00Z",
-        )["rendered_sql"]
-    finally:
-        runtime.close()
-    assert "< TIMESTAMP '2017-08-03 12:30:00'" in sql
-    assert "TIMESTAMP '2017-08-03T" not in sql
