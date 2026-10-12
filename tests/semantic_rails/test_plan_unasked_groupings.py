@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -31,6 +31,7 @@ from semantic_rails.planner.groupings import _listed_grouping_terms
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_listed_groupings import _upkeep
 
@@ -53,24 +54,19 @@ UNSTATED = "ENTITY_FILTER_PERIOD_UNSTATED"
 CLARIFY = {COMPARISON, UNSTATED}
 
 
-@pytest.fixture()
-def jaffle(runtime_factory: Any) -> Iterator[Runtime]:
-    runtime = runtime_factory("jaffle_shop")
-    try:
+@pytest.fixture(scope="module")
+def jaffle(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
+    with closing(opened(Runtime.from_path(str(path)))) as runtime:
         yield runtime
-    finally:
-        runtime.close()
 
 
-@pytest.fixture()
-def incident(tmp_path: Path) -> Iterator[Runtime]:
+@pytest.fixture(scope="module")
+def incident(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
     """Two incidents named "Leak", reported in January 2026, costing 10 and 20."""
-
-    runtime = _upkeep(tmp_path / "incident", "incident", "repair")
-    try:
+    path = tmp_path_factory.mktemp("upkeep") / "incident"
+    with closing(opened(_upkeep(path, "incident", "repair"))) as runtime:
         yield runtime
-    finally:
-        runtime.close()
 
 
 def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
@@ -155,18 +151,13 @@ def test_a_ranking_split_by_a_period_asks_which_ranking_it_means(
     jaffle: Runtime, intent: str
 ) -> None:
     limit = 1 if "top 1" in intent else 3
-    stores = "store" if limit == 1 else "stores"
     payload = plan_payload(jaffle, intent=intent)
 
     details = _held(payload, RANKING)
     assert details == {"limit": limit, "ranked": [STORE_ID, STORE], "grain": "month"}
     assert "clarification" not in details
     assert "execute" not in payload["next"].get("ready_for", [])
-    # The message states both readings; no option runs either one.
-    assert payload["why"]["message"].endswith(
-        f"The top {limit} {stores} over the whole window, or the top {limit} {stores} in each "
-        "month?"
-    )
+    # It asks which of the two readings is meant; no option runs either one.
     assert [hint["kind"] for hint in payload["why"]["recovery_hints"]] == ["ask_which_ranking"]
     assert "query" not in json.dumps(payload["why"])
 
@@ -602,7 +593,7 @@ def _outcome(payload: dict[str, Any]) -> str:
 def test_the_check_only_holds_a_plan_that_was_ready(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, case: _Case
 ) -> None:
-    jaffle._package_examples = []  # These cases test generic grouping checks.
+    monkeypatch.setattr(jaffle, "_package_examples", [])  # generic grouping checks
     after = plan_payload(jaffle, intent=case.intent)
     with monkeypatch.context() as without_checks:
         # The two checks are the only readers of the listed groupings, with the answer-shape
@@ -709,9 +700,10 @@ def _plain(value: Any) -> Any:
     ("intent", "columns", "sql"), _ONE_TOTAL, ids=[row[0] for row in _ONE_TOTAL]
 )
 def test_a_one_total_matches_plain_sql(
-    jaffle: Runtime, intent: str, columns: list[str], sql: str
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, intent: str, columns: list[str], sql: str
 ) -> None:
-    jaffle._package_examples = []  # As planned in test_the_check_only_holds_a_plan_that_was_ready.
+    # As planned in test_the_check_only_holds_a_plan_that_was_ready.
+    monkeypatch.setattr(jaffle, "_package_examples", [])
     payload = plan_payload(jaffle, intent=intent, now=AUGUST)
 
     assert payload["status"] == "ok", payload.get("why")

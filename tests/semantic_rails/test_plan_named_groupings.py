@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig
+from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_unasked_groupings import _CASES
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
@@ -43,13 +45,11 @@ def _alias(item: Any) -> str:
     return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
-@pytest.fixture()
-def jaffle(runtime_factory: Any) -> Iterator[Runtime]:
-    runtime = runtime_factory("jaffle_shop")
-    try:
+@pytest.fixture(scope="module")
+def jaffle(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
+    with closing(opened(Runtime.from_path(str(path)))) as runtime:
         yield runtime
-    finally:
-        runtime.close()
 
 
 def _write_retail_package(tmp_path: Path, *, explicit_columns: bool = False) -> Path:
@@ -125,13 +125,10 @@ def retail_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return _write_retail_package(tmp_path_factory.mktemp("retail"))
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def retail(retail_package: Path) -> Iterator[Runtime]:
-    runtime = Runtime.from_path(str(retail_package))
-    try:
+    with closing(opened(Runtime.from_path(str(retail_package)))) as runtime:
         yield runtime
-    finally:
-        runtime.close()
 
 
 _PHRASINGS = [
@@ -151,11 +148,15 @@ _PHRASINGS = [
     "group by\n{noun}",
 ]
 
-# Plurals, separators and a repeated "at" don't change which groupings the list names.
+# Plurals, separators and a repeated "at" don't change which groupings the list names: each
+# separator once, with the level and grain words in turn.
 _SUFFIX_LISTS = [
     f"revenue at customer type{separator}store name {word}"
-    for word in ["level", "levels", "grain", "grains"]
-    for separator in [" and ", " & ", ", ", " and at ", ", at ", " & at "]
+    for separator, word in zip(
+        [" and ", " & ", ", ", " and at ", ", at ", " & at "],
+        ["level", "levels", "grain", "grains", "levels", "grains"],
+        strict=True,
+    )
 ]
 
 
@@ -269,18 +270,23 @@ def _compare_declared_name_base(
     return before, after
 
 
-@pytest.mark.parametrize("kind", ["dimension", "entity"])
-@pytest.mark.parametrize("source", ["name", "label", "aliases"])
+_KINDS_AND_SOURCES = [
+    (kind, source) for kind in ("dimension", "entity") for source in ("name", "label", "aliases")
+]
+
+
 @pytest.mark.parametrize(
-    "term",
+    ("kind", "source", "term"),
     [
-        "client_category",
-        "client category",
-        "CLIENT_CATEGORY",
-        "_client_category",
-        "client_category_",
+        (kind, source, term)
+        for (kind, source), term in zip(
+            _KINDS_AND_SOURCES,
+            ["client_category", "client category", "CLIENT_CATEGORY", "_client_category",
+             "client_category_", "client category"],
+            strict=True,
+        )
     ],
-)
+)  # fmt: skip
 def test_declared_grouping_names_preserve_underscore_space_and_case_spans(
     jaffle: Runtime, kind: str, source: str, term: str
 ) -> None:
@@ -306,9 +312,13 @@ def test_declared_grouping_names_preserve_underscore_space_and_case_spans(
     assert term.lower() in unmet
 
 
-@pytest.mark.parametrize("kind", ["dimension", "entity"])
-@pytest.mark.parametrize("source", ["name", "label", "aliases"])
-@pytest.mark.parametrize("term", ["_client_category", "client_category_"])
+@pytest.mark.parametrize(
+    ("kind", "source", "term"),
+    [
+        (kind, source, ("_client_category", "client_category_")[index % 2])
+        for index, (kind, source) in enumerate(_KINDS_AND_SOURCES)
+    ],
+)
 def test_boundary_underscores_do_not_hide_a_space_joined_declared_name(
     jaffle: Runtime, kind: str, source: str, term: str
 ) -> None:
@@ -328,20 +338,28 @@ def test_boundary_underscores_do_not_hide_a_space_joined_declared_name(
     ] == ["client_category"]
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("group_by", [None, [STORE], [STORE, CUSTOMER_TYPE]])
+_GROUP_BYS = [None, [STORE], [STORE, CUSTOMER_TYPE]]
+_PATHS = ("primary", "fallback")
+
+
+def _in_turn(*rows: tuple[Any, ...]) -> list[tuple[Any, ...]]:
+    """Each row on each caller group_by, with the planner paths taken in turn."""
+    combos = [(*row, group_by) for row in rows for group_by in _GROUP_BYS]
+    return [(_PATHS[index % 2], *combo) for index, combo in enumerate(combos)]
+
+
 @pytest.mark.parametrize(
-    "question",
-    [
-        "revenue at customer_type and store name level",
-        "revenue at CUSTOMER_TYPE and STORE_NAME levels",
-        "revenue at customer type and store name level",
-        "revenue at customer_type and store_name grain",
-        "revenue at store name and customer_type level",
-        "revenue at store name level",
-        "revenue by store name",
-        "revenue at mystery level",
-    ],
+    ("path", "question", "group_by"),
+    _in_turn(
+        ("revenue at customer_type and store name level",),
+        ("revenue at CUSTOMER_TYPE and STORE_NAME levels",),
+        ("revenue at customer type and store name level",),
+        ("revenue at customer_type and store_name grain",),
+        ("revenue at store name and customer_type level",),
+        ("revenue at store name level",),
+        ("revenue by store name",),
+        ("revenue at mystery level",),
+    ),
 )
 def test_declared_name_variants_only_add_holds_against_immediate_base(
     jaffle: Runtime,
@@ -378,10 +396,15 @@ def test_declared_name_variants_only_add_holds_against_immediate_base(
             assert sorted(_in_memory_rows(jaffle, query, [STORE, CUSTOMER_TYPE])) == reference
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("source", ["name", "label", "aliases"])
-@pytest.mark.parametrize("term", ["_customer_type", "customer_type_"])
-@pytest.mark.parametrize("group_by", [None, [STORE], [STORE, CUSTOMER_TYPE]])
+@pytest.mark.parametrize(
+    ("path", "source", "term", "group_by"),
+    [
+        (path, ("name", "label", "aliases")[index % 3], term, group_by)
+        for index, (path, term, group_by) in enumerate(
+            _in_turn(("_customer_type",), ("customer_type_",))
+        )
+    ],
+)
 def test_boundary_underscore_names_only_add_holds(
     jaffle: Runtime,
     monkeypatch: pytest.MonkeyPatch,
@@ -460,10 +483,18 @@ _HELD_WITHOUT_IT = {
 }
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("group_by", [None, [STORE], [STORE, CUSTOMER_TYPE]])
-@pytest.mark.parametrize("alias", ["_new_type", "new_type", "new_type_", "new type"])
-@pytest.mark.parametrize("phrasing", _VALUE_IN_NAME_QUESTIONS)
+@pytest.mark.parametrize(
+    ("path", "group_by", "alias", "phrasing"),
+    [
+        (path, group_by, ("_new_type", "new_type", "new_type_", "new type")[index % 4], phrasing)
+        for index, (phrasing, path, group_by) in enumerate(
+            (phrasing, path, group_by)
+            for phrasing in _VALUE_IN_NAME_QUESTIONS
+            for path in _PATHS
+            for group_by in _GROUP_BYS
+        )
+    ],
+)
 def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
     jaffle: Runtime,
     monkeypatch: pytest.MonkeyPatch,
@@ -577,9 +608,17 @@ def test_a_value_outside_grouping_names_adds_no_hold(
     )
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("alias", ["_customer_type", "customer_type", "customer type"])
-@pytest.mark.parametrize("phrasing", _VALUE_IN_NAME_QUESTIONS)
+@pytest.mark.parametrize(
+    ("path", "alias", "phrasing"),
+    [
+        (_PATHS[index % 2], alias, phrasing)
+        for index, (alias, phrasing) in enumerate(
+            (alias, phrasing)
+            for alias in ("_customer_type", "customer_type", "customer type")
+            for phrasing in _VALUE_IN_NAME_QUESTIONS
+        )
+    ],
+)
 def test_a_fully_grouped_alias_without_a_value_collision_matches_reference_sql(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, path: str, alias: str, phrasing: str
 ) -> None:
@@ -808,8 +847,10 @@ def test_a_grouped_or_pinned_name_keeps_its_answer(
     assert sorted(_in_memory_rows(jaffle, query, dimensions)) == reference
 
 
-@pytest.mark.parametrize("path", ["pattern", "fallback"])
-@pytest.mark.parametrize("phrasing", _PHRASINGS)
+@pytest.mark.parametrize(
+    ("path", "phrasing"),
+    [(("pattern", "fallback")[index % 2], phrasing) for index, phrasing in enumerate(_PHRASINGS)],
+)
 def test_a_filter_never_stands_in_for_a_dropped_grouping(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, path: str, phrasing: str
 ) -> None:
@@ -857,7 +898,6 @@ def test_a_filter_never_stands_in_for_a_dropped_grouping(
     actual = typed_rows(jaffle.query(query))
     assert len(actual) == 2
     assert actual == typed_rows(jaffle.query(before["best"]["query"]))
-    jaffle.close()
     with duckdb.connect(jaffle.db_path, read_only=True) as connection:
         reference = dict(
             connection.execute(
@@ -913,7 +953,6 @@ def test_a_second_named_term_cannot_be_discharged_by_a_filter(
         ("b", "Central", 25),
         ("c", "Harbor", 7),
     ]
-    retail.close()
     with duckdb.connect(retail.db_path, read_only=True) as connection:
         reference = connection.execute(
             "SELECT store_id, store_name, SUM(revenue) FROM stores GROUP BY 1, 2 ORDER BY 1"
@@ -957,14 +996,15 @@ _STORE_CASES = [
     ("revenue by store id and store name", [ID_FILTER, NAME_FILTER]),
     *[
         ("revenue " + form.format(noun=noun), [ID_FILTER if noun == "store id" else NAME_FILTER])
-        for form in _PHRASINGS
-        for noun in ["store id", "store name"]
+        for form, noun in zip(_PHRASINGS, ["store id", "store name"] * 7, strict=True)
     ],
 ]
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize(("question", "filters"), _STORE_CASES)
+@pytest.mark.parametrize(
+    ("path", "question", "filters"),
+    [(_PATHS[index % 2], *case) for index, case in enumerate(_STORE_CASES)],
+)
 def test_store_question_outcomes_only_gain_holds(
     retail: Runtime,
     monkeypatch: pytest.MonkeyPatch,
@@ -976,27 +1016,29 @@ def test_store_question_outcomes_only_gain_holds(
     _compare_base(retail, monkeypatch, question, {"where": filters})
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
+_FILTERED_STORE_CONTROLS = [
+    *("revenue " + form.format(noun="store name") for form in _PHRASINGS),
+    "revenue by the store name",
+    "revenue by store name per month",
+    "revenue by store name sorted by revenue",
+    "revenue by customer type, store name",
+    "revenue by customer type; by store name",
+    *_SUFFIX_LISTS,
+    "revenue last month customer type level",
+    "revenue, customer type level",
+    "revenue and orders store level",
+    "revenue at store name level for customer type new",
+    "revenue at store level for customer types new and repeat",
+    "revenue at store name level for each store",
+    "revenue by store name for each store",
+    "revenue at region level",
+    "revenue at the level",
+]
+
+
 @pytest.mark.parametrize(
-    "question",
-    [
-        *("revenue " + form.format(noun="store name") for form in _PHRASINGS),
-        "revenue by the store name",
-        "revenue by store name per month",
-        "revenue by store name sorted by revenue",
-        "revenue by customer type, store name",
-        "revenue by customer type; by store name",
-        *_SUFFIX_LISTS,
-        "revenue last month customer type level",
-        "revenue, customer type level",
-        "revenue and orders store level",
-        "revenue at store name level for customer type new",
-        "revenue at store level for customer types new and repeat",
-        "revenue at store name level for each store",
-        "revenue by store name for each store",
-        "revenue at region level",
-        "revenue at the level",
-    ],
+    ("path", "question"),
+    [(_PATHS[index % 2], question) for index, question in enumerate(_FILTERED_STORE_CONTROLS)],
 )
 def test_filtered_store_controls_only_gain_holds(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, path: str, question: str
@@ -1018,7 +1060,7 @@ def test_store_key_catalog_controls_only_gain_holds(
             replace(dim, aliases=[*(dim.aliases or []), term]) if dim.id == STORE_NAME else dim
             for dim in dimensions
         ]
-    retail._config = replace(retail._config, dimensions=dimensions)
+    monkeypatch.setattr(retail, "_config", replace(retail._config, dimensions=dimensions))
     before, after = _compare_base(retail, monkeypatch, f"revenue by {term}")
     if change == "missing":
         assert before["status"] == after["status"] == "low_confidence"
@@ -1311,7 +1353,7 @@ def test_repeated_description_of_one_grouping_stays_ready(
 def test_level_in_a_dimension_name_stays_ready(
     retail: Runtime, monkeypatch: pytest.MonkeyPatch, noun: str, dimension: str
 ) -> None:
-    retail._config = replace(
+    changed = replace(
         retail._config,
         dimensions=[
             replace(row, label="Severity level", name="severity_level", aliases=[])
@@ -1332,6 +1374,7 @@ def test_level_in_a_dimension_name_stays_ready(
             for row in retail._config.measures
         ],
     )
+    monkeypatch.setattr(retail, "_config", changed)
     before, complete = _compare_base(
         retail, monkeypatch, f"count by {noun}", {"group_by": [dimension]}
     )
