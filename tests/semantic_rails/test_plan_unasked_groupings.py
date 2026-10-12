@@ -31,7 +31,8 @@ from semantic_rails.planner.groupings import _listed_grouping_terms
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_listed_groupings import _upkeep
 
@@ -54,11 +55,7 @@ UNSTATED = "ENTITY_FILTER_PERIOD_UNSTATED"
 CLARIFY = {COMPARISON, UNSTATED}
 
 
-@pytest.fixture(scope="module")
-def jaffle(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
-    with closing(opened(Runtime.from_path(str(path)))) as runtime:
-        yield runtime
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
 
 
 @pytest.fixture(scope="module")

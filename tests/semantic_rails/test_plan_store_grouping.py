@@ -18,6 +18,7 @@ from semantic_rails.planner.intent_holds import _qualifying_entity_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
 from tests.semantic_rails.test_plan_named_groupings import _write_retail_package
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
@@ -68,11 +69,7 @@ def retail(retail_package: Path) -> Iterator[Runtime]:
         yield runtime
 
 
-@pytest.fixture(scope="module")
-def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
-    with closing(opened(Runtime.from_path(str(path)))) as runtime:
-        yield runtime
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 @pytest.fixture(scope="module")
@@ -492,9 +489,18 @@ def test_qualification_check_only_downgrades_scalar_cohort_answers(
         assert after["why"]["details"]["terms"] == ["month"]
     if status != "ok":
         return
-    # A cohort counted in each month matches plain SQL.
+    # A cohort counted in each month matches plain SQL, every month of it: no default limit
+    # drops the months after the first few.
     query = after["best"]["query"]
     assert query["time"]["grain"] == "month"
+    assert "limit" not in query
+    assert query["where"] == [
+        {
+            "entity": "entity.jaffle_customer",
+            "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
+            "over": "period",
+        }
+    ]
     alias = _alias(query["select"][0])
     actual = {row["period"]: row[alias] for row in typed_rows(runtime.query(query))}
     expected = dict(
@@ -508,7 +514,7 @@ def test_qualification_check_only_downgrades_scalar_cohort_answers(
             "AND DATE_TRUNC('month', o.ordered_at) = c.month GROUP BY 1",
         )
     )
-    assert expected
+    assert len(expected) > 2
     assert actual == expected
 
 

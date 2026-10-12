@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
 
@@ -32,7 +31,7 @@ from semantic_rails.schema import (
     RelationshipConfig,
 )
 from semantic_rails.sql_ast import SqlSelect
-from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 SESSION_TIME = "temporal_role.jaffle_session_started_at"
@@ -51,12 +50,7 @@ ORDERS = _measure("order_count", "orders")
 REVENUE = {"expression": "measure.jaffle.revenue_usd", "as": "revenue"}
 
 
-@pytest.fixture(scope="module")
-def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
-    runtime = opened(Runtime.from_path(str(path)))
-    yield runtime
-    runtime.close()
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 @pytest.fixture(scope="module")

@@ -10,7 +10,6 @@ not keep.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -33,7 +32,7 @@ from semantic_rails.planner.time_checks import _caller_window_gaps
 from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
 from semantic_rails.planner.unmatched_words import unmatched_intent_terms
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import disable_planner_patterns
 
 MARCH_15 = "2017-03-15"
@@ -54,12 +53,7 @@ MARCH_2017 = {"start": "2017-03-01", "end": "2017-04-01"}
 SOMEONE_ELSES_DAY = {"start": "2018-06-01", "end": "2018-06-02"}
 
 
-@pytest.fixture(scope="module")
-def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
-    runtime = opened(Runtime.from_path(str(path)))
-    yield runtime
-    runtime.close()
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 def unconsumed_terms(runtime: Any, text: str, query: dict[str, Any]) -> list[str]:

@@ -13,8 +13,6 @@ parses. A total over a window is one total: the window asks for no grain.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
-from contextlib import closing
 from datetime import UTC, datetime
 from typing import Any
 
@@ -31,7 +29,7 @@ from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolved_time_phrases
 from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
 Q2_2017 = {"start": "2017-04-01", "end": "2017-07-01"}
@@ -225,11 +223,7 @@ ORDER_TIME = "temporal_role.jaffle_order_time"
 LONG = "revenue " + "please " * 300
 
 
-@pytest.fixture(scope="module")
-def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
-    with closing(opened(Runtime.from_path(str(path)))) as runtime:
-        yield runtime
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 def _best(payload: dict[str, Any]) -> dict[str, Any]:
