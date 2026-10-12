@@ -43,6 +43,7 @@ from .indexes import (
     _dimension_index,
     _measure_index,
     _recipe_index,
+    _recipe_or_raise,
     _temporal_role_index,
     get_package_analysis,
 )
@@ -76,11 +77,7 @@ def _time_bound_relationship_ids(query: NormalizedQuery, config: PackageConfig) 
 
 def _requires_query_time(expr: SemanticExpr, config: PackageConfig) -> bool:
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _requires_query_time(recipe.expression, config)
     if isinstance(expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr)):
         return True
@@ -244,11 +241,7 @@ def _window_measure_exprs(
         if not window_inputs:
             yield expr
     elif isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         yield from _window_measure_exprs(recipe.expression, config, window_inputs=window_inputs)
     elif isinstance(expr, ConversionExpr) and not window_inputs:
         yield from _window_measure_exprs(expr.base, config)
@@ -293,11 +286,7 @@ def _metric_ref_leaf_temporal_role_sets(
     query: NormalizedQuery,
     recipe_stack: tuple[str, ...],
 ) -> list[set[str]]:
-    recipe = _recipe_index(config).get(expr.metric_recipe)
-    if recipe is None:
-        raise SemanticLayerError(
-            "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-        )
+    recipe = _recipe_or_raise(config, expr.metric_recipe)
     if recipe.id in recipe_stack:
         cycle = (*recipe_stack[recipe_stack.index(recipe.id) :], recipe.id)
         raise SemanticLayerError(
@@ -524,11 +513,7 @@ def _collect_conversion_bindings(
     recipe) is bound only by its base anchor's compatible temporal roles.
     """
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         _collect_conversion_bindings(
             recipe.expression, config, out, recipe_id=str(expr.metric_recipe)
         )
@@ -774,11 +759,7 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
 
 def _expr_contains_unsafe_bounded_cumulative(expr: SemanticExpr, config: PackageConfig) -> bool:
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _expr_contains_unsafe_bounded_cumulative(recipe.expression, config)
     if isinstance(expr, CumulativeExpr):
         return True
@@ -832,11 +813,7 @@ def _expr_contains_unsafe_bounded_windowed(expr: SemanticExpr, config: PackageCo
     kinds (rolling, prior_period, period_to_date).
     """
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _expr_contains_unsafe_bounded_windowed(recipe.expression, config)
     if isinstance(expr, RollingExpr):
         return True

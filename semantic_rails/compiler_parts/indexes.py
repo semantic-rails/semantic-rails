@@ -160,6 +160,13 @@ def _recipe_index(config: PackageConfig) -> dict[str, MetricConfig]:
     return binding_index(get_package_analysis(config).recipes, config)
 
 
+def _recipe_or_raise(config: PackageConfig, recipe_id: str) -> MetricConfig:
+    recipe = _recipe_index(config).get(recipe_id)
+    if recipe is None:
+        raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric recipe '{recipe_id}'")
+    return recipe
+
+
 def _temporal_role_index(config: PackageConfig) -> dict[str, TemporalRoleConfig]:
     return binding_index(get_package_analysis(config).temporal_roles, config)
 

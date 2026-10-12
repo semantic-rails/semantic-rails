@@ -49,7 +49,13 @@ from ..sql_ast import (
 )
 from .bind import _expression_alias
 from .dependencies import _recipes, recipe_objects, record_leaf_reference
-from .indexes import _entity_index, _measure_has_source_row_key, _measure_index, _recipe_index
+from .indexes import (
+    _entity_index,
+    _measure_has_source_row_key,
+    _measure_index,
+    _recipe_index,
+    _recipe_or_raise,
+)
 from .namespacing import _namespace_sql_select
 from .paths import display_key
 from .temporal import _period_to_date_period, _window_unit_to_rows
@@ -365,11 +371,7 @@ def _compile_post_expr(
     if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         return _base_alias_ref(_expression_alias(expr, config), table_alias=table_alias)
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         with recipe_objects(recipe.id):
             return sub(recipe.expression)
     if isinstance(expr, LiteralExpr):
@@ -494,11 +496,7 @@ def _compile_post_expr(
 
 def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bool:
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _expr_requires_dense_series(recipe.expression, config)
     if isinstance(expr, RollingExpr):
         return True

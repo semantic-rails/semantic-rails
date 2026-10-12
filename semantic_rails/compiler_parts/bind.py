@@ -63,6 +63,7 @@ from .indexes import (
     _entity_index,
     _measure_index,
     _recipe_index,
+    _recipe_or_raise,
     _relationship_index,
     _resolve_table_entity,
 )
@@ -846,11 +847,7 @@ def _collect_measure_refs(
         out.append(_bind_scoped_aggregate(expr, config, query))
         return
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         _collect_measure_refs(recipe.expression, config, query, out)
         return
     if isinstance(expr, ArithmeticExpr):

@@ -56,7 +56,7 @@ from .indexes import (
     _dimension_index,
     _entity_index,
     _measure_index,
-    _recipe_index,
+    _recipe_or_raise,
     _relationship_index,
     _temporal_role_index,
     get_package_analysis,
@@ -315,11 +315,7 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
             raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{expr.measure}'")
         return measure.entity
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _expression_root_entity(recipe.expression, config)
     if isinstance(
         expr,
