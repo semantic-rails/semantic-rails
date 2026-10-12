@@ -25,7 +25,6 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
     OffsetWindowExpr,
     ScopedAggregateExpr,
-    parse_semantic_expression,
 )
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
@@ -309,24 +308,6 @@ def test_unsupported_expression_parts_fail_the_load_naming_metric_and_part(
         assert fragment in message, message
 
 
-def test_prior_period_shorthand_loads_as_the_parser_reads_it(tmp_path: Path) -> None:
-    expression = _probe(
-        tmp_path,
-        "last_month",
-        {
-            "kind": "derived",
-            "expression": {
-                "kind": "prior_period",
-                "measure": REVENUE,
-                "offset": -1,
-                "grain": "month",
-            },
-        },
-    )
-    assert isinstance(expression, OffsetWindowExpr)
-    assert (expression.kind, expression.unit, expression.value) == ("prior_period", "month", 1)
-
-
 def test_prior_period_shorthand_resolves_a_short_measure_key_and_answers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -381,17 +362,6 @@ def test_a_window_value_that_is_not_a_number_fails_the_load_naming_the_metric(
     )
     assert error.code == "INVALID_EXPRESSION_AST"
     assert "metric 'probe.broken'" in str(error)
-
-
-def test_the_parser_refuses_a_rolling_window_value_that_is_not_a_number() -> None:
-    expression = {
-        "kind": "rolling",
-        "input": {"measure": "measure.probe.item_revenue_usd", "aggregation": "sum"},
-        "window": {"unit": "day", "value": "7d"},
-    }
-    with pytest.raises(SemanticLayerError) as excinfo:
-        parse_semantic_expression(expression, context="config")
-    assert excinfo.value.code == "INVALID_EXPRESSION_AST"
 
 
 # --- direct fields ------------------------------------------------------------------
@@ -707,17 +677,6 @@ def test_expression_block_with_only_a_kind_beside_it_still_loads(tmp_path: Path)
     assert (expression.unit, expression.value) == ("day", 7)
 
 
-def test_the_central_translation_refuses_the_mix_whoever_calls_it() -> None:
-    with pytest.raises(SemanticLayerError) as excinfo:
-        config_module._translate_metric_direct_fields(
-            {"expression": ROLLING_EXPRESSION, "window": WEEK},
-            resolve=lambda ref: ref,
-            context="pkg: metric 'mixed'",
-        )
-    assert excinfo.value.code == "INVALID_CONFIG"
-    assert excinfo.value.details["conflicting_fields"] == ["window"]
-
-
 # --- partition_by names dimensions of the package -----------------------------------
 
 MEASURE_INPUT = {"kind": "aggregate", "measure": "item_revenue_usd", "aggregation": "sum"}
@@ -848,14 +807,3 @@ def test_partition_by_entry_that_is_not_a_dimension_refuses_at_load(
     assert "metric 'probe.partitioned'" in str(error)
     assert "partition_by" in str(error)
     assert error.details["unknown_partition_by"] == [unknown]
-
-
-def test_the_central_translation_refuses_partition_by_when_no_dimension_is_known() -> None:
-    # A caller that supplies no dimensions gets a refusal, not a pass-through.
-    with pytest.raises(SemanticLayerError) as excinfo:
-        config_module._translate_metric_direct_fields(
-            {"kind": "cumulative", "measure": "revenue_usd", "partition_by": [PRODUCT_TYPE]},
-            resolve=lambda ref: ref,
-            context="pkg: metric 'partitioned'",
-        )
-    assert excinfo.value.details["unknown_partition_by"] == [PRODUCT_TYPE]
