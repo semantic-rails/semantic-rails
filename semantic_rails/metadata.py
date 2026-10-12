@@ -1021,17 +1021,12 @@ def _summary_row(
     # default) the catalog is for browsing — agents should
     # ``inspect`` an id to get the payload, not pull every measure's
     # payload in one shot.
-    if obj["kind"] == "measure" and verbosity == "full":
-        row["payload"] = payload
-        row["operational"] = dict(card.get("operational", {}) or {})
     if obj["kind"] == "metric":
         row["executable"] = payload.get("executable", True)
         row["unsupported_reason"] = payload.get("unsupported_reason", "")
-        if verbosity == "full":
-            row["payload"] = payload
-            row["operational"] = dict(card.get("operational", {}) or {})
-    if obj["kind"] == "segment" and verbosity == "full":
+    if obj["kind"] in {"measure", "metric"} and verbosity == "full":
         row["payload"] = payload
+        row["operational"] = dict(card.get("operational", {}) or {})
     if obj["kind"] == "temporal_role":
         # Surface temporal_class so agents and discovery surfaces can
         # reason about role semantics (event_time, calendar_time,
@@ -1088,16 +1083,6 @@ def catalog_payload(
 ) -> dict[str, Any]:
     catalog = runtime.catalog()
     supported_capabilities, unsupported_capabilities = _capability_payload(runtime._config)
-    grouped: dict[str, Any] = {
-        "entities": [],
-        "dimensions": [],
-        "measures": [],
-        "segments": [],
-        "temporal_roles": [],
-        "relationships": [],
-        "value_domains": [],
-        "metrics": [],
-    }
     kind_map = {
         "entity": "entities",
         "dimension": "dimensions",
@@ -1108,6 +1093,7 @@ def catalog_payload(
         "value_domain": "value_domains",
         "metric": "metrics",
     }
+    grouped: dict[str, Any] = {bucket: [] for bucket in kind_map.values()}
     aliases: dict[str, list[str]] = {}
     alias_index: dict[str, list[str]] = {}
     search_norm = normalize_search_value(search)
@@ -1135,8 +1121,6 @@ def catalog_payload(
         bucket = kind_map.get(str(row["kind"]))
         if not bucket:
             continue
-        if view == "summary" and verbosity != "full":
-            row = dict(row)
         grouped[bucket].append(row)
         aliases[row["id"]] = list(row.get("aliases", []) or [])
         for alias in [
