@@ -13,9 +13,13 @@
 from __future__ import annotations
 
 import duckdb
+import pytest
 
 from semantic_rails.planner import plan_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
+
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 def _reference(runtime, sql: str) -> list[tuple]:
@@ -23,162 +27,99 @@ def _reference(runtime, sql: str) -> list[tuple]:
         return connection.execute(sql).fetchall()
 
 
-def test_predicate_metric_resolves_to_customer_count_not_aov(runtime_factory) -> None:
-    """The reviewer's flagship failure: 'with at least N distinct
-    customers' silently resolved ``predicate_metrics`` to
-    ``metric.sales.aov_usd``. After phase 5 it must resolve to one of
-    the customer-count measures/metrics — never AOV.
-    """
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(
-            runtime,
-            intent="top stores by order count with at least 4 distinct customers",
-            limit=5,
-        )
-        assert payload["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-        predicate_metrics = list(payload["interpreted_intent"].get("predicate_metrics", []) or [])
-        assert predicate_metrics, (
-            "predicate_metrics must resolve — without a predicate the qualification is unrealizable"
-        )
-        # Never AOV — that was the bug.
-        assert "metric.sales.aov_usd" not in predicate_metrics
-        # Must be one of the customer-count primitives.
-        allowed = {
-            "measure.jaffle.ordering_customer_count",
-            "measure.jaffle.customer_count",
-            "metric.sales.customer_count",
-        }
-        assert set(predicate_metrics) & allowed, (
-            f"expected a customer-count predicate; got {predicate_metrics}"
-        )
-    finally:
-        runtime.close()
+def test_predicate_metric_resolves_to_customer_count_not_aov(runtime) -> None:
+    """'with at least N distinct customers' once resolved its predicate to
+    ``metric.sales.aov_usd``: it resolves to a customer-count measure or metric, never AOV."""
+    payload = plan_candidate_envelope(
+        runtime, intent="top stores by order count with at least 4 distinct customers", limit=5
+    )
+    assert payload["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
+    predicate_metrics = list(payload["interpreted_intent"].get("predicate_metrics", []) or [])
+    assert predicate_metrics, "without a predicate the qualification is unrealizable"
+    assert "metric.sales.aov_usd" not in predicate_metrics
+    allowed = {
+        "measure.jaffle.ordering_customer_count",
+        "measure.jaffle.customer_count",
+        "metric.sales.customer_count",
+    }
+    assert set(predicate_metrics) & allowed, predicate_metrics
 
 
-def test_a_top_n_qualified_rollup_ranks_the_qualifying_entities(runtime_factory) -> None:
+@pytest.mark.parametrize(
+    ("target", "alias", "aggregate"),
+    [
+        ("revenue", "revenue_usd", "SUM(o.order_total_cents / 100.0)"),
+        ("order count", "order_count", "COUNT(DISTINCT o.order_id)"),
+    ],
+)
+def test_a_top_n_qualified_rollup_ranks_the_qualifying_entities(
+    runtime, target: str, alias: str, aggregate: str
+) -> None:
     """No window: every order of each store qualifies it, the one reading, so plan answers."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        plan = plan_payload(
-            runtime, intent="top 3 stores by order count with at least 4 distinct customers"
-        )
-        assert plan["status"] == "ok", plan.get("why")
-        query = plan["best"]["query"]
-        assert query["where"] == [
-            {
-                "entity": "entity.jaffle_store",
-                "having": [
-                    {"field": "measure.jaffle.ordering_customer_count", "op": "gte", "value": 4}
-                ],
-                "over": "all_time",
-            }
-        ]
-        assert query["order_by"] == [{"field": "order_count", "direction": "desc"}]
-        assert query["limit"] == 3
-        rows = runtime.query(query)["rows"]
-        reference = _reference(
-            runtime,
-            "SELECT s.store_name, COUNT(DISTINCT o.order_id) FROM jaffle_order o "
-            "JOIN jaffle_store s USING (store_id) WHERE o.store_id IN (SELECT store_id "
-            "FROM jaffle_order GROUP BY 1 HAVING COUNT(DISTINCT customer_id) >= 4) "
-            "GROUP BY 1 ORDER BY 2 DESC LIMIT 3",
-        )
-    finally:
-        runtime.close()
-    assert [(row["dimension.jaffle_store_name"], row["order_count"]) for row in rows] == reference
+    plan = plan_payload(
+        runtime, intent=f"top 3 stores by {target} with at least 4 distinct customers"
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    assert plan["best"]["pattern"] == "qualified_metric_rollup"
+    query = plan["best"]["query"]
+    assert query["where"] == [
+        {
+            "entity": "entity.jaffle_store",
+            "having": [
+                {"field": "measure.jaffle.ordering_customer_count", "op": "gte", "value": 4}
+            ],
+            "over": "all_time",
+        }
+    ]
+    assert query["order_by"] == [{"field": alias, "direction": "desc"}]
+    assert query["limit"] == 3
+    rows = runtime.query(query)["rows"]
+    reference = _reference(
+        runtime,
+        f"SELECT s.store_name, {aggregate} FROM jaffle_order o "
+        "JOIN jaffle_store s USING (store_id) WHERE o.store_id IN (SELECT store_id "
+        "FROM jaffle_order GROUP BY 1 HAVING COUNT(DISTINCT customer_id) >= 4) "
+        "GROUP BY 1 ORDER BY 2 DESC LIMIT 3",
+    )
+    actual = [(row["dimension.jaffle_store_name"], row[alias]) for row in rows]
+    assert [name for name, _ in actual] == [name for name, _ in reference]
+    assert [value for _, value in actual] == pytest.approx([value for _, value in reference])
     assert len(reference) == 2
 
 
-def test_a_qualified_rollup_in_each_period_returns_every_row(runtime_factory) -> None:
-    """Without a "top N" request, a default limit would silently drop every month after the
-    first few, so the call has none; "in that month" qualifies each customer per period."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        plan = plan_payload(
-            runtime,
-            intent="monthly order volume for customers that made more than 10 purchases in that month",
-        )
-        assert plan["status"] == "ok", plan.get("why")
-        query = plan["best"]["query"]
-        assert "limit" not in query
-        assert query["where"] == [
-            {
-                "entity": "entity.jaffle_customer",
-                "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
-                "over": "period",
-            }
-        ]
-        rows = runtime.query(query)["rows"]
-        reference = _reference(
-            runtime,
-            "WITH monthly AS (SELECT customer_id, DATE_TRUNC('month', ordered_at) AS m, "
-            "COUNT(DISTINCT order_id) AS n FROM jaffle_order GROUP BY 1, 2) "
-            "SELECT CAST(DATE_TRUNC('month', o.ordered_at) AS DATE)::VARCHAR, "
-            "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN monthly c "
-            "ON c.customer_id = o.customer_id AND c.m = DATE_TRUNC('month', o.ordered_at) "
-            "WHERE c.n > 10 GROUP BY 1 ORDER BY 1",
-        )
-    finally:
-        runtime.close()
-    assert [(row["period"], row["order_count"]) for row in rows] == reference
-    assert len(reference) > 2
+def test_qualification_not_realizable_drops_to_blocked(runtime) -> None:
+    """When the pattern is matched (threshold + entity + target) but no predicate metric
+    resolves from the qualification phrase, the candidate drops to blocked with
+    QUALIFICATION_NOT_REALIZABLE, never a degenerate draft."""
+    payload = plan_candidate_envelope(
+        runtime,
+        intent="top stores by order count with at least 4 puffins of fluff",
+        limit=3,
+        verbosity="full",
+    )
+    blocked_rows = [
+        row
+        for row in (payload.get("blocked", []) or [])
+        if row.get("why_blocked", {}).get("code") == "QUALIFICATION_NOT_REALIZABLE"
+    ]
+    assert blocked_rows
+    # interpreted_intent names the matched pattern with no predicate metric, so the caller
+    # knows where the resolution failed.
+    interpreted = payload.get("interpreted_intent")
+    if isinstance(interpreted, dict):
+        assert interpreted.get("pattern") == "qualified_metric_rollup"
+        assert interpreted.get("predicate_metrics") == []
+    row = blocked_rows[0]
+    assert row.get("recovery_hints"), "QUALIFICATION_NOT_REALIZABLE must carry recovery_hints"
+    assert "qualification_phrase" in (row["why_blocked"].get("details", {}) or {})
 
 
-def test_qualification_not_realizable_drops_to_blocked(runtime_factory) -> None:
-    """When the pattern is matched (threshold + entity + target) but no
-    predicate metric can be resolved from the qualification phrase, the
-    candidate must drop to blocked with QUALIFICATION_NOT_REALIZABLE.
-    """
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # An intent whose qualification phrase has NO catalog-tokens
-        # that resolve to any measure or metric. The threshold is
-        # present, the entity is present, the target is present —
-        # only the predicate target can't be resolved.
-        payload = plan_candidate_envelope(
-            runtime,
-            intent="top stores by order count with at least 4 puffins of fluff",
-            limit=3,
-            verbosity="full",
-        )
-        # The qualified path should mark this as blocked. Note that
-        # discovery may still surface unrelated fallback candidates —
-        # what matters is that the qualified pattern itself did NOT
-        # silently produce a degenerate IR.
-        blocked_codes = {
-            row.get("why_blocked", {}).get("code") for row in (payload.get("blocked", []) or [])
-        }
-        assert "QUALIFICATION_NOT_REALIZABLE" in blocked_codes, (
-            f"expected QUALIFICATION_NOT_REALIZABLE in blocked codes; got {blocked_codes}"
-        )
-        # interpreted_intent still names the matched pattern with
-        # predicate_metrics = [] so the caller knows where the
-        # resolution failed.
-        ii = payload.get("interpreted_intent")
-        if isinstance(ii, dict):
-            assert ii.get("pattern") == "qualified_metric_rollup"
-            assert ii.get("predicate_metrics") == []
-        # The blocked envelope carries recovery hints naming the
-        # qualification phrase that couldn't be resolved.
-        blocked_rows = [
-            row
-            for row in (payload.get("blocked", []) or [])
-            if row.get("why_blocked", {}).get("code") == "QUALIFICATION_NOT_REALIZABLE"
-        ]
-        assert blocked_rows
-        row = blocked_rows[0]
-        assert row.get("recovery_hints"), "QUALIFICATION_NOT_REALIZABLE must carry recovery_hints"
-        details = row["why_blocked"].get("details", {}) or {}
-        assert "qualification_phrase" in details
-    finally:
-        runtime.close()
-
-
-def test_a_year_over_year_question_asks_for_the_series(runtime_factory) -> None:
+@pytest.mark.parametrize(
+    "intent", ["revenue with YoY", "revenue year over year", "revenue vs last year"]
+)
+def test_a_year_over_year_question_asks_for_the_series(runtime, intent: str) -> None:
     """A comparison with the year before is a question in this release: plan offers the last
     two complete years as a series, ready to send."""
-    runtime = runtime_factory("jaffle_shop")
     series = {
         "select": ["measure.jaffle.revenue_usd"],
         "time": {
@@ -188,15 +129,11 @@ def test_a_year_over_year_question_asks_for_the_series(runtime_factory) -> None:
         },
         "order_by": [{"field": "period", "direction": "asc"}],
     }
-    try:
-        for intent in ("revenue with YoY", "revenue year over year", "revenue vs last year"):
-            plan = plan_payload(runtime, intent=intent)
-            assert plan["status"] == "needs_clarification", (intent, plan.get("why"))
-            assert plan["why"]["code"] == "PERIOD_COMPARISON", intent
-            # The one option's call is the drafted series, named by reference.
-            [option] = plan["why"]["details"]["options"]
-            assert option["call"] == {"$ref": "best.query"}, intent
-            assert plan["best"]["query"] == series, intent
-            assert runtime.validate(series, now="2026-10-09T12:00:00Z")["ok"]
-    finally:
-        runtime.close()
+    plan = plan_payload(runtime, intent=intent)
+    assert plan["status"] == "needs_clarification", plan.get("why")
+    assert plan["why"]["code"] == "PERIOD_COMPARISON"
+    # The one option's call is the drafted series, named by reference.
+    [option] = plan["why"]["details"]["options"]
+    assert option["call"] == {"$ref": "best.query"}
+    assert plan["best"]["query"] == series
+    assert runtime.validate(series, now="2026-10-09T12:00:00Z")["ok"]

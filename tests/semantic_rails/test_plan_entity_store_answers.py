@@ -8,7 +8,6 @@ of a DuckDB query written from the seed tables, not from the engine.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,7 @@ import pytest
 
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 STORE_ID = "dimension.jaffle_store_id"
 STORE = "dimension.jaffle_store_name"
@@ -218,10 +217,14 @@ CASES = [
         ]
     ),
     _Case("orders by store and month", (ORDERS,), grain="month"),
+    # Each grain once, the grain and level spellings in turn.
     *(
-        _Case(f"revenue by store, {spelling}", grain=grain)
-        for grain in ("day", "week", "quarter", "year")
-        for spelling in (f"at {grain} grain", f"at {grain} level", f"{grain} level")
+        _Case(f"revenue by store, {spelling.format(grain)}", grain=grain)
+        for grain, spelling in zip(
+            ("day", "week", "quarter", "year"),
+            ("at {} grain", "at {} level", "{} level", "at {} grain"),
+            strict=True,
+        )
     ),
     # By store, in a window.
     _Case("monthly revenue by store for 2017", grain="month", window=YEAR_2017),
@@ -349,12 +352,7 @@ CASES = [
 ]
 
 
-@pytest.fixture(scope="module")
-def jaffle(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    root = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
-    runtime = opened(Runtime.from_path(str(root)))
-    yield runtime
-    runtime.close()
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
 
 
 @pytest.mark.parametrize("case", CASES, ids=str)

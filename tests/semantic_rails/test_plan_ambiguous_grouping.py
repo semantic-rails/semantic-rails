@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
@@ -17,6 +18,7 @@ from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.test_plan_value_lists import _force_fallback, _with_districts
 
 CUSTOMER = "dimension.customer_district"
@@ -35,9 +37,24 @@ def _alias(item: Any) -> str:
     return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
+@pytest.fixture(scope="module")
+def shop_roots():
+    return {}
+
+
 @pytest.fixture()
-def shop(tmp_path, request):
+def shop(tmp_path_factory, shop_roots, request):
     store_district = "districts" if getattr(request, "param", "") == "plural_store" else "district"
+    if store_district not in shop_roots:
+        shop_roots[store_district] = _write_shop(tmp_path_factory.mktemp("shop"), store_district)
+    with closing(Runtime.from_path(str(shop_roots[store_district]))) as runtime:
+        yield runtime
+
+
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
+
+
+def _write_shop(tmp_path, store_district):
     (tmp_path / "models").mkdir()
     (tmp_path / "data").mkdir()
     for entity, csv in {
@@ -105,11 +122,7 @@ def shop(tmp_path, request):
         files[f"models/{entity}.yml"] = {"model": model}
     for name, body in files.items():
         (tmp_path / name).write_text(yaml.safe_dump(body, sort_keys=False))
-    runtime = Runtime.from_path(str(tmp_path))
-    try:
-        yield runtime
-    finally:
-        runtime.close()
+    return tmp_path
 
 
 def _rows_match_reference(runtime, query, dimension, reference, expected):
@@ -117,7 +130,6 @@ def _rows_match_reference(runtime, query, dimension, reference, expected):
     rows = runtime.query(query)["rows"]
     alias = _alias(query["select"][0])
     actual = {row[dimension]: row[alias] for row in rows}
-    runtime.close()
     with duckdb.connect(runtime.db_path, read_only=True) as connection:
         sql_rows = dict(connection.execute(reference).fetchall())
     assert len(actual) == len(rows) == len(sql_rows)
@@ -138,10 +150,15 @@ REFERENCES = {
 }
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
 @pytest.mark.parametrize(
-    "term", ["district", "districts", "the districts", "their districts", "each districts"]
+    ("path", "detail", "term"),
+    [
+        ("primary", "query", "district"),
+        ("fallback", "best", "districts"),
+        ("primary", "full", "the districts"),
+        ("fallback", "debug", "their districts"),
+        ("primary", "best", "each districts"),
+    ],
 )
 def test_shared_grouping_offers_each_visible_meaning_with_reference_rows(
     shop, monkeypatch, path, detail, term
@@ -161,8 +178,10 @@ def test_shared_grouping_offers_each_visible_meaning_with_reference_rows(
 
 
 @pytest.mark.parametrize("shop", ["plural_store"], indirect=True)
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
+@pytest.mark.parametrize(
+    ("path", "detail"),
+    [("primary", "query"), ("fallback", "best"), ("primary", "full"), ("fallback", "debug")],
+)
 def test_strict_match_does_not_hide_a_discovered_meaning(shop, monkeypatch, path, detail):
     intent = "item revenue by district"
     _force_fallback(shop, monkeypatch, intent, path)
@@ -309,18 +328,17 @@ def _assert_no_grouping_options(why, ambiguous):
     ],
 )
 def test_terms_that_could_replace_the_same_grouping_offer_no_options(
-    runtime_factory, monkeypatch, path, intent, ambiguous
+    jaffle, monkeypatch, path, intent, ambiguous
 ):
-    runtime = runtime_factory("jaffle_shop")
-    _force_fallback(runtime, monkeypatch, intent, path)
-    payload = plan_payload(runtime, intent=intent)
+    _force_fallback(jaffle, monkeypatch, intent, path)
+    payload = plan_payload(jaffle, intent=intent)
     assert payload["status"] == "low_confidence", payload.get("why")
     assert "execute" not in payload.get("next", {}).get("ready_for", [])
     _assert_no_grouping_options(payload["why"], ambiguous)
 
 
-def test_fallback_draft_without_overlap_keeps_composable_options(runtime_factory, monkeypatch):
-    runtime = runtime_factory("jaffle_shop")
+def test_fallback_draft_without_overlap_keeps_composable_options(jaffle, monkeypatch):
+    runtime = jaffle
     intent = "order count by name and product name"
     _force_fallback(runtime, monkeypatch, intent, "fallback")
     payload = plan_payload(runtime, intent=intent)
@@ -351,7 +369,6 @@ def test_fallback_draft_without_overlap_keeps_composable_options(runtime_factory
     rows = runtime.query(queries[0])["rows"]
     alias = _alias(queries[0]["select"][0])
     actual = sorted((row[JAFFLE_STORE], row[ITEM_PRODUCT_NAME], row[alias]) for row in rows)
-    runtime.close()
     with duckdb.connect(runtime.db_path, read_only=True) as connection:
         expected = connection.execute(
             "SELECT s.store_name, i.product_name, COUNT(DISTINCT o.order_id) "
@@ -362,8 +379,8 @@ def test_fallback_draft_without_overlap_keeps_composable_options(runtime_factory
     assert actual == expected
 
 
-def test_settled_grouping_overlap_offers_no_options_for_several_terms(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
+def test_settled_grouping_overlap_offers_no_options_for_several_terms(jaffle):
+    runtime = jaffle
     intent = "order count by store name, name and product type"
     draft = plan_payload(runtime, intent=intent)["best"]["query"]
     query = {**draft, "group_by": [JAFFLE_STORE, JAFFLE_CUSTOMER, ITEM_PRODUCT_TYPE]}

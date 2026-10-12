@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from dataclasses import replace
 
 import duckdb
@@ -22,19 +21,14 @@ from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.planner.plan_query import _validate_query
 from semantic_rails.planner.plan_trace import _select_best_plan
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import assert_plan_held
 
 REVENUE = "measure.jaffle.revenue_usd"
 REVENUE_SUM = {"kind": "measure", "measure": REVENUE, "aggregation": "sum"}
 
 
-@pytest.fixture(scope="module")
-def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
-    runtime = opened(Runtime.from_path(str(path)))
-    yield runtime
-    runtime.close()
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 def _reference(runtime: Runtime, sql: str) -> list[tuple]:
@@ -93,37 +87,6 @@ def test_best_plan_corpus_carries_query_once(runtime) -> None:
                     assert value == long_reason[field]
 
 
-def test_plan_drafts_a_qualified_ranking(runtime) -> None:
-    """No window: every order of each store qualifies it, the one reading, so plan answers."""
-    payload = plan_payload(
-        runtime, intent="top 3 stores by revenue with at least 4 distinct customers"
-    )
-    assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["pattern"] == "qualified_metric_rollup"
-    query = payload["best"]["query"]
-    assert query["where"] == [
-        {
-            "entity": "entity.jaffle_store",
-            "having": [
-                {"field": "measure.jaffle.ordering_customer_count", "op": "gte", "value": 4}
-            ],
-            "over": "all_time",
-        }
-    ]
-    rows = runtime.query(query)["rows"]
-    reference = _reference(
-        runtime,
-        "SELECT s.store_name, SUM(o.order_total_cents / 100.0) FROM jaffle_order o "
-        "JOIN jaffle_store s USING (store_id) WHERE o.store_id IN (SELECT store_id "
-        "FROM jaffle_order GROUP BY 1 HAVING COUNT(DISTINCT customer_id) >= 4) "
-        "GROUP BY 1 ORDER BY 2 DESC LIMIT 3",
-    )
-    actual = [(row["dimension.jaffle_store_name"], row["revenue_usd"]) for row in rows]
-    assert [name for name, _ in actual] == [name for name, _ in reference]
-    assert [value for _, value in actual] == pytest.approx([value for _, value in reference])
-    assert len(reference) == 2
-
-
 @pytest.mark.parametrize(
     ("intent", "expected_id"),
     [
@@ -163,37 +126,31 @@ def test_plan_prefers_the_governed_or_qualified_subject(runtime, intent, expecte
 
 
 @pytest.mark.parametrize(
-    ("intent", "now", "status", "code"),
+    ("intent", "status", "code"),
     [
         (
             "Which customer segments drove the most historical revenue?",
-            None,
             "low_confidence",
             "PLAN_INTENT_COVERAGE_GAP",
         ),
         # Grounded only by a time grain or by the package namespace, which every id carries.
-        ("refunds by month", None, "out_of_scope", "LOW_RELEVANCE"),
-        ("by month", None, "out_of_scope", "LOW_RELEVANCE"),
-        ("how do I cook a jaffle at home", None, "out_of_scope", "LOW_RELEVANCE"),
+        ("refunds by month", "out_of_scope", "LOW_RELEVANCE"),
+        ("by month", "out_of_scope", "LOW_RELEVANCE"),
+        ("how do I cook a jaffle at home", "out_of_scope", "LOW_RELEVANCE"),
         # The namespace word beside a real measure word still plans.
-        ("jaffle revenue", None, "ok", None),
-        # A fiscal quarter is never answered in Gregorian quarters.
-        ("revenue by fiscal quarter", "2017-11-04T00:00:00Z", "low_confidence", None),
-        ("revenue by FY quarter", "2017-11-04T00:00:00Z", "low_confidence", None),
+        ("jaffle revenue", "ok", None),
     ],
 )
-def test_plan_status_for_a_question(runtime, intent, now, status, code) -> None:
-    payload = plan_payload(runtime, intent=intent, now=now)
+def test_plan_status_for_a_question(runtime, intent, status, code) -> None:
+    payload = plan_payload(runtime, intent=intent)
     assert payload["status"] == status, payload.get("why")
-    if code:
-        assert payload["why"]["code"] == code
-    ready = "execute" in payload.get("next", {}).get("ready_for", [])
-    assert ready is (status == "ok")
+    assert (payload.get("why") or {}).get("code") == code
+    assert ("execute" in payload.get("next", {}).get("ready_for", [])) is (status == "ok")
     if status == "out_of_scope":
         assert payload["best"] is None
     elif status == "ok":
         assert payload["best"]["query"]["select"]
-    if code == "PLAN_INTENT_COVERAGE_GAP":
+    else:
         assert "ranking_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
 
 

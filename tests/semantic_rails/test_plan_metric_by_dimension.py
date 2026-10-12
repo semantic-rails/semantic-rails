@@ -11,6 +11,7 @@ intent shape. It must:
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -27,107 +28,59 @@ from semantic_rails.schema import (
     PackageConfig,
     PackageMeta,
 )
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
-_FIRES_FROM_PROPOSE = [
-    ("top stores by revenue", "measure.jaffle.revenue_usd"),
-    ("monthly revenue by store", "measure.jaffle.revenue_usd"),
-    ("orders by store", "measure.jaffle.order_count"),
-]
-
-
-@pytest.mark.parametrize("intent,expected_target", _FIRES_FROM_PROPOSE)
-def test_metric_by_dimension_fires_from_plan(
-    runtime_factory, intent: str, expected_target: str
-) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = compose(runtime, intent)
-    finally:
-        runtime.close()
-    assert result.pattern == "metric_by_dimension_rollup", (
-        f"plan did not fire metric_by_dimension_rollup for {intent!r}; "
-        f"got pattern={result.pattern!r}"
-    )
-    target = result.draft.interpreted_intent.get("target")
-    assert target == expected_target, (
-        f"resolved wrong target for {intent!r}: got {target!r}, expected {expected_target!r}"
-    )
+ROLLUP = "metric_by_dimension_rollup"
+REVENUE = "measure.jaffle.revenue_usd"
+ORDERS = "measure.jaffle.order_count"
+MONTHLY = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
 
 
-def test_metric_by_dimension_without_time_cue_does_not_invent_a_bucket(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = compose(runtime, "orders by store")
-    finally:
-        runtime.close()
-
-    query = result.draft.query.to_call()
-    assert query["select"] == ["measure.jaffle.order_count"]
-    assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
-    assert "time" not in query
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 @pytest.mark.parametrize(
-    ("intent", "expected_target"),
+    ("intent", "pattern", "subject", "time"),
     [
-        ("total orders", "measure.jaffle.order_count"),
-        ("total revenue", "measure.jaffle.revenue_usd"),
-        ("average order value", "metric.sales.aov_usd"),
+        ("top stores by revenue", ROLLUP, REVENUE, None),
+        ("monthly revenue by store", ROLLUP, REVENUE, MONTHLY),
+        # No time cue invents no bucket.
+        ("orders by store", ROLLUP, ORDERS, None),
+        # A bare aggregate with no time cue stays all time.
+        ("total orders", None, ORDERS, None),
+        ("total revenue", None, REVENUE, None),
+        ("average order value", None, "metric.sales.aov_usd", None),
+        # An explicit time-series intent keeps its series.
+        ("historical revenue by customer segment", None, None, MONTHLY),
+        # A more specific pattern (score 1.0) wins over the catch-all (score 0.5).
+        ("top 3 stores by revenue with at least 4 customers", "qualified_metric_rollup", None, ...),
+        ("revenue YoY", "inline_period_shift", None, ...),
+        ("food vs drink revenue", "inline_comparison", None, ...),
+        ("revenue versus order count by store", "inline_comparison", None, ...),
+        ("signup to send adoption", "filtered_adoption_funnel", None, ...),
     ],
 )
-def test_bare_aggregate_without_time_cue_stays_all_time(
-    runtime_factory, intent: str, expected_target: str
+def test_compose_picks_the_pattern_subject_and_time(
+    runtime, intent: str, pattern: str | None, subject: str | None, time: Any
 ) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = compose(runtime, intent)
-    finally:
-        runtime.close()
-
+    result = compose(runtime, intent)
     assert result.draft is not None
-    query = result.draft.query
-    assert query.time is None
-    assert query.select[0].ref == expected_target
-
-
-def test_metric_by_dimension_preserves_an_explicit_time_series_intent(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = compose(runtime, "historical revenue by customer segment")
-    finally:
-        runtime.close()
-
-    assert result.draft.query.to_call()["time"] == {
-        "temporal_role": "temporal_role.jaffle_order_time",
-        "grain": "month",
-    }
-
-
-@pytest.mark.parametrize(
-    "intent,expected_winner",
-    [
-        ("top 3 stores by revenue with at least 4 customers", "qualified_metric_rollup"),
-        ("revenue YoY", "inline_period_shift"),
-        ("food vs drink revenue", "inline_comparison"),
-        ("signup to send adoption", "filtered_adoption_funnel"),
-    ],
-)
-def test_specific_patterns_win_over_catch_all(
-    runtime_factory, intent: str, expected_winner: str
-) -> None:
-    """The catch-all returns ``score=0.5`` so any more
-    specific pattern (score=1.0) wins via score-based selection.
-    """
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = compose(runtime, intent)
-    finally:
-        runtime.close()
-    assert result.pattern == expected_winner, (
-        f"{intent!r}: expected specific pattern {expected_winner!r} to win on score, "
-        f"got pattern={result.pattern!r}"
-    )
+    query = result.draft.query.to_call()
+    if pattern:
+        assert result.pattern == pattern, (intent, result.pattern)
+    if subject:
+        assert result.draft.query.select[0].ref == subject
+    if pattern == ROLLUP:
+        assert result.draft.interpreted_intent.get("target") == subject
+    if time is not ...:
+        assert query.get("time") == time
+    if intent == "orders by store":
+        assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
+    if pattern == "inline_comparison":
+        interpreted = result.draft.interpreted_intent
+        assert interpreted["left"]["id"] and interpreted["right"]["id"]
+        assert interpreted["left"]["id"] != interpreted["right"]["id"]
+        assert len(query["select"]) == 2
 
 
 def _claims_config() -> PackageConfig:
@@ -208,9 +161,7 @@ def test_top_n_group_by_phrase_uses_after_by_as_measure_target() -> None:
     assert "five" not in result.intent_ir.unresolved
 
 
-def test_fallback_discovery_keeps_region_instead_of_a_planner_synonym(
-    runtime_factory, monkeypatch
-) -> None:
+def test_fallback_discovery_keeps_region_instead_of_a_planner_synonym(runtime, monkeypatch) -> None:
     import semantic_rails.metadata as metadata
 
     geo = DimensionConfig(
@@ -220,7 +171,6 @@ def test_fallback_discovery_keeps_region_instead_of_a_planner_synonym(
         data_type="string",
         label="Geo",
     )
-    runtime = runtime_factory("jaffle_shop")
     monkeypatch.setattr(
         runtime, "_config", replace(runtime._config, dimensions=[*runtime._config.dimensions, geo])
     )
@@ -232,9 +182,6 @@ def test_fallback_discovery_keeps_region_instead_of_a_planner_synonym(
         return discover(*args, **kwargs)
 
     monkeypatch.setattr(metadata, "discover_payload", capture_discovery)
-    try:
-        groups = _choose_group_dimensions(runtime, Call(), "item revenue by region")
-        assert discovered_terms == ["region"]
-        assert geo.id not in groups
-    finally:
-        runtime.close()
+    groups = _choose_group_dimensions(runtime, Call(), "item revenue by region")
+    assert discovered_terms == ["region"]
+    assert geo.id not in groups

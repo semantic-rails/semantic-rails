@@ -190,9 +190,17 @@ def _files(
     }
 
 
+@pytest.fixture(scope="module")
+def roots() -> dict[str, Path]:
+    return {}
+
+
 @pytest.fixture()
-def subscriptions(tmp_path: Path) -> Iterator[Callable[..., Runtime]]:
-    """The neutral subscriptions package; ``display="name"`` on account unless told otherwise."""
+def subscriptions(
+    tmp_path_factory: pytest.TempPathFactory, roots: dict[str, Path]
+) -> Iterator[Callable[..., Runtime]]:
+    """The neutral subscriptions package; ``display="name"`` on account unless told otherwise.
+    Each variant is written once per module; each call opens a runtime of its own."""
 
     runtimes: list[Runtime] = []
 
@@ -201,14 +209,16 @@ def subscriptions(tmp_path: Path) -> Iterator[Callable[..., Runtime]]:
         account_dimensions: dict[str, Any] | None = None,
         event_display: str | None = None,
     ) -> Runtime:
-        root = tmp_path / f"subscriptions_{len(runtimes)}"
-        for name, text in _files(display, account_dimensions or {}, event_display).items():
-            path = root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-        with duckdb.connect(str(root / "subscriptions.duckdb")) as connection:
-            connection.execute(SEED)
-        runtime = Runtime.from_path(str(root))
+        key = repr((display, account_dimensions, event_display))
+        if key not in roots:
+            roots[key] = root = tmp_path_factory.mktemp("subscriptions")
+            for name, text in _files(display, account_dimensions or {}, event_display).items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            with duckdb.connect(str(root / "subscriptions.duckdb")) as connection:
+                connection.execute(SEED)
+        runtime = Runtime.from_path(str(roots[key]))
         runtimes.append(runtime)
         return runtime
 

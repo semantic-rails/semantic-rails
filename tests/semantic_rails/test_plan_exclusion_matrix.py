@@ -24,7 +24,8 @@ from semantic_rails.planner.exclusions import exclusion_clauses, exclusion_gaps
 from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
-from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import assert_plan_held
 from tests.semantic_rails.test_plan_accuracy_guard import _draft_plan
 
@@ -69,11 +70,7 @@ def shop(tmp_path_factory):
         yield runtime
 
 
-@pytest.fixture(scope="module")
-def jaffle(tmp_path_factory):
-    path = copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
-    with closing(opened(Runtime.from_path(str(path)))) as runtime:
-        yield runtime
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
 
 
 def _labelled(shop: Runtime, monkeypatch, label: str, *extra: ValueDomainValue) -> Runtime:
@@ -521,14 +518,9 @@ def test_an_excluded_value_named_top_is_no_ranking(shop):
 
 
 def test_an_exclusion_is_answered_with_the_null_keeping_not(shop):
-    # Held before, though its draft counted these 4: the answer is the executable form.
-    payload = _plan(shop, "signups excluding web")
-    assert payload["best"]["query"]["where"] == _drops("web")
-    _assert_answered(shop, payload, "channel IS DISTINCT FROM 'web'")
-    assert _selected(shop, payload["best"]["query"])[1] == 4
-    windowed = _plan(shop, "signups excluding web in June 2024")
-    _assert_answered(shop, windowed, f"channel IS DISTINCT FROM 'web' AND {JUNE_2024}")
-    assert _selected(shop, windowed["best"]["query"]) == ({107}, 1)
+    # Its numbers, with and without a window, are the answers ledger's
+    # shop/plan-signups-excluding-web cases: here, the draft's form and the caller's '!='.
+    assert _plan(shop, "signups excluding web")["best"]["query"]["where"] == _drops("web")
     # A plain '!=' is the same word.
     payload = _plan(shop, "signups excluding web", _drops("web", op="!="))
     _assert_answered(shop, payload, "channel IS DISTINCT FROM 'web'")
