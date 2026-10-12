@@ -1692,6 +1692,10 @@ def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested
         )
     elif placement == "outer_predicate":
         query["metric_filters"] = [{"expression": predicate, "op": "=", "value": True}]
+        # The recipe keeps customers by an aggregate taken in the call's own context, so it has
+        # no population to observe before the call's filters: like any where beside it, an
+        # entity filter is judged inside them.
+        query["observation_scope"] = "query"
     else:
         query["time"] = {
             "temporal_role": "temporal_role.jaffle_inventory_day",
@@ -1705,6 +1709,10 @@ def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested
     if placement == "outer_time":
         expected_roles.add("temporal_role.jaffle_order_time")
     sql = compiler.compile_query(config, None, query)["sql"]
+    if placement == "outer_predicate":
+        with pytest.raises(SemanticLayerError) as unsettled:
+            compiler.compile_query(config, None, {**query, "observation_scope": "dataset"})
+        assert unsettled.value.code == "EMPTY_GROUPS_UNSETTLED"
     if placement == "outer_time":
         assert ' AS "period"' in sql
     else:
