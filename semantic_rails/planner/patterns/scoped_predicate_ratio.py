@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._base import RuntimeCompositionDraft, _entity, _measure, _metric, _object_text, _resolved
+from .._base import RuntimeCompositionDraft, _account_entity, _measure, _metric, _resolved
 from ..call import QueryBuilder
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import _add_order, _product_filter
@@ -27,11 +27,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if not wants_pct or not {"sms", "push"} <= terms:
         return None
 
-    account_entity = _entity(
-        config,
-        ["account"],
-        exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-    )
+    account_entity = _account_entity(config)
     sms_metric = _metric(config, ["sms"])
     push_metric = _metric(config, ["push"])
     if account_entity is None or sms_metric is None or push_metric is None:

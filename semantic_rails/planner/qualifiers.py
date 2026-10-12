@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from ..query_call import TIME_AXIS
-from ._base import _NUMBER_WORDS, _best, _dimension, _entity, _object_text, _tokens
+from ._base import _NUMBER_WORDS, _account_entity, _best, _dimension, _entity, _tokens
 from .call import Condition, Order, QueryBuilder
 from .exclusions import exclusion_regions
 from .time_windows import _time_window
@@ -352,38 +352,21 @@ def _explicit_qualifying_entity_keyword(text: str) -> str:
 
 
 def _qualifying_entity(config: Any, terms: set[str], *, text: str = "") -> Any | None:
-    explicit = _explicit_qualifying_entity_keyword(text)
-    if explicit == "customer":
-        return _entity(config, ["customer"])
-    if explicit == "store":
-        return _entity(config, ["store"])
-    if explicit == "account":
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    if "store" in terms and "customer" in terms:
-        return _entity(config, ["store"])
-    if "account" in terms and "customer" in terms:
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    if "customer" in terms:
-        return _entity(config, ["customer"])
-    if "store" in terms:
-        return _entity(config, ["store"])
-    if bool({"entity", "entities", "child"} & terms) and "order" in terms and "rate" in terms:
-        return _entity(config, ["store"])
-    if "account" in terms:
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    return None
+    # The qualifying phrase names the entity; otherwise the first rule below whose words appear.
+    rules = (
+        ("store", "store" in terms and "customer" in terms),
+        ("account", "account" in terms and "customer" in terms),
+        ("customer", "customer" in terms),
+        ("store", "store" in terms),
+        ("store", bool({"entity", "entities", "child"} & terms) and {"order", "rate"} <= terms),
+        ("account", "account" in terms),
+    )
+    keyword = _explicit_qualifying_entity_keyword(text) or next(
+        (word for word, applies in rules if applies), ""
+    )
+    if not keyword:
+        return None
+    return _account_entity(config) if keyword == "account" else _entity(config, [keyword])
 
 
 _TOP_N_PATTERN = re.compile(r"\btop(?:\s+(\d+))?\b", re.IGNORECASE)

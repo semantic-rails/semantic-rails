@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._base import RuntimeCompositionDraft, _entity, _measure, _object_text, _resolved
+from .._base import RuntimeCompositionDraft, _account_entity, _measure, _resolved
 from ..call import QueryBuilder
 from ..groupings import _time_spec
 from ..qualifiers import _add_order, _product_filter
@@ -20,11 +20,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     wants_distribution = "p80" in terms or "percentile" in terms or "80th" in terms
     if not wants_distribution or "arr" not in terms:
         return None
-    account_entity = _entity(
-        config,
-        ["account"],
-        exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-    )
+    account_entity = _account_entity(config)
     if account_entity is None:
         return None
 

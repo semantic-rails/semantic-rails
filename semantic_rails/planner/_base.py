@@ -234,6 +234,12 @@ def _entity(config: Any, terms: Iterable[str], *, exclude: Iterable[str] = ()) -
     return _best(config.entities, terms, exclude=exclude)
 
 
+def _account_entity(config: Any) -> Any | None:
+    """The account entity, never a parent account."""
+    exclude = [row.id for row in config.entities if "parent" in _object_text(row)]
+    return _entity(config, ["account"], exclude=exclude)
+
+
 def _measure(config: Any, terms: Iterable[str]) -> Any | None:
     return _best(config.measures, terms)
 
