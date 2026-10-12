@@ -9,10 +9,9 @@ from typing import Any
 
 import pytest
 
-from semantic_rails import caveats, expressions, query_call, resource_access, runtime
+from semantic_rails import compiler, expressions, query_call, resource_access, runtime
 from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.runtime_parts import responses
 from semantic_rails.schema import SemanticPolicyConfig
 
 SCHEMA = load_contract("query.v2.json")
@@ -222,11 +221,7 @@ def _cases():
 
 CASES = list(_cases())
 BOUND = [case for case in CASES if case[3]]
-WALKERS = [
-    responses._collect_expr_object_ids,
-    caveats._collect_expr_object_ids,
-    resource_access._references,
-]
+WALKERS = [expressions.collect_object_references, resource_access._references]
 SOURCE = "configs/semantic_rails/jaffle_shop"
 SCOPES = ["roles", "audiences"]
 
@@ -878,7 +873,7 @@ def test_recipe_filter_spec_spellings(base_config, spelling):
         semantic_policies=[_deny(protected)],
     )
     query = _internal(config, _select(recipe.id))
-    assert protected in runtime._query_object_ids(query, config)
+    assert protected in compiler.bind_query(config, None, query).object_ids
     _assert_grant_refuses(config, query, recipe.id)
 
 
@@ -1092,7 +1087,7 @@ def test_authored_measure_columns_keep_their_owner_for_shared_tables(base_config
         entities=[*base_config.entities, other],
         measures=[measure if row.id == measure.id else row for row in base_config.measures],
     )
-    dependencies = runtime._query_object_ids(_select({"measure": measure.id}), config)
+    dependencies = compiler.bind_query(config, None, _select({"measure": measure.id})).object_ids
     assert owner.id in dependencies
     assert other.id not in dependencies
 
@@ -1206,7 +1201,10 @@ def test_permitted_effective_temporal_dependencies_compile(base_config, kind, pl
         assert sql
         if override:
             assert "safe_time" in sql
-            assert role.id not in runtime._query_object_ids(_internal(config, query), config)
+            assert (
+                role.id
+                not in compiler.bind_query(config, None, _internal(config, query)).object_ids
+            )
         if placement == "recipe":
             access = resource_access.ResourceAccess(
                 config,
@@ -1282,7 +1280,7 @@ def test_literal_reference_strings_do_not_authorize_objects(base_config):
         ]
     }
     try:
-        assert MEASURE not in runtime._query_object_ids(_internal(config, query), config)
+        assert MEASURE not in compiler.bind_query(config, None, _internal(config, query)).object_ids
         assert engine.compile(query)["rendered_sql"]
     finally:
         engine.close()

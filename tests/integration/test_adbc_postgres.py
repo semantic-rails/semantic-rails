@@ -261,7 +261,7 @@ def test_postgres_runtime_interval_row_encodes_identically_to_duckdb(adbc, tmp_p
     adbc.query("CREATE TEMP TABLE order_fact(amount INTERVAL)")
     adbc.query(f"INSERT INTO order_fact VALUES (INTERVAL '{literal}'), (NULL)")
     runtime.set_adapter(adbc)
-    db = Database.connect_in_memory()
+    db = Database.connect(":memory:")
     try:
         result = runtime.query(
             {

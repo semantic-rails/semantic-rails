@@ -66,7 +66,7 @@ def _calendar_runtime(adapter, zone="UTC", warehouse="duckdb", declared="date"):
 
 def _duckdb_runtime(**options):
     adapter = DuckDBAdapter.__new__(DuckDBAdapter)
-    adapter._db = Database.connect_in_memory()
+    adapter._db = Database.connect(":memory:")
     return _calendar_runtime(adapter, **options)
 
 

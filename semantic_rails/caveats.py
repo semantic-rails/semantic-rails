@@ -171,14 +171,14 @@ def _signals_for_query(
         if not isinstance(item, dict):
             continue
         expr = dict(item.get("expression", {}) or {})
-        signals.strong_object_ids.update(_collect_expr_object_ids(expr))
+        signals.strong_object_ids.update(collect_object_references(expr))
         if str(expr.get("kind", "") or "") == "prior_period":
             signals.comparative = True
 
     for item in list(query.get("metric_filters", []) or []):
         if isinstance(item, dict):
             signals.strong_object_ids.update(
-                _collect_expr_object_ids(dict(item.get("expression", {}) or {}))
+                collect_object_references(dict(item.get("expression", {}) or {}))
             )
 
     selected_metric_ids = [
@@ -187,7 +187,7 @@ def _signals_for_query(
     for metric_id in selected_metric_ids:
         metric = metrics[metric_id]
         expr_payload = expr_to_dict(metric.expression)
-        signals.strong_object_ids.update(_collect_expr_object_ids(expr_payload))
+        signals.strong_object_ids.update(collect_object_references(expr_payload))
         if _contains_kind(expr_payload, "prior_period"):
             signals.comparative = True
         if metric.temporal_role:
@@ -215,10 +215,6 @@ def _where_values(row: dict[str, Any]) -> set[str]:
     if raw is None:
         return set()
     return {str(raw)}
-
-
-def _collect_expr_object_ids(expr: dict[str, Any]) -> set[str]:
-    return set(collect_object_references(expr))
 
 
 def _contains_kind(expr: dict[str, Any], kind: str) -> bool:

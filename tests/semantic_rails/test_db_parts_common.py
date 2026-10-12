@@ -70,7 +70,7 @@ def test_seed_dollar_quoted_and_escape_string_values_execute_with_data_intact():
         assert _split_sql_statements(statement) == [statement]
         scripts.append((statement + "; SELECT 2;", f"it's {value}"))
     for script, value in scripts:
-        db = Database.connect_in_memory()
+        db = Database.connect(":memory:")
         try:
             db.execute_script(script)
             assert db.query("SELECT value FROM seed_example") == [{"value": value}]
@@ -100,7 +100,7 @@ def test_unclosed_seed_construct_refuses_before_any_execution():
         '"unterminated',
         r"E'x\'",
     ]:
-        db = Database.connect_in_memory()
+        db = Database.connect(":memory:")
         try:
             script = f"CREATE TABLE seed_example(value TEXT); SELECT {fragment}"
             assert _refusal_before_any_execution(db, script) == {
