@@ -965,7 +965,7 @@ def test_clock_policy_still_refuses_if_the_scan_gate_is_bypassed(
     runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CLOCK_LABEL)))
     query = _query(CUMULATIVE, [])
     reader = RequestContext(audience="reader", attributes={"visible": "2026-09-15 10:00:00"})
-    monkeypatch.setattr(binding, "apply_row_filters", lambda sql, filters: (sql, ()))
+    monkeypatch.setattr(binding, "apply_row_filters", lambda sql, filters, **_: (sql, ()))
     try:
         with pytest.raises(SemanticLayerError) as caught:
             runtime.compile(query, context=reader)

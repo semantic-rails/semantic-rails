@@ -457,6 +457,11 @@ _GRANTED_WARNING_KEYS = {
     # Coverage is read under the caller's row filters; measure IDs occur in both text
     # and details, so the whole warning is dropped unless every named measure is granted.
     "NO_DATA_YET": frozenset({"code", "severity", "stage", "message", "object_ids", "details"}),
+    # answer_warnings._zero_after_last_row_notes: fixed text, measure IDs and their last rows'
+    # dates, read under the caller's row filters; dropped unless every named measure is granted.
+    "ZERO_AFTER_LAST_ROW": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
     # answer_warnings._partial_data_warnings: fixed text, the answer's own data_through date
     # and day counts; it names no object.
     "PARTIAL_DATA": frozenset({"code", "severity", "stage", "message", "details"}),

@@ -60,7 +60,8 @@ def test_days_after_the_last_order_say_no_data_yet(shop: Runtime) -> None:
     ]
     assert warning["message"] == (
         f"No data yet for {ORDERS}: its last row is dated 2024-08-01. Nothing says this data is "
-        "loaded past it, so later days read NULL, not 0."
+        "loaded past it, so later days read NULL, not 0. If the load ran and nothing happened, "
+        'declare zero_through (PACKAGE_AUTHORING.md, "Empty periods").'
     )
     # Only August 2 is a whole day missing before today, and it is a period of its own.
     assert not [w for w in result["warnings"] if w["code"] == "PARTIAL_DATA"]

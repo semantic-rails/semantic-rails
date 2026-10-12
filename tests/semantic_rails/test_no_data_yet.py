@@ -88,7 +88,8 @@ def test_relative_window_total_names_the_last_row_and_the_normalized_start(total
     assert warning["details"]["measures"][0]["edge"] == "2026-09-13"
     assert warning["message"] == (
         f"No data yet for {REVENUE}: its last row is dated 2026-09-13. Nothing says this data "
-        "is loaded past it, so the window starting 2026-09-21 reads NULL, not 0."
+        "is loaded past it, so the window starting 2026-09-21 reads NULL, not 0. If the load "
+        'ran and nothing happened, declare zero_through (PACKAGE_AUTHORING.md, "Empty periods").'
     )
 
 
@@ -219,9 +220,13 @@ def test_series_compares_only_compatible_sql_bucket_keys(
     monkeypatch.setattr(
         answer_warnings_module,
         "_guard_probe_names",
-        lambda *a: (
-            {"m1": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
-            {"value": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
+        lambda compiled, prefix: (
+            (
+                {"m1": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
+                {"value": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
+            )
+            if prefix == "coverage_"
+            else ({}, {})
         ),
     )
     coverage = {f"coverage_{i}__loaded_to": edge for i, edge in enumerate(edges, 1)}

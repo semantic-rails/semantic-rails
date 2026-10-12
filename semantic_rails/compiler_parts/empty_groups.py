@@ -7,6 +7,11 @@ reads them as 0 (``earlier_settlement``). Probes and coverage respect row filter
 Projection bypasses and sums without a row count refuse with EMPTY_GROUPS_UNSETTLED. Stocks
 and non-additive values remain NULL.
 
+A table's declared edge (``zero_through``: ``now``, or a load log's loaded-through mark)
+replaces its last row as the upper bound of loaded coverage: an empty period reads 0 only when
+it ends at or before that edge, and NULL after it even beside a later stray row. The lower
+bound (the first row) and observation are unchanged.
+
 ``observation_scope`` says where "observed" is judged: ``dataset`` (the default) in the
 measure's own rows under its authored conditions, ``query`` inside the query's filters too.
 For a top-level conditional operand, a supported source probe judges whether the relation
@@ -23,7 +28,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from ..clock import current_time
+from ..clock import current_time, engine_window, local_now
 from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
@@ -34,7 +39,7 @@ from ..expressions import (
     SemanticExpr,
 )
 from ..ir import LogicalPlan, MeasurePlan
-from ..schema import MeasureConfig, PackageConfig
+from ..schema import MeasureConfig, PackageConfig, ZeroThrough
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
@@ -166,6 +171,17 @@ def zero_outputs(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class DeclaredEdge:
+    """A measure's declared edge in the guard's bucket space: ``rows`` reads the load log's
+    mark (None under ``now``), and ``bound`` reads it into ``loaded_before``, the first bucket
+    the edge doesn't certify, ``loaded_through``, the exclusive edge as wall time in the clock's
+    zone, and ``edge_source``."""
+
+    rows: SqlSelect | None
+    bound: SqlSelect
+
+
+@dataclass(frozen=True)
 class LeafScope:
     """A plain leaf's aggregate, untimed filters and base time axis."""
 
@@ -177,6 +193,7 @@ class LeafScope:
     raw_time: Any | None = None
     storage_zone: str = "UTC"
     bounded: bool = False
+    edge: DeclaredEdge | None = None
 
 
 _leaf_scopes: ContextVar[dict[str, LeafScope] | None] = ContextVar("leaf_scopes", default=None)
@@ -288,6 +305,7 @@ def guard_empty_groups(
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
     coverage: dict[str, str] = {}
+    edges: dict[str, str] = {}
     probes: dict[str, str] = {}
 
     def probed(probe: SqlSelect) -> SqlBinary:
@@ -358,7 +376,17 @@ def guard_empty_groups(
                         name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
                         ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
                         joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
-                    seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
+                    if scope.edge is None:
+                        seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
+                    else:
+                        # One edge per binding: two tables, or two bindings over one table,
+                        # never share it.
+                        edge = edges.get(repr(scope.edge))
+                        if edge is None:
+                            edge = edges[repr(scope.edge)] = f"edge_{len(edges) + 1}"
+                            ctes.extend(_edge_ctes(edge, scope.edge))
+                            joins.append(SqlJoin("CROSS", SqlTableRef(name=edge)))
+                        seen = SqlBinary(seen, "AND", _certified_bucket(time_key, name, edge))
             if (
                 aggregation not in _COUNTING
                 and not earlier_settlement_applies()
@@ -438,6 +466,99 @@ def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
         "AND",
         SqlBinary(bucket, "<=", SqlIdentifier(parts=[coverage, "loaded_to"])),
     )
+
+
+def _certified_bucket(time_key: str, coverage: str, edge: str) -> SqlBinary:
+    """From the base's first loaded bucket up to (not including) the edge's first uncertified
+    one. A NULL mark certifies nothing."""
+    bucket = SqlIdentifier(parts=["base", time_key])
+    return SqlBinary(
+        SqlBinary(bucket, ">=", SqlIdentifier(parts=[coverage, "loaded_from"])),
+        "AND",
+        SqlBinary(bucket, "<", SqlIdentifier(parts=[edge, "loaded_before"])),
+    )
+
+
+def _edge_ctes(name: str, edge: DeclaredEdge) -> list[SqlCte]:
+    if edge.rows is None:
+        return [SqlCte(name=name, query=edge.bound)]
+    rows = f"{name}_rows"
+    return [
+        SqlCte(name=rows, query=edge.rows),
+        SqlCte(name=name, query=replace(edge.bound, from_table=SqlTableRef(name=rows))),
+    ]
+
+
+def declared_edge(
+    edge: ZeroThrough, time: Mapping[str, Any], zone: str, dialect: Any
+) -> DeclaredEdge:
+    """``edge`` as a bound on the buckets of ``time`` in the clock's ``zone``, wall time on
+    both sides. The edge is the load log's mark (a DATE through the end of that day: the next
+    local midnight; a timestamp at its instant), or ``now``, capped at ``now``. A bucket is
+    certified when its period, inside the window, ends at or before the edge: every bucket
+    before the edge's own, or all of them when the window ends by then. A window total's one
+    bucket (0) is certified when the window ends by then."""
+    now = request_now()
+    window_end = engine_window(time, now=now, timezone=zone).end
+    clock = _wall_time(now, zone, dialect)
+    end = _wall_time(window_end, zone, dialect) if window_end else clock
+    rows = None
+    through: Any = clock
+    if edge.kind == "loaded":
+        mark = SqlIdentifier(parts=["watermark"])
+        if edge.data_type == "date":
+            through = dialect.date_add("day", SqlLiteral(1), dialect.timestamp_cast(mark))
+        else:
+            through = dialect.utc_timestamp(mark, edge.timezone)
+            if zone != "UTC":
+                through = dialect.convert_timezone("UTC", zone, through)
+        through = SqlCase([SqlCaseWhen(SqlBinary(through, ">", clock), clock)], else_expr=through)
+        column = SqlIdentifier(parts=[edge.relation, edge.column])
+        rows = SqlSelect(
+            select=[SqlField(SqlCall("MAX", [column]), "watermark")],
+            from_table=SqlTableRef(name=edge.relation),
+            observation_scan=True,
+        )
+    certified = SqlBinary(through, ">=", end)
+    # An ungrained series' buckets are the times themselves.
+    own = dialect.date_trunc(time["grain"], through) if time.get("grain") else through
+    before = (
+        SqlCase([SqlCaseWhen(certified, SqlLiteral(1))], else_expr=SqlLiteral(0))
+        if time.get("window_total")
+        else SqlCase([SqlCaseWhen(certified, end)], else_expr=own)
+    )
+    bound = SqlSelect(
+        select=[
+            SqlField(before, "loaded_before"),
+            SqlField(through, "loaded_through"),
+            SqlField(SqlLiteral(edge.kind), "edge_source"),
+        ],
+        from_table=None,
+    )
+    return DeclaredEdge(rows=rows, bound=bound)
+
+
+def _wall_time(instant: Any, zone: str, dialect: Any) -> Any:
+    """``instant`` (an aware ``datetime``, or a window bound's text) as a timestamp literal of
+    wall time in ``zone``."""
+    if isinstance(instant, str):
+        instant = datetime.fromisoformat(instant.replace("Z", "+00:00"))
+    if instant.tzinfo is not None:
+        instant = local_now(instant, zone)
+    return dialect.timestamp_cast(SqlLiteral(instant.isoformat(sep=" ")))
+
+
+def refuse_declared_edges(measures: Iterable[MeasureConfig], dialect: Any) -> None:
+    """A declared edge where loaded coverage never runs would change nothing: refused, as the
+    loader refuses it for the package's own warehouse."""
+    declared = sorted(row.id for row in measures if row.zero_through is not None)
+    if declared and not dialect.reads_coverage:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"zero_through can only be data on {dialect.name}, which reads no loaded coverage; "
+            f"{', '.join(declared)} declare(s) another edge. Write zero_through: data.",
+            details={"path": "zero_through", "measures": declared, "warehouse": dialect.name},
+        )
 
 
 def coverage_select(scope: LeafScope, dialect: Any) -> SqlSelect:

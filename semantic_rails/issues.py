@@ -71,7 +71,7 @@ CODES: dict[str, str] = {
         UNKNOWN_ROWS_KEPT VALID_VALUES_NO_DOMAIN VALID_VALUES_UNKNOWN_ARG
         """,
     ),
-    **_codes(NOTE, "VALUES_WITHHELD"),
+    **_codes(NOTE, "VALUES_WITHHELD ZERO_AFTER_LAST_ROW"),
     # One entry per disclosure an answer states under ``assumptions``.
     **_codes(
         ASSUMPTION,

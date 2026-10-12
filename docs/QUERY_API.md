@@ -204,7 +204,7 @@ valid-value lookups are unavailable for restricted grants. Plans contain portabl
 each subsequent request must independently resolve its trusted grants. Restricted
 compile/query results retain SQL and result rows but omit package-wide diagnostics,
 dependency descriptions, and related-object suggestions. Grant responses carry only
-listed engine diagnostics (`NO_DATA_YET`, `PARTIAL_DATA`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
+listed engine diagnostics (`NO_DATA_YET`, `PARTIAL_DATA`, `ZERO_AFTER_LAST_ROW`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
 `FILTER_VALUE_UNVERIFIED`, `FILTERED_SERIES_BUCKETS_DROPPED`, and
 `FILTERED_SERIES_BUCKETS_UNVERIFIED`) whose named objects are all granted. Bucket diagnostics
 re-enter authorization and reveal no bucket keys when the source read is denied. Requests
@@ -214,8 +214,9 @@ HTTP and hosted MCP with `IDENTITY_CLAIM_REFUSED`.
 `NO_DATA_YET` fires for guarded `NULL` series buckets beyond their visible coverage,
 empty totals with coverage proven before the window, or no visible coverage.
 `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`:
-`edge` is the date of the measure's last visible row (`edge_source` `last_row`), and both
-are null with no visible coverage. It replaces
+`edge` is the date of the measure's last visible row (`edge_source` `last_row`), or of its
+declared edge (`loaded`, null when the load log holds no date; `now`), and both are null with
+no visible coverage. It replaces
 `EMPTY_RESULT_WINDOW` and excludes covered outputs from `NO_DATA_IN_SCOPE`. It is granted
 only when every named measure is granted.
 
@@ -1133,11 +1134,17 @@ The response `warnings` array can carry these non-error signals:
   coverage, empty totals whose coverage is proven before the window, or no visible
   coverage. `details.outputs` lists output aliases; `details.measures` lists
   `{id, edge, edge_source}`: `edge` is the date, in the clock's zone, of the measure's last
-  visible row, with `edge_source` `last_row`. Both are null with no visible coverage.
+  visible row, with `edge_source` `last_row`, or of its declared edge (`zero_through`), with
+  `edge_source` `loaded` (`edge` null when the load log holds no date) or `now`. Both are
+  null with no visible coverage.
   An empty series with dated coverage keeps existing warnings. `NO_DATA_YET` replaces
   `EMPTY_RESULT_WINDOW`, and covered outputs are excluded from `NO_DATA_IN_SCOPE`.
   Resource grants expose it only when every named measure is granted.
   See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
+- `ZERO_AFTER_LAST_ROW` (a note) — fires on `execute` when a sum or count whose package says
+  its table is always loaded (`zero_through: now`) reads days after its last row as `0`:
+  `details.measures` lists `{id, last_row}`. Resource grants expose it only when every named
+  measure is granted. See [Empty periods](PACKAGE_AUTHORING.md#empty-periods).
 - `PARTIAL_DATA` — fires on `execute` when a window total, or a row of a day-or-coarser
   series, spans a whole day after `window.data_through` and before `now`'s day:
   `details` `{through, days_covered, days, period}` (`period` only for a series row). See

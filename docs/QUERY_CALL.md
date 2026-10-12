@@ -493,7 +493,9 @@ What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full
 - **NULL with `NO_DATA_YET`** after the data's edge: the last week has orders through Thursday
   2017-08-31 and nothing says the data is loaded past that last row, so Friday to Sunday read
   NULL, never 0. `window.data_through` is that edge: the date, in the clock's zone, of the last
-  row at or before `now`.
+  row at or before `now`. A package that records how far its load ran says so with
+  `zero_through` (["Empty periods"](PACKAGE_AUTHORING.md#empty-periods)): a quiet week the load
+  covers then reads 0.
 
 ```json
 {"select": ["measure.jaffle.order_count"], "time": {"last": {"unit": "week", "value": 1}, "grain": "day"}}
@@ -819,7 +821,7 @@ per-entity aggregation.
 ```jsonc
 {"status": "ok",
  "rows": [...],                                       // one column per group_by id, then period, period_partial, then select columns
- "window": {"start", "end", "now", "partial", "data_through"},  // whenever a window or a grain series was resolved
+ "window": {"start", "end", "now", "partial", "data_through", "data_through_source"},  // whenever a window or a grain series was resolved
  "clock": "temporal_role.<id>",                       // whenever a time-bearing measure was read
  "observation_scope": "dataset",                      // always
  "routes": [{"from", "to", "via"}],                   // only when a route was chosen among several
@@ -836,7 +838,9 @@ per-entity aggregation.
   `this` starts on a date and ends at `now`, stated with the clock zone's offset), `now` as
   used, `partial`, and `data_through` once loaded coverage has read the edge (DuckDB,
   MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a named
-  window's series).
+  window's series). `data_through_source` says where a declared edge comes from: the load log
+  as the package declares it (`export_runs.through_day`; `loaded` when the caller can't see
+  that model), or `now`; it is left out when the edge is the last row.
 - No field is empty: `routes`, `assumptions`, `warnings` and `errors` appear only when they
   have entries, and a list, object or string with nothing in it is left out (`rows` stays: an
   empty result is an answer).
@@ -983,7 +987,12 @@ whole base relation under policy row filters, ignoring measure and call filters,
 reported as `window.data_through`. Populated sums and positive counts always survive, including
 future-dated rows. `NO_DATA_YET` names each affected output and measure with its `edge`, the
 date of the measure's last row, and `edge_source` `last_row`: nothing says the data is loaded
-past that row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+past that row. A table whose package declares its edge (`zero_through`, see
+["Empty periods"](PACKAGE_AUTHORING.md#empty-periods)) reads `0` in an empty period only when
+the period ends by that edge: a load log's loaded-through date (`edge_source` `loaded`; `edge`
+is null and the message says "loaded-through date unavailable" when the log holds none) or
+`now` (`edge_source` `now`, with the note `ZERO_AFTER_LAST_ROW` when the answer reaches past the
+last row). Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).

@@ -1,4 +1,8 @@
-"""``zero_through``: what a package may declare."""
+"""``zero_through``: what a package may declare, and what the declared edge compiles to.
+
+Answers are frozen in the correctness ledger (``shop/tests/answers.yml``) and their disclosures
+checked in ``tests/integration/correctness/test_zero_through.py``.
+"""
 
 from dataclasses import replace
 from pathlib import Path
@@ -7,10 +11,28 @@ from typing import Any
 import pytest
 import yaml
 
+from semantic_rails.compiler_parts.empty_groups import (
+    DeclaredEdge,
+    LeafScope,
+    guard_empty_groups,
+)
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ZeroThrough
+from semantic_rails.sql_ast import (
+    SqlCall,
+    SqlField,
+    SqlIdentifier,
+    SqlLiteral,
+    SqlSelect,
+    SqlTableRef,
+)
 from tests.integration.correctness.conftest import _write_variant
+
+NOW = "2024-10-07T06:00:00Z"
+WEEKS = {"select": ["measure.shop.tickets_opened"], "time": {"last": {"unit": "week", "value": 4}, "grain": "week"}}  # fmt: skip
 
 
 @pytest.fixture
@@ -125,6 +147,144 @@ def test_a_warehouse_without_loaded_coverage_refuses_a_declared_edge(shop):
     _edit(shop, "package.yml", lambda doc: doc["package"].update(warehouse="clickhouse"))
     with pytest.raises(SemanticLayerError, match="can only be data on ClickHouse"):
         load_package_config(str(shop))
+
+
+def test_a_compile_on_such_a_warehouse_refuses_rather_than_ignores_it(shop):
+    config = load_package_config(str(shop))
+    config = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    runtime = Runtime.from_config(config, source_path=str(shop))
+    try:
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.compile(WEEKS, now=NOW)
+        assert raised.value.code == "INVALID_CONFIG"
+        assert raised.value.details["measures"] == ["measure.shop.tickets_opened"]
+        # A measure that reads its last row compiles as before.
+        runtime.compile({**WEEKS, "select": ["measure.shop.tickets_by_last_row"]}, now=NOW)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "warehouse",
+    [
+        "duckdb",
+        "motherduck",
+        "ducklake",
+        "postgres",
+        "snowflake",
+        "bigquery",
+        "databricks",
+        "athena",
+    ],
+)
+def test_the_load_log_mark_compiles_beside_coverage_on_every_warehouse_that_reads_it(
+    shop, warehouse
+):
+    config = load_package_config(str(shop))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    runtime = Runtime.from_config(config, source_path=str(shop))
+    try:
+        sql = runtime.compile(WEEKS, now=NOW)["rendered_sql"]
+    finally:
+        runtime.close()
+    assert "edge_1_rows" in sql and "ticket_loads" in sql and "loaded_before" in sql
+
+
+def test_the_declared_edge_never_moves_routing(shop):
+    """An open monthly window reads the rollup with or without an edge on its measures; a
+    named window reads the base either way."""
+    base = load_package_config(str(shop))
+    declared = replace(
+        base,
+        measures=[
+            replace(row, zero_through=ZeroThrough("now"))
+            if row.id == "measure.shop.revenue"
+            else row
+            for row in base.measures
+        ],
+    )
+    sql: dict[str, list[str]] = {}
+    for name, config in (("last_row", base), ("now", declared)):
+        runtime = Runtime.from_config(config, source_path=str(shop))
+        try:
+            sql[name] = [
+                runtime.compile({"select": ["measure.shop.revenue"], "time": time}, now=NOW)[
+                    "rendered_sql"
+                ]
+                for time in (
+                    {"grain": "month", "end": "2023-12-01"},
+                    {"grain": "month", "start": "2023-10-01", "end": "2024-09-01"},
+                )
+            ]
+        finally:
+            runtime.close()
+    assert sql["now"][0] == sql["last_row"][0]
+    assert "FROM orders_monthly" in sql["now"][0]
+    assert ["FROM orders_monthly" in text for text in sql["now"]] == [True, False]
+    assert ["FROM orders_monthly" in text for text in sql["last_row"]] == [True, False]
+    assert "edge_1" in sql["now"][1] and "edge_1" not in sql["last_row"][1]
+
+
+def _scope(edge: DeclaredEdge) -> LeafScope:
+    opened = SqlIdentifier(parts=["tickets", "opened_at"])
+    return LeafScope(
+        from_table=SqlTableRef(name="tickets"),
+        joins=(),
+        where=(),
+        value=SqlCall("COUNT", [SqlIdentifier(parts=["tickets", "ticket_id"])]),
+        bucket=opened,
+        raw_time=opened,
+        edge=edge,
+    )
+
+
+def _edge(relation: str) -> DeclaredEdge:
+    rows = SqlSelect(
+        select=[
+            SqlField(SqlCall("MAX", [SqlIdentifier(parts=[relation, "through_day"])]), "watermark")
+        ],
+        from_table=SqlTableRef(name=relation),
+        observation_scan=True,
+    )
+    bound = SqlSelect(select=[SqlField(SqlLiteral(1), "loaded_before")])
+    return DeclaredEdge(rows=rows, bound=bound)
+
+
+@pytest.mark.parametrize("second", ["ticket_audits", "ticket_loads"])
+def test_two_bindings_over_one_table_never_share_an_edge(second):
+    """Coverage over one table is read once; each binding has its own edge, and each measure's
+    guard reads only its own."""
+    scopes = {"a": _scope(_edge("ticket_loads")), "b": _scope(_edge(second))}
+    ctes = guard_empty_groups(
+        "series_base",
+        ["t"],
+        ["a", "b"],
+        {"a": "count", "b": "count"},
+        scopes,
+        time_key="t",
+        dialect=dialect_for_warehouse("duckdb"),
+    )
+    names = [cte.name for cte in ctes]
+    shared = second == "ticket_loads"
+    assert names.count("coverage_1") == 1 and "coverage_2" not in names
+    assert ("edge_2" in names) is not shared
+    guard = ctes[-1].query
+    reads = {
+        field.alias: {
+            node.parts[0]
+            for node in _identifiers(field.expression)
+            if node.parts[0].startswith("edge_")
+        }
+        for field in guard.select
+        if field.alias in {"a", "b"}
+    }
+    assert reads == {"a": {"edge_1"}, "b": {"edge_1" if shared else "edge_2"}}
+
+
+def _identifiers(expr: Any) -> list[SqlIdentifier]:
+    from semantic_rails.sql_ast import sql_nodes
+
+    return [node for node in sql_nodes(expr) if isinstance(node, SqlIdentifier)]
 
 
 def test_a_written_package_keeps_its_models_edges(tmp_path):
