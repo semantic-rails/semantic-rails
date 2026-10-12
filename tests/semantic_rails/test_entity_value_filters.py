@@ -150,12 +150,13 @@ def test_valid_value_filter_matches_reference_sql(engine, tagged, dimension_filt
 
 
 def test_published_schema_closes_value_filter_items():
+    validator = Draft202012Validator(load_contract("query.v2.json"))
+    validator.validate(
+        _query([{"kind": "value_filter", "op": "gt", "value": 1}, {"op": ">", "value": 1}])
+    )
+    for item in (FIELD_FILTER, {"kind": "row_filter", "op": "gt", "value": 1}):
+        assert list(validator.iter_errors(_query([item]))), item
+    # execute's kind table writes the item's keys out.
     execute = next(tool for tool in list_tool_definitions() if tool["name"] == "execute")
-    valid = _query([{"kind": "value_filter", "op": "gt", "value": 1}, {"op": ">", "value": 1}])
-    for validator, wrap in (
-        (Draft202012Validator(load_contract("query.v2.json")), lambda query: query),
-        (Draft202012Validator(execute["inputSchema"]), lambda query: {"query": query}),
-    ):
-        validator.validate(wrap(valid))
-        for item in (FIELD_FILTER, {"kind": "row_filter", "op": "gt", "value": 1}):
-            assert list(validator.iter_errors(wrap(_query([item])))), item
+    table = execute["inputSchema"]["$defs"]["Expression"]["description"]
+    assert "entity_value:entity*,input*:E,where:[{kind:value_filter,op:Op,value}]" in table

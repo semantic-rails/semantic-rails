@@ -22,25 +22,27 @@
       ],
       "type": "object"
     },
+    "Conditions": {
+      "items": {
+        "$ref": "#/$defs/Condition"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
     "EntityFilter": {
       "additionalProperties": false,
+      "dependentRequired": {
+        "over": [
+          "having"
+        ]
+      },
       "oneOf": [
         {
-          "not": {
-            "required": [
-              "over"
-            ]
-          },
           "required": [
             "any"
           ]
         },
         {
-          "not": {
-            "required": [
-              "over"
-            ]
-          },
           "required": [
             "none"
           ]
@@ -54,29 +56,17 @@
       ],
       "properties": {
         "any": {
-          "items": {
-            "$ref": "#/$defs/Condition"
-          },
-          "minItems": 1,
-          "type": "array"
+          "$ref": "#/$defs/Conditions"
         },
         "entity": {
           "minLength": 1,
           "type": "string"
         },
         "having": {
-          "items": {
-            "$ref": "#/$defs/Condition"
-          },
-          "minItems": 1,
-          "type": "array"
+          "$ref": "#/$defs/Conditions"
         },
         "none": {
-          "items": {
-            "$ref": "#/$defs/Condition"
-          },
-          "minItems": 1,
-          "type": "array"
+          "$ref": "#/$defs/Conditions"
         },
         "over": {
           "enum": [
@@ -1363,48 +1353,6 @@
     },
     "time": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "not": {
-            "required": [
-              "last",
-              "this"
-            ]
-          }
-        },
-        {
-          "not": {
-            "required": [
-              "last",
-              "start"
-            ]
-          }
-        },
-        {
-          "not": {
-            "required": [
-              "last",
-              "end"
-            ]
-          }
-        },
-        {
-          "not": {
-            "required": [
-              "this",
-              "start"
-            ]
-          }
-        },
-        {
-          "not": {
-            "required": [
-              "this",
-              "end"
-            ]
-          }
-        }
-      ],
       "anyOf": [
         {
           "required": [
@@ -1432,6 +1380,40 @@
           ]
         }
       ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "last",
+              "this"
+            ]
+          },
+          {
+            "required": [
+              "last",
+              "start"
+            ]
+          },
+          {
+            "required": [
+              "last",
+              "end"
+            ]
+          },
+          {
+            "required": [
+              "this",
+              "start"
+            ]
+          },
+          {
+            "required": [
+              "this",
+              "end"
+            ]
+          }
+        ]
+      },
       "properties": {
         "end": {
           "description": "ISO date or date-time, exclusive: [start, end).",

@@ -34,11 +34,9 @@ def test_execute_schema_is_the_call_and_empty_select_lists_rows(runtime_factory)
     tools = list_tool_definitions()
     execute = next(t for t in tools if t["name"] == "execute")
     execute_desc = execute["description"]
-    # The query schema lists every inline kind; the description stays short.
-    kinds = [
-        kind["properties"]["kind"]["const"]
-        for kind in execute["inputSchema"]["$defs"]["Expression"]["anyOf"][1]["anyOf"]
-    ]
+    # The query schema's kind table lists every inline kind; the description stays short.
+    table = execute["inputSchema"]["$defs"]["Expression"]["description"].split("): ", 1)[1]
+    kinds = [name for row in table.split(";") for name in row.split(":", 1)[0].split("/")]
     for kind in (
         "prior_period",
         "rolling",

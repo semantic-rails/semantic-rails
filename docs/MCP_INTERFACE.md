@@ -160,11 +160,14 @@ stripped and answered.
 resolve against, for `execute` and `plan`; it defaults to the current time, and an answer echoes
 it as `window.now` ([`now`](QUERY_CALL.md#now)). `discover` takes no `now`.
 
-`tools/list` is paid once at connect time, before the first call. The query call's generated
-schema (`query.v2.json`) ships once, as `execute`'s `query` property with its `$defs` at the
-schema root; `plan` and the metadata tools take a partial call to start from.
-`tests/semantic_rails/test_mcp_response_budget.py` caps `tools/list` in bytes, and the cap may
-only shrink. `validate` checks a call before it runs; a call that already ran needs no
+`tools/list` is paid once at connect time, before the first call. `execute`'s `query` property
+is a compact form of the call's generated schema (`query.v2.json`), with its `$defs` at the
+schema root: the same fields, words and rules, with each expression kind's keys as one line of a
+table (the description of `$defs/Expression`) and the filter words' value shapes and SQL
+spellings in one sentence (`$defs/Op`). `query.v2.json` keeps a schema per kind, and the parser
+refuses what the table rules out at its path. `plan` and the metadata tools take a partial call
+to start from. `tests/semantic_rails/test_mcp_response_budget.py` caps each tool's definition
+and `tools/list` in bytes, and a cap may only shrink. `validate` checks a call before it runs; a call that already ran needs no
 validation.
 
 ### Writing Tool Descriptions

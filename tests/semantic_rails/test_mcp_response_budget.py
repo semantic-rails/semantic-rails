@@ -359,14 +359,30 @@ def test_unsupported_expression_reports_received_kind_and_request_path(
     assert "docs/" not in json_text(result) and "schemas/" not in json_text(result)
 
 
-# tools/list was 12,728 bytes with the prose summary of the old query shapes; execute now
-# embeds the call's generated schema once, each kind's keys written out in one anyOf. The
-# budget is that size plus 5% and may only shrink.
-TOOLS_LIST_MAX_BYTES = 20_776  # 19,787 * 1.05
+# Every agent session pays for tools/list. Each tool's definition as it is sent (compact JSON);
+# execute embeds the call's schema with each expression kind's keys as one line of a table.
+# A budget may only shrink.
+TOOL_MAX_BYTES = {
+    "discover": 1_751,
+    "inspect": 1_123,
+    "valid-values": 1_388,
+    "plan": 1_887,
+    "execute": 5_991,
+    "segment": 1_300,
+}
+
+
+def test_each_tool_definition_fits_its_byte_budget() -> None:
+    sizes = {
+        tool["name"]: len(json.dumps(tool, separators=(",", ":")))
+        for tool in list_tool_definitions()
+    }
+    assert sizes.keys() == TOOL_MAX_BYTES.keys()
+    assert {name: size for name, size in sizes.items() if size > TOOL_MAX_BYTES[name]} == {}
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
-    assert len(json_text({"tools": list_tool_definitions()})) <= TOOLS_LIST_MAX_BYTES
+    assert len(json_text({"tools": list_tool_definitions()})) <= 13_457
 
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without

@@ -1,9 +1,11 @@
-"""query.v2.json and the parser give every condition the same verdict.
+"""query.v2.json and the parser give every condition the same verdict; execute's schema lists
+the words and states the rest once.
 
 Each operator's value shape (one value for ranges, text for contains, true or false for missing,
 one or several values for is and not) and its spellings (any case, any spacing, the SQL aliases)
-come from the operator registry, so the schema refuses what the parser refuses and accepts what
-it accepts.
+come from the operator registry, so the published schema refuses what the parser refuses and
+accepts what it accepts. The tool's schema takes the words and says in one sentence which
+values each takes and which SQL symbols read as them.
 """
 
 from __future__ import annotations
@@ -82,18 +84,29 @@ def validators() -> dict[str, Draft202012Validator]:
     }
 
 
-def test_the_schemas_give_every_condition_the_parsers_verdict(validators) -> None:
-    differing = []
-    for op, value in CASES:
-        call = _call(op, value)
-        verdicts = {
-            "parser": _parser_accepts(call),
-            "published": validators["published"].is_valid(call),
-            "embedded": validators["embedded"].is_valid({"query": call}),
-        }
-        if len(set(verdicts.values())) > 1:
-            differing.append((op, value, verdicts))
+def test_the_published_schema_gives_every_condition_the_parsers_verdict(validators) -> None:
+    differing = [
+        (op, value)
+        for op, value in CASES
+        if validators["published"].is_valid(_call(op, value)) != _parser_accepts(_call(op, value))
+    ]
     assert not differing, differing[:5]
+
+
+def test_execute_takes_the_words_and_states_their_values_once(validators) -> None:
+    differing = [
+        (op, value)
+        for op, value in CASES
+        if validators["embedded"].is_valid({"query": _call(op, value)}) != (op in operators.WORDS)
+    ]
+    assert not differing, differing[:5]
+    execute = next(tool for tool in list_tool_definitions() if tool["name"] == "execute")
+    op = execute["inputSchema"]["$defs"]["Op"]
+    assert op["enum"] == list(operators.WORDS)
+    assert [alias for alias in operators.ALIASES if alias not in op["description"]] == []
+    shapes = {"a value or a list": ["is", "not"], "one value": ["gt", "gte", "lt", "lte"]}
+    for phrase, words in {**shapes, "text": ["contains"], "true or false": ["missing"]}.items():
+        assert f"{'/'.join(words)}: {phrase}" in op["description"]
 
 
 @pytest.mark.parametrize("op", ["gt", "GTE", "<", "lte"])

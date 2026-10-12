@@ -168,42 +168,27 @@ QUERY_SEED_SCHEMA: dict[str, Any] = {
 }
 NOW_SCHEMA: dict[str, Any] = {
     "type": "string",
-    "description": (
-        "ISO date or date-time that relative windows (time.last, time.this) resolve against; "
-        "default: the current time."
-    ),
+    "description": "ISO date or date-time for time.last and time.this.",
 }
 
+# execute's response options; each description says only what its enum does not.
 VERBOSITY_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["minimal", "compact", "full"],
     "default": "minimal",
-    "description": (
-        "Response detail. 'minimal' (default)={ok,errors,warnings}, "
-        "+rendered_sql on compile, +rows/row_count on execute — a few KB. "
-        "'compact' adds query metadata without compiler plans. "
-        "'full' adds plans within the same response budget; omitted_fields names trimmed detail."
-    ),
+    "description": "'compact' adds metadata; 'full' adds plans too.",
 }
 
 SQL_PROFILE_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["audit", "compact", "debug", "off"],
-    "default": "audit",
-    "description": (
-        "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; "
-        "'off' suppresses rendered_sql + sql_plan entirely."
-    ),
+    "description": "'off' omits rendered_sql and sql_plan.",
 }
 
 ROW_FORMAT_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["records", "columns"],
-    "default": "records",
-    "description": (
-        "Execute row shape. 'records' (default)=rows as objects; "
-        "'columns'=columns plus array rows, avoiding repeated field names."
-    ),
+    "description": "'columns': column names once, rows as arrays.",
 }
 
 MCP_RESULT_SCHEMA: dict[str, Any] = {
@@ -268,7 +253,6 @@ MCP_RESULT_SCHEMA: dict[str, Any] = {
 
 MCP_RESULT_SCHEMA_SLIM: dict[str, Any] = {
     "type": "object",
-    "description": "Semantic Rails MCP v2 result envelope.",
     "required": ["ok", "status"],
     "properties": {
         "ok": {"type": "boolean"},
@@ -539,12 +523,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Answer a query call; call plan first to draft it. mode 'run' returns rows; "
-            "'validate' only checks the call; 'sql' adds rendered_sql; only 'run' reads the "
-            "warehouse, and a call that already ran needs no validate. The query schema is "
-            "the call: select ids or {expression, as}, group_by dimension ids (alone, it lists "
-            "rows), where/having [{field, op, value}], time (time.end is exclusive), order_by, "
-            "limit. Pass now to pin relative windows."
+            "Answer a query call; call plan first to draft it. mode 'run' returns rows, "
+            "'validate' only checks the call, 'sql' adds rendered_sql; only 'run' reads the "
+            "warehouse, and a call that already ran needs no validate. Call: select ids or "
+            "{expression, as}, group_by dimension ids (alone, it lists rows), where/having "
+            "[{field, op, value}] and entity filters, time (time.end is exclusive), order_by "
+            "(period is the time column), limit."
         ),
         input_schema={
             **_schema(
@@ -556,14 +540,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                         "enum": list(_EXECUTE_MODES),
                         "default": "run",
                     },
-                    "verbosity": {
-                        **VERBOSITY_SCHEMA,
-                        "description": (
-                            "'minimal' (default): outcome, errors, warnings; SQL in 'sql', "
-                            "rows in 'run'. 'compact' adds metadata without plans; 'full' adds "
-                            "plans. All modes share a budget; omitted_fields lists trimmed detail."
-                        ),
-                    },
+                    "verbosity": VERBOSITY_SCHEMA,
                     "sql_profile": SQL_PROFILE_SCHEMA,
                     "row_format": ROW_FORMAT_SCHEMA,
                     "max_rows": {
@@ -571,10 +548,6 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                         "minimum": 1,
                         "maximum": MCP_MAX_ROWS_LIMIT,
                         "default": MCP_DEFAULT_MAX_ROWS,
-                        "description": (
-                            "Rows to return in mode 'run'. A larger result sets truncated=true; "
-                            "the rest is not counted (total_row_count null)."
-                        ),
                     },
                 },
                 required=["query"],

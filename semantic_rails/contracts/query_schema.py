@@ -173,22 +173,25 @@ def query_call_schema_document() -> dict[str, Any]:
         },
         "OpValue": op_value,
         "Condition": condition,
+        "Conditions": {"type": "array", "items": {"$ref": "#/$defs/Condition"}, "minItems": 1},
+        # Exactly one of any, none or having; over goes with having, and only with it.
         "EntityFilter": {
             "type": "object",
             "properties": {
                 "entity": {"type": "string", "minLength": 1},
-                "any": {"type": "array", "items": {"$ref": "#/$defs/Condition"}, "minItems": 1},
-                "none": {"type": "array", "items": {"$ref": "#/$defs/Condition"}, "minItems": 1},
-                "having": {"type": "array", "items": {"$ref": "#/$defs/Condition"}, "minItems": 1},
+                "any": {"$ref": "#/$defs/Conditions"},
+                "none": {"$ref": "#/$defs/Conditions"},
+                "having": {"$ref": "#/$defs/Conditions"},
                 "over": {"enum": list(OVER)},
             },
             "required": ["entity"],
             "additionalProperties": False,
             "oneOf": [
-                {"required": ["any"], "not": {"required": ["over"]}},
-                {"required": ["none"], "not": {"required": ["over"]}},
+                {"required": ["any"]},
+                {"required": ["none"]},
                 {"required": ["having", "over"]},
             ],
+            "dependentRequired": {"over": ["having"]},
         },
         **kind_defs,
     }
@@ -251,7 +254,7 @@ def query_call_schema_document() -> dict[str, Any]:
                     {"required": ["start"]},
                     {"required": ["end"]},
                 ],
-                "allOf": [{"not": {"required": pair}} for pair in exclusive],
+                "not": {"anyOf": [{"required": pair} for pair in exclusive]},
             },
             "order_by": {
                 "type": "array",
@@ -293,24 +296,116 @@ def query_call_schema_document() -> dict[str, Any]:
     }
 
 
+def _shape(schema: dict[str, Any]) -> str:
+    """A key's schema in a few characters, for the tool's kind table: ``E`` an expression,
+    ``id`` a measure or metric id, ``a|b`` one of the words, ``[x]`` a list, ``{k:x}`` an
+    object, ``&X`` also follows the definition ``X``; "" when the parser checks the value."""
+    if "$ref" in schema:
+        name = schema["$ref"].rsplit("/", 1)[-1]
+        return {"Expression": "E", "Ref": "id"}.get(name, name)
+    if "enum" in schema:
+        return "|".join(map(str, schema["enum"]))
+    if "const" in schema:
+        return str(schema["const"])
+    if schema.get("type") == "array":
+        return f"[{_shape(schema['items'])}]"
+    if "properties" in schema:
+        keys = ",".join(
+            key + (f":{_shape(value)}" if _shape(value) else "")
+            for key, value in schema["properties"].items()
+        )
+        rules = "".join(f"&{_shape(rule)}" for rule in schema.get("allOf", ()))
+        return f"{{{keys}}}{rules}"
+    return str(schema.get("type", ""))
+
+
+def _kind_table(kinds: dict[str, dict[str, Any]]) -> str:
+    """Each kind's keys, required ones first and starred, kinds with the same keys together."""
+    rows: dict[str, list[str]] = {}
+    for kind, schema in kinds.items():
+        required = [key for key in schema["required"] if key != "kind"]
+        optional = sorted(key for key in schema["properties"] if key not in {"kind", *required})
+        keys = ",".join(
+            key
+            + ("*" if key in required else "")
+            + (f":{_shape(schema['properties'][key])}" if _shape(schema["properties"][key]) else "")
+            for key in (*required, *optional)
+        )
+        rows.setdefault(keys, []).append(kind)
+    return ";".join(f"{'/'.join(names)}:{keys}" for keys, names in rows.items())
+
+
+# Each value shape of the operator registry, in words.
+_VALUE_SHAPES = {
+    "scalar_or_list": "a value or a list",
+    "scalar": "one value",
+    "text": "text",
+    "boolean": "true or false",
+}
+
+
+def _compact(node: Any, shared: dict[str, Any]) -> Any:
+    """``node`` without prose, each ``shared`` schema as its reference, and an op and value that
+    follow ``OpValue`` as an ``op`` that is one of the ``Op`` words."""
+    if isinstance(node, list):
+        return [_compact(item, shared) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out = {key: _compact(value, shared) for key, value in node.items() if key != "description"}
+    name = next((name for name, schema in shared.items() if out == schema), None)
+    if name:
+        return {"$ref": f"#/$defs/{name}"}
+    if out.get("allOf") == [{"$ref": "#/$defs/OpValue"}]:
+        del out["allOf"]
+        out["properties"] = {**out["properties"], "op": {"$ref": "#/$defs/Op"}}
+    return out
+
+
 def embedded_query_call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
     """The call schema as a tool embeds it, and the ``$defs`` its references resolve against.
 
-    The published document's rules, with each kind's keys written out in one ``anyOf``
-    instead of an ``if``/``then`` chain over ``Kind_*`` definitions: about 4 KB less in every
-    ``tools/list``. A test holds both forms to the same verdicts.
+    The published document's fields, words and rules in under half its size, for every
+    ``tools/list``: no prose (the tool's description has it), each kind's keys as one line of a
+    table instead of a schema per kind, and the filter words with their value shapes and SQL
+    spellings in one sentence. The parser refuses what the table and the sentence rule out at
+    its path, with a hint; a test holds them to the published document.
     """
+    from semantic_rails import operators
+    from semantic_rails.query_call import GRAINS
 
-    document = query_call_schema_document()
+    # Written once: a non-empty string (every id, name and date of a call) and a time unit.
+    shared = {"Text": {"type": "string", "minLength": 1}, "Unit": {"enum": list(GRAINS)}}
+    document = _compact(query_call_schema_document(), shared)
     definitions: dict[str, Any] = document.pop("$defs")
     for key in ("$schema", "$id", "title", "x-fields"):
         document.pop(key, None)
-    kinds = []
-    for name in sorted(name for name in definitions if name.startswith("Kind_")):
-        kind = definitions.pop(name)
-        kind.pop("type")
-        kinds.append(kind)
-    definitions["Expression"] = {
-        "anyOf": [{"$ref": "#/$defs/Ref"}, {"type": "object", "anyOf": kinds}]
+    kinds = {
+        name.removeprefix("Kind_"): definitions.pop(name)
+        for name in sorted(definitions)
+        if name.startswith("Kind_")
     }
+    words: dict[str, list[str]] = {}
+    for word, operator in operators.OPERATORS.items():
+        words.setdefault(operator.value_shape, []).append(word)
+    del definitions["OpValue"]
+    definitions.update(
+        {
+            **shared,
+            "Op": {
+                "enum": list(operators.WORDS),
+                "description": "Values: "
+                + "; ".join(
+                    f"{'/'.join(names)}: {_VALUE_SHAPES[shape]}" for shape, names in words.items()
+                )
+                + f". SQL symbols ({', '.join(operators.ALIASES)}) read as these words.",
+            },
+            "Expression": {
+                "description": (
+                    "An id, or an object whose kind names its keys (*: required; E: "
+                    f"expression; id: measure or metric id): {_kind_table(kinds)}"
+                ),
+                "anyOf": [{"$ref": "#/$defs/Ref"}, {"type": "object", "required": ["kind"]}],
+            },
+        }
+    )
     return document, definitions
