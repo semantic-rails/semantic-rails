@@ -615,7 +615,7 @@ def _predicate_time_spec(
                 "recovery_hints": [
                     {
                         "code": "SET_TIME_GRAIN",
-                        "message": 'Add "grain" to time, or use over: window or all_time.',
+                        "message": "Set time.grain, or use over: window or all_time.",
                     }
                 ]
             },

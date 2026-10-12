@@ -791,7 +791,9 @@ before the last complete day; otherwise `stock_as_of_unrealized`. This includes 
 `execute` reads it as `NULL`. When a `metric_constraint` requires the
 clock's date dimension in `group_by`, `plan` adds it (beside the day grain it adds no row) and
 counts it as asked; any other required field, or one hidden from the caller, keeps the
-`POLICY_DENIED` hold. A balance the question compares ("MRR right now compared with a week
+`POLICY_DENIED` hold. A draft that is no balance under such a constraint reads a one-day window
+at day grain, and otherwise returns `needs_clarification` with a `day_read_required` gap that
+asks which day or daily values. A balance the question compares ("MRR right now compared with a week
 ago"), or asks for by week, month, quarter or year where the clock or a constraint reads it per
 day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of_unrealized`
 gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
@@ -1217,7 +1219,7 @@ expression kind names the received kind and its request path (for example,
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
 | `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences, including inherited decisions. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. Unrelated route rows retain bounded reachability scans; inherited-route searches skip branches that cannot reach the target within the remaining hops. |
-| `POLICY_DENIED` | Policy context blocks a referenced object or query cut. `policy_effects` state each policy as the caller may see it: one that lists a hidden object, or whose text names one, appears without `policy_id` and with its action's fixed text. While anything is hidden from the caller, a raw-column aggregate is refused with empty `blocked_objects`, `policy_effects` and `policy_violations`. When what the caller may see can't be resolved, every tool refuses before binding or the warehouse with `details: {"reason": "visibility_unresolved"}`, naming nothing. |
+| `POLICY_DENIED` | Policy context blocks a referenced object or query cut. The message names the blocked object and the cuts a metric constraint allows; the one hint carries the call fragment that meets it in `patch.merge`. `policy_effects` state each policy as the caller may see it: one that lists a hidden object, or whose text names one, appears without `policy_id` and with its action's fixed text. While anything is hidden from the caller, a raw-column aggregate is refused with empty `blocked_objects`, `policy_effects` and `policy_violations`. When what the caller may see can't be resolved, every tool refuses before binding or the warehouse with `details: {"reason": "visibility_unresolved"}`, naming nothing. |
 | `INVALID_METRIC_PREDICATE` | A `metric_predicate` expression, or an entity filter's `having`, is malformed or asks what this shape can't answer; the message says which. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |
 | `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE` | Predicate context entity disagrees with the surrounding query. |

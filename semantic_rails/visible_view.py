@@ -576,8 +576,10 @@ def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list
 def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
     """A policy refusal as this caller may see it (:func:`public_effects`)."""
     meta = get_package_analysis(config).view
-    if meta is None or exc.code != "POLICY_DENIED" or "policy_effects" not in exc.details:
+    if meta is None or exc.code != "POLICY_DENIED" or not exc.details.get("policy_effects"):
         return exc
+    from .policies import denied
+
     effects = public_effects(exc.details["policy_effects"], config)
     details = {
         **exc.details,
@@ -585,9 +587,7 @@ def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLaye
         "policy_effects": effects,
         "policy_violations": [row for effect in effects for row in effect.get("violations", [])],
     }
-    return (
-        exc if details == exc.details else SemanticLayerError(exc.code, str(exc), details=details)
-    )
+    return exc if details == exc.details else denied(details)
 
 
 @dataclass

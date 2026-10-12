@@ -444,6 +444,29 @@ def test_empty_time_window_reports_diagnostics_warning_and_data_coverage(runtime
     (empty,) = [w for w in result["warnings"] if w["code"] == "EMPTY_RESULT_WINDOW"]
     assert empty["details"]["applied_time_filter"]["start"] == "2099-01-01"
     assert empty["details"]["actual_data_coverage"] == coverage
+    assert "The data may not exist in this window" in empty["message"]
+
+
+def test_an_empty_grouped_answer_inside_the_data_says_the_data_covers_it(runtime):
+    # No store sold a billion dollars in the week before now; the week has orders.
+    call = {
+        "select": ["measure.jaffle.revenue_usd"],
+        "group_by": ["dimension.jaffle_store_name"],
+        "time": {"last": {"unit": "week", "value": 1}},
+        "having": [{"field": "measure.jaffle.revenue_usd", "op": "gt", "value": 10**9}],
+        "limit": 5,
+    }
+    result = runtime.query(call, now="2017-06-14T12:00:00Z")
+    assert result["rows"] == [] and result["window"]["start"] == "2017-06-05"
+    [week] = runtime._get_adapter().query(
+        "SELECT COUNT(*) AS orders FROM jaffle_order WHERE ordered_at >= '2017-06-05' "
+        "AND ordered_at < '2017-06-12'"
+    )
+    assert week["orders"] > 0
+    (empty,) = [w for w in result["warnings"] if w["code"] == "EMPTY_RESULT_WINDOW"]
+    assert empty["message"] == (
+        "No group has rows in this window. The data covers it (through 2017-06-14)."
+    )
 
 
 def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory):

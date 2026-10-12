@@ -61,8 +61,13 @@ def aggregation_override(
             "aggregation": aggregation,
             "default": defaults.get(measure, ""),
         }
+        over = ""
         if hidden is not None and columns.get(alias) in hidden:
             entry["rows"] = _total(hidden[columns[alias]])
+            over = f", over {entry['rows']} source rows"
+        entry["message"] = (
+            f"{measure} is read as {aggregation}, not its default {entry['default']}{over}."
+        )
         out.append(entry)
     return out
 
@@ -146,14 +151,29 @@ def refuse_hidden_governors(config: PackageConfig, query: dict[str, Any]) -> Non
 
 
 def governed_metric_exists(config: PackageConfig, compiled: dict[str, Any]) -> list[dict[str, Any]]:
-    """``GOVERNED_METRIC_EXISTS`` for each governed metric that filters a measure the call reads
-    raw: the package's definition of that number is the metric."""
+    """``GOVERNED_METRIC_EXISTS`` once for each measure the call reads raw that governed metrics
+    the caller sees filter: the package's definition of that number is one of them. It names
+    the first three and counts them all."""
     select = compiled["logical_plan"].query.get("select")
-    return [
-        {"code": "GOVERNED_METRIC_EXISTS", "measure": measure, "metric": metric}
-        for measure, visible, _ in _governors(config, select)
-        for metric in visible
-    ]
+    out = []
+    for measure, visible, _ in _governors(config, select):
+        if not visible:
+            continue
+        more = f" and {len(visible) - 3} more" if len(visible) > 3 else ""
+        out.append(
+            {
+                "code": "GOVERNED_METRIC_EXISTS",
+                "measure": measure,
+                "metrics": visible[:3],
+                "count": len(visible),
+                "message": (
+                    f"{measure} is also defined as a governed metric "
+                    f"({', '.join(visible[:3])}{more}). Select "
+                    f"{'one' if len(visible) > 1 else 'it'} to use the package's definition."
+                ),
+            }
+        )
+    return out
 
 
 def share_of_total(
@@ -179,6 +199,11 @@ def share_of_total(
         spans = set((hidden or {}).get(columns.get(row.get("as"), ""), []))
         if len(spans) == 1:
             entry["rows"] = int(spans.pop())
+        rows = f" ({entry['rows']} rows per total)" if "rows" in entry else ""
+        entry["message"] = (
+            f"{entry['column']} is a fraction of the total of {entry['input']} across "
+            f"{' and '.join(entry['over'])} in the rows the call keeps{rows}."
+        )
         out.append(entry)
     return out
 
@@ -192,14 +217,36 @@ def grouped_by_key(
     asked = list(payload.get("group_by") or [])
     grouped = list(compiled["logical_plan"].group_by)
     out: list[dict[str, Any]] = [
-        {"code": "GROUPED_BY_KEY", "dimension": dimension, "key": key}
+        {
+            "code": "GROUPED_BY_KEY",
+            "dimension": dimension,
+            "key": key,
+            "message": f"Grouped by {key} beside {dimension}, so namesakes stay apart.",
+        }
         for dimension in asked
         if (key := display_key(config, dimension)) and key in grouped and key not in asked
     ]
+    entities = {row.id: row.entity for row in config.dimensions}
     for dimension in grouped:
         entity = keyed_entity(config, dimension)
-        if entity is not None and not entity.display:
-            out.append({"code": "SHOWN_BY_KEY", "entity": entity.id, "dimension": dimension})
+        # A call that groups by another of the entity's dimensions shows more than the key.
+        if (
+            entity is None
+            or entity.display
+            or any(
+                entities.get(other) == entity.id and keyed_entity(config, other) is None
+                for other in grouped
+            )
+        ):
+            continue
+        out.append(
+            {
+                "code": "SHOWN_BY_KEY",
+                "entity": entity.id,
+                "dimension": dimension,
+                "message": f"{entity.id} declares no name, so its rows show only {dimension}.",
+            }
+        )
     return out
 
 

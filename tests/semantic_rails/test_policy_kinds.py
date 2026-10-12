@@ -402,3 +402,64 @@ def test_scoped_environments_must_be_declared_by_the_package(tmp_path, starter, 
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
     assert any("package.environments" in error for error in validate_runtime_package(path))
+
+
+STORE = "dimension.jaffle_store_name"
+
+
+@pytest.mark.parametrize(
+    ("violation", "says", "hint", "merge"),
+    [
+        (
+            {"kind": "missing_required_where", "missing": [{"field": STORE, "value": "Brooklyn"}]},
+            f"can only be read where {STORE} is Brooklyn",
+            f'Add [{{"field": "{STORE}", "op": "is", "value": "Brooklyn"}}] to where.',
+            {"where": [{"field": STORE, "op": "is", "value": "Brooklyn"}]},
+        ),
+        (
+            {"kind": "missing_required_group_by", "missing": [STORE]},
+            f"can only be read grouped by {STORE}: add {STORE} to group_by",
+            f"Add {STORE} to group_by.",
+            {"group_by": [STORE]},
+        ),
+        (
+            {"kind": "disallowed_where", "disallowed": ["dimension.x"], "allowed": [STORE],
+             "source": "inline_expression"},
+            f"can't be filtered by dimension.x inside an expression; it can be filtered only by "
+            f"{STORE}",
+            "Remove the conditions on dimension.x inside the expression.",
+            None,
+        ),
+        (
+            {"kind": "disallowed_temporal_role", "temporal_role": "temporal_role.b",
+             "allowed": ["temporal_role.a"]},
+            "can't be read on temporal_role.b; it is read on temporal_role.a",
+            "Set time.temporal_role to temporal_role.a.",
+            {"time": {"temporal_role": "temporal_role.a"}},
+        ),
+        (
+            {"kind": "disallowed_metric_filter_entity", "disallowed": ["entity.c"], "allowed": []},
+            "can't be cut by an entity filter's having on entity.c; it can't be cut by an entity "
+            "filter's having",
+            "Remove the entity filter on entity.c.",
+            None,
+        ),
+        (
+            {"kind": "metric_filters_not_allowed"},
+            "can't be cut by having, an entity filter or a filter inside an expression",
+            "Remove the having, entity filter or inline filter that reads it.",
+            None,
+        ),
+    ],
+)  # fmt: skip
+def test_a_metric_constraint_refusal_names_its_cut_in_the_call_s_words(
+    violation, says, hint, merge
+):
+    from semantic_rails.policies import denied
+
+    effect = {"kind": "metric_constraint", "object_ids": [MEASURE], "violations": [violation]}
+    error = denied({"blocked_objects": [MEASURE], "policy_effects": [effect]})
+    assert (error.code, str(error)) == ("POLICY_DENIED", f"{MEASURE} {says}.")
+    [fix] = error.details["recovery_hints"]
+    assert (fix["code"], fix["message"]) == ("FIX_QUERY_CALL", hint)
+    assert fix.get("patch") == ({"merge": merge} if merge else None)

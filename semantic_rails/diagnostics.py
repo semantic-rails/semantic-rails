@@ -793,18 +793,8 @@ def recovery_hints_for_error(
                     "details": dict(details),
                 }
             ]
-        effects = list(details.get("policy_effects", []) or [])
-        if any(str(effect.get("kind", "")) == "metric_constraint" for effect in effects):
-            return [
-                {
-                    "kind": "adjust_metric_cuts",
-                    "message": (
-                        "Use only the group_by, where, temporal, or metric-filter cuts "
-                        "allowed by the metric constraint policy."
-                    ),
-                    "details": dict(details),
-                }
-            ]
+        if details.get("recovery_hints"):
+            return list(details["recovery_hints"])
         return [
             {
                 "kind": "remove_denied_object",

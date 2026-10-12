@@ -1166,9 +1166,10 @@ the same answer as a package without `display:`; the entity itself stays visible
 
 A call that groups by the `display` dimension itself groups by the entity's one-column key
 too, just before the name, so two customers named Ann stay two rows; the answer carries the
-key column and the assumption `GROUPED_BY_KEY {dimension, key}`. When the caller can't see
-the key, the call groups by the name alone. A call grouped by an entity's key, when the entity
-declares no `display:`, carries `SHOWN_BY_KEY {entity, dimension}`: its rows show only the key.
+key column and the assumption `GROUPED_BY_KEY {dimension, key, message}`. When the caller can't
+see the key, the call groups by the name alone. A call grouped by an entity's key, when the
+entity declares no `display:` and the call groups by none of its other dimensions, carries
+`SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
 ### `disallowed_names:` — explicit anti-pattern guard
 
@@ -1530,8 +1531,13 @@ aggregate) is answered only for complete days: `plan` holds a draft of it that r
 an open window, with `stock_as_of_unrealized`. To have
 every query read a balance per day, declare a `metric_constraint` on the stock with
 `required_group_by: [<the clock's date dimension>]` (and `supported_grains: [day]` on the
-clock if weeks or months are never meaningful). `plan` then adds that grouping to its drafts,
-and asks which day for a question by week or month rather than drafting against the policy.
+clock if weeks or months are never meaningful). `plan` then reads the balance at day grain,
+which meets the grouping, and asks which day for a question by week or month rather than
+drafting against the policy. Under such a policy a measure that is no balance is read at day
+grain when the question names one day, and otherwise `plan` asks which day or daily values
+(`day_read_required`). A call that misses the day is refused naming the cut ("can only be read
+by day: group by ..., or set time.grain to day."), with the fragment that meets it in the
+hint's `patch.merge`.
 
 The snapshot is chosen per series per period first. A grouped attribute stored on the
 snapshot rows, such as an account's plan that changes mid-week, is read from that

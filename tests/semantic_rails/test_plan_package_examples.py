@@ -162,7 +162,7 @@ def test_snapshot_policy_holds_a_query_without_the_day(subscriptions):
         "time": {"temporal_role": ROLE, "last": {"unit": "day", "value": 1}},
         "order_by": [{"field": NAME, "direction": "asc"}],
     }
-    with pytest.raises(SemanticLayerError, match="blocked by policy"):
+    with pytest.raises(SemanticLayerError, match="can only be read by day: group by "):
         subscriptions.query(query, now=NOW["now"])
 
 

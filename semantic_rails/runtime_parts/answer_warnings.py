@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .. import visible_view
@@ -484,10 +484,23 @@ def _requested_window(compiled, payload):
     return window
 
 
+def _covered_through(window: dict[str, Any], probed: dict[str, str]) -> str:
+    """The last loaded day when an answer's window lies inside the loaded data, else "": a
+    first row on or before the window's first day, and data through its last day."""
+    day = {key: str(window.get(key) or "")[:10] for key in ("start", "end", "now")}
+    day.update({key: str(probed.get(key) or "")[:10] for key in ("min", "max")})
+    last = str(window.get("data_through") or "") or (day["max"] and min(day["max"], day["now"]))
+    try:
+        inside = date.fromisoformat(day["min"]) <= date.fromisoformat(day["start"]) and (
+            date.fromisoformat(day["end"]) <= date.fromisoformat(last) + timedelta(days=1)
+        )
+    except ValueError:
+        return ""
+    return last if inside else ""
+
+
 def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excluded_outputs=()):
     """Disclose only edges proven by the same coverage that guarded the answer's NULLs."""
-    from datetime import date
-
     from ..compiler_parts.aliasing import AliasRegistry
 
     time = compiled["logical_plan"].time

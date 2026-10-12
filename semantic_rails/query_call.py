@@ -1118,7 +1118,7 @@ def _entity_filter(
         raise refusal(
             f"{path}.over",
             "'period' takes the aggregate per output period, so the call needs time.grain",
-            fix='Add "grain" to "time", or use over "window" or "all_time".',
+            fix='Set time.grain, or use over "window" or "all_time".',
         )
     predicates = []
     for index, condition in enumerate(conditions):
@@ -1260,13 +1260,13 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
             raise refusal(
                 "time.fill",
                 "applies to an open window with a grain; a named window already returns every period",
-                fix="Remove 'fill'.",
+                fix="Remove time.fill.",
             )
     if not (grain or windows or "start" in raw or "end" in raw) and not context.partial:
         raise refusal(
             "time",
             "say a grain or a window",
-            fix='Add "grain", or a window: "last", "this", or "start"/"end".',
+            fix="Set time.grain, or a window: time.last, time.this, or time.start and time.end.",
         )
     role = raw.get("temporal_role")
     if role is not None and (not isinstance(role, str) or not role.strip()):

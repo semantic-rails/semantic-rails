@@ -13,7 +13,7 @@ earlier day stands in for one.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any
 
@@ -366,8 +366,10 @@ def shape_snapshot(
 
     config = runtime._config
     balance = _balance(config, query)
-    if balance is None or (partial_query is not None and partial_query.time is not None):
+    if partial_query is not None and partial_query.time is not None:
         return query, None
+    if balance is None:
+        return _read_by_day(config, query, required) if required else (query, None)
     expected = _expected_read(runtime, question, query)
     window = _time_window(question)
     # Report the existing stock hold even when a day policy would fail validation first. An
@@ -403,6 +405,45 @@ def shape_snapshot(
             return query, None
         shaped = QueryBuilder(config, shaped).group(day_dimension).build()
     return shaped, None
+
+
+def _read_by_day(
+    config: Any, query: Call, required: tuple[str, ...]
+) -> tuple[Call, dict[str, Any] | None]:
+    """A draft that is no balance read, denied by a metric constraint that needs its clock's
+    day: a one-day window read at day grain (one row, the same number), or why plan asks which
+    day or daily values. Another required field, another clock or a grain the draft already
+    states leaves the denial as it is."""
+
+    time = _time_block(query)
+    roles = [row for row in config.temporal_roles if row.dimension in required]
+    if len(roles) != 1 or set(required) != {roles[0].dimension} or time.grain or not query.select:
+        return query, None
+    clock = roles[0].id
+    if time.temporal_role not in ("", clock):
+        return query, None
+    days = _days(time.window, clock) if time.window else None
+    if days is not None and days[1] - days[0] == _DAY:
+        day = replace(time, temporal_role=clock, grain="day")
+        return QueryBuilder(config, query).time(day).build(), None
+    subject = _object_by_id([*config.metric_recipes, *config.measures], query.select[0].ref)
+    label = str(getattr(subject, "label", "") or "") or query.select[0].ref
+    latest = _days(_LAST_DAY, clock)
+    gap = CoverageGap(
+        kind="day_read_required",
+        clause=label,
+        message=f"The package reads {label} only by day, so plan asks which day to read.",
+        expected={"grain": "day"},
+        actual={"grain": None},
+        recovery_hint={
+            "kind": "ask_for_one_day",
+            "message": f"Pick a day ('{label} on {latest[0] if latest else '<YYYY-MM-DD>'}') "
+            f"or ask for daily values ('daily {label}').",
+        },
+    )
+    why = _coverage_why([gap]) or {}
+    ask = {"question": f"{label} is read per day: which day, or daily values?"}
+    return query, {**why, "details": {**why.get("details", {}), "clarification": ask}}
 
 
 def snapshot_read(runtime: Any, question: str, query: Call) -> _Read | None:

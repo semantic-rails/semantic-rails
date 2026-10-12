@@ -10,6 +10,7 @@ effects to execution unchanged; responses carry ``visible_view.public_effects``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
@@ -218,8 +219,19 @@ def enforce_query_policies(
     if unchecked and (_hidden_policy_ids(config, **scope) or _visible_only_listed(config, **scope)):
         raise SemanticLayerError(
             "POLICY_DENIED",
-            "Query references a semantic object blocked by policy.",
-            details={"blocked_objects": [], "policy_effects": [], "policy_violations": []},
+            "This query can't be checked against the package's policies for you: select a "
+            "measure or metric in place of an aggregate over columns.",
+            details={
+                "blocked_objects": [],
+                "policy_effects": [],
+                "policy_violations": [],
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": "Select a measure or metric in place of the aggregate.",
+                    }
+                ],
+            },
         )
     effects = query_policy_effects(
         config,
@@ -232,20 +244,19 @@ def enforce_query_policies(
     )
     blocking = [row for row in effects if row["action"] in {"deny", "hidden"}]
     if blocking:
-        raise SemanticLayerError(
-            "POLICY_DENIED",
-            "Query references a semantic object blocked by policy.",
-            details={
-                "blocked_objects": sorted(
-                    {object_id for row in blocking for object_id in row.get("object_ids", [])}
-                ),
+        # The objects this query reads that a blocking policy lists; all it lists when the
+        # query reads none of them directly (a caller's aggregate over a governed column).
+        listed = {object_id for row in blocking for object_id in row.get("object_ids", [])}
+        raise denied(
+            {
+                "blocked_objects": sorted(listed.intersection(object_ids) or listed),
                 "policy_effects": blocking,
                 "policy_violations": [
                     violation
                     for row in blocking
                     for violation in list(row.get("violations", []) or [])
                 ],
-            },
+            }
         )
     withheld = withheld_object_ids(
         config,
@@ -267,6 +278,156 @@ def enforce_query_policies(
                 row["withheld_objects"] = sorted(withheld)
                 row["withheld_column"] = column
     return effects
+
+
+def denied(details: Mapping[str, Any]) -> SemanticLayerError:
+    """The refusal of a query a policy blocks. Its message and its one hint come from
+    ``details`` alone (the blocked objects and the effects with their violations), so
+    ``visible_view.public_error`` restates both from a caller's view of the same details."""
+    lines: list[str] = []
+    actions: list[str] = []
+    merge: dict[str, Any] = {}
+    objects = list(details.get("blocked_objects") or [])
+    for effect in details.get("policy_effects") or []:
+        names = _listed([item for item in effect.get("object_ids") or [] if item in objects])
+        names = names or _listed(objects) or "This query"
+        violations = list(effect.get("violations") or [])
+        if effect.get("kind") != "metric_constraint":
+            lines.append(f"{names} is denied by policy")
+            actions.append(f"Remove {names} from the call." if objects else "")
+        elif not violations:  # each one names an object hidden from this caller
+            lines.append(f"{names} can't be read this way under policy")
+        for violation in violations:
+            line, action, fragment = _constraint_cut(violation)
+            lines.append(f"{names} {line}")
+            actions.append(action)
+            for key, value in fragment.items():
+                merge[key] = (
+                    {**merge.get(key, {}), **value}
+                    if isinstance(value, dict)
+                    else [*merge.get(key, []), *value]
+                )
+    hint: dict[str, Any] = {
+        "code": "FIX_QUERY_CALL",
+        "message": " ".join(dict.fromkeys(action for action in actions if action))
+        or "Ask a package admin what this policy allows you to read.",
+    }
+    if merge:
+        hint["patch"] = {"merge": merge}
+    message = "; ".join(dict.fromkeys(lines)) or "A policy denies this query"
+    return SemanticLayerError(
+        "POLICY_DENIED", f"{message}.", details={**details, "recovery_hints": [hint]}
+    )
+
+
+def _listed(items: Iterable[Any], word: str = "and") -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    texts = [str(item) for item in items]
+    return f"{', '.join(texts[:-1])} {word} {texts[-1]}" if len(texts) > 1 else "".join(texts)
+
+
+def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """What one metric constraint violation says, in the call's words: the cuts the policy
+    allows, the one fix, and the call fragment that makes it (merged into the call)."""
+    kind = violation.get("kind")
+    disallowed = _listed(violation.get("disallowed") or [])
+    allowed = list(violation.get("allowed") or [])
+    if kind == "missing_required_group_by":
+        period = dict(violation.get("by_time") or {})
+        day, grain = period.get("dimension"), period.get("grain")
+        others = [field for field in violation.get("missing") or [] if field != day]
+        reads = [f"by {grain}"] * bool(day) + [f"grouped by {_listed(others)}"] * bool(others)
+        on = f" on {period['temporal_role']}" if "temporal_role" in period else ""
+        fixes = [f"set time.grain to {grain}{on}"] * bool(day)
+        fixes += [f"add {_listed(others)} to group_by"] * bool(others)
+        how = f"group by {day}, or {fixes[0]}" if day and not others else " and ".join(fixes)
+        fragment: dict[str, Any] = {}
+        if day:
+            fragment["time"] = {key: value for key, value in period.items() if key != "dimension"}
+        fragment.update({"group_by": others} if others else {})
+        action = " and ".join(fixes)
+        line = f"can only be read {' and '.join(reads)}: {how}"
+        return line, f"{action[:1].upper()}{action[1:]}.", fragment
+    if kind == "missing_required_where":
+        conditions = [
+            {
+                "field": spec["field"],
+                "op": operators.operator_word(spec.get("op", "is"), path="required_where.op"),
+                "value": spec.get("value", "<value>"),
+            }
+            for spec in violation.get("missing") or []
+        ]
+        said = " and ".join(
+            operators.describe(row["field"], row["op"], row["value"]) for row in conditions
+        )
+        return (
+            f"can only be read where {said}",
+            f"Add {json.dumps(conditions)} to where.",
+            {"where": conditions},
+        )
+    if kind == "required_where_outside_entity_filter":
+        fields = _listed(spec["field"] for spec in violation.get("missing") or [])
+        line = (
+            f"can't be read inside an entity filter: its required filter on {fields} cuts "
+            "only the query's own rows"
+        )
+        return line, "Read it in select instead of in an entity filter's having.", {}
+    if kind == "disallowed_temporal_role":
+        line = f"can't be read on {violation.get('temporal_role')}"
+        if not allowed:
+            return line, "", {}
+        return (
+            f"{line}; it is read on {_listed(allowed, 'or')}",
+            f"Set time.temporal_role to {allowed[0]}.",
+            {"time": {"temporal_role": allowed[0]}},
+        )
+    inline = violation.get("source") == "inline_expression"
+    where = f"Remove the conditions on {disallowed} " + (
+        "inside the expression." if inline else "from where."
+    )
+    cut = {
+        "disallowed_group_by": ("grouped by", f"Remove {disallowed} from group_by."),
+        "disallowed_where": ("filtered by", where),
+        "disallowed_metric_filter_entity": (
+            "cut by an entity filter's having on",
+            f"Remove the entity filter on {disallowed}.",
+        ),
+        "disallowed_metric_filter_metric": (
+            "cut by having on",
+            f"Remove the having on {disallowed}.",
+        ),
+    }.get(str(kind))
+    if cut is not None:
+        verb, action = cut
+        base, by = verb.rsplit(" ", 1)
+        line = (
+            f"can't be {verb} {disallowed}"
+            + " inside an expression" * inline
+            + "; "
+            + (
+                f"it can be {base} only {by} {_listed(allowed, 'or')}"
+                if allowed
+                else f"it can't be {base}"
+            )
+        )
+        return line, action, {}
+    if kind == "unresolved_metric_filter":
+        return (
+            "is cut by a having or entity filter the policy can't check",
+            "Remove that having or entity filter.",
+            {},
+        )
+    if inline:
+        return (
+            "can't be cut by a filter inside an expression",
+            "Remove the filter inside the expression.",
+            {},
+        )
+    return (
+        "can't be cut by having, an entity filter or a filter inside an expression",
+        "Remove the having, entity filter or inline filter that reads it.",
+        {},
+    )
 
 
 def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> None:
@@ -703,8 +864,23 @@ def _period_is(dimension_id: str, bound: BoundQuery) -> bool:
     )
     if time is None or not time.grain or role is None or role.dimension != dimension_id:
         return False
-    grains = [grain for grain in UNITS if grain in (role.supported_grains or UNITS)] or ["day"]
-    return time.grain in UNITS and UNITS.index(time.grain) <= UNITS.index(grains[0])
+    return time.grain in UNITS and UNITS.index(time.grain) <= UNITS.index(_finest(role))
+
+
+def _finest(role: Any) -> str:
+    return next((grain for grain in UNITS if grain in (role.supported_grains or UNITS)), "day")
+
+
+def _by_time(missing: list[str], bound: BoundQuery) -> dict[str, Any]:
+    """The time block whose period is a missing field, a clock's own date dimension: that
+    clock (named when the query reads another) at its finest grain."""
+    time = normalize_query(bound.plan.query, config=bound.config).time
+    current = getattr(time, "temporal_role", "")
+    for role in sorted(bound.config.temporal_roles, key=lambda row: row.id != current):
+        if role.dimension in missing:
+            clock = {"temporal_role": role.id} if role.id != current else {}
+            return {"by_time": {"dimension": role.dimension, **clock, "grain": _finest(role)}}
+    return {}
 
 
 def _metric_constraint_violations(
@@ -728,6 +904,7 @@ def _metric_constraint_violations(
                     "kind": "missing_required_group_by",
                     "missing": missing,
                     "present_group_by": list(query.group_by),
+                    **_by_time(missing, bound()),
                 }
             )
 
