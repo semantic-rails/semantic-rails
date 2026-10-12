@@ -562,6 +562,18 @@ def test_a_window_total_observes_conditional_counts_outside_its_bounds(
         assert not _warnings(response)
 
 
+@pytest.mark.parametrize("time", LAST_WEEK_SPELLINGS, ids=["named", "last-week"])
+def test_grainless_conditional_count_total_has_no_missing_data_warning(
+    shop: Runtime, time: dict[str, Any]
+) -> None:
+    """The answer is the ledger's; a total with data says nothing about missing data."""
+    response = shop.query(
+        {"select": A_B_NET, "time": {"temporal_role": SHOP_ROLE, **time}}, now=WEEK_END
+    )
+    assert _a_b_net(response) == [(1, 0, 1)]
+    assert not _warnings(response)
+
+
 @pytest.mark.parametrize("grain", [None, "week"])
 def test_a_window_count_never_matched_reads_zero_where_its_bucket_is_checked(
     shop: Runtime, grain: str | None
