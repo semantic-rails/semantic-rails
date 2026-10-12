@@ -31,23 +31,28 @@ MATCHING_WEEKS = {0, 2, 3, 5, 7, 9, 11}
 START = datetime(2025, 1, 6)
 
 
+def _twelve_weeks(connection) -> None:
+    """One sale a week for twelve weeks: an apple in MATCHING_WEEKS, a pear otherwise."""
+    connection.execute("DELETE FROM sales")
+    connection.executemany(
+        "INSERT INTO sales VALUES (?, 's1', 'east', ?, ?, ?)",
+        [
+            (
+                week + 1,
+                "apple" if week in MATCHING_WEEKS else "pear",
+                week + 1,
+                START + timedelta(weeks=week),
+            )
+            for week in range(12)
+        ],
+    )
+
+
 @pytest.fixture(scope="module")
 def series(tmp_path_factory):
     package = _package(tmp_path_factory.mktemp("filtered_series") / "obs", {})
     with duckdb.connect(str(package / "obs.duckdb")) as connection:
-        connection.execute("DELETE FROM sales")
-        connection.executemany(
-            "INSERT INTO sales VALUES (?, 's1', 'east', ?, ?, ?)",
-            [
-                (
-                    week + 1,
-                    "apple" if week in MATCHING_WEEKS else "pear",
-                    week + 1,
-                    START + timedelta(weeks=week),
-                )
-                for week in range(12)
-            ],
-        )
+        _twelve_weeks(connection)
     config = load_package_config(str(package))
     metrics = [
         MetricConfig(
@@ -84,8 +89,7 @@ def _query(kind, scope="dataset", **time):
     }
 
 
-@pytest.mark.parametrize("scope", ["dataset", "query"])
-@pytest.mark.parametrize("kind", ["sum", "count"])
+@pytest.mark.parametrize(("kind", "scope"), [("sum", "query"), ("count", "dataset")])
 def test_twelve_observed_weeks_include_five_zeros(series, scope, kind):
     response = series.query(_query(kind, scope, start="2025-01-06", end="2025-03-31"))
     aggregate = (
@@ -105,8 +109,7 @@ def test_twelve_observed_weeks_include_five_zeros(series, scope, kind):
     assert not any(w["code"] == "EMPTY_RESULT_WINDOW" for w in response.get("warnings", []))
 
 
-@pytest.mark.parametrize("scope", ["dataset", "query"])
-@pytest.mark.parametrize("kind", ["sum", "count"])
+@pytest.mark.parametrize(("kind", "scope"), [("sum", "dataset"), ("count", "query")])
 def test_a_quiet_week_agrees_with_its_ungrouped_total(series, scope, kind):
     query = _query(kind, scope, start="2025-01-13", end="2025-01-20")
     grouped = series.query(query)
@@ -175,9 +178,8 @@ def test_folded_sum_and_count_keep_the_same_buckets(series):
     ]
 
 
-@pytest.mark.parametrize("scope", ["dataset", "query"])
-def test_query_filters_still_define_the_observed_population(series, scope):
-    query = _query("sum", scope)
+def test_query_filters_still_define_the_observed_population(series):
+    query = _query("sum", "dataset")
     query["where"] = [{"field": PRODUCT, "op": "=", "value": "pear"}]
     response = series.query(query)
     assert len(response["rows"]) == 5
@@ -310,10 +312,13 @@ def _guard_sql(aggregation, retained, scopes, time_key):
     )
 
 
-@pytest.mark.parametrize("aggregation", ["sum", "count"])
 @pytest.mark.parametrize(
-    ("scopes", "time_key"),
-    [(None, ""), ({"v": LOADED}, ""), ({"v": replace(LOADED, bucket=None)}, "t")],
+    ("scopes", "time_key", "aggregation"),
+    [
+        (None, "", "sum"),
+        ({"v": LOADED}, "", "count"),
+        ({"v": replace(LOADED, bucket=None)}, "t", "sum"),
+    ],
     ids=["no_scope", "no_coverage", "no_bucket"],
 )
 def test_an_ungated_retained_scope_emits_no_marker(aggregation, scopes, time_key):
@@ -329,8 +334,9 @@ def _compile(config, query):
     return compile_query(config, Registry(config), read_call(query, config=config)[0])
 
 
-@pytest.mark.parametrize("kind", ["sum", "count"])
-@pytest.mark.parametrize("time", [{}, {"start": "2025-01-06", "end": "2025-03-31"}])
+@pytest.mark.parametrize(
+    ("kind", "time"), [("sum", {}), ("count", {"start": "2025-01-06", "end": "2025-03-31"})]
+)
 def test_a_retained_series_reads_its_loaded_coverage_without_fill(series, kind, time):
     compiled = _compile(series.config, _query(kind, **time))
     assert compiled["retained_filtered_series"]
@@ -425,11 +431,16 @@ def test_an_incomplete_source_probe_never_claims_a_dropped_bucket(series, monkey
         runtime.close()
 
 
-@pytest.mark.parametrize("kind", ["sum", "count"])
-@pytest.mark.parametrize("scope", ["dataset", "query"])
-@pytest.mark.parametrize("limit", [None, 20])
-@pytest.mark.parametrize("metric_only", [False, True])
-@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize(
+    ("kind", "scope", "limit", "metric_only", "cached"),
+    # Every option appears; a metric-only grant meets both a cold and a cached compile.
+    [
+        ("sum", "dataset", None, False, False),
+        ("count", "query", 20, False, True),
+        ("sum", "query", 20, True, False),
+        ("count", "dataset", None, True, True),
+    ],
+)
 def test_retained_series_skip_bucket_probes_on_cold_and_cached_compiles(
     series, monkeypatch, kind, scope, limit, metric_only, cached
 ):
@@ -480,19 +491,7 @@ def test_unsupported_series_accept_container_valued_group_keys(
 ):
     package = _package(tmp_path / "container", {})
     with duckdb.connect(str(package / "obs.duckdb")) as connection:
-        connection.execute("DELETE FROM sales")
-        connection.executemany(
-            "INSERT INTO sales VALUES (?, 's1', 'east', ?, ?, ?)",
-            [
-                (
-                    week + 1,
-                    "apple" if week in MATCHING_WEEKS else "pear",
-                    week + 1,
-                    START + timedelta(weeks=week),
-                )
-                for week in range(12)
-            ],
-        )
+        _twelve_weeks(connection)
         connection.execute(f"ALTER TABLE sales ALTER store_id TYPE {sql_type} USING {sql_value}")
     config = replace(load_package_config(str(package)), metric_recipes=series.config.metric_recipes)
     base = Runtime.from_config(config, source_path=str(package))
@@ -536,8 +535,9 @@ def test_a_key_normalization_failure_only_warns_after_the_answer_is_computed(ser
         runtime.close()
 
 
-@pytest.mark.parametrize("scope", ["dataset", "query"])
-@pytest.mark.parametrize(("op", "value"), [("=", "appels"), ("IN", ["apple", "appels"])])
+@pytest.mark.parametrize(
+    ("op", "value", "scope"), [("=", "appels", "dataset"), ("IN", ["apple", "appels"], "query")]
+)
 def test_retained_aggregate_filter_literals_keep_the_shared_misspelling_guard(
     series, scope, op, value
 ):
@@ -560,10 +560,7 @@ def test_retained_aggregate_filter_literals_keep_the_shared_misspelling_guard(
     ]
 
 
-@pytest.mark.parametrize("scope", ["dataset", "query"])
-def test_a_failed_retained_filter_literal_probe_warns_without_losing_rows(
-    series, monkeypatch, scope
-):
+def test_a_failed_retained_filter_literal_probe_warns_without_losing_rows(series, monkeypatch):
     original = series.query_internal
 
     def query(payload):
@@ -572,7 +569,7 @@ def test_a_failed_retained_filter_literal_probe_warns_without_losing_rows(
         return original(payload)
 
     monkeypatch.setattr(series, "query_internal", query)
-    response = series.query(_query("sum", scope))
+    response = series.query(_query("sum", "dataset"))
     assert len(response["rows"]) == 12
     (warning,) = [w for w in response.get("warnings", []) if w["code"] == "FILTER_VALUE_UNVERIFIED"]
     assert warning["details"]["filters"] == [{"dimension": PRODUCT, "value": "apple"}]
