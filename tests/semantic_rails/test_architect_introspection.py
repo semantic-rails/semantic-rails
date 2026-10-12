@@ -35,9 +35,9 @@ from tests.semantic_rails.dbt_warehouse import (
 )
 
 
-@pytest.fixture()
-def warehouse_path(tmp_path: Path) -> Path:
-    return build_dbt_warehouse(tmp_path / "warehouse.duckdb")
+@pytest.fixture(scope="module")
+def warehouse_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_dbt_warehouse(tmp_path_factory.mktemp("warehouse") / "warehouse.duckdb")
 
 
 def _by(rows: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any]]:

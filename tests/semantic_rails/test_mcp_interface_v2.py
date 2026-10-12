@@ -26,6 +26,8 @@ from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.metadata_parts.relevance import _no_viable_candidates_block
 from semantic_rails.planner.plan_query import _trim_why_errors
 from semantic_rails.request_context import RequestContext
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
@@ -56,8 +58,8 @@ VOLATILE = {"request_id", "timing_ms", "api_version", "request_context"}
 
 
 @pytest.fixture()
-def runtime(runtime_factory: Any) -> Iterator[Any]:
-    runtime = runtime_factory("jaffle_shop")
+def runtime(jaffle_snapshot) -> Iterator[Any]:
+    runtime = Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
     yield runtime
     runtime.close()
 

@@ -19,6 +19,7 @@ from semantic_rails.diagnostics import (
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import MeasureRefExpr
 from semantic_rails.fanout import eligible_path_targets, resolve_path
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import (
     DimensionConfig,
@@ -30,6 +31,19 @@ from semantic_rails.schema import (
 )
 from semantic_rails.sql_ast import SqlLiteral, build_filter_condition
 from semantic_rails.visible_view import view_of
+from tests.semantic_rails.conftest import copy_package_config
+
+
+@pytest.fixture(scope="module")
+def package_config_factory(tmp_path_factory):
+    package = copy_package_config(tmp_path_factory.mktemp("hint_package"), "jaffle_shop")
+    snapshot = load_package_snapshot(package)
+
+    def build(package_id):
+        assert package_id == "jaffle_shop"
+        return snapshot.config, package
+
+    return build
 
 
 @pytest.mark.parametrize("aggregation", ["count", "percentile", "unknown", None])

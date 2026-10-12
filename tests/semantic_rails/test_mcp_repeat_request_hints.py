@@ -15,6 +15,8 @@ from semantic_rails.mcp import MCP_DEFAULT_MAX_ROWS, SemanticLayerMCPAdapter, js
 from semantic_rails.mcp_server import serve_stdio
 from semantic_rails.mcp_session import MCPQuerySession
 from semantic_rails.mcp_streamable_http import handle_streamable_http_request
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 QUERY = {
     "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
@@ -22,8 +24,10 @@ QUERY = {
 
 
 @pytest.fixture()
-def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    adapter = SemanticLayerMCPAdapter(
+        Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
+    )
     yield adapter
     adapter.close()
 

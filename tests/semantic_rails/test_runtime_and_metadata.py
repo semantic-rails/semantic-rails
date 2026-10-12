@@ -16,9 +16,28 @@ from semantic_rails.metadata import (
     inspect_payload,
     valid_values_payload,
 )
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.runtime import Runtime
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.result_helpers import held_candidate
+
+
+@pytest.fixture(scope="module")
+def jaffle_snapshot(tmp_path_factory):
+    package = copy_package_config(
+        tmp_path_factory.mktemp("jaffle_snapshot"), "jaffle_shop", preseed_db=True
+    )
+    return load_package_snapshot(package)
+
+
+@pytest.fixture(scope="module")
+def runtime_factory(jaffle_snapshot):
+    def build(package_id):
+        assert package_id == "jaffle_shop"
+        return Runtime.from_snapshot(jaffle_snapshot, package_id=package_id)
+
+    return build
 
 
 def _fake_query_result(payload, **_options):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -45,11 +46,9 @@ def _calendar(**extra: Any) -> dict[str, Any]:
     }
 
 
-@pytest.fixture()
-def workspace(tmp_path: Path) -> Path:
-    """The orders package over the dbt warehouse, plus a dim_date the calendar can read."""
-    package = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
-    db_path = build_dbt_warehouse(package / "data" / "warehouse.duckdb")
+@pytest.fixture(scope="module")
+def calendar_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    db_path = build_dbt_warehouse(tmp_path_factory.mktemp("calendar") / "warehouse.duckdb")
     conn = duckdb.connect(str(db_path))
     try:
         conn.execute(
@@ -62,6 +61,15 @@ def workspace(tmp_path: Path) -> Path:
         )
     finally:
         conn.close()
+    return db_path
+
+
+@pytest.fixture()
+def workspace(tmp_path: Path, calendar_db: Path) -> Path:
+    package = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
+    target = package / "data" / "warehouse.duckdb"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(calendar_db, target)
     return tmp_path
 
 
