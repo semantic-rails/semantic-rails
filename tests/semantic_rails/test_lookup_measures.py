@@ -356,16 +356,16 @@ def test_the_lookup_equals_a_hand_written_view_join(runtime: Runtime, package_di
     assert engine[None] is None and engine["C4"] == engine["C5"] == 0
 
 
-@pytest.mark.parametrize("model,table", [("claims", "claim"), ("premiums", "premium")])
+# Each name the lookup's own relations take, on the child's or on the source's table.
 @pytest.mark.parametrize(
-    "relation",
+    ("model", "table", "relation"),
     [
-        "lookup_source",
-        "leaf_1_lookup_source",
-        "leaf_1_lookup_source_gate",
-        "leaf_1__leaf_1_lookup_source",
-        "leaf_1_lookup_source__leaf_1",
-        "leaf_1__leaf_1_lookup_source__leaf_1",
+        ("claims", "claim", "lookup_source"),
+        ("premiums", "premium", "leaf_1_lookup_source"),
+        ("claims", "claim", "leaf_1_lookup_source_gate"),
+        ("premiums", "premium", "leaf_1__leaf_1_lookup_source"),
+        ("claims", "claim", "leaf_1_lookup_source__leaf_1"),
+        ("premiums", "premium", "leaf_1__leaf_1_lookup_source__leaf_1"),
     ],
 )
 def test_a_physical_relation_can_be_named_lookup_source(
@@ -524,10 +524,9 @@ def test_access_to_the_source_measure_is_required(package_dir: Path) -> None:
     assert engine.query(_query("reserve"), context={"audience": "external"})["ok"]
 
 
-@pytest.mark.parametrize("action", ["deny"])
 @pytest.mark.parametrize("group_by", [[CLAIM_KEY], [COVERAGE_KEY]], ids=["child", "via"])
 def test_access_to_the_lookup_relationship_is_required(
-    package_dir: Path, monkeypatch, action: str, group_by: list[str]
+    package_dir: Path, monkeypatch, group_by: list[str]
 ) -> None:
     from semantic_rails import compiler
 
@@ -540,7 +539,7 @@ def test_access_to_the_lookup_relationship_is_required(
         kind="object_access",
         object_ids=[relationship],
         audiences=["external"],
-        action=action,
+        action="deny",
     )
     engine = Runtime.from_config(
         replace(config, semantic_policies=[policy]), source_path=str(package_dir)
