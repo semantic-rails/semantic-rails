@@ -690,7 +690,7 @@ def _record_balance_edge(
     bucket: Any,
 ) -> None:
     """A balance's loaded coverage on its own clock, to say where its data ends."""
-    if not _dialect(config).has_time_coverage:
+    if not _reads_coverage(plan, config):
         return
     role = _temporal_role_index(config)[
         _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
@@ -5709,6 +5709,9 @@ def _stored_time(column: Any, zones: tuple[str, str], config: PackageConfig) -> 
     def match(pattern: Any, value: Any) -> Any | None:
         if pattern is hole:
             return value
+        if isinstance(pattern, SqlCast):
+            same = isinstance(value, SqlCast) and pattern.type_name == value.type_name
+            return match(pattern.expr, value.expr) if same else None
         if not (isinstance(pattern, SqlCall) and isinstance(value, SqlCall)) or (
             pattern.name,
             len(pattern.args),
@@ -5716,7 +5719,7 @@ def _stored_time(column: Any, zones: tuple[str, str], config: PackageConfig) -> 
             return None
         found = None
         for part, other in zip(pattern.args, value.args, strict=True):
-            if part is hole or isinstance(part, SqlCall):
+            if part is hole or isinstance(part, SqlCall | SqlCast):
                 found = match(part, other)
                 if found is None:
                     return None
