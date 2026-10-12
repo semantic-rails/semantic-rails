@@ -366,9 +366,10 @@ def embedded_query_call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
 
     The published document's fields, words and rules in under half its size, for every
     ``tools/list``: no prose (the tool's description has it), each kind's keys as one line of a
-    table instead of a schema per kind, and the filter words with their value shapes and SQL
-    spellings in one sentence. The parser refuses what the table and the sentence rule out at
-    its path, with a hint; a test holds them to the published document.
+    table instead of a schema per kind, and the filter words and their SQL aliases (lower case
+    and capitals) as one enum, with each word's value shape in one sentence. The parser refuses
+    what the table and the sentence rule out at its path, with a hint; a test holds them to the
+    published document.
     """
     from semantic_rails import operators
     from semantic_rails.query_call import GRAINS
@@ -387,17 +388,24 @@ def embedded_query_call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
     words: dict[str, list[str]] = {}
     for word, operator in operators.OPERATORS.items():
         words.setdefault(operator.value_shape, []).append(word)
+    spellings = [*operators.WORDS, *operators.ALIASES]
+    aliases_of: dict[str, list[str]] = {}
+    for alias, word in operators.ALIASES.items():
+        aliases_of.setdefault(word, []).append(alias)
     del definitions["OpValue"]
     definitions.update(
         {
             **shared,
             "Op": {
-                "enum": list(operators.WORDS),
-                "description": "Values: "
+                # The words, then the SQL aliases the parser reads as them, each also in capitals.
+                "enum": [*spellings, *(name.upper() for name in spellings if name.upper() != name)],
+                "description": "Aliases read as their word ("
+                + "; ".join(f"{', '.join(aliases)}: {word}" for word, aliases in aliases_of.items())
+                + "). Values: "
                 + "; ".join(
                     f"{'/'.join(names)}: {_VALUE_SHAPES[shape]}" for shape, names in words.items()
                 )
-                + f". SQL symbols ({', '.join(operators.ALIASES)}) read as these words.",
+                + ".",
             },
             "Expression": {
                 "description": (
