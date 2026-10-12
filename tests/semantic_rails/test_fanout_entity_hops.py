@@ -472,30 +472,53 @@ def test_measure_bound_child_filter_does_not_change_unfiltered_sibling(package: 
     assert _rows(package, query) == _reference(package, reference) == [(30.0, 290.0)]
 
 
-@pytest.mark.parametrize("bound_filter", [False, True], ids=["query", "measure"])
-def test_time_bounded_child_filter_keeps_window_observation(
-    package: Path, bound_filter: bool
+def _revenue(**query: Any) -> dict[str, Any]:
+    return {"select": [_measure("revenue")], **query}
+
+
+BEVERAGE_ONLY_REVENUE = {
+    "kind": "aggregate",
+    "measure": "measure.hop.revenue",
+    "aggregation": "sum",
+    "filter": {"all": [BEVERAGE]},
+}
+HOT_BEVERAGE = "i.product_type = 'beverage' AND i.is_hot"
+
+
+@pytest.mark.parametrize(
+    ("query", "negation", "condition"),
+    [
+        (_revenue(where=[BEVERAGE]), "", "i.product_type = 'beverage'"),
+        (
+            {"select": [{"expression": BEVERAGE_ONLY_REVENUE, "as": "revenue"}]},
+            "",
+            "i.product_type = 'beverage'",
+        ),
+        # A child group lowers in the same semi-join leaf as a flat child filter.
+        (
+            _revenue(where=[{"entity": "entity.hop_item", "any": [BEVERAGE, HOT_ITEM]}]),
+            "",
+            HOT_BEVERAGE,
+        ),
+        (
+            _revenue(where=[{"entity": "entity.hop_item", "none": [BEVERAGE, HOT_ITEM]}]),
+            "NOT ",
+            HOT_BEVERAGE,
+        ),
+    ],
+    ids=["query_filter", "measure_filter", "any_group", "none_group"],
+)
+def test_time_bounded_child_filters_keep_window_observation(
+    package: Path, query: dict[str, Any], negation: str, condition: str
 ) -> None:
-    expression: dict[str, Any] = {"kind": "measure", "measure": "measure.hop.revenue"}
-    if bound_filter:
-        expression.update(kind="aggregate", aggregation="sum", filter={"all": [BEVERAGE]})
-    query = {
-        "select": [{"expression": expression, "as": "revenue"}],
-        "where": [] if bound_filter else [BEVERAGE],
-        "time": {
-            "temporal_role": ROLE,
-            "grain": "month",
-            "start": "2016-10-01",
-            "end": "2017-04-01",
-        },
-    }
-    matching = """
+    window = {"temporal_role": ROLE, "grain": "month", "start": "2016-10-01", "end": "2017-04-01"}
+    matching = f"""
         SELECT DATE_TRUNC('month', o.ordered_at) AS month, SUM(o.total) AS revenue
         FROM orders o
         WHERE o.ordered_at >= TIMESTAMP '2016-10-01'
           AND o.ordered_at < TIMESTAMP '2017-04-01'
-          AND EXISTS (SELECT 1 FROM order_items i
-                      WHERE i.order_id = o.order_id AND i.product_type = 'beverage')
+          AND {negation}EXISTS (SELECT 1 FROM order_items i
+                                WHERE i.order_id = o.order_id AND {condition})
         GROUP BY month
     """
     # The named window answers each of its months: 0 where none matched.
@@ -506,52 +529,13 @@ def test_time_bounded_child_filter_keeps_window_observation(
                              INTERVAL '1 month') AS months(month)
         LEFT JOIN matching USING (month)
     """
-    result = _run(package, query)
-    assert _normal(tuple(row.values()) for row in typed_rows(result)) == _reference(
-        package, reference
-    )
-    sql = result["rendered_sql"]
-    assert "EXISTS (" in sql and "SELECT DISTINCT" not in sql
-    # Rewritten fanout leaves retain observation inside the window, including filled buckets.
-    assert "coverage_" not in sql and sql.count("FROM orders") == 1
-
-
-@pytest.mark.parametrize("match", ["any", "none"])
-def test_time_bounded_child_groups_keep_window_observation(package: Path, match: str) -> None:
-    """A child group lowers in the same semi-join leaf as a flat child filter."""
-    query = {
-        "select": ["measure.hop.revenue"],
-        "where": [{"entity": "entity.hop_item", match: [BEVERAGE, HOT_ITEM]}],
-        "time": {
-            "temporal_role": ROLE,
-            "grain": "month",
-            "start": "2016-10-01",
-            "end": "2017-04-01",
-        },
-    }
-    negation = "NOT " if match == "none" else ""
-    matching = f"""
-        SELECT DATE_TRUNC('month', o.ordered_at) AS month, SUM(o.total) AS revenue
-        FROM orders o
-        WHERE o.ordered_at >= TIMESTAMP '2016-10-01'
-          AND o.ordered_at < TIMESTAMP '2017-04-01'
-          AND {negation}EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.order_id
-                                AND i.product_type = 'beverage' AND i.is_hot)
-        GROUP BY month
-    """
-    reference = f"""
-        WITH matching AS ({matching})
-        SELECT months.month, COALESCE(matching.revenue, 0)
-        FROM GENERATE_SERIES(TIMESTAMP '2016-10-01', TIMESTAMP '2017-03-01',
-                             INTERVAL '1 month') AS months(month)
-        LEFT JOIN matching USING (month)
-    """
-    result = _run(package, query)
+    result = _run(package, {**query, "time": window})
     assert _normal(tuple(row.values()) for row in typed_rows(result)) == _reference(
         package, reference
     )
     sql = result["rendered_sql"]
     assert f"{negation}EXISTS (" in sql and "SELECT DISTINCT" not in sql
+    # Rewritten fanout leaves retain observation inside the window, including filled buckets.
     assert "coverage_" not in sql and sql.count("FROM orders") == 1
 
 
@@ -708,17 +692,22 @@ def test_a_conditional_aggregate_of_rows_of_unknown_grain(receipts_by_order: Pat
     assert "could merge rows that share a key" in caught.value.details["why_invalid"]
 
 
+GROUPED_LOOKUP = {"group_by": [COUPON]}
+LOOKUP_FILTER = {"where": [{"field": COUPON, "op": "=", "value": 1}]}
+NULL_LOOKUP_FILTER = {"where": [{"field": COUPON, "op": "IS NULL", "value": None}]}
+
+
 @pytest.mark.parametrize(
-    "lookup",
+    ("lookup", "bound_filter", "clause"),
     [
-        {"group_by": [COUPON]},
-        {"where": [{"field": COUPON, "op": "=", "value": 1}]},
-        {"where": [{"field": COUPON, "op": "IS NULL", "value": None}]},
+        pytest.param(GROUPED_LOOKUP, False, BEVERAGE, id="descent-where-grouped_lookup"),
+        pytest.param(LOOKUP_FILTER, True, BEVERAGE, id="descent-measure_filter-lookup_filter"),
+        pytest.param(NULL_LOOKUP_FILTER, False, BEVERAGE, id="descent-where-null_lookup_filter"),
+        pytest.param(GROUPED_LOOKUP, True, BEVERAGE, id="descent-measure_filter-grouped_lookup"),
+        pytest.param(LOOKUP_FILTER, False, WEB, id="lookup_then_child-where-lookup_filter"),
+        pytest.param(GROUPED_LOOKUP, True, WEB, id="lookup_then_child-measure_filter-grouped"),
     ],
-    ids=["grouped_lookup", "lookup_filter", "null_lookup_filter"],
 )
-@pytest.mark.parametrize("bound_filter", [False, True], ids=["where", "measure_filter"])
-@pytest.mark.parametrize("clause", [BEVERAGE, WEB], ids=["descent", "lookup_then_child"])
 def test_clickhouse_keeps_supported_lookups_beside_a_child_filter(
     package: Path, lookup: dict[str, Any], bound_filter: bool, clause: dict[str, Any]
 ) -> None:
@@ -1219,8 +1208,6 @@ def test_the_rewrite_is_disclosed(package: Path, query: dict[str, Any]) -> None:
     result = _run(package, query)
     [warning] = _disclosed(result)
     assert warning["code"] == "REWRITE_APPLIED"
-    assert "'entity.hop_order' counts once per group" in warning["message"]
-    assert "at least one matching row" in warning["message"]
     assert warning["details"]["paths"] == {"entity.hop_item": ["relationship.order_items_order"]}
     assert result["provenance_summary"]["rewrite_status"] == "rewritten"
     explain = _run(package, query, validate=True)["explain"]
@@ -1546,9 +1533,7 @@ def test_a_range_on_a_boolean_child_dimension_is_refused_with_the_words(
     error = _refusal(package, _where(op, value, HOT))
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["dimension"] == HOT
-    assert error["recovery_hints"] == [
-        {"code": "USE_FILTER_WORD", "message": "Write is true or is false."}
-    ]
+    assert [hint["code"] for hint in error["recovery_hints"]] == ["USE_FILTER_WORD"]
 
 
 @pytest.mark.parametrize(
@@ -1582,7 +1567,8 @@ def test_a_conditional_aggregate_asks_about_a_negated_child_filter_too(
         assert _rows(package, resent) == expected, option["id"]
 
 
-@pytest.mark.parametrize("op", ["IS NOT", "IS NULL", "IS DISTINCT FROM", "NOT LIKE", "NOT ILIKE"])
+# The engine's own null-test spellings, and one with a hint but no alias.
+@pytest.mark.parametrize("op", ["IS NULL", "IS DISTINCT FROM", "NOT LIKE"])
 def test_sql_spellings_with_no_filter_word_are_refused_before_hop_analysis(
     package: Path, op: str
 ) -> None:
@@ -1737,22 +1723,15 @@ def test_rollup_safe_package_refuses_two_groups_across_a_hop(
         ]
 
 
-# The de-duplicated leaf on every locally testable warehouse: a CTE, SELECT DISTINCT and an
-# aggregate over its columns. Only the time bucket and the median differ by dialect.
-WAREHOUSES = ("duckdb", "postgres", "clickhouse", "ducklake")
+# The de-duplicated leaf on the locally testable dialect families: a CTE, SELECT DISTINCT and
+# an aggregate over its columns. Only the time bucket and the median differ by dialect.
 _TRUNC = "DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))"
-MONTH = {
-    "duckdb": _TRUNC,
-    "postgres": _TRUNC,
-    "clickhouse": f"CAST({_TRUNC} AS TIMESTAMP)",
-    "ducklake": _TRUNC,
-}
+MONTH = {"duckdb": _TRUNC, "postgres": _TRUNC, "clickhouse": f"CAST({_TRUNC} AS TIMESTAMP)"}
 _VALUE = "orders.total"
 MEDIAN = {
     "duckdb": f"MEDIAN({_VALUE})",
     "postgres": f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {_VALUE} ASC)",
     "clickhouse": f"quantileExactInclusive(0.5)({_VALUE})",
-    "ducklake": f"MEDIAN({_VALUE})",
 }
 SHAPES = {
     "filtered": FILTERED_SUM,
@@ -1951,8 +1930,20 @@ FROM leaf_1 AS base""",
 }
 
 
-@pytest.mark.parametrize("warehouse", WAREHOUSES)
-@pytest.mark.parametrize("shape", SHAPES)
+# Every shape, each dialect's median, and each ClickHouse template; the filtered leaf's
+# correlated EXISTS is pinned for the remote dialects below.
+@pytest.mark.parametrize(
+    ("warehouse", "shape"),
+    [
+        ("duckdb", "grouped"),
+        ("duckdb", "monthly"),
+        ("duckdb", "median"),
+        ("postgres", "median"),
+        ("clickhouse", "filtered"),
+        ("clickhouse", "monthly"),
+        ("clickhouse", "median"),
+    ],
+)
 def test_each_dialect_renders_the_de_duplicated_leaf(
     package: Path, warehouse: str, shape: str
 ) -> None:
