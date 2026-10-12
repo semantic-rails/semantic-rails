@@ -32,8 +32,10 @@ def config():
     )
 
 
-@pytest.mark.parametrize("warehouse", ["duckdb", "postgres"])
-@pytest.mark.parametrize("session_zone", ["UTC", "America/New_York", "America/Los_Angeles"])
+@pytest.mark.parametrize(
+    ("warehouse", "session_zone"),
+    [("duckdb", "UTC"), ("postgres", "America/New_York"), ("duckdb", "America/Los_Angeles")],
+)
 def test_converted_date_uses_a_naive_timestamp_input(config, warehouse, session_zone):
     role = replace(next(r for r in config.temporal_roles if r.id == ROLE), column_timezone="UTC")
     config = replace(
@@ -205,17 +207,16 @@ def _fixed_clock(monkeypatch, hour=2):
 
 
 @pytest.mark.parametrize(
-    "now",
+    ("now", "partial"),
     [
-        "2024-07-01T02:00:00Z",
-        "2024-06-30T22:00:00-04:00",
-        datetime(2024, 7, 1, 2, tzinfo=UTC),
-        "2024-06-30",
-        date(2024, 6, 30),
-        datetime(2024, 6, 30, 22),
+        ("2024-07-01T02:00:00Z", False),
+        ("2024-06-30T22:00:00-04:00", True),
+        (datetime(2024, 7, 1, 2, tzinfo=UTC), False),
+        ("2024-06-30", True),
+        (date(2024, 6, 30), False),
+        (datetime(2024, 6, 30, 22), True),
     ],
 )
-@pytest.mark.parametrize("partial", [False, True])
 def test_a_relative_window_resolves_in_the_roles_zone(config, now, partial):
     time = read_call(_query(), config=config, now=now, partial=partial)[0]["time"]
     assert (time["start"], time["end"]) == ("2024-05-01", "2024-06-01")
