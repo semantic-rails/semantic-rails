@@ -5,11 +5,15 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
+from semantic_rails.clock import local_date
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.empty_groups import sql_nodes
 from semantic_rails.registry import Registry
 from semantic_rails.runtime_parts import answer_warnings as answer_warnings_module
-from semantic_rails.runtime_parts.answer_warnings import _no_data_yet_warnings
+from semantic_rails.runtime_parts.answer_warnings import (
+    _no_data_yet_warnings,
+    _partial_data_warnings,
+)
 from semantic_rails.sql_ast import SqlIdentifier
 
 ROLE = "temporal_role.jaffle_order_time"
@@ -235,3 +239,39 @@ def test_series_compares_only_compatible_sql_bucket_keys(
                 "edge_source": None if expected == "undated" else "last_row",
             }
         ]
+
+
+@pytest.mark.parametrize(
+    "through,zone,expected",
+    [
+        (datetime(2026, 10, 10, 18), "UTC", (6, 7)),  # Sunday 10-11 is missing
+        (datetime(2026, 10, 11, 23), "UTC", None),  # a nightly load: only today is unfinished
+        (datetime(2026, 10, 4, 12), "UTC", None),  # the whole week is after the edge
+        (datetime(2026, 10, 9, 12), "UTC", (5, 7)),
+        # 01:30 UTC on Sunday is still Saturday in New York.
+        (datetime(2026, 10, 11, 1, 30), "America/New_York", (6, 7)),
+        (None, "UTC", None),
+    ],
+)
+def test_partial_data_counts_whole_days_after_the_edge_before_today(
+    package_config_factory, through, zone, expected
+):
+    config, _ = package_config_factory("jaffle_shop")
+    query = {
+        "select": [{"expression": {"measure": REVENUE}, "as": "value"}],
+        "time": {"temporal_role": ROLE, "start": "2026-10-05", "end": "2026-10-12"},
+    }
+    compiled = compile_query(config, Registry(config), query)
+    coverage = {"coverage_1__data_through": through}
+    now = (
+        datetime(2026, 10, 12, 6, tzinfo=UTC)
+        if zone == "UTC"
+        else datetime(2026, 10, 12, 10, tzinfo=UTC)
+    )
+    warnings = _partial_data_warnings(compiled, [{"value": 1}], coverage, now=now, zone=zone)
+    if expected is None:
+        assert warnings == []
+    else:
+        [warning] = warnings
+        assert (warning["details"]["days_covered"], warning["details"]["days"]) == expected
+        assert warning["details"]["through"] == local_date(through, zone)

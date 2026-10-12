@@ -17,7 +17,10 @@ from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 
+from .answer_ledger import load_entries
 from .conftest import SESSION_ZONE, _rows, _runtime, _write_variant
+
+ENTRIES = dict(load_entries())
 
 ORDERS = "measure.shop.order_count"
 SEATS = "measure.shop.seats"
@@ -59,6 +62,8 @@ def test_days_after_the_last_order_say_no_data_yet(shop: Runtime) -> None:
         f"No data yet for {ORDERS}: its last row is dated 2024-08-01. Nothing says this data is "
         "loaded past it, so later days read NULL, not 0."
     )
+    # Only August 2 is a whole day missing before today, and it is a period of its own.
+    assert not [w for w in result["warnings"] if w["code"] == "PARTIAL_DATA"]
     # The output columns list the flag right after the period.
     fields = [column["field"] for column in result["output_columns"]]
     assert fields[:2] == ["period", "period_partial"]
@@ -454,8 +459,6 @@ def test_a_named_window_answers_the_same_with_its_probe_read_through_ctes(packag
     from semantic_rails import package_tools
     from semantic_rails.dialects import DuckDbDialect
 
-    from .answer_ledger import load_entries
-
     monkeypatch.setattr(DuckDbDialect, "exists_in_select", False)
     cases = [
         (case_id, spec)
@@ -479,3 +482,39 @@ def test_a_named_window_answers_the_same_with_its_probe_read_through_ctes(packag
         for runtime in runtimes.values():
             runtime.close()
     assert probed
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_a_window_missing_whole_days_after_the_data_says_partial_data(request, backend) -> None:
+    """Rows frozen in the ledger; here the answer says which days its total covers."""
+    runtime = request.getfixturevalue(f"{backend}_backend").runtimes["utc_authored"]
+    spec = ENTRIES["shop/last-week-before-its-last-days-loaded-keeps-its-total"]
+    result = runtime.query(spec["query"], now=spec["now"])
+    assert result["window"]["partial"] is False
+    assert _partial_data(result) == [
+        {
+            "code": "PARTIAL_DATA",
+            "message": "Data runs through 2024-08-01, so this total covers 4 of the window's 7 days.",
+            "severity": "warning",
+            "stage": "execution",
+            "details": {"through": "2024-08-01", "days_covered": 4, "days": 7},
+        }
+    ]
+    # A series names the period that misses the days; the complete week before says nothing.
+    series = {**spec["query"], "time": {"last": {"unit": "week", "value": 2}, "grain": "week"}}
+    result = runtime.query(series, now=spec["now"])
+    assert [w["message"] for w in _partial_data(result)] == [
+        "Data runs through 2024-08-01, so the week of 2024-07-29 covers 4 of its 7 days."
+    ]
+    assert _partial_data(result)[0]["details"]["period"] == "2024-07-29"
+    # A nightly load leaves only today unfinished: nothing to say.
+    spec = ENTRIES["shop/a-week-so-far-after-a-nightly-load-keeps-its-total"]
+    assert _partial_data(runtime.query(spec["query"], now=spec["now"])) == []
+    # A window wholly after the data is NO_DATA_YET's, never PARTIAL_DATA's.
+    result = runtime.query(spec["query"], now="2024-08-20T06:00:00Z")
+    assert _partial_data(result) == []
+    assert _no_data_yet(result)
+
+
+def _partial_data(result: dict) -> list[dict]:
+    return [w for w in result.get("warnings", []) if w["code"] == "PARTIAL_DATA"]

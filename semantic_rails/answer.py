@@ -120,13 +120,8 @@ def answer_fields(
             out["window"]["partial"] = window.partial
         elif rows:
             out["window"]["partial"] = any(row.get(PERIOD_PARTIAL) for row in rows)
-        edges = [
-            value
-            for key, value in (coverage or {}).items()
-            if key.endswith("__data_through") and isinstance(value, datetime)
-        ]
-        if edges:
-            out["window"]["data_through"] = local_date(min(edges), zone)
+        if through := data_through(coverage, zone):
+            out["window"]["data_through"] = through
         if "this" in window.spec:
             text = describe_window(window, now=now, timezone=zone)
             assumptions.append({"code": "PARTIAL_PERIOD", "message": text})
@@ -164,6 +159,17 @@ def answer_fields(
     out["routes"] = routes_taken(config, compiled)
     out["assumptions"] = assumptions
     return out
+
+
+def data_through(coverage: Mapping[str, Any] | None, zone: str) -> str | None:
+    """The answer's edge: the date, in the clock's zone, of the earliest last row at or before
+    ``now`` among the coverage the answer read (None when it read none)."""
+    edges = [
+        value
+        for key, value in (coverage or {}).items()
+        if key.endswith("__data_through") and isinstance(value, datetime)
+    ]
+    return local_date(min(edges), zone) if edges else None
 
 
 def _instant(now: datetime, zone: str) -> str:

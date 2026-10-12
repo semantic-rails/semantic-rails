@@ -7596,6 +7596,34 @@ tests:
       LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b
         AND o.ordered_at < TIMESTAMP '2024-08-03 12:00:00'
       GROUP BY 1
+  shop/last-week-before-its-last-days-loaded-keeps-its-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'On Monday August 5 at 06:00 the last order is order 11 on Thursday August 1, so last week (July 29 to August 5) totals the 2 it holds; Friday to Sunday are whole days after the data, which the answer discloses (PARTIAL_DATA) without changing the total.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#time]
+    tags: [time-window]
+    query:
+      select: [measure.shop.revenue]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-08-05T06:00:00Z'
+    expected_rows: [{revenue: 2}]
+    reference_sql: |
+      SELECT SUM(o.amount) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-07-29' AND o.ordered_at < TIMESTAMP '2024-08-05'
+  shop/a-week-so-far-after-a-nightly-load-keeps-its-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'On Friday August 2 at 06:00 the data runs through Thursday August 1 (order 11), as a nightly load leaves it: this week so far totals 2, and only today, still unfinished, has no rows, so the answer says nothing more.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#time]
+    tags: [time-window]
+    query:
+      select: [measure.shop.revenue]
+      time: {this: week}
+    now: '2024-08-02T06:00:00Z'
+    expected_rows: [{revenue: 2}]
+    reference_sql: |
+      SELECT SUM(o.amount) FROM orders AS o
+      WHERE o.ordered_at >= TIMESTAMP '2024-07-29' AND o.ordered_at <= TIMESTAMP '2024-08-02 06:00:00'
   shop/a-ratio-with-no-denominator-in-the-window-reads-null:
     kind: query_matches_snapshot
     expect: answer

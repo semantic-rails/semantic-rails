@@ -431,7 +431,10 @@ A result threshold filters result rows; to filter which entities count toward a 
 {"rows": [{"period": "2017-08-21", "period_partial": false, "order_count": 1961, "revenue_usd": 24249.450000000146},
           {"period": "2017-08-28", "period_partial": false, "order_count": 1470, "revenue_usd": 16381.80000000001}],
  "window": {"start": "2017-08-21", "end": "2017-09-04", "now": "2017-09-04T12:00:00Z", "partial": false, "data_through": "2017-08-31"},
- "clock": "temporal_role.jaffle_order_time"}
+ "clock": "temporal_role.jaffle_order_time",
+ "warnings": [{"code": "PARTIAL_DATA",
+   "message": "Data runs through 2017-08-31, so the week of 2017-08-28 covers 4 of its 7 days.",
+   "details": {"through": "2017-08-31", "days_covered": 4, "days": 7, "period": "2017-08-28"}}]}
 ```
 
 ### The clock
@@ -523,7 +526,7 @@ What an empty period reads ([Empty groups](#empty-groups-null-or-0) has the full
 ```
 
 The same call with `"last": {"unit": "week", "value": 1}` and no grain reads one total,
-`1470`, over the four loaded days.
+`1470`, over the four loaded days, and says so (`PARTIAL_DATA`, below).
 
 ### Partial periods
 
@@ -549,6 +552,15 @@ is partial by definition and says how much of the period it covers:
 `last` counts only complete periods, so it is never partial. A window with only `start` runs to
 `now`, so it is partial. Both `this` and a `start`-only window end at the request's `now`
 exactly, to the microsecond: a row stamped after `now` is not counted.
+
+A complete period can still hold days the data doesn't reach. When a window total, or a row of
+a day-or-coarser series, spans a whole day (in the clock's zone) after `window.data_through`
+and before `now`'s day, the answer carries `PARTIAL_DATA`: "Data runs through 2017-08-31, so
+this total covers 4 of the window's 7 days" (for a series row, "the week of 2017-08-28 covers 4
+of its 7 days"), with `details` `{through, days_covered, days, period}` (`period` only for a
+series row). The number is what the loaded days hold; `partial` keeps its meaning (the period
+ends after `now`). A nightly load whose only gap is today's unfinished day says nothing, and a
+period wholly after the edge is `NO_DATA_YET`'s to explain.
 
 ### Balances
 

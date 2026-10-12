@@ -204,7 +204,7 @@ valid-value lookups are unavailable for restricted grants. Plans contain portabl
 each subsequent request must independently resolve its trusted grants. Restricted
 compile/query results retain SQL and result rows but omit package-wide diagnostics,
 dependency descriptions, and related-object suggestions. Grant responses carry only
-listed engine diagnostics (`NO_DATA_YET`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
+listed engine diagnostics (`NO_DATA_YET`, `PARTIAL_DATA`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
 `FILTER_VALUE_UNVERIFIED`, `FILTERED_SERIES_BUCKETS_DROPPED`, and
 `FILTERED_SERIES_BUCKETS_UNVERIFIED`) whose named objects are all granted. Bucket diagnostics
 re-enter authorization and reveal no bucket keys when the source read is denied. Requests
@@ -1138,6 +1138,10 @@ The response `warnings` array can carry these non-error signals:
   `EMPTY_RESULT_WINDOW`, and covered outputs are excluded from `NO_DATA_IN_SCOPE`.
   Resource grants expose it only when every named measure is granted.
   See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
+- `PARTIAL_DATA` — fires on `execute` when a window total, or a row of a day-or-coarser
+  series, spans a whole day after `window.data_through` and before `now`'s day:
+  `details` `{through, days_covered, days, period}` (`period` only for a series row). See
+  [Partial periods](QUERY_CALL.md#partial-periods).
 - `NO_DATA_IN_SCOPE` — fires on `execute` when a sum, count or distinct count (or a sum or
   difference of them) reads `NULL` on every returned row, or nothing came back and neither a
   `start`/`end` window nor an entity filter explains it. Such a

@@ -1773,7 +1773,11 @@ class Runtime:
 
     @runtime_request_scope
     def query_internal(self, payload: dict[str, Any]) -> dict[str, Any]:
-        from .runtime_parts.answer_warnings import _compiled_warnings, _no_data_yet_warnings
+        from .runtime_parts.answer_warnings import (
+            _compiled_warnings,
+            _no_data_yet_warnings,
+            _partial_data_warnings,
+        )
 
         refusal = _scope_refusal(payload)
         if refusal is not None:
@@ -1895,6 +1899,13 @@ class Runtime:
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
                 *coverage_warnings,
+                *_partial_data_warnings(
+                    compiled,
+                    rows,
+                    coverage,
+                    now=_answer_now(payload),
+                    zone=_time_zone(self._config, compiled) or "UTC",
+                ),
                 *_no_data_in_scope_warnings(
                     compiled,
                     rows,

@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .. import visible_view
-from ..answer import _time_zone
-from ..ast import normalize_query, plain_filters, time_output_alias
+from ..answer import _time_zone, data_through
+from ..ast import TIME_AXIS, normalize_query, plain_filters, time_output_alias
 from ..caveats import caveat_warnings
-from ..clock import local_date
+from ..clock import engine_window, local_date, local_now, period_end
 from ..compiler import read_routes
 from ..compiler_parts.empty_groups import GUARDED_BASE, base_reads, sql_nodes
 from ..compiler_parts.indexes import get_package_analysis
@@ -597,6 +598,76 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
             object_ids=sorted({item["id"] for item in measures}),
         )
     ]
+
+
+def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
+    """PARTIAL_DATA for a window total, or each period of a day-or-coarser series, whose span
+    holds a whole day (in the clock's zone) after the answer's ``data_through`` and before
+    ``now``'s day: its number covers only the days through that edge. A nightly load whose only
+    gap is today's unfinished day says nothing, and a span wholly after the edge is
+    ``NO_DATA_YET``'s to explain."""
+    through = data_through(coverage, zone)
+    time = compiled["logical_plan"].time or {}
+    grain = str(time.get("grain") or "")
+    if through is None or not (time.get("window_total") or grain in _DAY_GRAINS):
+        return []
+    edge = date.fromisoformat(through)
+    today = local_now(now, zone).date()
+    window = engine_window(time, now=now, timezone=zone)
+    first, last = _first_day(window.start), _last_day(window.end)
+    spans: list[tuple[date | None, date, date]] = []
+    if time.get("window_total"):
+        if first is not None and last is not None:
+            spans.append((None, first, last))
+    else:
+        for period in dict.fromkeys(_period_day(row.get(TIME_AXIS), zone) for row in rows):
+            if period is not None:
+                end = period_end(period, grain) - timedelta(days=1)
+                spans.append((period, max(period, first or period), min(end, last or end)))
+    warnings = []
+    for period, start, end in spans:
+        end = min(end, today)
+        if edge < start or edge + timedelta(days=1) >= min(end + timedelta(days=1), today):
+            continue
+        days, covered = (end - start).days + 1, (min(edge, end) - start).days + 1
+        span = "this total" if period is None else f"the {grain} of {period.isoformat()}"
+        whole = "the window's" if period is None else "its"
+        warnings.append(
+            semantic_issue(
+                code="PARTIAL_DATA",
+                message=f"Data runs through {through}, so {span} covers {covered} of {whole} {days} days.",
+                severity="warning",
+                stage="execution",
+                details={
+                    "through": through,
+                    "days_covered": covered,
+                    "days": days,
+                    **({"period": period.isoformat()} if period is not None else {}),
+                },
+            )
+        )
+    return warnings
+
+
+_DAY_GRAINS = ("day", "week", "month", "quarter", "year")
+
+
+def _first_day(value: str | None) -> date | None:
+    return None if value is None else datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+
+
+def _last_day(value: str | None) -> date | None:
+    """The last day an exclusive end reaches: the day before a midnight, else its own day."""
+    if value is None:
+        return None
+    end = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return end.date() - timedelta(days=1) if end.time() == datetime.min.time() else end.date()
+
+
+def _period_day(value: Any, zone: str) -> date | None:
+    if isinstance(value, datetime):
+        return (value.astimezone(ZoneInfo(zone)) if value.utcoffset() is not None else value).date()
+    return value if isinstance(value, date) else None
 
 
 def _measure_validity_warnings(config, logical_plan, display_config=None) -> list[dict[str, Any]]:
