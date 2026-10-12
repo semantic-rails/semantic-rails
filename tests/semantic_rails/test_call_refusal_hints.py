@@ -3,27 +3,34 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
 from semantic_rails.embedding import RequestContext
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 
 NOW = "2017-09-04T12:00:00Z"
 ORDERS = "measure.jaffle.order_count"
 REVENUE = "measure.jaffle.revenue_usd"
 
 
+@pytest.fixture(scope="module")
+def package_snapshot(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
+    return load_package_snapshot(path)
+
+
 @pytest.fixture()
-def runtime(runtime_factory: Any) -> Iterator[Runtime]:
-    rt = runtime_factory("jaffle_shop")
+def runtime(package_snapshot):
+    runtime = Runtime.from_snapshot(package_snapshot)
     try:
-        yield rt
+        yield runtime
     finally:
-        rt.close()
+        runtime.close()
 
 
 def _error(runtime: Runtime, call: dict[str, Any]) -> dict[str, Any]:

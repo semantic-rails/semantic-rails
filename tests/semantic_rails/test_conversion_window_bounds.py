@@ -62,6 +62,16 @@ def _query(window: str, *, bound: bool) -> dict[str, Any]:
     return query
 
 
+@pytest.fixture(scope="module")
+def window_sql():
+    registry = Registry(_CONFIG)
+    return {
+        (window, bound): compile_query(_CONFIG, registry, _query(window, bound=bound))["sql"]
+        for window in dict.fromkeys(case[1] for case in EDGE_CASES)
+        for bound in (False, True)
+    }
+
+
 @pytest.mark.parametrize("bound", [False, True], ids=["rate", "converted-side-binding"])
 @pytest.mark.parametrize(
     ("case", "window", "base_at", "converted_at", "converts"),
@@ -69,9 +79,9 @@ def _query(window: str, *, bound: bool) -> dict[str, Any]:
     ids=[case[0] for case in EDGE_CASES],
 )
 def test_duckdb_conversion_window_is_a_half_open_duration(
-    case: str, window: str, base_at: str, converted_at: str, converts: bool, bound: bool
+    window_sql, case: str, window: str, base_at: str, converted_at: str, converts: bool, bound: bool
 ) -> None:
-    sql = compile_query(_CONFIG, Registry(_CONFIG), _query(window, bound=bound))["sql"]
+    sql = window_sql[window, bound]
     column_type = "DATE" if len(base_at) == len("2024-01-31") else "TIMESTAMP"
     con = duckdb.connect()
     con.execute(

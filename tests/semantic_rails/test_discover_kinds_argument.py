@@ -19,18 +19,29 @@ from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.http_request import HTTPInputError, coerce_string_list
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import discover_payload
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.request_payload import DISCOVER_RANKED_KINDS, parse_string_list
 from semantic_rails.resource_access import GRANT_DISCOVER_KINDS
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 
 NO_MATCH = "No semantic objects"
 
 
+@pytest.fixture(scope="module")
+def package_snapshot(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
+    return load_package_snapshot(path)
+
+
 @pytest.fixture()
-def runtime(runtime_factory: Any) -> Iterator[Any]:
-    runtime = runtime_factory("jaffle_shop")
-    yield runtime
-    runtime.close()
+def runtime(package_snapshot):
+    runtime = Runtime.from_snapshot(package_snapshot)
+    try:
+        yield runtime
+    finally:
+        runtime.close()
 
 
 @pytest.fixture()
