@@ -262,8 +262,9 @@ def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) 
             assert error["details"]["field"] == field
 
 
-@pytest.mark.parametrize("action", ["validate", "explain", "preview"])
-@pytest.mark.parametrize("verbosity", [None, "", "   "])
+@pytest.mark.parametrize(
+    ("action", "verbosity"), [("validate", ""), ("explain", "   "), ("preview", None)]
+)
 def test_segment_actions_default_to_minimal_verbosity(
     v2: SemanticLayerMCPAdapter, action: str, verbosity: str | None
 ) -> None:

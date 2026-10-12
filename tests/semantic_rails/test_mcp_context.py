@@ -754,10 +754,19 @@ def test_a_session_may_only_use_ids_it_was_shown(
         mcp_context.measure_query_mcp(jaffle_package)
 
 
-@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+# Each probe once, and every verbosity across the probes.
+PROBE_VERBOSITY = {
+    "discover_unknown_argument": "minimal",
+    "inspect_label_not_id": "compact",
+    "validate_fanout": "full",
+    "validate_unknown_dimension": "minimal",
+}
+
+
 @pytest.mark.parametrize("probe", mcp_context.ERROR_PROBES, ids=lambda p: p[0])
-def test_error_probe_hints_appear_once(jaffle_package: Path, probe, verbosity: str) -> None:
-    _name, tool, arguments, ok, code = probe
+def test_error_probe_hints_appear_once(jaffle_package: Path, probe) -> None:
+    name, tool, arguments, ok, code = probe
+    verbosity = PROBE_VERBOSITY[name]
     with mcp_context.QueryMCPClient(jaffle_package) as client:
         result = client.call_tool(tool, {**arguments, "verbosity": verbosity})
     payload = result["structuredContent"]

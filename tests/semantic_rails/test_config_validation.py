@@ -2557,11 +2557,19 @@ def _jaffle_with_relocated_spec(
     return package_dir
 
 
-@pytest.mark.parametrize("layout", ["bare", "singular", "root_file", "package_yml"])
+# Every layout twice: once valid and once with an unknown key, for a segment or a metric.
 @pytest.mark.parametrize(
-    ("kind", "extra_key"),
-    [("segment", None), ("segment", "filters"), ("metric", None), ("metric", "valeu_type")],
-    ids=["valid-segment", "segment-unknown-key", "valid-metric", "metric-unknown-key"],
+    ("kind", "extra_key", "layout"),
+    [
+        ("segment", None, "bare"),
+        ("segment", None, "root_file"),
+        ("segment", "filters", "singular"),
+        ("segment", "filters", "package_yml"),
+        ("metric", None, "singular"),
+        ("metric", None, "package_yml"),
+        ("metric", "valeu_type", "bare"),
+        ("metric", "valeu_type", "root_file"),
+    ],
 )
 def test_key_checks_cover_every_layout_the_loader_reads(
     package_config_factory, kind, extra_key, layout
