@@ -133,7 +133,6 @@ def _draft_for_choice(
     partial_query: Call | None,
     choice: dict[str, Any],
 ) -> RuntimeCompositionDraft:
-    from ..metadata_parts.object_metadata import _public_object_type  # noqa: WPS433
 
     config = runtime._config
     # The caller's order_by may name a column this draft doesn't add; the merge restores it.
@@ -151,7 +150,7 @@ def _draft_for_choice(
     resolved = [
         {
             "id": choice["id"],
-            "object_type": _public_object_type(choice["kind"]),
+            "object_type": choice["kind"],
             "label": choice["label"],
         }
     ]

@@ -44,14 +44,6 @@ from ..expressions import (
 from ..schema import PackageConfig
 
 
-def _measures_by_id(config: PackageConfig) -> dict[str, Any]:
-    return {row.id: row for row in config.measures}
-
-
-def _metric_recipes_by_id(config: PackageConfig) -> dict[str, Any]:
-    return {row.id: row for row in config.metric_recipes}
-
-
 def _aggregation_guidance(measure: Any) -> dict[str, Any]:
     discouraged = [
         {"aggregation": agg, "reason": "not valid for this measure class"}
@@ -76,7 +68,7 @@ def _metric_measure_ids(
     if isinstance(expr, MetricRecipeRefExpr):
         if expr.metric_recipe in seen_metric_ids:
             return []
-        recipe = _metric_recipes_by_id(config).get(expr.metric_recipe)
+        recipe = {row.id: row for row in config.metric_recipes}.get(expr.metric_recipe)
         if recipe is None:
             return []
         return _metric_measure_ids(
@@ -135,7 +127,7 @@ def _metric_guidance(config: PackageConfig, recipe: Any) -> dict[str, Any]:
             "suggested_aggregations": [],
             "discouraged_aggregations": [],
         }
-    primary_measure = _measures_by_id(config)[measure_ids[0]]
+    primary_measure = {row.id: row for row in config.measures}[measure_ids[0]]
     if isinstance(recipe.expression, AggregateExpr):
         aggregation = recipe.expression.aggregation or primary_measure.default_aggregation
         return {

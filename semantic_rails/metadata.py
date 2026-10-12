@@ -76,7 +76,6 @@ from .metadata_parts.object_metadata import (
     _comparison_metadata,
     _example_test_metadata,
     _operational_metadata,
-    _public_object_type,
     _review_metadata,
     _time_contract_metadata,
 )
@@ -104,7 +103,7 @@ from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
-from .segments import build_segment_query, normalize_segment
+from .segments import _config_maps, build_segment_query, normalize_segment
 from .temporal_support import require_temporal_support, validate_temporal_support
 from .visible_view import base_of
 
@@ -121,24 +120,8 @@ def _query_state(query: dict[str, Any], config: PackageConfig) -> dict[str, Any]
     return state
 
 
-def _config_maps(config: PackageConfig) -> dict[str, dict[str, Any]]:
-    return {
-        "entities": {row.id: row for row in config.entities},
-        "dimensions": {row.id: row for row in config.dimensions},
-        "temporal_roles": {row.id: row for row in config.temporal_roles},
-        "measures": {row.id: row for row in config.measures},
-        "metric_recipes": {row.id: row for row in config.metric_recipes},
-        "segments": {row.id: row for row in config.segments},
-        "value_domains": {row.id: row for row in config.value_domains},
-    }
-
-
-def _relationship_index(config: PackageConfig) -> dict[str, Any]:
-    return {row.id: row for row in config.relationships}
-
-
 def _relationship_card_payload(config: PackageConfig, relationship_id: str) -> dict[str, Any]:
-    relationships = _relationship_index(config)
+    relationships = {row.id: row for row in config.relationships}
     rel = relationships.get(relationship_id)
     if rel is None:
         raise SemanticLayerError(
@@ -459,7 +442,7 @@ def _compact_summary_from_card(
 ) -> dict[str, Any]:
     row = {
         "id": card.get("id", ""),
-        "object_type": _public_object_type(str(card.get("kind", ""))),
+        "object_type": str(card.get("kind", "")),
         "kind": card.get("kind", ""),
         "name": card.get("name", ""),
         "label": card.get("label", ""),
@@ -841,7 +824,7 @@ def _object_card(
     payload.update(_metric_object_payload(config, object_id, obj.kind))
     base = {
         "id": obj.id,
-        "object_type": _public_object_type(obj.kind),
+        "object_type": obj.kind,
         "kind": obj.kind,
         "name": payload.get("name", obj.canonical_name),
         "label": payload.get("label", obj.display_name),
