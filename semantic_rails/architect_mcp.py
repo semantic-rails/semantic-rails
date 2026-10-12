@@ -1092,7 +1092,8 @@ def create_architect_mcp_server(
             "an existing model. An existing dimension, time or measure given only label, "
             "description, synonyms or meta keeps its other fields; given anything else it is "
             "rewritten, and dropped_fields lists what that drops. replace: true rewrites the "
-            "model from the arguments, keeping only its id, entities and calendar_id, and lists "
+            "model from the arguments, keeping only its id, entities, calendar_id and "
+            "zero_through (how far its tables are loaded), and lists "
             "what it drops in dropped_fields. Relationships go through upsert_relationship."
         ),
     )
