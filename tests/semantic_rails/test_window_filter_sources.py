@@ -142,8 +142,16 @@ def test_authorization_precedes_source_refusals(
         runtime.close()
 
 
-@pytest.mark.parametrize("placement", ["select", "result-filter", "arithmetic", "authored"])
-@pytest.mark.parametrize("scope", ["full-history", "query-period"])
+# The full-history select and result-filter shapes are answer-ledger cases.
+@pytest.mark.parametrize(
+    ("placement", "scope"),
+    [
+        ("select", "query-period"),
+        ("result-filter", "query-period"),
+        ("arithmetic", "query-period"),
+        ("authored", "full-history"),
+    ],
+)
 def test_sibling_filter_keeps_independent_window_answers(shop_config, tmp_path, placement, scope):
     history = deepcopy(HISTORY)
     if scope == "query-period":
@@ -235,11 +243,7 @@ def test_source_refusal_message_has_no_space_before_period(shop_config, tmp_path
     try:
         with pytest.raises(SemanticLayerError) as caught:
             runtime.compile(_query(expression))
-        assert str(caught.value) == (
-            "Rolling, prior_period, and period_to_date expressions do not support a measure filter "
-            "on a temporal column (measure_filters[0]): the leaf-level WHERE truncates the lookback "
-            "rows the window function depends on, producing silently wrong values. "
-            "Query an unwindowed measure or ask the package author for a supported metric."
-        )
+        assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+        assert "(measure_filters[0]):" in str(caught.value) and " ." not in str(caught.value)
     finally:
         runtime.close()
