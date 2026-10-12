@@ -457,18 +457,11 @@ def _with_home_region(project: ArchitectProject) -> dict[str, Any]:
     ("from_entity", "columns", "new_route"),
     [
         # A second route through the owner: unrecorded, the pair would be refused.
-        pytest.param(
-            "owner",
-            ["home_region_id"],
-            [*INVOICE_ACCOUNT, OWNS, "relationship.owners_region"],
-            id="second-route",
-        ),
+        pytest.param("owner", ["home_region_id"], [*INVOICE_ACCOUNT, OWNS, "relationship.owners_region"], id="second-route"),
         # The new key is on the start's own table: unrecorded, the pair would take it.
-        pytest.param(
-            "invoice", ["issued_region_id"], ["relationship.invoices_region"], id="own-key"
-        ),
+        pytest.param("invoice", ["issued_region_id"], ["relationship.invoices_region"], id="own-key"),
     ],
-)
+)  # fmt: skip
 def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     tmp_path, from_entity, columns, new_route
 ):
@@ -514,9 +507,16 @@ def test_a_preview_refuses_unrecorded_decisions_without_generating_rows(tmp_path
     assert _files_and_receipts(project) == before
 
 
-@pytest.mark.parametrize("dry_run", [False, True], ids=["write", "preview"])
-@pytest.mark.parametrize("grouped", [True, False], ids=["group-by-key", "filter-orphan-key"])
-@pytest.mark.parametrize("role", ["destination", "origin"], ids=["keep-route", "switch-route"])
+@pytest.mark.parametrize(
+    ("dry_run", "grouped", "role"),
+    [
+        (False, True, "destination"),
+        (True, False, "destination"),
+        (False, False, "origin"),
+        (True, True, "origin"),
+    ],
+    ids=["keep-route-group-by-key", "keep-route-preview", "switch-route", "switch-route-preview"],
+)
 def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run, grouped, role):
     pkg = _write_air_package(tmp_path, explicit=("destination",), extra_seed=ORPHAN_LEG)
     project = ArchitectProject(pkg, workspace_root=tmp_path)
@@ -1070,8 +1070,9 @@ def test_unexpected_staging_failures_write_no_files_revision_or_receipts(
     assert _files_and_receipts(project) == before
 
 
-@pytest.mark.parametrize("load_number", [1, 2], ids=["base-load", "staged-load"])
-@pytest.mark.parametrize("error", [yaml.YAMLError, ValueError])
+@pytest.mark.parametrize(
+    ("load_number", "error"), [(1, yaml.YAMLError), (2, ValueError)], ids=["base", "staged"]
+)
 def test_invalid_loader_input_reaches_the_parse_gate_and_rolls_back(
     tmp_path, monkeypatch, load_number, error
 ):

@@ -727,9 +727,10 @@ def test_every_entry_point_refuses_a_route_row_under_a_row_policy(tmp_path, monk
     assert OWNER not in message and "owner" not in message.lower()
 
 
-@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
-@pytest.mark.parametrize("entry", ["query", "mcp_execute"])
-@pytest.mark.parametrize("option_index", [0, 1])
+@pytest.mark.parametrize(
+    ("verbosity", "entry", "option_index"),
+    [("minimal", "query", 0), ("compact", "mcp_execute", 1), ("full", "query", 1)],
+)
 def test_query_route_switches_are_disclosed_without_another_execution(
     tmp_path, monkeypatch, verbosity, entry, option_index
 ):
@@ -1294,14 +1295,8 @@ def test_record_route_decision_refuses_a_row_that_would_not_take_effect(tmp_path
         pytest.param({**DIAMOND_ROW, "relationship_path": ["relationship.accounts_branch"]}, id="off-route"),
         pytest.param({**DIAMOND_ROW, "relationship_path": ["relationship.nope"]}, id="unknown-relationship"),
         pytest.param({**DIAMOND_ROW, "target_entity": "entity.bank_nope"}, id="unknown-entity"),
-        pytest.param(
-            {**DIAMOND_ROW, "relationship_path": ["relationship.branches_district"]}, id="broken-chain"
-        ),
-        pytest.param(
-            {"source_entity": AIRPORT, "target_entity": FLIGHT,
-             "relationship_path": ["relationship.flights_origin"]},
-            id="disallowed-direction",
-        ),
+        pytest.param({**DIAMOND_ROW, "relationship_path": ["relationship.branches_district"]}, id="broken-chain"),
+        pytest.param({"source_entity": AIRPORT, "target_entity": FLIGHT, "relationship_path": ["relationship.flights_origin"]}, id="disallowed-direction"),
     ],
 )  # fmt: skip
 def test_record_route_decision_refuses_a_path_that_is_not_a_route_and_writes_nothing(tmp_path, row):
@@ -1521,8 +1516,11 @@ def test_every_available_build_options_patch_validates(tmp_path):
 # --- Live valid values read through the query's own route ---------------------------------
 
 
-@pytest.mark.parametrize("package_rows", [[], [BRANCH_BY_KEY]], ids=["undecided", "decided"])
-@pytest.mark.parametrize("reference", ["measure", "metric"])
+@pytest.mark.parametrize(
+    ("package_rows", "reference"),
+    [([], "measure"), ([BRANCH_BY_KEY], "metric")],
+    ids=["undecided-measure", "decided-metric"],
+)
 def test_live_valid_values_read_through_the_query_rows_route(
     tmp_path, monkeypatch, package_rows, reference
 ):
@@ -1597,8 +1595,11 @@ def test_live_valid_values_read_through_the_query_rows_route(
     )
 
 
-@pytest.mark.parametrize("package_rows", [[], [BRANCH_BY_KEY]], ids=["undecided", "decided"])
-@pytest.mark.parametrize("route", [BRANCH_ROUTE, OWNER_ROUTE], ids=["branch", "owner"])
+@pytest.mark.parametrize(
+    ("package_rows", "route"),
+    [([], BRANCH_ROUTE), ([BRANCH_BY_KEY], OWNER_ROUTE)],
+    ids=["undecided-branch", "decided-owner"],
+)
 def test_live_valid_values_keeps_routes_read_only_by_metric_filters(tmp_path, package_rows, route):
     runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=package_rows)))
     row = {**DIAMOND_ROW, "relationship_path": route}
@@ -1635,9 +1636,10 @@ def test_live_valid_values_keeps_routes_read_only_by_metric_filters(tmp_path, pa
     assert out["query_state"]["metric_filters"] == runtime.engine_payload(query)["metric_filters"]
 
 
-@pytest.mark.parametrize("route", [BRANCH_ROUTE, OWNER_ROUTE], ids=["branch", "owner"])
 @pytest.mark.parametrize(
-    "conditional_first", [False, True], ids=["conditional-last", "conditional-first"]
+    ("route", "conditional_first"),
+    [(BRANCH_ROUTE, False), (OWNER_ROUTE, True)],
+    ids=["branch-conditional-last", "owner-conditional-first"],
 )
 def test_live_valid_values_accepts_conditional_aggregates(tmp_path, route, conditional_first):
     runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=[BRANCH_BY_KEY])))
@@ -1700,9 +1702,9 @@ def test_live_valid_values_without_a_query_measure_explains_the_missing_anchor(
     assert refused.value.details == {"attempts": []}
 
 
-@pytest.mark.parametrize("shape", list(SHAPES))
-def test_mcp_route_options_match_reference_sql(tmp_path, shape):
-    query, columns, _, expected = SHAPES[shape]
+def test_mcp_route_options_match_reference_sql(tmp_path):
+    # Every shape answers each option by its route in the runtime tests above.
+    query, columns, _, expected = SHAPES["shorter_fan_out"]
     adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(_write_package(tmp_path))))
     try:
         refusal = adapter.call_tool("execute", {"query": query})

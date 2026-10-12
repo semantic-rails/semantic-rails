@@ -47,22 +47,10 @@ MINIMAL = {"verbosity": "minimal"}
         (None, None, {"type": "null"}),
         (True, True, {"type": "boolean"}),
         (date(2026, 9, 30), "2026-09-30", {"type": "date"}),
-        (
-            datetime(2026, 9, 30, 8, 15),
-            "2026-09-30T08:15:00",
-            {"type": "timestamp", "timezone": "naive"},
-        ),
-        (
-            datetime(2026, 9, 30, 8, 15, tzinfo=timezone(timedelta(hours=-4))),
-            "2026-09-30T12:15:00+00:00",
-            {"type": "timestamp", "timezone": "aware"},
-        ),
+        (datetime(2026, 9, 30, 8, 15), "2026-09-30T08:15:00", {"type": "timestamp", "timezone": "naive"}),
+        (datetime(2026, 9, 30, 8, 15, tzinfo=timezone(timedelta(hours=-4))), "2026-09-30T12:15:00+00:00", {"type": "timestamp", "timezone": "aware"}),
         (time(8, 15, 0, 123), "08:15:00.000123", {"type": "time", "timezone": "naive"}),
-        (
-            time(8, 15, tzinfo=timezone(timedelta(hours=-4))),
-            "12:15:00+00:00",
-            {"type": "time", "timezone": "aware"},
-        ),
+        (time(8, 15, tzinfo=timezone(timedelta(hours=-4))), "12:15:00+00:00", {"type": "time", "timezone": "aware"}),
         (timedelta(), "P0DT0H0M0S", {"type": "interval"}),
         (timedelta(days=-1, microseconds=1), "-P0DT23H59M59.999999S", {"type": "interval"}),
         (b"\x00\xff", "AP8=", {"type": "binary", "encoding": "base64"}),
@@ -73,7 +61,7 @@ MINIMAL = {"verbosity": "minimal"}
         ([9007199254740993, True], [9007199254740993, True], {"type": "array"}),
         ({"a": [{"n": 9007199254740993}]}, {"a": [{"n": 9007199254740993}]}, {"type": "object"}),
     ],
-)
+)  # fmt: skip
 def test_value_policy(value: Any, expected: Any, metadata: dict[str, str]) -> None:
     result = result_rows([{"value": value}])
     assert result["rows"] == [{"value": expected}]

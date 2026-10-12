@@ -69,15 +69,19 @@ def _codes(response: dict[str, Any]) -> list[str]:
     return [str(item.get("code")) for item in response.get("warnings") or []]
 
 
-def test_a_window_without_a_grain_is_one_total(runtime: Runtime) -> None:
-    response = runtime.query(
-        _query([REVENUE, ORDERS], {"start": "2017-04-01", "end": "2017-07-01"})
-    )
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [("2017-04-01", "2017-07-01"), ("2017-04-03 12:00:00", "2017-04-03 13:00:00")],
+    ids=["months", "inside-one-day"],
+)
+def test_a_window_without_a_grain_is_one_total(runtime: Runtime, start: str, end: str) -> None:
+    response = runtime.query(_query([REVENUE, ORDERS], {"start": start, "end": end}))
     gold = _gold(
         runtime,
         "SELECT COUNT(*) AS orders, SUM(order_total_cents) / 100.0 AS revenue FROM jaffle_order "
-        "WHERE ordered_at >= TIMESTAMP '2017-04-01' AND ordered_at < TIMESTAMP '2017-07-01'",
+        f"WHERE ordered_at >= TIMESTAMP '{start}' AND ordered_at < TIMESTAMP '{end}'",
     )
+    assert gold[0]["orders"] > 1  # a raw-timestamp answer would have been several rows
     assert response["row_count"] == 1
     row = response["rows"][0]
     assert set(row) == {"revenue", "orders"}  # no time column
@@ -85,22 +89,6 @@ def test_a_window_without_a_grain_is_one_total(runtime: Runtime) -> None:
     assert row["revenue"] == pytest.approx(gold[0]["revenue"])
     assert [column["field"] for column in response["output_columns"]] == ["revenue", "orders"]
     assert _window_total_lines(response) == 1
-
-
-def test_a_window_inside_one_day_is_one_total(runtime: Runtime) -> None:
-    response = runtime.query(
-        _query([REVENUE, ORDERS], {"start": "2017-04-03T12:00:00", "end": "2017-04-03T13:00:00"})
-    )
-    gold = _gold(
-        runtime,
-        "SELECT COUNT(*) AS orders, SUM(order_total_cents) / 100.0 AS revenue FROM jaffle_order "
-        "WHERE ordered_at >= TIMESTAMP '2017-04-03 12:00:00' "
-        "AND ordered_at < TIMESTAMP '2017-04-03 13:00:00'",
-    )
-    assert gold[0]["orders"] > 1  # a raw-timestamp answer would have been several rows
-    assert response["row_count"] == 1
-    assert response["rows"][0]["orders"] == gold[0]["orders"]
-    assert response["rows"][0]["revenue"] == pytest.approx(gold[0]["revenue"])
 
 
 def test_a_grouped_window_is_one_total_per_group(runtime: Runtime) -> None:

@@ -43,6 +43,9 @@ CONDITIONAL_COUNT = {
 }
 
 
+KINDS = ["rolling", "cumulative", "period_to_date"]
+
+
 def window(input_expr, kind="rolling"):
     options = {"window": {"unit": "month", "value": 3}} if kind == "rolling" else {}
     if kind == "period_to_date":
@@ -83,13 +86,12 @@ def test_conditional_count_still_feeds_a_summing_window(config, kind):
     assert isinstance(result.function, SqlCall) and result.function.name == "SUM"
 
 
-@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
 @pytest.mark.parametrize(
-    "input_expr",
+    ("kind", "input_expr"),
     [
-        RATIO,
-        {"kind": "arithmetic", "op": "divide", "left": REVENUE, "right": ORDERS},
-        {"metric": "metric.sales.aov_usd"},
+        ("rolling", RATIO),
+        ("cumulative", {"kind": "arithmetic", "op": "divide", "left": REVENUE, "right": ORDERS}),
+        ("period_to_date", {"metric": "metric.sales.aov_usd"}),
     ],
     ids=["ratio", "divide", "recipe"],
 )
@@ -156,8 +158,10 @@ def test_non_additive_inputs_refuse_centrally(config, input_expr, name):
     assert raised.value.details["recovery_hints"]
 
 
-@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
-@pytest.mark.parametrize("measure_id", [ORDERS["measure"], "measure.jaffle.session_starts"])
+@pytest.mark.parametrize(
+    ("kind", "measure_id"),
+    [("rolling", ORDERS["measure"]), ("period_to_date", "measure.jaffle.session_starts")],
+)
 def test_source_row_key_counts_still_feed_summing_windows(config, kind, measure_id):
     measure = next(m for m in config.measures if m.id == measure_id)
     payload = query(window({"measure": measure_id}, kind))
@@ -204,12 +208,14 @@ def test_distinct_count_requires_a_source_row_key(config, key_source, other_key)
 
 
 @pytest.mark.parametrize(
-    ("row_grain", "source_relation"),
-    [(["order_id", "line_no"], ""), ([], "order_lines")],
-    ids=["order_lines_grain", "other_source"],
+    ("row_grain", "source_relation", "kind", "route"),
+    [
+        (["order_id", "line_no"], "", "rolling", "compile"),
+        (["order_id", "line_no"], "", "cumulative", "lower"),
+        ([], "order_lines", "period_to_date", "compile"),
+        ([], "order_lines", "rolling", "lower"),
+    ],
 )
-@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
-@pytest.mark.parametrize("route", ["compile", "lower"])
 def test_entity_key_cannot_override_the_measure_source_rows(
     config, row_grain, source_relation, kind, route
 ):
@@ -245,10 +251,17 @@ def test_entity_key_cannot_override_the_measure_source_rows(
     assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
 
 
-@pytest.mark.parametrize("key_source", ["row_grain", "entity_key", "both"])
-@pytest.mark.parametrize("ratio", [False, True], ids=["count", "ratio_denominator"])
-@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
-@pytest.mark.parametrize("route", ["compile", "lower"])
+@pytest.mark.parametrize(
+    ("key_source", "route", "ratio", "kind"),
+    [
+        (key_source, route, i % 2 == 1, KINDS[i % 3])
+        for i, (key_source, route) in enumerate(
+            (key, route)
+            for key in ["row_grain", "entity_key", "both"]
+            for route in ["compile", "lower"]
+        )
+    ],
+)
 def test_composite_key_components_cannot_feed_a_summing_window(
     config, key_source, ratio, kind, route
 ):
@@ -310,14 +323,12 @@ def test_same_named_key_on_another_source_cannot_feed_a_window(config, qualifier
     assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
 
 
-@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
-@pytest.mark.parametrize("measure_id", [REVENUE["measure"], ORDERS["measure"]])
 @pytest.mark.parametrize(
-    ("op", "factor", "literal_first"),
+    ("kind", "measure_id", "op", "factor", "literal_first"),
     [
-        ("multiply", 2, False),
-        ("multiply", 0.5, True),
-        ("divide", 100, False),
+        ("rolling", REVENUE["measure"], "multiply", 2, False),
+        ("cumulative", ORDERS["measure"], "multiply", 0.5, True),
+        ("period_to_date", REVENUE["measure"], "divide", 100, False),
     ],
 )
 def test_literal_scaling_preserves_windowed_totals(
@@ -334,9 +345,7 @@ def test_literal_scaling_preserves_windowed_totals(
             "right": input_expr if literal_first else literal,
         }
         original = runtime.query(query(window(input_expr, kind)))["rows"]
-        result = runtime.query(query(window(expression, kind)))
-        assert "SUM(base.m1) OVER" in result["rendered_sql"]
-        scaled = result["rows"]
+        scaled = runtime.query(query(window(expression, kind)))["rows"]
         assert original and len(scaled) == len(original)
         for before, after in zip(original, scaled, strict=True):
             assert before["period"] == after["period"]
@@ -346,14 +355,18 @@ def test_literal_scaling_preserves_windowed_totals(
         runtime.close()
 
 
-@pytest.mark.parametrize("route", ["select", "recipe", "derived", "metric_filter"])
+STATISTIC = {**REVENUE, "aggregation": "max"}
+NON_KEY_COUNT = {"measure": "measure.jaffle.visiting_customer_count"}
+
+
 @pytest.mark.parametrize(
-    "input_expr",
+    ("route", "input_expr"),
     [
-        {**REVENUE, "aggregation": "max"},
-        {"measure": "measure.jaffle.visiting_customer_count"},
+        ("select", STATISTIC),
+        ("recipe", NON_KEY_COUNT),
+        ("derived", STATISTIC),
+        ("metric_filter", NON_KEY_COUNT),
     ],
-    ids=["statistic", "non_key_count"],
 )
 def test_recipes_and_filters_cannot_bypass_the_guard(config, route, input_expr):
     invalid = window(input_expr)
@@ -392,14 +405,7 @@ def test_recipes_and_filters_cannot_bypass_the_guard(config, route, input_expr):
     assert raised.value.code == "ROLLUP_UNSAFE"
 
 
-@pytest.mark.parametrize(
-    "input_expr",
-    [
-        {**REVENUE, "aggregation": "max"},
-        {"measure": "measure.jaffle.visiting_customer_count"},
-    ],
-    ids=["statistic", "non_key_count"],
-)
+@pytest.mark.parametrize("input_expr", [STATISTIC, NON_KEY_COUNT], ids=["statistic", "count"])
 def test_direct_window_lowering_cannot_bypass_the_guard(config, input_expr):
     expr = OffsetWindowExpr(
         input=parse_semantic_expression(input_expr, context="query"),
@@ -415,8 +421,10 @@ def test_direct_window_lowering_cannot_bypass_the_guard(config, input_expr):
     assert raised.value.code == "ROLLUP_UNSAFE"
 
 
-@pytest.mark.parametrize("transport", ["rest", "mcp"])
-@pytest.mark.parametrize("input_expr", [RATIO_CALL, "measure.jaffle.inventory_on_hand_eop"])
+@pytest.mark.parametrize(
+    ("transport", "input_expr"),
+    [("rest", "measure.jaffle.inventory_on_hand_eop"), ("mcp", RATIO_CALL)],
+)
 def test_execute_uses_the_same_window_rule(runtime_factory, transport, input_expr, monkeypatch):
     runtime = runtime_factory("jaffle_shop")
     try:

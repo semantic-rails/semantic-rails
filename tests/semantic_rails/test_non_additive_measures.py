@@ -205,15 +205,12 @@ BY_DAY_SNAP = {"temporal_role": SNAP, "grain": "day"}
         (_query("visitors_14d", where=[_eq(REPO_SNAP, "a")], time=BY_WEEK_SNAP), [4]),
         (_query("visitors_14d", where=[_eq(REPO_SNAP, "a")]), [4]),
         # A stock's sum takes one snapshot per series per bucket too, then adds series.
-        (
-            _query("visitors_14d", aggregation="sum", group_by=[REPO_SNAP], time=BY_WEEK_SNAP),
-            [4, 6],
-        ),
+        (_query("visitors_14d", aggregation="sum", group_by=[REPO_SNAP], time=BY_WEEK_SNAP), [4, 6]),
         (_query("path_visitors_14d", group_by=[PATH], where=[_eq(PATH_REPO, "a")]), [2, 2, 3]),
         # An additive stock beside them is untouched.
         (_query("stars", time=BY_WEEK_SNAP), [3]),
     ],
-)
+)  # fmt: skip
 def test_one_row_per_output_row_answers(runtime: Runtime, payload, expected) -> None:
     assert _values(runtime, payload) == expected
 
@@ -280,10 +277,7 @@ DAILY = f"measure.{NS}.daily_visitors"
     [
         (_metric("cumulative_visitors"), False),
         (_metric("rolling_visitors"), False),
-        (
-            _inline({"kind": "scoped_aggregate", "measure": DAILY, "where": [_eq(REPO_DAY, "a")]}),
-            False,
-        ),
+        (_inline({"kind": "scoped_aggregate", "measure": DAILY, "where": [_eq(REPO_DAY, "a")]}), False),
         # A predicate per row's own context over an aggregation override: the engine's form.
         (
             _inline(
@@ -306,7 +300,7 @@ DAILY = f"measure.{NS}.daily_visitors"
         ),
     ],
     ids=["cumulative", "rolling", "scoped-filter", "metric-predicate"],
-)
+)  # fmt: skip
 def test_windows_and_per_entity_rollups_are_refused(runtime: Runtime, payload, internal) -> None:
     assert _refused(runtime, payload, internal=internal)["missing_columns"] == []
 

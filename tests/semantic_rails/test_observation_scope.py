@@ -181,7 +181,10 @@ def test_apples_whose_quantity_is_unknown_stay_unknown(runtime: Runtime, scope: 
     assert ("NO_DATA_IN_SCOPE" in _codes(quantity)) is (scope == "query")
 
 
-@pytest.mark.parametrize("warehouse", sorted(_WAREHOUSE_CONNECTORS))
+# One warehouse per dialect family: DuckLake and MotherDuck render as DuckDB does.
+@pytest.mark.parametrize(
+    "warehouse", sorted(set(_WAREHOUSE_CONNECTORS) - {"ducklake", "motherduck"})
+)
 def test_every_warehouse_probes_with_plain_ctes(package: Path, warehouse: str) -> None:
     """The probe is a first-row CTE counted and cross-joined, which every warehouse runs."""
     config = load_package_config(str(package))

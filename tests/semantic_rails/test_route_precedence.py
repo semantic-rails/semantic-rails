@@ -791,17 +791,11 @@ def test_two_own_keys_are_not_one_and_an_inherited_row_decides(tmp_path):
 @pytest.mark.parametrize(
     "rows",
     [
-        pytest.param(
-            [ACCOUNT_OWNER_ROW, _row(LOAN, DISTRICT, [*LOAN_ACCOUNT, *BRANCH])],
-            id="a-longer-row-walks-the-pair-differently",
-        ),
-        pytest.param(
-            [ACCOUNT_OWNER_ROW, _row(DISTRICT, ACCOUNT, BRANCH[::-1])],
-            id="the-reverse-pair-records-another-route",
-        ),
+        pytest.param([ACCOUNT_OWNER_ROW, _row(LOAN, DISTRICT, [*LOAN_ACCOUNT, *BRANCH])], id="a-longer-row-walks-the-pair-differently"),
+        pytest.param([ACCOUNT_OWNER_ROW, _row(DISTRICT, ACCOUNT, BRANCH[::-1])], id="the-reverse-pair-records-another-route"),
         pytest.param([ACCOUNT_OWNER_ROW, _row(ACCOUNT, DISTRICT, BRANCH)], id="one-pair-twice"),
     ],
-)
+)  # fmt: skip
 def test_rows_that_disagree_are_refused_at_load_naming_both(tmp_path, rows):
     with pytest.raises(SemanticLayerError) as exc_info:
         load_package_config(str(_write_package(tmp_path, rows=rows)))
@@ -1107,16 +1101,10 @@ def test_a_child_filter_through_an_inherited_route_counts_each_loan_once(tmp_pat
         (LENDER, [ACCOUNT_OWNER_ROW], ("clients_district",), 4, DISTRICT),
         (OWN_DISTRICT, [ACCOUNT_OWNER_ROW], (), 4, LOAN),
         ((*LENDER, "accounts_district"), [ACCOUNT_OWNER_ROW], (), 2, LOAN),
-        (
-            (*OWN_DISTRICT, "loans_payout_district"),
-            [_row(DISTRICT, LOAN, OWN_KEY)],
-            (),
-            4,
-            LOAN,
-        ),
+        ((*OWN_DISTRICT, "loans_payout_district"), [_row(DISTRICT, LOAN, OWN_KEY)], (), 4, LOAN),
     ],
     ids=["inherited", "reverse", "one-way", "own-key", "excluded", "two-own-keys"],
-)
+)  # fmt: skip
 def test_path_hints_agree_with_the_inherited_route_ladder(
     tmp_path, monkeypatch, relationships, rows, forward_only, max_hops, start
 ):

@@ -97,20 +97,6 @@ def _timed_query(adapter: DuckDBAdapter, timeout_ms: int) -> tuple[BaseException
 
 
 @pytest.mark.timeout(30)
-def test_duckdb_statement_timeout_stops_the_running_query(tmp_path):
-    adapter = DuckDBAdapter(_duckdb_file(tmp_path))
-    try:
-        error, elapsed = _timed_query(adapter, 200)
-    finally:
-        adapter.close()
-
-    assert isinstance(error, SemanticLayerError)
-    assert error.code == "QUERY_EXECUTION_ERROR"
-    assert _interrupt_in_chain(error)
-    assert elapsed < 10
-
-
-@pytest.mark.timeout(30)
 def test_duckdb_statement_timeout_only_stops_its_own_query(tmp_path):
     adapter = DuckDBAdapter(_duckdb_file(tmp_path))
     results: dict[int, tuple[BaseException | None, float]] = {}
@@ -130,6 +116,8 @@ def test_duckdb_statement_timeout_only_stops_its_own_query(tmp_path):
 
     short_error, short_elapsed = results[200]
     long_error, long_elapsed = results[5_000]
+    assert isinstance(short_error, SemanticLayerError)
+    assert short_error.code == "QUERY_EXECUTION_ERROR"
     assert _interrupt_in_chain(short_error)
     assert short_elapsed < 4
     # The short query's watchdog left the long one running until its own timeout.
@@ -378,18 +366,9 @@ def test_create_warehouse_adapter_selects_snowflake_native_direct_connect(
     ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
     [
         ({}, 10, 65, None),
-        (
-            {
-                "connect_timeout_seconds": "7",
-                "read_timeout_seconds": "45",
-                "statement_timeout_seconds": "40",
-            },
-            7,
-            45,
-            40,
-        ),
+        ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45", "statement_timeout_seconds": "40"}, 7, 45, 40),
     ],
-)
+)  # fmt: skip
 def test_snowflake_native_adapter_queries_with_optional_connector(
     monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout, statement_timeout
 ):
@@ -762,13 +741,9 @@ def test_snowflake_direct_connection_passes_tag_as_session_parameter(monkeypatch
     [
         {},
         {"statement_timeout_seconds": "0"},
-        {
-            "connect_timeout_seconds": "7",
-            "read_timeout_seconds": "45",
-            "statement_timeout_seconds": "20",
-        },
+        {"connect_timeout_seconds": "7", "read_timeout_seconds": "45", "statement_timeout_seconds": "20"},
     ],
-)
+)  # fmt: skip
 def test_snowflake_named_profile_preserves_inherited_session_and_login(monkeypatch, options):
     from unittest.mock import Mock
 

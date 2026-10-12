@@ -220,27 +220,17 @@ def test_namespace_rename_and_deployment_locator_rules(portable):
     assert not compare_metric_portability(before, export_metric_portability(package))["compatible"]
 
 
-def test_cli_selects_portability_without_changing_default(portable, tmp_path):
-    import subprocess
-    import sys
+def test_cli_selects_portability_without_changing_default(portable, tmp_path, monkeypatch):
+    from semantic_rails.cli import main
 
     _, package = portable
     output = tmp_path / "metrics.json"
-    base = [
-        sys.executable,
-        "-m",
-        "semantic_rails",
-        "export-contract",
-        "--path",
-        str(package),
-        "--output",
-        str(output),
-    ]
-    subprocess.run(
-        [*base, "--format", "metrics"], check=True, capture_output=True, text=True, timeout=120
-    )
+    base = ["semantic-rails", "export-contract", "--path", str(package), "--output", str(output)]
+    monkeypatch.setattr("sys.argv", [*base, "--format", "metrics"])
+    main()
     assert json.loads(output.read_text()) == export_metric_portability(package)
-    subprocess.run(base, check=True, capture_output=True, text=True, timeout=120)
+    monkeypatch.setattr("sys.argv", base)
+    main()
     assert json.loads(output.read_text()) == export_semantic_contract(package)
 
 

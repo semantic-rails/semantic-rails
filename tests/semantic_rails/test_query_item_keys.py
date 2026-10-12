@@ -55,8 +55,13 @@ CASES = [
 ]
 
 
-@pytest.mark.parametrize("normalize", [normalize_query, normalize_partial_query])
-@pytest.mark.parametrize("key,item,path,unknown,closest", CASES)
+@pytest.mark.parametrize(
+    "normalize,key,item,path,unknown,closest",
+    [
+        pytest.param([normalize_query, normalize_partial_query][i % 2], *case.values, id=case.id)
+        for i, case in enumerate(CASES)
+    ],
+)
 def test_unknown_query_item_keys_are_refused(normalize, key, item, path, unknown, closest):
     payload = {"select": [SELECT], key: [item]}
     with pytest.raises(SemanticLayerError) as exc:
@@ -102,8 +107,13 @@ CALL_CASES = [
 ]
 
 
-@pytest.mark.parametrize("mode", ["run", "sql", "validate"])
-@pytest.mark.parametrize("key,item,path", CALL_CASES)
+@pytest.mark.parametrize(
+    "mode,key,item,path",
+    [
+        pytest.param(["run", "sql", "validate"][i % 3], *case.values, id=case.id)
+        for i, case in enumerate(CALL_CASES)
+    ],
+)
 def test_the_call_refuses_unknown_item_keys_with_their_path(runtime_factory, mode, key, item, path):
     adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
     try:

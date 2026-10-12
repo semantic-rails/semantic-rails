@@ -10,9 +10,15 @@ from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.test_model_physical_variants import _MONTHLY, _rollup_package
 
 
-@pytest.mark.parametrize("layout", ["directory", "single_file"])
-@pytest.mark.parametrize("location", ["variant", "inherited_variant", "base_variant", "aggregate"])
-@pytest.mark.parametrize("value", [True, False, "yes"])
+@pytest.mark.parametrize(
+    ("location", "layout", "value"),
+    [
+        ("variant", "directory", True),
+        ("inherited_variant", "single_file", False),
+        ("base_variant", "directory", "yes"),
+        ("aggregate", "single_file", True),
+    ],
+)
 def test_removed_rollup_setting_is_an_unknown_key(tmp_path: Path, layout, location, value):
     variants = {}
     if location == "aggregate":

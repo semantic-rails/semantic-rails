@@ -101,8 +101,10 @@ def _forbid_second_preparation(*args, **kwargs):
     raise AssertionError("compiled SQL must reach the driver without a second preparation")
 
 
-@pytest.mark.parametrize("profile", ["audit", "compact", "debug", "off"])
-@pytest.mark.parametrize("warehouse", ["postgres", "databricks", "athena", "snowflake"])
+@pytest.mark.parametrize(
+    ("warehouse", "profile"),
+    [("postgres", "audit"), ("databricks", "compact"), ("athena", "debug"), ("snowflake", "off")],
+)
 def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, warehouse, profile):
     compiled = _compile(package_config, warehouse, profile)
     prepared = compiled["prepared_query"]

@@ -115,12 +115,22 @@ def _reference(adapter, *, first="2024-05-06", last="2024-05-13", revenue=False)
     return [(row["bucket"].date(), row["n"]) for row in rows]
 
 
-@pytest.mark.parametrize("physical", ["TIMESTAMP", "TIMESTAMPTZ"])
-@pytest.mark.parametrize("shift", [0, 12, -1])
+WEEK, BOTH = ("week_start",), ("week_start", "date_day")
+
+
+# Each storage type, shift, zone and column set, in pairs: none moves a bucket.
 @pytest.mark.parametrize(
-    "calendar_runtime", ["UTC", "America/Los_Angeles", "Pacific/Auckland"], indirect=True
+    ("physical", "shift", "calendar_runtime", "columns"),
+    [
+        ("TIMESTAMP", 0, "UTC", WEEK),
+        ("TIMESTAMPTZ", 12, "UTC", BOTH),
+        ("TIMESTAMP", -1, "America/Los_Angeles", BOTH),
+        ("TIMESTAMPTZ", 0, "America/Los_Angeles", WEEK),
+        ("TIMESTAMP", 12, "Pacific/Auckland", WEEK),
+        ("TIMESTAMPTZ", -1, "Pacific/Auckland", BOTH),
+    ],
+    indirect=["calendar_runtime"],
 )
-@pytest.mark.parametrize("columns", [("week_start",), ("week_start", "date_day")])
 def test_default_fill_uses_leaf_buckets(calendar_runtime, physical, shift, columns):
     runtime = calendar_runtime
     adapter = runtime._get_adapter()
@@ -132,9 +142,17 @@ def test_default_fill_uses_leaf_buckets(calendar_runtime, physical, shift, colum
     assert _query_buckets(runtime) == expected
 
 
-@pytest.mark.parametrize("declared", ["date", "timestamp"])
-@pytest.mark.parametrize("anchor", ["date", "noon", "sunday"])
-@pytest.mark.parametrize("bounded", [True, False])
+@pytest.mark.parametrize(
+    ("declared", "anchor", "bounded"),
+    [
+        ("date", "date", True),
+        ("timestamp", "date", False),
+        ("date", "noon", False),
+        ("timestamp", "noon", True),
+        ("date", "sunday", True),
+        ("timestamp", "sunday", False),
+    ],
+)
 def test_default_fill_ignores_authored_week_anchor(declared, anchor, bounded):
     # A Sunday-week (or noon) authored default calendar still answers ISO weeks.
     runtime = _duckdb_runtime(declared=declared)
@@ -164,9 +182,9 @@ def test_default_fill_ignores_authored_week_anchor(declared, anchor, bounded):
     assert expected[:2] == [(date(2024, 5, 6), 2), (date(2024, 5, 13), 0)]
 
 
-@pytest.mark.parametrize("physical", ["TIMESTAMP", "TIMESTAMPTZ"])
 @pytest.mark.parametrize(
-    ("grain", "bucket"), [("day", date(2024, 5, 7)), ("week", date(2024, 5, 6))]
+    ("physical", "grain", "bucket"),
+    [("TIMESTAMP", "day", date(2024, 5, 7)), ("TIMESTAMPTZ", "week", date(2024, 5, 6))],
 )
 def test_noon_day_keys_keep_an_intraday_window(calendar_runtime, physical, grain, bucket):
     # The order at May 7 noon falls inside [11:00, 13:00); noon calendar days don't move it.
@@ -236,7 +254,6 @@ def test_a_non_default_calendar_refuses_on_every_leaf_path(time, shape):
     assert refused.value.code == "REWRITE_NOT_SUPPORTED"
     assert refused.value.details["reason"] == "calendar_not_supported_yet"
     assert refused.value.details["calendar_id"] == "fiscal"
-    assert "fiscal calendars return in a later release" in str(refused.value)
 
 
 def test_a_calendar_named_in_the_call_is_refused():

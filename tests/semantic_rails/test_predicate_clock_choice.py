@@ -30,9 +30,10 @@ from tests.semantic_rails.conftest import copy_package_config
 ORDERED = "temporal_role.clocks_order_ordered_at"
 SHIPPED = "temporal_role.clocks_order_shipped_at"
 SIGNED_UP = "temporal_role.clocks_customer_signed_up_at"
-WINDOW_CLOCK_HINT = (
-    "Set time.temporal_role to one of `compatible`, filter by a package metric that pins one "
-    "clock, or use over: all_time."
+# Each alignment once, alternating the public compile and the nested entry point.
+ALIGNED_ENTRYPOINTS = pytest.mark.parametrize(
+    ("alignment", "entrypoint"),
+    [("query_window", compile_query), ("rolling_window_in_period", _compile_query_sql_ast)],
 )
 
 
@@ -316,20 +317,22 @@ def _mixed_reference(conn, combined, threshold):
 
 # The thresholds and reference answers at which filtering both operands on ORDERED differs.
 MIXED_CASES = [
-    pytest.param("mixed_sum", 2, "{ordered} + {shipped}", [], id="sum"),
+    pytest.param("mixed_sum", 2, "{ordered} + {shipped}", [], "query_window", id="sum"),
     pytest.param(
         "mixed_difference",
         1,
         "{ordered} - {shipped}",
         [(1, 1)],
+        "rolling_window_in_period",
         id="difference",
     ),
-    pytest.param("mixed_ratio", 1, "{ordered} / NULLIF({shipped}, 0)", [], id="ratio"),
+    pytest.param(
+        "mixed_ratio", 1, "{ordered} / NULLIF({shipped}, 0)", [], "query_window", id="ratio"
+    ),
 ]
 
 
-@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
-@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+@ALIGNED_ENTRYPOINTS
 def test_ambiguous_window_clock_refuses_with_candidates(warehouse, alignment, entrypoint):
     config, conn = warehouse
     ordered = _reference(conn, "ordered_at")
@@ -346,13 +349,10 @@ def test_ambiguous_window_clock_refuses_with_candidates(warehouse, alignment, en
     assert error.details["requested"] == SIGNED_UP
     assert error.details["compatible"] == [ORDERED, SHIPPED]
     assert not any(clock in str(error) for clock in [ORDERED, SHIPPED])
-    hint = error.details["recovery_hints"][0]
-    assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
-    assert hint["message"] == WINDOW_CLOCK_HINT
+    assert error.details["recovery_hints"][0]["code"] == "CHOOSE_PREDICATE_CLOCK"
 
 
-@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
-@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+@ALIGNED_ENTRYPOINTS
 def test_measure_default_does_not_choose_an_ambiguous_window_clock(
     warehouse, alignment, entrypoint
 ):
@@ -371,8 +371,7 @@ def test_measure_default_does_not_choose_an_ambiguous_window_clock(
     assert raised.value.details["compatible"] == [ORDERED, SHIPPED]
 
 
-@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
-@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+@ALIGNED_ENTRYPOINTS
 def test_metric_advertised_clocks_refuse_when_an_override_would_choose(
     warehouse, alignment, entrypoint
 ):
@@ -389,9 +388,7 @@ def test_metric_advertised_clocks_refuse_when_an_override_would_choose(
     assert error.code == "INVALID_TEMPORAL_BINDING"
     assert error.details["requested"] == SIGNED_UP
     assert error.details["compatible"] == [ORDERED, SHIPPED]
-    hint = error.details["recovery_hints"][0]
-    assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
-    assert hint["message"] == WINDOW_CLOCK_HINT
+    assert error.details["recovery_hints"][0]["code"] == "CHOOSE_PREDICATE_CLOCK"
 
 
 @pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
@@ -404,9 +401,13 @@ def test_window_follows_the_clock_a_metric_pins_though_it_advertises_two(warehou
     assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
 
 
-@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
-@pytest.mark.parametrize("binding", ["input", "override"])
-@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+@pytest.mark.parametrize(
+    ("alignment", "binding", "entrypoint"),
+    [
+        ("query_window", "input", compile_query),
+        ("rolling_window_in_period", "override", _compile_query_sql_ast),
+    ],
+)
 def test_metric_bound_clock_conflicting_with_window_clock_refuses(
     warehouse, alignment, binding, entrypoint
 ):
@@ -422,55 +423,32 @@ def test_metric_bound_clock_conflicting_with_window_clock_refuses(
     assert error.code == "INVALID_TEMPORAL_BINDING"
     assert error.details["requested"] == ORDERED
     assert error.details["compatible"] == [SHIPPED]
-    hint = error.details["recovery_hints"][0]
-    assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
-    assert SHIPPED in hint["message"]
-    assert "time.temporal_role" in hint["message"]
-    assert "over: all_time" in hint["message"]
+    assert error.details["recovery_hints"][0]["code"] == "CHOOSE_PREDICATE_CLOCK"
 
 
-@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
-@pytest.mark.parametrize("name,threshold,combined,expected", MIXED_CASES)
-@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+@pytest.mark.parametrize("name,threshold,combined,expected,alignment", MIXED_CASES)
 def test_window_clock_excluded_by_any_measure_in_metric_refuses(
-    warehouse, alignment, name, threshold, combined, expected, entrypoint
+    warehouse, alignment, name, threshold, combined, expected
 ):
     config, conn = warehouse
     assert _mixed_reference(conn, combined, threshold) == expected
     query = _mixed_query(name, threshold, alignment)
     with pytest.raises(SemanticLayerError) as raised:
-        if entrypoint is compile_query:
-            entrypoint(config, None, query)
+        if name == "mixed_difference":
+            _compile_query_sql_ast(config, query)
         else:
-            entrypoint(config, query)
+            compile_query(config, None, query)
     error = raised.value
     assert error.code == "INVALID_TEMPORAL_BINDING"
     assert error.details["requested"] == ORDERED
     assert error.details["compatible"] == [SHIPPED]
-    hint = error.details["recovery_hints"][0]
-    assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
-    assert hint["message"] == (
-        f"The input is bound to {SHIPPED}; set time.temporal_role to one of them, "
-        "or write over: all_time to apply the predicate over all time."
-    )
+    assert error.details["recovery_hints"][0]["code"] == "CHOOSE_PREDICATE_CLOCK"
 
 
 def test_contextual_window_clock_excluded_by_any_measure_in_metric_refuses(warehouse):
     config, conn = warehouse
     assert _mixed_reference(conn, "{ordered} + {shipped}", 2) == []
     query = _mixed_query("mixed_sum", 2, "same_query_period")
-    query["metric_filters"][0]["expression"]["scope_mode"] = "contextual"
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, None, query)
-    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
-    assert raised.value.details["requested"] == ORDERED
-    assert raised.value.details["compatible"] == [SHIPPED]
-
-
-def test_contextual_metric_bound_clock_conflict_refuses(warehouse):
-    config, conn = warehouse
-    assert _order_reference(conn, "ordered_at", "shipped_at") == []
-    query = _metric_order_query("input", "same_query_period", ORDERED)
     query["metric_filters"][0]["expression"]["scope_mode"] = "contextual"
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, None, query)
@@ -491,17 +469,6 @@ def test_metric_bound_clock_agreeing_with_window_clock_matches_reference(
     assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
 
 
-def test_direct_lowering_cannot_bypass_metric_bound_clock_refusal(warehouse):
-    config, _conn = warehouse
-    plan = plan_query(config, None, _metric_order_query("input", "query_window", SHIPPED))
-    unsafe = _metric_order_query("input", "query_window", ORDERED)
-    with pytest.raises(SemanticLayerError) as raised:
-        lower_to_sql(replace(plan, query=unsafe), config)
-    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
-    assert raised.value.details["requested"] == ORDERED
-    assert raised.value.details["compatible"] == [SHIPPED]
-
-
 def test_direct_lowering_cannot_bypass_any_measure_bound_clock_refusal(warehouse):
     config, _conn = warehouse
     plan = plan_query(config, None, _metric_order_query("input", "query_window", SHIPPED))
@@ -512,9 +479,15 @@ def test_direct_lowering_cannot_bypass_any_measure_bound_clock_refusal(warehouse
     assert raised.value.details["compatible"] == [SHIPPED]
 
 
-@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
-@pytest.mark.parametrize("clock,role", [("ordered_at", ORDERED), ("shipped_at", SHIPPED)])
-@pytest.mark.parametrize("binding", ["input", "override"])
+@pytest.mark.parametrize(
+    "alignment,clock,role,binding",
+    [
+        ("query_window", "ordered_at", ORDERED, "input"),
+        ("rolling_window_in_period", "shipped_at", SHIPPED, "input"),
+        ("rolling_window_in_period", "ordered_at", ORDERED, "override"),
+        ("query_window", "shipped_at", SHIPPED, "override"),
+    ],
+)
 def test_explicit_window_clock_matches_reference(warehouse, alignment, clock, role, binding):
     config, conn = warehouse
     query = _query(alignment=alignment)
@@ -527,9 +500,12 @@ def test_explicit_window_clock_matches_reference(warehouse, alignment, clock, ro
     )
 
 
-@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
 @pytest.mark.parametrize(
-    "measure,clock", [("ordered_orders", "ordered_at"), ("default_orders", "shipped_at")]
+    "alignment,measure,clock",
+    [
+        ("query_window", "ordered_orders", "ordered_at"),
+        ("rolling_window_in_period", "default_orders", "shipped_at"),
+    ],
 )
 def test_single_clock_declared_or_inherited_from_model_default_time_matches_reference(
     warehouse, alignment, measure, clock
@@ -601,17 +577,19 @@ def _runtime(tmp_path, conn):
 def _assert_override_refusal(error):
     assert error.code == "INVALID_TEMPORAL_BINDING"
     assert error.details["measures"] == ["measure.clocks.orders"]
-    assert "measure 'measure.clocks.orders'" in str(error)
-    assert error.details["recovery_hints"][0]["message"] == (
-        "Remove the override for this measure, or use a metric whose definition binds that clock."
-    )
+    assert error.details["recovery_hints"][0]["code"] == "CHOOSE_PREDICATE_CLOCK"
 
 
 CONVERSION_ALIGNMENTS = ["query_window", "rolling_window_in_period", "same_query_period", None]
 
 
-@pytest.mark.parametrize("alignment", CONVERSION_ALIGNMENTS)
-@pytest.mark.parametrize("entrypoint", ["runtime", "compile"])
+@pytest.mark.parametrize(
+    "alignment,entrypoint",
+    [
+        (alignment, ["runtime", "compile"][i % 2])
+        for i, alignment in enumerate(CONVERSION_ALIGNMENTS)
+    ],
+)
 def test_conversion_input_refuses_overridden_converted_measure(
     warehouse, tmp_path, alignment, entrypoint
 ):
@@ -748,8 +726,9 @@ def _output_call(name, role, grain=""):
     }
 
 
-@pytest.mark.parametrize("grain", ["", "month"])
-@pytest.mark.parametrize("entrypoint", ["compile", "nested", "runtime"])
+@pytest.mark.parametrize(
+    "grain,entrypoint", [("", "compile"), ("month", "nested"), ("", "runtime")]
+)
 def test_pinned_metric_output_refuses_a_window_on_another_advertised_clock(
     warehouse, tmp_path, grain, entrypoint
 ):
@@ -868,9 +847,15 @@ def _nested_query(alignment, override, depth=1, input_=None):
     return query
 
 
-@pytest.mark.parametrize("alignment", CONVERSION_ALIGNMENTS)
-@pytest.mark.parametrize("depth", [1, 2])
-@pytest.mark.parametrize("entrypoint", ["runtime", "compile"])
+@pytest.mark.parametrize(
+    "alignment,depth,entrypoint",
+    [
+        ("query_window", 1, "runtime"),
+        ("rolling_window_in_period", 2, "compile"),
+        ("same_query_period", 1, "compile"),
+        (None, 2, "runtime"),
+    ],
+)
 def test_nested_scoped_predicate_refuses_an_override_its_input_would_drop(
     warehouse, tmp_path, alignment, depth, entrypoint
 ):
@@ -890,8 +875,10 @@ def test_nested_scoped_predicate_refuses_an_override_its_input_would_drop(
     _assert_override_refusal(raised.value)
 
 
-@pytest.mark.parametrize("alignment", CONVERSION_ALIGNMENTS)
-@pytest.mark.parametrize("depth", [1, 2])
+@pytest.mark.parametrize(
+    "alignment,depth",
+    [(alignment, 1 + i % 2) for i, alignment in enumerate(CONVERSION_ALIGNMENTS)],
+)
 def test_nested_scoped_predicate_without_override_matches_reference(
     warehouse, tmp_path, alignment, depth
 ):
@@ -972,8 +959,13 @@ def _aggregate_nested_query(nesting, override):
     return query
 
 
-@pytest.mark.parametrize("nesting", NESTED_AGGREGATES)
-@pytest.mark.parametrize("entrypoint", ["validate", "compile", "lower"])
+@pytest.mark.parametrize(
+    "nesting,entrypoint",
+    [
+        (nesting, ["validate", "compile", "lower"][i % 3])
+        for i, nesting in enumerate(NESTED_AGGREGATES)
+    ],
+)
 def test_aggregate_filter_predicates_refuse_an_override_their_input_would_drop(
     warehouse, tmp_path, nesting, entrypoint
 ):

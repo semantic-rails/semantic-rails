@@ -382,23 +382,11 @@ def test_the_direct_key_and_a_recorded_route_each_answer_naming_the_route(tmp_pa
 @pytest.mark.parametrize(
     ("relationships", "pins", "verbosity", "routes"),
     [
-        pytest.param(
-            DIAMOND,
-            None,
-            "minimal",
-            [{"from": ACCOUNT, "to": REGION, "via": BRANCH}],
-            id="minimal-response",
-        ),
+        pytest.param(DIAMOND, None, "minimal", [{"from": ACCOUNT, "to": REGION, "via": BRANCH}], id="minimal-response"),
         pytest.param(("accounts_branch_region",), None, "compact", None, id="one-route"),
-        pytest.param(
-            ("accounts_branch_region",),
-            [_pin("account", "region", BRANCH)],
-            "compact",
-            None,
-            id="one-route-recorded",
-        ),
+        pytest.param(("accounts_branch_region",), [_pin("account", "region", BRANCH)], "compact", None, id="one-route-recorded"),
     ],
-)
+)  # fmt: skip
 def test_no_route_where_nothing_was_chosen_and_the_minimal_response_names_only_the_route(
     tmp_path, relationships, pins, verbosity, routes
 ):

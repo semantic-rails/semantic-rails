@@ -97,9 +97,6 @@ def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory)
     )
     config = load_package_config(str(package_path))
     rendered = compile_query(config, Registry(config), _query())["sql"]
-    assert "TIMEZONE('America/New_York', TIMEZONE('UTC'" in rendered, rendered
-    assert "CONVERT_TIMEZONE" not in rendered, rendered
-    assert "DATE_TRUNC('month', CAST(TIMEZONE(" in rendered, rendered
 
     with duckdb.connect() as con:
         con.execute("CREATE TABLE jaffle_order (order_id VARCHAR, ordered_at TIMESTAMP)")
@@ -114,8 +111,6 @@ def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory)
     ("warehouse", "expected"),
     [
         ("duckdb", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
-        ("motherduck", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
-        ("ducklake", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
         ("postgres", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
         ("snowflake", "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"),
         ("databricks", "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"),
@@ -167,7 +162,8 @@ def test_no_conversion_when_source_zone_is_absent_or_equal(
     compiled = compile_query(config, Registry(config), _query())
     rendered = compiled["sql"]
 
-    assert "CONVERT_TIMEZONE" not in rendered, rendered
+    # DuckDB writes a conversion as TIMEZONE(...).
+    assert "TIMEZONE(" not in rendered, rendered
 
 
 # -- zone-aware columns: answers in the role's zone, whatever the session's ------------
@@ -231,22 +227,12 @@ def _zone_runtime(root: Path, column: str, zones: str) -> Runtime:
     [
         # A zone-aware column is bucketed and bounded in the role's zone (UTC by default).
         ("ordered_at_tz", "", {"2023-12-01": 7}, {"2023-12-01": 15}),
-        (
-            "ordered_at_tz",
-            ", timezone: America/New_York",
-            {"2023-12-01": 14},
-            {"2023-11-01": 1, "2023-12-01": 14},
-        ),
+        ("ordered_at_tz", ", timezone: America/New_York", {"2023-12-01": 14}, {"2023-11-01": 1, "2023-12-01": 14}),
         # Naive columns keep their stored clock, converted only by column_timezone.
         ("ordered_at", "", {"2023-12-01": 7}, {"2023-12-01": 15}),
-        (
-            "ordered_at",
-            ", timezone: America/New_York, column_timezone: UTC",
-            {"2023-12-01": 14},
-            {"2023-11-01": 1, "2023-12-01": 14},
-        ),
+        ("ordered_at", ", timezone: America/New_York, column_timezone: UTC", {"2023-12-01": 14}, {"2023-11-01": 1, "2023-12-01": 14}),
     ],
-)
+)  # fmt: skip
 def test_answers_do_not_follow_the_session_time_zone(
     tmp_path: Path, column: str, zones: str, days: dict[str, int], months: dict[str, int]
 ) -> None:

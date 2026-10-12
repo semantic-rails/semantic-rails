@@ -154,15 +154,10 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
         ("day", [date(2024, 9, 21)], [None], None),
         ("day", [date(2024, 9, 21)], [date(2024, 9, 22), "2024-09-23"], None),
         ("day", [date(2024, 9, 20), datetime(2024, 9, 21)], [date(2024, 9, 22)], None),
-        (
-            "hour",
-            [datetime(2024, 9, 21, 9), datetime(2024, 9, 21, 10, tzinfo=UTC)],
-            [datetime(2024, 9, 21, 11)],
-            None,
-        ),
+        ("hour", [datetime(2024, 9, 21, 9), datetime(2024, 9, 21, 10, tzinfo=UTC)], [datetime(2024, 9, 21, 11)], None),
         ("day", [None], [], "undated"),
     ],
-)
+)  # fmt: skip
 def test_series_compares_only_compatible_sql_bucket_keys(
     package_config_factory, monkeypatch, grain, edges, buckets, expected
 ):

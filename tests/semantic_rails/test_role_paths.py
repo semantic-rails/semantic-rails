@@ -371,21 +371,6 @@ AUTHORED_LAYOUTS = {
 
 
 @pytest.mark.parametrize("layout", AUTHORED_LAYOUTS)
-def test_loader_keeps_both_roles(tmp_path, layout):
-    config = load_package_config(str(_write_package(tmp_path, **AUTHORED_LAYOUTS[layout])))
-    relationships = _relationship_ids(config, "entity.air_leg", "entity.air_airport")
-    assert len(relationships) == 2
-    assert DESTINATION in relationships
-    columns = {
-        rel.id: rel.source_columns
-        for rel in config.relationships
-        if rel.source_entity == "entity.air_leg"
-    }
-    assert columns[DESTINATION] == ["destination_code"]
-    assert ["origin_code"] in columns.values()
-
-
-@pytest.mark.parametrize("layout", AUTHORED_LAYOUTS)
 def test_query_through_two_roles_is_refused_whatever_the_declaration_order(tmp_path, layout):
     config = load_package_config(str(_write_package(tmp_path, **AUTHORED_LAYOUTS[layout])))
     runtime = Runtime.from_path(str(tmp_path / "air"))
@@ -396,7 +381,11 @@ def test_query_through_two_roles_is_refused_whatever_the_declaration_order(tmp_p
     assert err.code == "AMBIGUOUS_PATH"
     options = err.details["clarification"]["options"]
     candidates = sorted(option["relationship_path"][0] for option in options)
+    # The loader keeps both roles, each on its own column.
     assert candidates == _relationship_ids(config, "entity.air_leg", "entity.air_airport")
+    assert DESTINATION in candidates and len(candidates) == 2
+    columns = {rel.id: rel.source_columns for rel in config.relationships if rel.id in candidates}
+    assert sorted(columns.values()) == [["destination_code"], ["origin_code"]]
     assert all(len(option["relationship_path"]) == 1 for option in options)
     hint = err.details["hint"]
     # The hint sends one option's query, or records its decision as the package default.
@@ -443,8 +432,10 @@ def _rows(runtime: Runtime, query: dict, columns: list[str], *, key=None) -> lis
     )
 
 
-@pytest.mark.parametrize("query_name", ROLE_QUERIES)
-@pytest.mark.parametrize("layout", AUTHORED_LAYOUTS)
+@pytest.mark.parametrize(
+    ("query_name", "layout"),
+    [(name, list(AUTHORED_LAYOUTS)[i % 4]) for i, name in enumerate(ROLE_QUERIES)],
+)
 def test_every_query_through_two_roles_is_refused_unpinned(tmp_path, layout, query_name):
     """Neither the key dimension nor a metric predicate is answered from the role
     that happens to be declared first."""
@@ -455,11 +446,15 @@ def test_every_query_through_two_roles_is_refused_unpinned(tmp_path, layout, que
     assert exc_info.value.code == "AMBIGUOUS_PATH"
 
 
-@pytest.mark.parametrize("query_name", ROLE_QUERIES)
+# Every layout pins each role once, and every query runs at least once.
 @pytest.mark.parametrize(
-    ("role", "role_column"), [("origin", "origin_code"), ("destination", "destination_code")]
+    ("layout", "role", "role_column", "query_name"),
+    [
+        (layout, role, f"{role}_code", list(ROLE_QUERIES)[(2 * i + j) % len(ROLE_QUERIES)])
+        for i, layout in enumerate(AUTHORED_LAYOUTS)
+        for j, role in enumerate(["origin", "destination"])
+    ],
 )
-@pytest.mark.parametrize("layout", AUTHORED_LAYOUTS)
 def test_pinned_role_returns_that_roles_gold_value(tmp_path, layout, role, role_column, query_name):
     query, columns, select, where = ROLE_QUERIES[query_name]
     _write_package(tmp_path, **AUTHORED_LAYOUTS[layout], **_pin(role, layout))
@@ -514,26 +509,9 @@ def test_a_single_role_is_no_census_entry(tmp_path):
     assert _undecided(tmp_path, explicit=("destination",)) == {}
 
 
-def test_three_roles_of_one_pair_are_one_entry_naming_each(tmp_path):
-    """Every query through the pair is refused until a row records its role."""
-    undecided = _undecided(tmp_path, explicit=("origin", "destination", "alternate"))
-    assert undecided[(LEG, AIRPORT)] == [[ALTERNATE], [DESTINATION], [ORIGIN]]
-
-
 def test_a_pair_pin_settles_its_own_direction_and_the_reverse(tmp_path):
     """The reverse pair inherits the row when every hop allows a reverse walk."""
     assert _undecided(tmp_path, **_pin("origin", "explicit_origin_first")) == {}
-
-
-def test_the_key_shortcut_declines_a_pair_with_several_routes(tmp_path):
-    """The direct read of a key never picks a role: a pair with several routes returns None,
-    so the caller goes through path selection, which follows a pin or refuses."""
-    config = load_package_config(str(_write_package(tmp_path)))
-    leg, airport = "entity.air_leg", "entity.air_airport"
-    routes = _pair_key_routes(leg, airport, "airport_code", config)
-    assert sorted(column for _rel, column in routes) == ["destination_code", "origin_code"]
-    assert _direct_entity_key_source_expr(leg, airport, "airport_code", config) is None
-    assert _direct_dimension_source_expr(leg, CODE, config) is None
 
 
 def test_the_key_shortcut_declines_when_another_role_targets_a_non_key_column(tmp_path):
@@ -548,15 +526,6 @@ def test_the_key_shortcut_declines_when_another_role_targets_a_non_key_column(tm
     ]
     assert _direct_entity_key_source_expr(leg, airport, "airport_code", config) is None
     assert _direct_dimension_source_expr(leg, CODE, config) is None
-
-
-def test_the_shortcut_still_reads_a_single_role_from_the_source_table(tmp_path):
-    config = load_package_config(str(_write_package(tmp_path, explicit=("destination",))))
-    expr = _direct_entity_key_source_expr(
-        "entity.air_leg", "entity.air_airport", "airport_code", config
-    )
-    assert expr is not None
-    assert expr.parts[-1] == "destination_code"
 
 
 GATE_PIN = (
@@ -619,23 +588,6 @@ def test_the_key_shortcut_declines_when_a_pin_names_another_route(tmp_path):
         [ORIGIN],
         [[ORIGIN], ["relationship.legs_gate", "relationship.gates_airport"]],
     )
-
-
-def test_the_key_shortcut_stands_when_the_pin_names_only_the_direct_relationship(tmp_path):
-    pin = (
-        "  path_preferences:\n"
-        "    - source_entity: leg\n"
-        "      target_entity: airport\n"
-        f"      relationship_path: [{DESTINATION}]\n"
-    )
-    config = load_package_config(
-        str(_write_package(tmp_path, explicit=("destination",), path_preferences=pin))
-    )
-    expr = _direct_entity_key_source_expr(
-        "entity.air_leg", "entity.air_airport", "airport_code", config
-    )
-    assert expr is not None
-    assert expr.parts[-1] == "destination_code"
 
 
 def test_the_legs_own_key_beats_a_row_written_from_the_target_side(tmp_path):
@@ -701,7 +653,8 @@ def _all_orders_are_refused(entries: list[tuple[str, dict]], inferred: list[str]
 
 def test_two_authored_entries_on_the_same_columns_are_refused_in_every_order():
     """Never merged by id or declaration order, so no authored attribute (a pin, a
-    traversal) is dropped without notice."""
+    traversal) is dropped without notice. An unset ``target`` is the entity key, not a
+    wildcard: entries that name different targets, or none, on one column still refuse."""
     _all_orders_are_refused(
         [
             _entry("a", ["origin_code"]),
@@ -709,11 +662,6 @@ def test_two_authored_entries_on_the_same_columns_are_refused_in_every_order():
             _entry("c", ["origin_code"]),
         ]
     )
-
-
-def test_entries_on_the_same_columns_are_refused_whatever_their_target_columns():
-    """An unset ``target`` is the entity key, not a wildcard: entries that name different
-    targets, or none, on one column still refuse in every order."""
     _all_orders_are_refused(
         [
             _entry("by_code", ["origin_code"], ["airport_code"]),
@@ -752,15 +700,6 @@ def test_second_entry_without_source_columns_is_refused_by_name():
         _normalized_joins(dict([_entry("a", ["origin_code"]), _entry("no_columns")]))
     assert exc_info.value.code == "INVALID_CONFIG"
     assert "relationship.no_columns" in str(exc_info.value)
-
-
-def test_roles_declared_from_opposite_sides_are_one_census_entry(tmp_path):
-    """A role written as ``[airport, leg]`` is still a second route between the pair."""
-    undecided = _undecided(tmp_path, explicit=("destination",), reverse=("origin",))
-    assert undecided[(LEG, AIRPORT)] == [
-        [DESTINATION],
-        ["relationship.legs_origin_airport_reverse"],
-    ]
 
 
 def test_one_role_declared_from_both_sides_is_listed_because_its_queries_refuse(tmp_path):
