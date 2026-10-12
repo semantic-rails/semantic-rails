@@ -256,6 +256,9 @@ def test_inline_yoy_validates_and_compiles(runtime: Runtime, grain: str) -> None
     validate_out = runtime.validate(_yoy_query(grain))
     assert validate_out.get("ok") is True
     assert "errors" not in validate_out
+    # A working inline prior_period keeps its kind: no silent-drop warning.
+    codes = [w.get("code") for w in validate_out.get("warnings") or []]
+    assert "EXPRESSION_NORMALIZED_AWAY" not in codes
     sql = str(runtime.compile(_yoy_query(grain)).get("rendered_sql", ""))
     assert ' AS "revenue_usd"' in sql
     assert ' AS "revenue_prior_year"' in sql
@@ -363,17 +366,6 @@ def test_expression_normalized_away_warning_fires_when_kind_dropped() -> None:
     assert warning["details"]["position"] == "select"
     assert warning["details"]["dropped_expression"]["kind"] == "prior_period"
     assert warning["details"]["compiled_kind"] == "measure"
-
-
-def test_expression_normalized_away_warning_does_not_fire_for_normal_query(
-    runtime: Runtime,
-) -> None:
-    """A working inline prior_period must NOT emit the silent-drop
-    warning — the kind is preserved in the compiled output."""
-    res = runtime.validate(_yoy_query("year"))
-    warnings = res.get("warnings", []) or []
-    codes = [w.get("code") for w in warnings]
-    assert "EXPRESSION_NORMALIZED_AWAY" not in codes, codes
 
 
 def test_expression_normalized_away_kind_list_includes_prior_period() -> None:
