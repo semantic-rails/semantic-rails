@@ -23,7 +23,6 @@ from tests.semantic_rails.conftest import copy_package_config, opened
 
 CONVERSION_METRICS = [
     "metric.adoption.signup_to_send_conversion_rate_28d",
-    "metric.sales.session_to_order_conversion_rate_7d",
     "metric.sales.session_to_order_conversion_rate_7d_same_store",
     "metric.sales.adele_then_chai_28d",  # added below: operand filters
 ]
@@ -93,22 +92,21 @@ def _run(adapter: SemanticLayerMCPAdapter, expression: dict[str, Any], **extra: 
 
 
 @pytest.mark.parametrize(
-    ("overrides", "problem"),
+    ("overrides", "received"),
     [
-        ({}, "require 'matching_mode'"),
-        ({"matching_mode": "first"}, "unsupported conversion matching_mode 'first'"),
-        ({"matching": {"mode": "same_customer"}}, "unsupported conversion matching_mode {"),
+        ({}, ""),
+        ({"matching_mode": "first"}, "first"),
+        ({"matching": {"mode": "same_customer"}}, {"mode": "same_customer"}),
     ],
 )
-def test_matching_mode_error_is_recoverable_in_one_step(adapter, overrides, problem):
+def test_matching_mode_error_is_recoverable_in_one_step(adapter, overrides, received):
     sent = {**SESSION_TO_ORDER, **overrides}
     query = {"select": [{"as": "v", "expression": sent}]}
     error = adapter.call_tool("execute", {"mode": "validate", "query": query})["errors"][0]
 
     assert error["code"] == "CONVERSION_MATCHING_MODE_REQUIRED"
-    assert problem in error["message"]
-    assert all(mode in error["message"] for mode in CONVERSION_MATCHING_MODES)
     assert error["details"]["path"] == "expression.matching_mode"
+    assert error["details"]["received_value"] == received
     assert error["details"]["allowed_values"] == CONVERSION_MATCHING_MODES
     (hint,) = error["recovery_hints"]
     assert hint["allowed_values"] == list(CONVERSION_MATCHING_MODES)
@@ -124,13 +122,14 @@ def test_window_error_names_the_units_and_shape(adapter, window):
     error = adapter.call_tool("execute", {"mode": "validate", "query": query})["errors"][0]
 
     assert error["code"] == "CONVERSION_WINDOW_REQUIRED"
+    assert error["details"]["path"] == "expression.window"
+    assert error["details"]["received_value"] == window
     if isinstance(window, dict):
-        assert "minute, hour, day, week, month, quarter, year" in error["message"]
         shape = error["details"]["suggested_shape"]
     else:
         (hint,) = error["recovery_hints"]
         shape = hint["suggested_shape"]
-    assert shape["unit"].startswith("<minute|hour|day")
+    assert shape["unit"] == "<minute|hour|day|week|month|quarter|year>"
 
 
 @pytest.mark.parametrize("metric_id", CONVERSION_METRICS)

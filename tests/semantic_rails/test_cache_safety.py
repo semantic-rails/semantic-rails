@@ -47,9 +47,7 @@ def test_lru_compiled_sql_cache_supports_concurrent_get_and_put():
 
 
 class _RecordingCache:
-    """Minimal `CompiledSqlCache` implementation used to confirm
-    `Runtime.set_compile_cache` accepts a protocol-conforming injection
-    and routes subsequent `get`/`put` traffic to it."""
+    """A minimal `CompiledSqlCache` that records the keys it is asked for."""
 
     def __init__(self) -> None:
         self.store: dict[str, CachedCompilation] = {}
@@ -65,42 +63,11 @@ class _RecordingCache:
         self.store[key] = value
 
 
-def test_runtime_set_compile_cache_accepts_protocol_implementation(runtime_factory):
-    """Public extension seam: `Runtime.set_compile_cache(cache)` replaces
-    the in-process LRU with a protocol-conforming process-local backend.
-    The underscore-prefixed attribute stays internal; the setter is the
-    typed-object contract, not a distributed serialization promise.
-    """
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        injected = _RecordingCache()
-        runtime.set_compile_cache(injected)
-        assert runtime._compile_cache is injected, (
-            "setter must swap the internal cache to the injected instance"
-        )
-        # Smoke: the runtime can now write into the new backend.
-        runtime._compile_cache.put("test-key", CachedCompilation(compiled={"sql": "select 1"}))
-        assert injected.put_calls == ["test-key"]
-    finally:
-        runtime.close()
-
-
-def test_runtime_reload_preserves_injected_compile_cache(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        injected = _RecordingCache()
-        runtime.set_compile_cache(injected)
-        runtime.reload()
-        assert runtime._compile_cache is injected
-    finally:
-        runtime.close()
-
-
-def test_runtime_set_compile_cache_rejects_non_conforming_object(runtime_factory):
-    """A misconfigured deployment that injects an object missing `get`/`put`
-    must fail fast at injection time, not at the first cached-query
-    request. Otherwise the cache becomes a silent foot-gun.
-    """
+def test_runtime_set_compile_cache_takes_only_a_protocol_implementation(runtime_factory):
+    """`Runtime.set_compile_cache(cache)` replaces the in-process LRU with a process-local
+    backend that implements the runtime-checkable `CompiledSqlCache` protocol, and keeps it
+    across a reload. An object missing `get` or `put` fails at injection time, not at the first
+    cached query."""
 
     class _MissingGet:
         def put(self, key, value):  # pragma: no cover - signature only
@@ -110,25 +77,23 @@ def test_runtime_set_compile_cache_rejects_non_conforming_object(runtime_factory
         def get(self, key):  # pragma: no cover - signature only
             return None
 
+    assert isinstance(LruCompiledSqlCache(), CompiledSqlCache)
+    assert not isinstance(object(), CompiledSqlCache)
     runtime = runtime_factory("jaffle_shop")
     try:
-        with pytest.raises(TypeError, match="CompiledSqlCache"):
-            runtime.set_compile_cache(_MissingGet())  # type: ignore[arg-type]
-        with pytest.raises(TypeError, match="CompiledSqlCache"):
-            runtime.set_compile_cache(_MissingPut())  # type: ignore[arg-type]
-        with pytest.raises(TypeError, match="CompiledSqlCache"):
-            runtime.set_compile_cache("not-a-cache")  # type: ignore[arg-type]
+        for wrong in (_MissingGet(), _MissingPut(), "not-a-cache"):
+            with pytest.raises(TypeError, match="CompiledSqlCache"):
+                runtime.set_compile_cache(wrong)  # type: ignore[arg-type]
+        injected = _RecordingCache()
+        assert isinstance(injected, CompiledSqlCache)
+        runtime.set_compile_cache(injected)
+        assert runtime._compile_cache is injected
+        runtime._compile_cache.put("test-key", CachedCompilation(compiled={"sql": "select 1"}))
+        assert injected.put_calls == ["test-key"]
+        runtime.reload()
+        assert runtime._compile_cache is injected
     finally:
         runtime.close()
-
-
-def test_compiled_sql_cache_protocol_runtime_checkable():
-    """The protocol must be `@runtime_checkable` so isinstance() works at
-    the setter boundary — that's the only way the setter can validate
-    inputs at startup without forcing operators to subclass anything."""
-    assert isinstance(LruCompiledSqlCache(), CompiledSqlCache)
-    assert isinstance(_RecordingCache(), CompiledSqlCache)
-    assert not isinstance(object(), CompiledSqlCache)
 
 
 def _key(policy_context):

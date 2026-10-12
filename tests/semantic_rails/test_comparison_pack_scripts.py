@@ -13,6 +13,7 @@ import subprocess
 import sys
 import urllib.error
 from collections import Counter
+from contextlib import closing
 from decimal import Decimal
 from email.message import Message
 from pathlib import Path
@@ -20,17 +21,16 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
-import yaml
 
 SCRIPTS = (
     Path(__file__).resolve().parents[2] / "comparisons" / "semantic_layers" / "shared" / "scripts"
 )
 
 
-def _load(name: str) -> ModuleType:
+def _load(name: str, path: Path | None = None) -> ModuleType:
     if str(SCRIPTS) not in sys.path:
         sys.path.insert(0, str(SCRIPTS))
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, path or SCRIPTS / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -45,6 +45,50 @@ LAYERS = generator.LAYER_ORDER
 SHARED = [f"q0{n}_shared" for n in range(1, 8)]
 TARGETED = [f"q{n:02d}_targeted" for n in range(8, 17)]
 BYPASS = {"q11_targeted": ["lifetime_order_count"], "q12_targeted": ["lifetime_spend_cents"]}
+REPORT = SCRIPTS.parent / "results" / "validation" / "output_consistency.json"
+MATRIX = SCRIPTS.parent / "capability_matrix.json"
+CUBE_ORDERS = "cubes:\n  - name: orders\n    sql_table: comparison_orders\n"
+CUBE_SQL = {"sql": {"sql": ["select 1", []]}}
+
+
+def _json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _labels() -> dict[str, Any]:
+    """The committed rubric labels, by layer and question id."""
+    return _json(rubric.OUTPUT_PATH)["labels"]
+
+
+def _write(root: Path, files: dict[str, Any]) -> Path:
+    """Write files under root, creating directories; content that isn't text is JSON."""
+    for relative, content in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = content if isinstance(content, str) else json.dumps(content)
+        path.write_text(text, encoding="utf-8")
+    return root
+
+
+def _edit_json(path: Path, **changes: Any) -> None:
+    _write(path.parent, {path.name: _json(path) | changes})
+
+
+def _variants() -> list[str]:
+    return sorted(q["id"] for q in generator.load_questions() if q["scope_level"] == "variant")
+
+
+@pytest.fixture
+def pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A scratch pack and repository root for the rubric's detectors."""
+    monkeypatch.setattr(rubric, "PACK", tmp_path)
+    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    return tmp_path
+
+
+@pytest.fixture(scope="module")
+def contracts() -> tuple[dict[str, Any], dict[str, Any]]:
+    return generator.build_contracts()
 
 
 def _question(qid: str, status: str = "matched") -> dict[str, Any]:
@@ -58,7 +102,7 @@ def _question(qid: str, status: str = "matched") -> dict[str, Any]:
     }
 
 
-def _report(items: list[dict[str, Any]]) -> dict[str, Any]:
+def _report(items: list[dict[str, Any]], stale: dict[str, Any] | None = None) -> dict[str, Any]:
     counts = {status: 0 for status in ("matched", "mismatched", "not_comparable")}
     by_slice: dict[str, dict[str, Any]] = {}
     for item in items:
@@ -76,7 +120,7 @@ def _report(items: list[dict[str, Any]]) -> dict[str, Any]:
         "summary": counts,
         "summary_by_slice": by_slice,
         "questions": items,
-        "stale_layers": {},
+        "stale_layers": stale or {},
     }
 
 
@@ -86,14 +130,8 @@ def _claims(
     stale: dict[str, Any] | None = None,
     layer_fields: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
-    questions = [
-        {
-            "id": item["question_id"],
-            "title": item["question_id"],
-            "bypass_columns": BYPASS.get(item["question_id"], []),
-        }
-        for item in items
-    ]
+    ids = [item["question_id"] for item in items]
+    questions = [{"id": qid, "title": qid, "bypass_columns": BYPASS.get(qid, [])} for qid in ids]
     slice_ids: dict[str, list[str]] = {}
     for item in items:
         slice_ids.setdefault(item["slice"], []).append(item["question_id"])
@@ -105,38 +143,26 @@ def _claims(
             "dataset": "stale" if layer in (stale or {}) else "current",
             **(layer_fields or {}).get(layer, {}),
             "questions": [
-                {
-                    "question_id": item["question_id"],
-                    "support_status": (labels or {}).get(layer, "precomputed"),
-                }
-                for item in items
+                {"question_id": qid, "support_status": (labels or {}).get(layer, "precomputed")}
+                for qid in ids
             ],
         }
         for layer in LAYERS
     ]
-    report = _report(items)
-    report["stale_layers"] = stale or {}
-    return generator.claim_findings(report, questions, slice_ids, layers)
+    return generator.claim_findings(_report(items, stale), questions, slice_ids, layers)
 
 
 def test_agreement_groups_agree_pairwise_despite_non_transitive_tolerance() -> None:
     def rows(value: str) -> list[dict[str, Any]]:
         return [{"orders": Decimal(value)}]
 
-    groups = validator._agreement_groups(
-        {
-            "semantic_rails": rows("10"),
-            "metricflow": rows("1"),
-            "cube": rows("1.0000009"),
-            "malloy": rows("0.9999991"),
-        }
-    )
     by_layer = {
         "semantic_rails": "10",
         "metricflow": "1",
         "cube": "1.0000009",
         "malloy": "0.9999991",
     }
+    groups = validator._agreement_groups({layer: rows(value) for layer, value in by_layer.items()})
     for group in groups:
         for left, right in itertools.combinations(group, 2):
             assert validator._rows_equal(rows(by_layer[left]), rows(by_layer[right]))[0], group
@@ -171,15 +197,6 @@ def test_claims_refuse_a_report_not_checked_against_the_answer_key() -> None:
         generator.claim_findings(report, [], {}, [])
 
 
-def test_headline_when_everything_matches() -> None:
-    claims = _claims([_question(qid) for qid in SHARED + TARGETED])
-    assert claims[0] == (
-        "On all 16 questions, all 6 layers return the independent answer key's normalized "
-        "outputs, with numbers matching within 1e-6."
-    )
-    assert not any(claim.startswith("On q") for claim in claims)
-
-
 def test_unsupported_layer_is_named_and_empty_slices_are_skipped() -> None:
     items = [_question(qid) for qid in SHARED]
     unsupported = copy.deepcopy(items[2])
@@ -210,9 +227,15 @@ def test_status_totals_keep_unknown_labels() -> None:
     assert totals["native"] == 2 and totals["other"] == 1 and totals["unsupported"] == 0
 
 
-def test_bypass_sentence_names_every_layers_label() -> None:
+def test_headline_and_bypass_sentences_when_everything_matches() -> None:
     items = [_question(qid) for qid in SHARED + TARGETED]
     claims = _claims(items)
+    assert claims[0] == (
+        "On all 16 questions, all 6 layers return the independent answer key's normalized "
+        "outputs, with numbers matching within 1e-6."
+    )
+    assert not any(claim.startswith("On q") for claim in claims)
+    # The bypass sentence names every layer's label.
     assert (
         "q11 asks for a rollup that the shared data already holds in `lifetime_order_count`; it "
         "is labeled precomputed for Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic "
@@ -268,12 +291,7 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
 
 
 def _load_runner(layer: str) -> ModuleType:
-    path = SCRIPTS.parents[1] / layer / "scripts" / "run_questions.py"
-    spec = importlib.util.spec_from_file_location(f"{layer}_runner", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _load(f"{layer}_runner", SCRIPTS.parents[1] / layer / "scripts" / "run_questions.py")
 
 
 def test_snowflake_run_records_only_one_agreed_fingerprint() -> None:
@@ -288,52 +306,36 @@ def test_snowflake_run_records_only_one_agreed_fingerprint() -> None:
 def _run_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snowflake: dict) -> dict:
     """Run the output check on a three-layer, one-question pack whose Snowflake run is given."""
     layers = ["semantic_rails", "ktx", "snowflake_semantic_views"]
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    (tmp_path / "questions.yml").write_text(
-        "questions:\n  - id: q01_x\n    title: X\n    scope_level: required\n", encoding="utf-8"
-    )
-    rows = {layer: [{"order_month": "2016-09-01", "orders": 5}] for layer in layers[:2]}
-    rows["snowflake_semantic_views"] = [
-        {"order_month": "2016-09-01", "orders": snowflake["orders"]}
-    ]
+    maps = {layer: {"q01_x": {"month": "order_month", "orders": "orders"}} for layer in layers}
+    files: dict[str, Any] = {
+        "questions.yml": "questions:\n  - id: q01_x\n    title: X\n    scope_level: required\n",
+        "results/oracle/q01_x.json": [{"month": "2016-09-01", "orders": 5}],
+        "oracle/q01_x.sql": "SELECT DATE '2016-09-01' AS month, 5 AS orders",
+        "column_maps.yml": maps,
+    }
     for layer in layers:
-        layer_dir = tmp_path / "results" / layer
-        layer_dir.mkdir(parents=True)
-        payload = {"rows": rows[layer]} if layer == "semantic_rails" else rows[layer]
-        (layer_dir / "q01_x.json").write_text(json.dumps(payload), encoding="utf-8")
-        fingerprint = snowflake["fingerprint"] if layer == "snowflake_semantic_views" else "fp-now"
-        summary = {
-            "dataset_fingerprint": fingerprint,
-            "generated_at": "2026-09-23T00:00:00+00:00",
-            "questions": [
-                {
-                    "question_id": "q01_x",
-                    "status": snowflake.get("status", "executed")
-                    if layer == "snowflake_semantic_views"
-                    else "executed",
-                    "result_path": f"results/{layer}/q01_x.json",
-                }
-            ],
+        snow = layer == "snowflake_semantic_views"
+        rows = [{"order_month": "2016-09-01", "orders": snowflake["orders"] if snow else 5}]
+        files[f"results/{layer}/q01_x.json"] = {"rows": rows} if layer == "semantic_rails" else rows
+        question = {
+            "question_id": "q01_x",
+            "status": snowflake.get("status", "executed") if snow else "executed",
+            "result_path": f"results/{layer}/q01_x.json",
         }
-        (layer_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
-    key_dir = tmp_path / "results" / "oracle"
-    key_dir.mkdir(parents=True)
-    (key_dir / "q01_x.json").write_text(
-        json.dumps([{"month": "2016-09-01", "orders": 5}]), encoding="utf-8"
-    )
-    oracle_dir = tmp_path / "oracle"
-    oracle_dir.mkdir()
-    (oracle_dir / "q01_x.sql").write_text("SELECT DATE '2016-09-01' AS month, 5 AS orders", "utf-8")
+        files[f"results/{layer}/summary.json"] = {
+            "dataset_fingerprint": snowflake["fingerprint"] if snow else "fp-now",
+            "generated_at": "2026-09-23T00:00:00+00:00",
+            "questions": [question],
+        }
+    _write(tmp_path, files)
     key_summary = {
         "dataset_fingerprint": "fp-now",
         "answer_key_fingerprint": validator.answer_key_fingerprint(
-            oracle_dir, tmp_path / "questions.yml"
+            tmp_path / "oracle", tmp_path / "questions.yml"
         ),
         "questions": [{"question_id": "q01_x", "result_path": "results/oracle/q01_x.json"}],
     }
-    (key_dir / "summary.json").write_text(json.dumps(key_summary), encoding="utf-8")
-    maps = {layer: {"q01_x": {"month": "order_month", "orders": "orders"}} for layer in layers}
-    (tmp_path / "column_maps.yml").write_text(json.dumps(maps), encoding="utf-8")
+    _write(tmp_path, {"results/oracle/summary.json": key_summary})
     for name, value in {
         "REPO_ROOT": tmp_path,
         "RESULTS_ROOT": tmp_path / "results",
@@ -348,15 +350,18 @@ def _run_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snowflake: d
     }.items():
         monkeypatch.setattr(validator, name, value)
     validator.main()
-    report = json.loads((tmp_path / "validation" / "output_consistency.json").read_text())
+    report = _json(tmp_path / "validation" / "output_consistency.json")
     report["markdown"] = (tmp_path / "validation" / "output_consistency.md").read_text()
     return report
 
 
 def test_fresh_snowflake_run_rejoins_the_comparison(tmp_path, monkeypatch) -> None:
-    matching = _run_validator(tmp_path / "a", monkeypatch, {"fingerprint": "fp-now", "orders": 5})
+    fresh = {"fingerprint": "fp-now", "orders": 5, "status": "workaround"}
+    matching = _run_validator(tmp_path / "a", monkeypatch, fresh)
     assert matching["stale_layers"] == {}
     assert matching["summary"]["matched"] == 1
+    # The report records only whether each layer ran, not how.
+    assert matching["questions"][0]["layer_statuses"]["snowflake_semantic_views"] == "executed"
     mismatching = _run_validator(
         tmp_path / "b", monkeypatch, {"fingerprint": "fp-now", "orders": 6}
     )
@@ -364,18 +369,9 @@ def test_fresh_snowflake_run_rejoins_the_comparison(tmp_path, monkeypatch) -> No
     assert mismatching["questions"][0]["mismatches"][0]["layer"] == "snowflake_semantic_views"
 
 
-def test_the_report_records_only_whether_each_layer_ran(tmp_path, monkeypatch) -> None:
-    status = {"fingerprint": "fp-now", "orders": 5, "status": "workaround"}
-    report = _run_validator(tmp_path, monkeypatch, status)
-    assert report["questions"][0]["layer_statuses"]["snowflake_semantic_views"] == "executed"
-
-
 def test_an_answer_key_from_older_data_is_refused(tmp_path, monkeypatch) -> None:
     assert _run_validator(tmp_path, monkeypatch, {"fingerprint": "fp-now", "orders": 5})
-    summary_path = tmp_path / "results" / "oracle" / "summary.json"
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    summary["dataset_fingerprint"] = "fp-old"
-    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    _edit_json(tmp_path / "results" / "oracle" / "summary.json", dataset_fingerprint="fp-old")
     with pytest.raises(SystemExit, match="predates the current dataset"):
         validator.main()
 
@@ -393,8 +389,7 @@ def test_stale_snowflake_capture_is_set_aside_and_reported(tmp_path, monkeypatch
 def _run_snowflake_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sql: str) -> dict:
     """Run the Snowflake runner offline; a question whose SQL says `broken` fails."""
     runner = _load_runner("snowflake_semantic_views")
-    examples = tmp_path / "query_examples.sql"
-    examples.write_text(f"-- q01_orders_by_month\n{sql}\n", encoding="utf-8")
+    _write(tmp_path, {"query_examples.sql": f"-- q01_orders_by_month\n{sql}\n"})
 
     def snow_sql(*, query=None, file_path=None):
         if query and "broken" in query:
@@ -404,7 +399,7 @@ def _run_snowflake_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sql: 
 
     monkeypatch.setattr(runner, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(runner, "SHARED_RESULTS_ROOT", tmp_path / "results")
-    monkeypatch.setattr(runner, "QUERY_EXAMPLES_PATH", examples)
+    monkeypatch.setattr(runner, "QUERY_EXAMPLES_PATH", tmp_path / "query_examples.sql")
     monkeypatch.setattr(runner, "run_snow_sql", snow_sql)
     monkeypatch.setattr(
         runner, "run_command", lambda args, **_: subprocess.CompletedProcess(args, 0, "", "")
@@ -413,15 +408,14 @@ def _run_snowflake_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sql: 
     return json.loads((tmp_path / "results" / "summary.json").read_text())
 
 
-def test_snowflake_runner_records_the_loaded_fingerprint(tmp_path, monkeypatch) -> None:
-    summary = _run_snowflake_runner(tmp_path, monkeypatch, "SELECT 1;")
+def test_snowflake_runner_records_the_fingerprint_and_a_failed_question(
+    tmp_path, monkeypatch
+) -> None:
+    summary = _run_snowflake_runner(tmp_path / "ok", monkeypatch, "SELECT 1;")
     assert summary["dataset_fingerprint"] == "fp-now"
     assert summary["questions"][0]["status"] == "executed"
-
-
-def test_snowflake_runner_lists_a_failed_question_as_unsupported(tmp_path, monkeypatch) -> None:
-    summary = _run_snowflake_runner(tmp_path, monkeypatch, "SELECT broken;")
-    [entry] = summary["questions"]
+    # A question that fails is listed as unsupported, with Snowflake's reason.
+    [entry] = _run_snowflake_runner(tmp_path / "broken", monkeypatch, "SELECT broken;")["questions"]
     assert entry["question_id"] == "q01_orders_by_month"
     assert entry["status"] == "unsupported"
     assert entry["reason"] == "SQL compilation error"
@@ -440,19 +434,13 @@ def test_cube_runs_with_only_the_environment_node_needs(monkeypatch) -> None:
 def test_cube_is_killed_when_it_ignores_the_stop_signal() -> None:
     calls = []
 
-    class Server:
-        def terminate(self) -> None:
-            calls.append("terminate")
+    def wait(timeout: float | None = None) -> None:
+        calls.append("wait")
+        if timeout:
+            raise subprocess.TimeoutExpired("node", timeout)
 
-        def kill(self) -> None:
-            calls.append("kill")
-
-        def wait(self, timeout: float | None = None) -> None:
-            calls.append("wait")
-            if timeout:
-                raise subprocess.TimeoutExpired("node", timeout)
-
-    _load_runner("cube")._stop(Server())
+    terminate, kill = lambda: calls.append("terminate"), lambda: calls.append("kill")
+    _load_runner("cube")._stop(SimpleNamespace(terminate=terminate, kill=kill, wait=wait))
     assert calls == ["terminate", "wait", "kill", "wait"]
 
 
@@ -480,12 +468,16 @@ def test_ktx_refuses_a_cached_wheel_off_the_pin_without_fetching(tmp_path, monke
     assert not any(private.iterdir())
 
 
-def test_cube_sql_excerpts_are_the_generated_sql() -> None:
-    data, _ = generator.build_contracts()
-    [cube] = [layer for layer in data["layers"] if layer["id"] == "cube"]
-    for entry in cube["questions"]:
-        if entry["support_status"] != "requires_model_change":  # no query ran, so no SQL
-            assert entry["sql_excerpt"].lstrip().upper().startswith(("SELECT", "WITH")), entry
+def test_cube_sql_excerpts_are_the_generated_sql_and_unassessed_answers_publish_none(
+    contracts,
+) -> None:
+    for layer in contracts[0]["layers"]:
+        for entry in layer["questions"]:
+            if entry["support_status"] == "not_assessed":
+                assert not entry["query_excerpt"] and not entry["sql_excerpt"], entry["question_id"]
+            # A model change runs no query, so has no SQL.
+            if layer["id"] == "cube" and entry["support_status"] != "requires_model_change":
+                assert entry["sql_excerpt"].lstrip().upper().startswith(("SELECT", "WITH")), entry
 
 
 def test_a_missing_mapped_column_fails_instead_of_being_guessed() -> None:
@@ -497,8 +489,7 @@ def test_a_missing_mapped_column_fails_instead_of_being_guessed() -> None:
 
 def test_column_maps_cover_every_field_of_every_answer() -> None:
     maps = validator._load_column_maps()
-    report = SCRIPTS.parent / "results" / "validation" / "output_consistency.json"
-    for item in json.loads(report.read_text(encoding="utf-8"))["questions"]:
+    for item in _json(REPORT)["questions"]:
         qid = item["question_id"]
         for layer, status in item["layer_statuses"].items():
             # Every layer maps q01-q16; a frozen-model variant only where the layer executed it.
@@ -525,24 +516,21 @@ def test_answer_key_queries_reproduce_the_committed_answers(tmp_path, monkeypatc
     oracle = _load("run_oracle")
     monkeypatch.setattr(bootstrap, "DB_PATH", tmp_path / "shared.duckdb")
     bootstrap.main()
-    committed = json.loads((oracle.RESULTS_DIR / "summary.json").read_text(encoding="utf-8"))
+    committed = _json(oracle.RESULTS_DIR / "summary.json")
     assert committed["answer_key_fingerprint"] == oracle.answer_key_fingerprint(
         oracle.ORACLE_DIR, oracle.QUESTIONS_PATH
     )
-    con = duckdb.connect(str(tmp_path / "shared.duckdb"), read_only=True)
-    try:
+    with closing(duckdb.connect(str(tmp_path / "shared.duckdb"), read_only=True)) as con:
         con.execute("SET TimeZone = 'UTC'")
         con.execute("SET threads = 1")
         for entry in committed["questions"]:
             qid = entry["question_id"]
             fresh = json.loads(json.dumps(oracle.answer(con, qid), default=str))
-            saved = json.loads((oracle.REPO_ROOT / entry["result_path"]).read_text("utf-8"))
+            saved = _json(oracle.REPO_ROOT / entry["result_path"])
             equal, detail = validator._rows_equal(
                 validator._normalize_rows(qid, saved), validator._normalize_rows(qid, fresh)
             )
             assert equal, (qid, detail)
-    finally:
-        con.close()
 
 
 def test_rubric_rules_apply_in_order() -> None:
@@ -580,68 +568,59 @@ def test_only_a_bare_view_passthrough_is_not_hand_written(sql: str, expected: bo
 
 def test_semantic_rails_derived_relations_count_as_hand_written(tmp_path, monkeypatch) -> None:
     view = {"id": "orders", "relation": "comparison_orders"}
+    derived, pipelines = ["derived model orders"], ["relation pipelines"]
+    # (model, package.yml additions, other package files, what the detector finds)
     cases = {
-        "view": (view, "", {}),
-        "pipeline": ({"id": "orders", "relation": {"steps": []}}, "", {}),
-        "raw_table": ({"id": "orders", "relation": "jaffle_order"}, "", {}),
-        "relation_ref": (view | {"relation_ref": "rollup"}, "", {}),
-        "variants": (view | {"variants": {"daily": {}}}, "", {}),
-        "relations": (view, "", {"relations.yml": "relations:\n  derived: {}\n"}),
-        "relations_dir": (view, "", {"relations/derived.yml": "relation:\n  id: derived\n"}),
-        "inline_model": (None, "models:\n  orders:\n    relation: jaffle_order\n", {}),
+        "view": (view, "", {}, []),
+        "pipeline": ({"id": "orders", "relation": {"steps": []}}, "", {}, derived),
+        "raw_table": ({"id": "orders", "relation": "jaffle_order"}, "", {}, derived),
+        "relation_ref": (view | {"relation_ref": "rollup"}, "", {}, derived),
+        "variants": (view | {"variants": {"daily": {}}}, "", {}, derived),
+        "relations": (view, "", {"relations.yml": "relations:\n  derived: {}\n"}, pipelines),
+        "relations_dir": (
+            view,
+            "",
+            {"relations/derived.yml": "relation: {id: derived}\n"},
+            pipelines,
+        ),
+        "inline_model": (None, "models:\n  orders:\n    relation: jaffle_order\n", {}, derived),
     }
-    (tmp_path / "sql.sql").write_text("select 1", encoding="utf-8")
+    _write(tmp_path, {"sql.sql": "select 1"})
     monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
-    found = {}
-    for name, (model, extra, files) in cases.items():
-        package = tmp_path / name
-        package.mkdir()
-        (package / "package.yml").write_text(f"package:\n  id: package\n{extra}", "utf-8")
+    for name, (model, extra, files, expected) in cases.items():
+        package = {"package.yml": f"package:\n  id: package\n{extra}", **files}
         if model is not None:
-            (package / "models").mkdir()
-            (package / "models" / "orders.yml").write_text(json.dumps({"model": model}), "utf-8")
-        for relative, text in files.items():
-            (package / relative).parent.mkdir(parents=True, exist_ok=True)
-            (package / relative).write_text(text, encoding="utf-8")
-        monkeypatch.setattr(rubric, "SR_PACKAGE", package)
-        found[name] = rubric.semantic_rails({"question_id": "q_x", "sql_path": "sql.sql"})[0]
-    derived = ["derived model orders"]
-    assert found == {
-        "view": [],
-        "pipeline": derived,
-        "raw_table": derived,
-        "relation_ref": derived,
-        "variants": derived,
-        "relations": ["relation pipelines"],
-        "relations_dir": ["relation pipelines"],
-        "inline_model": derived,
-    }
+            package["models/orders.yml"] = {"model": model}
+        monkeypatch.setattr(rubric, "SR_PACKAGE", _write(tmp_path / name, package))
+        entry = {"question_id": "q_x", "sql_path": "sql.sql"}
+        assert rubric.semantic_rails(entry)[0] == expected, name
 
 
 def test_a_detector_that_finds_nothing_fails_closed(tmp_path, monkeypatch) -> None:
-    models = tmp_path / "models"
-    models.mkdir()
-    (models / "_models.yml").write_text("models: []\n", encoding="utf-8")
-    (tmp_path / "sql.txt").write_text("SQL (remove --explain to see data):\nselect 1", "utf-8")
-    monkeypatch.setattr(rubric, "MF_MODELS", models)
+    _write(
+        tmp_path,
+        {
+            "models/_models.yml": "models: []\n",
+            "sql.txt": "SQL (remove --explain to see data):\nselect 1",
+            "package/package.yml": "package:\n  id: package\n",
+            "query.json": "{}",
+        },
+    )
+    monkeypatch.setattr(rubric, "MF_MODELS", tmp_path / "models")
     monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
     with pytest.raises(SystemExit, match="found no relations"):
         rubric.metricflow({"question_id": "q_x", "sql_path": "sql.txt"})
-    package = tmp_path / "package"
-    package.mkdir()
-    (package / "package.yml").write_text("package:\n  id: package\n", encoding="utf-8")
-    monkeypatch.setattr(rubric, "SR_PACKAGE", package)
+    monkeypatch.setattr(rubric, "SR_PACKAGE", tmp_path / "package")
     with pytest.raises(SystemExit, match="found no models"):
         rubric.semantic_rails({"question_id": "q_x"})
     monkeypatch.setattr(rubric, "PACK", tmp_path)
-    (tmp_path / "query.json").write_text("{}", encoding="utf-8")
     with pytest.raises(SystemExit, match="found no cubes"):
         rubric.cube({"question_id": "q_x", "query_path": "query.json", "sql_path": "sql.txt"})
     with pytest.raises(SystemExit, match="found no sources"):
         rubric.ktx({"question_id": "q_x", "query_path": "query.json", "sql_path": "sql.txt"})
-    (tmp_path / "malloy" / "models").mkdir(parents=True)
-    (tmp_path / "malloy" / "models" / "jaffle.malloy").write_text(
-        "query: q_y is orders -> { aggregate: n is count() }\n", encoding="utf-8"
+    _write(
+        tmp_path,
+        {"malloy/models/jaffle.malloy": "query: q_y is orders -> { aggregate: n is count() }\n"},
     )
     with pytest.raises(SystemExit, match="found no named query"):
         rubric.malloy({"question_id": "q_x", "sql_path": "sql.txt"})
@@ -659,25 +638,21 @@ def test_an_executed_answer_without_its_sql_fails_closed(tmp_path, monkeypatch, 
         rubric.semantic_rails(entry)
 
 
-def test_cube_counts_a_sql_cube_used_only_by_a_filter(tmp_path, monkeypatch) -> None:
-    cubes = tmp_path / "cube" / "model" / "cubes"
-    cubes.mkdir(parents=True)
-    (cubes / "orders.yml").write_text(
-        "cubes:\n  - name: orders\n    sql_table: comparison_orders\n", encoding="utf-8"
-    )
-    (cubes / "segments.yml").write_text(
-        "cubes:\n  - name: segments\n"
-        "    sql: select customer_id from comparison_orders group by 1\n",
-        encoding="utf-8",
-    )
+def test_cube_counts_a_sql_cube_used_only_by_a_filter(pack: Path) -> None:
     query = {
         "measures": ["orders.count"],
         "filters": [{"member": "segments.customer_id", "operator": "set"}],
     }
-    (tmp_path / "query.json").write_text(json.dumps(query), encoding="utf-8")
-    (tmp_path / "sql.json").write_text(json.dumps({"sql": {"sql": ["select 1", []]}}), "utf-8")
-    monkeypatch.setattr(rubric, "PACK", tmp_path)
-    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    _write(
+        pack,
+        {
+            "cube/model/cubes/orders.yml": CUBE_ORDERS,
+            "cube/model/cubes/segments.yml": "cubes:\n  - name: segments\n"
+            "    sql: select customer_id from comparison_orders group by 1\n",
+            "query.json": query,
+            "sql.json": CUBE_SQL,
+        },
+    )
     entry = {"question_id": "q_x", "query_path": "query.json", "sql_path": "sql.json"}
     assert rubric.cube(entry)[0] == ["cube segments"]
 
@@ -685,32 +660,26 @@ def test_cube_counts_a_sql_cube_used_only_by_a_filter(tmp_path, monkeypatch) -> 
 def test_metricflow_counts_helper_models_but_not_passthroughs_or_the_time_spine(
     tmp_path, monkeypatch
 ) -> None:
-    models = tmp_path / "models"
-    (models / "staging").mkdir(parents=True)
-    (models / "_models.yml").write_text(
-        "models:\n  - name: all_days\n    time_spine: {}\n", encoding="utf-8"
+    _write(
+        tmp_path,
+        {
+            "models/_models.yml": "models:\n  - name: all_days\n    time_spine: {}\n",
+            "models/all_days.sql": "select generate_series(1, 3)",
+            "models/staging/orders.sql": "select * from comparison_orders",
+            "models/staging/helper.sql": "select customer_id from comparison_orders group by 1",
+            "sql.txt": 'SQL (remove --explain to see data):\nselect * from "db"."main"."orders", '
+            '"db"."main"."helper", "db"."main"."all_days"',
+        },
     )
-    (models / "all_days.sql").write_text("select generate_series(1, 3)", encoding="utf-8")
-    (models / "staging" / "orders.sql").write_text("select * from comparison_orders", "utf-8")
-    (models / "staging" / "helper.sql").write_text(
-        "select customer_id from comparison_orders group by 1", encoding="utf-8"
-    )
-    (tmp_path / "sql.txt").write_text(
-        'SQL (remove --explain to see data):\nselect * from "db"."main"."orders", '
-        '"db"."main"."helper", "db"."main"."all_days"',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(rubric, "MF_MODELS", models)
+    monkeypatch.setattr(rubric, "MF_MODELS", tmp_path / "models")
     monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
     helpers, texts = rubric.metricflow({"sql_path": "sql.txt"})
     assert helpers == ["dbt model helper"]
     assert len(texts) == 2
 
 
-def test_malloy_counts_the_sql_blocks_its_executed_sql_reads(tmp_path, monkeypatch) -> None:
-    models = tmp_path / "malloy" / "models"
-    models.mkdir(parents=True)
-    (models / "jaffle.malloy").write_text(
+def test_malloy_counts_the_sql_blocks_its_executed_sql_reads(pack: Path) -> None:
+    model = (
         'source:  segments is jaffle.sql("""select customer_id, segment\n'
         '  from comparison_customer_history""") extend {}\n'
         "source: history is segments extend {}\n"
@@ -722,38 +691,36 @@ def test_malloy_counts_the_sql_blocks_its_executed_sql_reads(tmp_path, monkeypat
         "  join_one: history, passthrough on true\n"
         '  join_one: inline is jaffle.sql("""select order_id from comparison_order_items""")\n'
         "  join_one: unused on true\n}\n"
-        "query:  q08_x is orders -> { aggregate: n is count() }\n",
-        encoding="utf-8",
+        "query:  q08_x is orders -> { aggregate: n is count() }\n"
     )
     # Malloy compiles each SQL block the query reads into its SQL; `unused` and `prefix` aren't.
-    (tmp_path / "q08.sql").write_text(
+    sql = (
         "SELECT count(1) FROM comparison_orders AS base\n"
         "LEFT JOIN (\n  select customer_id, segment\n  from comparison_customer_history\n) AS h\n"
         "LEFT JOIN (select * from comparison_customers) AS p\n"
-        "LEFT JOIN (\nselect order_id from comparison_order_items\n) AS inline",
-        encoding="utf-8",
+        "LEFT JOIN (\nselect order_id from comparison_order_items\n) AS inline"
     )
-    monkeypatch.setattr(rubric, "PACK", tmp_path)
-    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+    _write(pack, {"malloy/models/jaffle.malloy": model, "q08.sql": sql})
     helpers, _ = rubric.malloy({"question_id": "q08_x", "sql_path": "q08.sql"})
     assert helpers == ["SQL source inline", "SQL source segments"]
 
 
 def test_a_question_without_an_executed_result_is_unsupported(tmp_path, monkeypatch) -> None:
-    (tmp_path / "shared").mkdir()
-    (tmp_path / "shared" / "questions.yml").write_text(
-        "questions:\n  - id: q01_a\n  - id: q02_b\n  - id: q03_c\n", encoding="utf-8"
-    )
-    results = tmp_path / "results" / "fake"
-    results.mkdir(parents=True)
     executed = [{"question_id": qid, "status": "executed"} for qid in ("q01_a", "q03_c")]
-    (results / "summary.json").write_text(json.dumps({"questions": executed}), "utf-8")
-    failed = {"q03_c": {"status": "unsupported", "reason": "error"}}
-    (results / "unsupported.json").write_text(json.dumps(failed), encoding="utf-8")
+    _write(
+        tmp_path,
+        {
+            "shared/questions.yml": "questions:\n  - id: q01_a\n  - id: q02_b\n  - id: q03_c\n",
+            "shared/frozen_model.yml": "{}\n",
+            "results/fake/summary.json": {"questions": executed},
+            "results/fake/unsupported.json": {
+                "q03_c": {"status": "unsupported", "reason": "error"}
+            },
+        },
+    )
     monkeypatch.setattr(rubric, "PACK", tmp_path)
     monkeypatch.setattr(rubric, "RESULTS", tmp_path / "results")
     monkeypatch.setattr(rubric, "FROZEN_MODEL_PATH", tmp_path / "shared" / "frozen_model.yml")
-    (tmp_path / "shared" / "frozen_model.yml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(rubric, "DETECTORS", {"fake": ("fake", lambda entry: ([], ["select 1"]))})
     labels = rubric.build_labels()["labels"]["fake"]
     assert {qid: label["label"] for qid, label in labels.items()} == {
@@ -765,20 +732,19 @@ def test_a_question_without_an_executed_result_is_unsupported(tmp_path, monkeypa
 
 def _frozen_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, executed: list[str]) -> Path:
     """A pack with one q01-q16 question and three frozen-model variants, for two layers."""
-    (tmp_path / "shared").mkdir()
     variants = "".join(
         f"  - id: {qid}\n    scope_level: variant\n" for qid in ("q17", "q18", "q19")
     )
-    (tmp_path / "shared" / "questions.yml").write_text(
-        f"questions:\n  - id: q01\n    scope_level: required\n{variants}", encoding="utf-8"
+    entries = [{"question_id": qid, "status": "executed"} for qid in ["q01", *executed]]
+    _write(
+        tmp_path,
+        {
+            "shared/questions.yml": f"questions:\n  - id: q01\n    scope_level: required\n{variants}",
+            "results/fake/summary.json": {"questions": entries},
+            "results/other/summary.json": {"questions": entries},
+            "fake_model/orders.yml": "measures: [revenue]\n",
+        },
     )
-    for layer in ("fake", "other"):
-        results = tmp_path / "results" / layer
-        results.mkdir(parents=True)
-        entries = [{"question_id": qid, "status": "executed"} for qid in ["q01", *executed]]
-        (results / "summary.json").write_text(json.dumps({"questions": entries}), "utf-8")
-    (tmp_path / "fake_model").mkdir()
-    (tmp_path / "fake_model" / "orders.yml").write_text("measures: [revenue]\n", "utf-8")
     monkeypatch.setattr(rubric, "PACK", tmp_path)
     monkeypatch.setattr(rubric, "RESULTS", tmp_path / "results")
     frozen = {
@@ -788,7 +754,7 @@ def _frozen_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, executed: list
             "requires_model_change": {"q18": {"reason": "Set in the model.", "doc": "https://d"}},
         }
     }
-    (tmp_path / "frozen_model.yml").write_text(json.dumps(frozen), encoding="utf-8")
+    _write(tmp_path, {"frozen_model.yml": frozen})
     monkeypatch.setattr(rubric, "FROZEN_MODEL_PATH", tmp_path / "frozen_model.yml")
     detect = ("fake", lambda entry: ([], ["select 1"]))
     monkeypatch.setattr(rubric, "DETECTORS", {"fake": detect, "other": ("other", detect[1])})
@@ -824,9 +790,9 @@ def test_a_frozen_model_workaround_must_say_why(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(rubric, "DETECTORS", {"fake": detect})
     with pytest.raises(SystemExit, match="q17 is a workaround, but frozen_model.yml doesn't say"):
         rubric.build_labels()
-    frozen = json.loads((tmp_path / "frozen_model.yml").read_text(encoding="utf-8"))
+    frozen = _json(tmp_path / "frozen_model.yml")
     frozen["fake"]["workaround"] = {"q17": {"reason": "SQL around a query.", "doc": "https://w"}}
-    (tmp_path / "frozen_model.yml").write_text(json.dumps(frozen), encoding="utf-8")
+    _write(tmp_path, {"frozen_model.yml": frozen})
     assert rubric.build_labels()["labels"]["fake"]["q17"]["evidence"] == [
         "SQL API window function",
         "SQL around a query.",
@@ -841,101 +807,75 @@ def test_a_changed_model_stops_the_rubric(tmp_path, monkeypatch) -> None:
         rubric.build_labels()
 
 
-def test_cube_sql_api_queries_around_a_cube_query_are_hand_written(tmp_path, monkeypatch) -> None:
-    cubes = tmp_path / "cube" / "model" / "cubes"
-    cubes.mkdir(parents=True)
-    (cubes / "orders.yml").write_text(
-        "cubes:\n  - name: orders\n    sql_table: comparison_orders\n", encoding="utf-8"
-    )
-    (tmp_path / "sql.json").write_text(json.dumps({"sql": {"sql": ["select 1", []]}}), "utf-8")
-    monkeypatch.setattr(rubric, "PACK", tmp_path)
-    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
+def test_cube_sql_api_queries_around_a_cube_query_are_hand_written(pack: Path) -> None:
+    _write(pack, {"cube/model/cubes/orders.yml": CUBE_ORDERS, "sql.json": CUBE_SQL})
     member = (
         "SELECT DATE_TRUNC('month', ordered_at) AS m, MEASURE(revenue) AS r FROM orders GROUP BY 1"
     )
     flat = "SELECT DATE_TRUNC('month', ordered_at) AS m, {} FROM orders GROUP BY 1"
-    queries = {
-        "plain.sql": member,
-        "aggregate.sql": flat.format("AVG(revenue), MAX(revenue)"),
-        "derived.sql": f"SELECT m, SUM(r) FROM ({member}) AS t WHERE r > 5 GROUP BY 1",
-        "window.sql": f"SELECT m, LAG(r) OVER (ORDER BY m) FROM ( {member} ) AS t",
-        "case.sql": flat.format("SUM(CASE WHEN revenue >= 50 THEN revenue END)"),
-        "having.sql": flat.format("MEASURE(revenue)") + " HAVING MEASURE(revenue) > 5",
-        "filter.sql": flat.format("SUM(revenue) FILTER (WHERE revenue >= 50)"),
-        "union.sql": f"{member} UNION ALL {member}",
-        # EXTRACT(... FROM column) names no cube.
-        "extract.sql": flat.format("EXTRACT(EPOCH FROM ordered_at)"),
-    }
-    found = {}
-    for name, sql in queries.items():
-        (tmp_path / name).write_text(sql, encoding="utf-8")
-        entry = {"question_id": "q_x", "query_path": name, "sql_path": "sql.json"}
-        found[name] = rubric.cube(entry)[0]
     derived, other = "SQL API query over a derived table", "SQL API HAVING, FILTER or UNION"
-    assert found == {
-        "plain.sql": [],
-        "aggregate.sql": [],
-        "derived.sql": [derived],
-        "window.sql": [derived, "SQL API window function"],
-        "case.sql": ["SQL API CASE expression"],
-        "having.sql": [other],
-        "filter.sql": [other],
-        "union.sql": [other],
-        "extract.sql": [],
+    # (SQL API query, what the detector finds)
+    cases = {
+        "plain.sql": (member, []),
+        "aggregate.sql": (flat.format("AVG(revenue), MAX(revenue)"), []),
+        "derived.sql": (f"SELECT m, SUM(r) FROM ({member}) AS t WHERE r > 5 GROUP BY 1", [derived]),
+        "window.sql": (
+            f"SELECT m, LAG(r) OVER (ORDER BY m) FROM ( {member} ) AS t",
+            [derived, "SQL API window function"],
+        ),
+        "case.sql": (
+            flat.format("SUM(CASE WHEN revenue >= 50 THEN revenue END)"),
+            ["SQL API CASE expression"],
+        ),
+        "having.sql": (flat.format("MEASURE(revenue)") + " HAVING MEASURE(revenue) > 5", [other]),
+        "filter.sql": (flat.format("SUM(revenue) FILTER (WHERE revenue >= 50)"), [other]),
+        "union.sql": (f"{member} UNION ALL {member}", [other]),
+        # EXTRACT(... FROM column) names no cube.
+        "extract.sql": (flat.format("EXTRACT(EPOCH FROM ordered_at)"), []),
     }
+    _write(pack, {name: sql for name, (sql, _) in cases.items()})
+    for name, (_, expected) in cases.items():
+        entry = {"question_id": "q_x", "query_path": name, "sql_path": "sql.json"}
+        assert rubric.cube(entry)[0] == expected, name
 
 
-def test_an_unassessed_answer_publishes_no_evidence() -> None:
-    data, _ = generator.build_contracts()
-    for layer in data["layers"]:
-        for entry in layer["questions"]:
-            if entry["support_status"] == "not_assessed":
-                assert not entry["query_excerpt"] and not entry["sql_excerpt"], entry["question_id"]
-
-
-def test_ktx_inline_measures_are_checked_against_the_sources_they_read(
-    tmp_path, monkeypatch
-) -> None:
-    sources = tmp_path / "ktx" / "sources"
-    sources.mkdir(parents=True)
-    (sources / "orders.yaml").write_text("name: orders\ntable: comparison_orders\n", "utf-8")
-    (sources / "facts.yaml").write_text(
-        "name: facts\nsql: select customer_id from comparison_orders group by 1\n", "utf-8"
+def test_ktx_inline_measures_are_checked_against_the_sources_they_read(pack: Path) -> None:
+    _write(
+        pack,
+        {
+            "ktx/sources/orders.yaml": "name: orders\ntable: comparison_orders\n",
+            "ktx/sources/facts.yaml": "name: facts\n"
+            "sql: select customer_id from comparison_orders group by 1\n",
+            "sql.sql": "select 1",
+        },
     )
-    (tmp_path / "sql.sql").write_text("select 1", encoding="utf-8")
-    monkeypatch.setattr(rubric, "PACK", tmp_path)
-    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
     found = []
     for expr in (
         "sum(case when orders.total >= 5000 then orders.total / 100.0 else 0 end)",
         "max(facts.customer_id)",
     ):
-        query = {"measures": ["orders.revenue", {"name": "x", "expr": expr}]}
-        (tmp_path / "query.json").write_text(json.dumps(query), encoding="utf-8")
+        _write(pack, {"query.json": {"measures": ["orders.revenue", {"name": "x", "expr": expr}]}})
         entry = {"question_id": "q_x", "query_path": "query.json", "sql_path": "sql.sql"}
         found.append(rubric.ktx(entry)[0])
     assert found == [[], ["SQL source facts"]]
 
 
-def test_malloy_reads_a_variant_query_only_from_its_own_query_file(tmp_path, monkeypatch) -> None:
-    (tmp_path / "malloy" / "models").mkdir(parents=True)
-    (tmp_path / "malloy" / "queries").mkdir()
-    (tmp_path / "malloy" / "models" / "jaffle.malloy").write_text(
-        "source: orders is jaffle.table('comparison_orders')\n", encoding="utf-8"
-    )
+def test_malloy_reads_a_variant_query_only_from_its_own_query_file(pack: Path) -> None:
     query = (
         "query: q17_x is orders extend {\n"
         '  join_one: facts is jaffle.sql("""select order_id from comparison_order_items""") on true\n'
         "} -> { aggregate: n is count() }\n"
     )
-    query_file = tmp_path / "malloy" / "queries" / "q17_x.malloy"
-    query_file.write_text(f'import "../models/jaffle.malloy"\n{query}', encoding="utf-8")
-    (tmp_path / "q17.sql").write_text(
-        "SELECT 1 FROM comparison_orders LEFT JOIN (select order_id from comparison_order_items)",
-        encoding="utf-8",
+    query_file = pack / "malloy" / "queries" / "q17_x.malloy"
+    _write(
+        pack,
+        {
+            "malloy/models/jaffle.malloy": "source: orders is jaffle.table('comparison_orders')\n",
+            "malloy/queries/q17_x.malloy": f'import "../models/jaffle.malloy"\n{query}',
+            "q17.sql": "SELECT 1 FROM comparison_orders "
+            "LEFT JOIN (select order_id from comparison_order_items)",
+        },
     )
-    monkeypatch.setattr(rubric, "PACK", tmp_path)
-    monkeypatch.setattr(rubric, "REPO_ROOT", tmp_path)
     entry = {"question_id": "q17_x", "sql_path": "q17.sql"}
     assert rubric.malloy(entry)[0] == ["SQL source facts"]
     raw = query.replace("aggregate: n is count()", 'aggregate: n is sql_number("count(*)")')
@@ -957,20 +897,15 @@ def test_a_missing_result_fails_the_check_unless_the_question_is_a_variant(
     tmp_path, monkeypatch
 ) -> None:
     assert _run_validator(tmp_path, monkeypatch, {"fingerprint": "fp-now", "orders": 5})
-    ktx_summary = tmp_path / "results" / "ktx" / "summary.json"
-    summary = json.loads(ktx_summary.read_text(encoding="utf-8"))
-    summary["questions"] = []
-    ktx_summary.write_text(json.dumps(summary), encoding="utf-8")
+    _edit_json(tmp_path / "results" / "ktx" / "summary.json", questions=[])
     with pytest.raises(SystemExit, match="ktx has no result for q01_x"):
         validator.main()
     questions = tmp_path / "questions.yml"
     questions.write_text(questions.read_text("utf-8").replace("required", "variant"), "utf-8")
-    key_summary = tmp_path / "results" / "oracle" / "summary.json"
-    key = json.loads(key_summary.read_text(encoding="utf-8"))
-    key["answer_key_fingerprint"] = validator.answer_key_fingerprint(tmp_path / "oracle", questions)
-    key_summary.write_text(json.dumps(key), encoding="utf-8")
+    fingerprint = validator.answer_key_fingerprint(tmp_path / "oracle", questions)
+    _edit_json(tmp_path / "results/oracle/summary.json", answer_key_fingerprint=fingerprint)
     validator.main()
-    report = json.loads((tmp_path / "validation" / "output_consistency.json").read_text("utf-8"))
+    report = _json(tmp_path / "validation" / "output_consistency.json")
     assert report["questions"][0]["layer_statuses"]["ktx"] == "not_run"
 
 
@@ -984,15 +919,7 @@ def test_a_missing_result_fails_the_check_unless_the_question_is_a_variant(
 )
 def test_cube_sql_api_rows_come_back_in_the_rest_shape(monkeypatch, body, error) -> None:
     cube = _load_runner("cube")
-
-    class Response(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(cube.urllib.request, "urlopen", lambda *a, **k: Response(body.encode()))
+    monkeypatch.setattr(cube.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(body.encode()))
     if error:
         with pytest.raises(cube.SqlApiError, match=error):
             cube._cubesql("SELECT 1")
@@ -1006,10 +933,7 @@ def test_cube_sql_api_rows_come_back_in_the_rest_shape(monkeypatch, body, error)
 
 def test_every_assessed_layer_answers_or_declares_each_variant() -> None:
     """No variant is left as a silent failure, and every declared model change says why."""
-    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
-    frozen = rubric.load_frozen_models()
-    questions = yaml.safe_load((SCRIPTS.parent / "questions.yml").read_text(encoding="utf-8"))
-    variants = [q["id"] for q in questions["questions"] if q.get("scope_level") == "variant"]
+    labels, frozen, variants = _labels(), rubric.load_frozen_models(), _variants()
     assert len(variants) == 8
     for layer in LAYERS:
         spec = frozen.get(layer)
@@ -1030,8 +954,7 @@ def test_every_assessed_layer_answers_or_declares_each_variant() -> None:
 
 
 def test_the_published_frozen_model_counts_come_from_the_labels() -> None:
-    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
-    matrix = json.loads((SCRIPTS.parent / "capability_matrix.json").read_text(encoding="utf-8"))
+    labels, matrix = _labels(), _json(MATRIX)
     variants = [row["question_id"] for row in matrix["rows"] if row["slice"] == "frozen_model"]
     for layer in matrix["layers"]:
         got = [labels[layer["id"]][qid]["label"] for qid in variants]
@@ -1052,24 +975,17 @@ def test_the_published_frozen_model_counts_come_from_the_labels() -> None:
 
 
 def test_committed_labels_are_what_the_rubric_derives() -> None:
-    committed = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))
+    committed = _json(rubric.OUTPUT_PATH)
     derived = rubric.build_labels()
     assert derived["rules"] == committed["rules"]
     assert derived["labels"] == committed["labels"]
 
 
-def test_published_labels_come_from_the_rubric() -> None:
-    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
-    matrix = json.loads((SCRIPTS.parent / "capability_matrix.json").read_text(encoding="utf-8"))
-    for row in matrix["rows"]:
-        qid = row["question_id"]
-        assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
-
-
-def test_contracts_take_rubric_labels_and_every_layer_on_current_data_counts() -> None:
-    _, matrix = generator.build_contracts()
-    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
-    for row in matrix["rows"]:
+def test_published_and_generated_contracts_take_rubric_labels_and_count_current_layers(
+    contracts,
+) -> None:
+    labels, matrix = _labels(), contracts[1]
+    for row in _json(MATRIX)["rows"] + matrix["rows"]:
         qid = row["question_id"]
         assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
     assert any("(Semantic Rails, MetricFlow, Cube, Malloy and KtX)" in c for c in matrix["claims"])
@@ -1078,7 +994,7 @@ def test_contracts_take_rubric_labels_and_every_layer_on_current_data_counts() -
 
 
 def test_q11_and_q12_are_precomputed_exactly_where_a_layer_reads_the_rollup_column() -> None:
-    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
+    labels = _labels()
     reading = {"semantic_rails", "snowflake_semantic_views", "ktx"}
     for layer in LAYERS:
         for qid, column in (
@@ -1117,13 +1033,11 @@ def _numbers(text: str) -> set[int]:
 
 
 def _labels_by_number() -> tuple[dict[str, dict[int, str]], dict[int, str]]:
-    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
-    report = SCRIPTS.parent / "results" / "validation" / "output_consistency.json"
-    items = json.loads(report.read_text(encoding="utf-8"))["questions"]
     by_layer = {
         layer: {int(qid[1:3]): label["label"] for qid, label in questions.items()}
-        for layer, questions in labels.items()
+        for layer, questions in _labels().items()
     }
+    items = _json(REPORT)["questions"]
     return by_layer, {int(item["question_id"][1:3]): item["slice"] for item in items}
 
 
@@ -1174,17 +1088,8 @@ def test_hand_written_label_tables_match_the_rubric() -> None:
     _assert_counts(line.split(":", 1)[1], labels["snowflake_semantic_views"])
 
 
-def _load_semantic_rails_runner() -> ModuleType:
-    path = SCRIPTS.parents[1] / "semantic_rails" / "scripts" / "run_questions.py"
-    spec = importlib.util.spec_from_file_location("semantic_rails_runner", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_semantic_rails_provenance_covers_queries_runner_and_questions() -> None:
-    module = _load_semantic_rails_runner()
+    module = _load_runner("semantic_rails")
     assert set(module._provenance()) == {
         "semantic_rails_commit",
         "semantic_rails_tree",
@@ -1201,7 +1106,7 @@ def test_semantic_rails_frozen_queries_reproduce_the_answer_key(tmp_path, monkey
     from semantic_rails.runtime import Runtime
 
     bootstrap = _load("bootstrap_shared_duckdb")
-    runner = _load_semantic_rails_runner()
+    runner = _load_runner("semantic_rails")
     monkeypatch.setattr(bootstrap, "DB_PATH", tmp_path / "shared.duckdb")
     bootstrap.main()
     monkeypatch.setattr(
@@ -1216,36 +1121,23 @@ def test_semantic_rails_frozen_queries_reproduce_the_answer_key(tmp_path, monkey
         ),
     )
     maps = validator._load_column_maps()["semantic_rails"]
-    variants = {q["id"] for q in generator.load_questions() if q["scope_level"] == "variant"}
-    runtime = Runtime(runner.PACKAGE_ID)
-    try:
-        for qid in sorted(variants):
-            path = runner.QUERY_DIR / f"{qid}.json"
-            query = json.loads(path.read_text("utf-8"))
+    with closing(Runtime(runner.PACKAGE_ID)) as runtime:
+        for qid in _variants():
+            query = _json(runner.QUERY_DIR / f"{qid}.json")
             validated = runtime.validate(query)
             assert validated["ok"], (qid, validated.get("errors"))
             fresh = runtime.query(query)
-            saved = json.loads(
-                (SCRIPTS.parent / "results" / "oracle" / qid / "result.json").read_text("utf-8")
-            )
+            saved = _json(SCRIPTS.parent / "results" / "oracle" / qid / "result.json")
             equal, detail = validator._rows_equal(
                 validator._normalize_rows(qid, saved),
                 validator._normalize_rows(qid, fresh["rows"], maps[qid]),
             )
             assert equal, (qid, detail)
-    finally:
-        runtime.close()
 
 
 def test_frozen_count_discloses_the_engine_and_release_capture() -> None:
-    summary = json.loads(
-        (SCRIPTS.parent / "results/semantic_rails/summary.json").read_text("utf-8")
-    )
-    release = json.loads(
-        (SCRIPTS.parent / "results/semantic_rails/latest_release_frozen_model.json").read_text(
-            "utf-8"
-        )
-    )
+    summary = _json(SCRIPTS.parent / "results/semantic_rails/summary.json")
+    release = _json(SCRIPTS.parent / "results/semantic_rails/latest_release_frozen_model.json")
     frozen = rubric.load_frozen_models()["semantic_rails"]
     assert release["model_sha256"] == frozen["sha256"]
     assert release["queries_sha256"] == rubric.model_digest(["semantic_rails/queries"])
@@ -1262,7 +1154,7 @@ def test_frozen_count_discloses_the_engine_and_release_capture() -> None:
     )
     assert not re.search(r"answers \d+ of", note)
     for name in ("capability_matrix.json", "comparison_data.json"):
-        contract = json.loads((SCRIPTS.parent / name).read_text("utf-8"))
+        contract = _json(SCRIPTS.parent / name)
         assert note in contract.get("claims", contract.get("headline_findings"))[0]
     readme = (SCRIPTS.parents[1] / "README.md").read_text("utf-8")
     assert note in " ".join(readme.split())
@@ -1274,44 +1166,43 @@ def test_frozen_count_discloses_the_engine_and_release_capture() -> None:
     assert not re.search(rf"{release['engine_release']}: \d+ of", row)
 
 
-def test_release_capture_with_answers_keeps_its_count(monkeypatch) -> None:
+def _patch_release(monkeypatch: pytest.MonkeyPatch, change: Any) -> None:
+    """Serve the latest release's frozen-model capture with `change` applied to it."""
     load = generator.load_json
+
+    def patched(path):
+        payload = load(path)
+        if path.name == "latest_release_frozen_model.json":
+            change(payload)
+        return payload
+
+    monkeypatch.setattr(generator, "load_json", patched)
+
+
+def test_release_capture_with_answers_keeps_its_count(monkeypatch) -> None:
     executed = {"status": "executed", "row_count": 12, "answer_key_matches": True}
     refused = {
         "q19_trailing_3_month_revenue_by_month",
         "q20_revenue_and_prior_month_revenue_by_month",
     }
 
-    def answering_release(path):
-        payload = load(path)
-        if path.name == "latest_release_frozen_model.json":
-            payload.pop("load_error", None)
-            payload["questions"] = [
-                {"question_id": qid, "status": "unsupported"}
-                if qid in refused
-                else {"question_id": qid, **executed}
-                for qid in sorted(
-                    q["id"] for q in generator.load_questions() if q["scope_level"] == "variant"
-                )
-            ]
-        return payload
+    def answering(payload):
+        payload.pop("load_error", None)
+        payload["questions"] = [
+            {"question_id": qid, "status": "unsupported"}
+            if qid in refused
+            else {"question_id": qid, **executed}
+            for qid in _variants()
+        ]
 
-    monkeypatch.setattr(generator, "load_json", answering_release)
+    _patch_release(monkeypatch, answering)
     note = generator.semantic_rails_frozen_version_note()
     assert "v0.3.1, answers 6 of 8 on the same frozen model (it refuses q19 and q20)." in note
     assert "refuses to load" not in note
 
 
 def test_release_count_requires_the_same_dataset(monkeypatch) -> None:
-    load = generator.load_json
-
-    def changed_release(path):
-        payload = load(path)
-        if path.name == "latest_release_frozen_model.json":
-            payload["dataset_fingerprint"] = "different"
-        return payload
-
-    monkeypatch.setattr(generator, "load_json", changed_release)
+    _patch_release(monkeypatch, lambda payload: payload.update(dataset_fingerprint="different"))
     with pytest.raises(SystemExit, match="different dataset"):
         generator.semantic_rails_frozen_version_note()
 
@@ -1334,7 +1225,7 @@ def test_an_unreleased_engine_is_not_labeled_as_the_release() -> None:
 
 
 def test_engine_release_needs_the_release_tree_and_a_clean_engine(monkeypatch) -> None:
-    runner = _load_semantic_rails_runner()
+    runner = _load_runner("semantic_rails")
     monkeypatch.setattr(runner, "version", lambda name: "0.2.1")
 
     def git_answers(answers: dict[tuple[str, ...], str]):

@@ -63,16 +63,14 @@ def _producer_case(runtime, monkeypatch, producer):
             "measure": ORDERS,
             "filter": {"all": [{"dimension": "district", "op": "is", "value": "Central"}]},
         }
+        alternatives = [STORE_DISTRICT, CUSTOMER_DISTRICT]
         return (
             query,
             CUSTOMER_DISTRICT,
             "Customer district",
             "AMBIGUOUS_ALIAS",
             "candidates",
-            [
-                STORE_DISTRICT,
-                CUSTOMER_DISTRICT,
-            ],
+            alternatives,
         )
     if producer == "conversion_events":
         from semantic_rails.compiler import compile_query
@@ -96,14 +94,8 @@ def _producer_case(runtime, monkeypatch, producer):
         assert raised.value.code == "CONVERSION_NOT_SUPPORTED"
         alternatives = raised.value.details["candidate_measures"]
         assert ORDERS in alternatives
-        return (
-            query,
-            ORDERS,
-            "Order count",
-            "CONVERSION_NOT_SUPPORTED",
-            "candidate_measures",
-            alternatives,
-        )
+        code, field = "CONVERSION_NOT_SUPPORTED", "candidate_measures"
+        return query, ORDERS, "Order count", code, field, alternatives
     monkeypatch.setattr(
         runtime,
         "_config",
@@ -129,17 +121,8 @@ def _producer_case(runtime, monkeypatch, producer):
             }
         ]
         code = "INVALID_TEMPORAL_BINDING"
-    return (
-        query,
-        LATEST_ORDER,
-        "Customer latest ordered at",
-        code,
-        "compatible",
-        [
-            FIRST_ORDER,
-            LATEST_ORDER,
-        ],
-    )
+    alternatives = [FIRST_ORDER, LATEST_ORDER]
+    return query, LATEST_ORDER, "Customer latest ordered at", code, "compatible", alternatives
 
 
 def _producer_response(runtime, query, transport):
@@ -176,23 +159,7 @@ def test_real_error_producers_withhold_hidden_alternatives(
             runtime, monkeypatch, producer
         )
         if visibility == "hidden":
-            monkeypatch.setattr(
-                runtime,
-                "_config",
-                replace(
-                    runtime._config,
-                    semantic_policies=[
-                        *runtime._config.semantic_policies,
-                        SemanticPolicyConfig(
-                            id="policy.hide_alternative",
-                            kind="object_visibility",
-                            object_ids=[hidden_id],
-                            audiences=["external"],
-                            action="hidden",
-                        ),
-                    ],
-                ),
-            )
+            monkeypatch.setattr(runtime, "_config", _hide(runtime._config, hidden_id))
         elif visibility == "unknown":
             monkeypatch.setattr(visible_view, "hidden_object_ids", _unknown_visibility)
         payload = _producer_response(runtime, query, transport)
@@ -337,8 +304,9 @@ def _unknown_visibility(*args, **kwargs):
 
 
 def _hide(config, object_id):
+    """The package with ``object_id`` hidden from the external audience."""
     policy = SemanticPolicyConfig(
-        id="policy.hide_district",
+        id="policy.hide_object",
         kind="object_visibility",
         object_ids=[object_id],
         audiences=["external"],
@@ -404,19 +372,8 @@ def test_cli_error_enrichment_preserves_scoped_visibility(
     from semantic_rails.cli import app
 
     config, _ = package_config_factory("jaffle_shop")
-    config = replace(
-        config,
-        dimensions=[replace(config.dimensions[0], id=CUSTOMER_DISTRICT, label="Customer district")],
-        semantic_policies=[
-            SemanticPolicyConfig(
-                id="policy.hide_district",
-                kind="object_visibility",
-                object_ids=[CUSTOMER_DISTRICT],
-                audiences=["external"],
-                action="hidden",
-            )
-        ],
-    )
+    district = replace(config.dimensions[0], id=CUSTOMER_DISTRICT, label="Customer district")
+    config = _hide(replace(config, dimensions=[district], semantic_policies=[]), CUSTOMER_DISTRICT)
 
     def fail(args):
         raise SemanticLayerError(

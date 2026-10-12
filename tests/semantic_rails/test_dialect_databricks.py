@@ -32,7 +32,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.renderer import render_expr
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, PackageMeta, SeedSpec
-from semantic_rails.sql_ast import SqlIdentifier, SqlLiteral
+from semantic_rails.sql_ast import SqlBinary, SqlIdentifier, SqlLiteral
 
 DIALECT = dialect_for_warehouse("databricks")
 
@@ -46,99 +46,77 @@ def _col(*parts: str) -> SqlIdentifier:
 # ---------------------------------------------------------------------------
 
 
-def test_registry_returns_databricks_dialect():
+def _trunc(unit: str, operand: str) -> str:
+    return f"DATE_TRUNC('{unit}', CAST({operand} AS TIMESTAMP))"
+
+
+def test_registry_returns_databricks_dialect_rendering_spark_forms():
     assert isinstance(DIALECT, DatabricksDialect)
     connector = warehouse_connector("databricks")
     assert connector is not None
     assert connector.connection_kinds == ("databricks_native",)
     assert connector.adapter == "semantic_rails.db_parts.databricks:create_adapter"
 
-
-@pytest.mark.parametrize(
-    ("method", "args", "expected"),
-    [
+    paid = SqlBinary(_col("t", "status"), "=", SqlLiteral("paid"))
+    rendered = [
+        (DIALECT.date_trunc("month", _col("t", "created_at")), _trunc("month", "t.created_at")),
+        (DIALECT.date_trunc("week", _col("t", "created_at")), _trunc("week", "t.created_at")),
         (
-            "date_trunc",
-            ("month", _col("t", "created_at")),
-            "DATE_TRUNC('month', CAST(t.created_at AS TIMESTAMP))",
-        ),
-        (
-            "date_trunc",
-            ("week", _col("t", "created_at")),
-            "DATE_TRUNC('week', CAST(t.created_at AS TIMESTAMP))",
-        ),
-        (
-            "percentile_cont",
-            (_col("t", "amount"), 0.95),
+            DIALECT.percentile_cont(_col("t", "amount"), 0.95),
             "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t.amount ASC)",
         ),
-        ("median", (_col("t", "amount"),), "MEDIAN(t.amount)"),
-        ("null_safe_eq", (_col("a", "k"), _col("b", "k")), "(a.k <=> b.k)"),
+        (DIALECT.median(_col("t", "amount")), "MEDIAN(t.amount)"),
+        (DIALECT.null_safe_eq(_col("a", "k"), _col("b", "k")), "(a.k <=> b.k)"),
         (
-            "convert_timezone",
-            ("UTC", "America/New_York", _col("t", "ts")),
+            DIALECT.convert_timezone("UTC", "America/New_York", _col("t", "ts")),
             "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)",
         ),
-    ],
-)
-def test_dialect_method_rendering(method, args, expected):
-    assert render_expr(getattr(DIALECT, method)(*args)) == expected
-
-
-@pytest.mark.parametrize("unit", ["second", "minute", "hour", "day", "month", "quarter", "year"])
-def test_date_diff_renders_boundary_aligned_timestampdiff(unit: str):
+        (DIALECT.first_value(_col("t", "x"), _col("t", "ts")), "MIN_BY(t.x, t.ts)"),
+        (DIALECT.last_value(_col("t", "x"), _col("t", "ts")), "MAX_BY(t.x, t.ts)"),
+        (
+            DIALECT.conditional_aggregate(
+                "count", DIALECT.null_safe_eq(_col("t", "status"), SqlLiteral("paid")), None
+            ),
+            "COUNT_IF((t.status <=> 'paid'))",
+        ),
+        (
+            DIALECT.conditional_aggregate("sum", paid, _col("t", "amount")),
+            "SUM(CASE WHEN t.status = 'paid' THEN t.amount END)",
+        ),
+        (DIALECT.timestamp_cast(_col("t", "ts")), "CAST(t.ts AS TIMESTAMP)"),
+    ]
     # Boundary-crossing parity with DuckDB: both operands are truncated
     # to the unit BEFORE TIMESTAMPDIFF, so Spark's complete-elapsed-unit
     # counting equals boundary counting (verified live: 23:00 -> 01:00
     # next day must be 1 day, not 0).
-    rendered = render_expr(DIALECT.date_diff(unit, _col("s"), _col("e")))
-    trunc = lambda operand: f"DATE_TRUNC('{unit}', CAST({operand} AS TIMESTAMP))"  # noqa: E731
-    assert rendered == f"TIMESTAMPDIFF({unit.upper()}, {trunc('s')}, {trunc('e')})"
-
-
-@pytest.mark.parametrize("unit", ["week", "isoweek"])
-def test_date_diff_week_is_truncated_day_delta_over_seven(unit: str):
+    for unit in ["second", "minute", "hour", "day", "month", "quarter", "year"]:
+        rendered.append(
+            (
+                DIALECT.date_diff(unit, _col("s"), _col("e")),
+                f"TIMESTAMPDIFF({unit.upper()}, {_trunc(unit, 's')}, {_trunc(unit, 'e')})",
+            )
+        )
     # DuckDB's date_diff('week', ...) is NOT a Monday-boundary count:
     # it is the day delta divided by 7, truncated toward zero (same
     # relowering as the Postgres dialect). Spark / is float division,
     # so the quotient is CAST to BIGINT (truncates toward zero).
-    rendered = render_expr(DIALECT.date_diff(unit, _col("s"), _col("e")))
-    trunc = lambda operand: f"DATE_TRUNC('day', CAST({operand} AS TIMESTAMP))"  # noqa: E731
-    assert rendered == (f"CAST(TIMESTAMPDIFF(DAY, {trunc('s')}, {trunc('e')}) / 7 AS BIGINT)")
-
-
-@pytest.mark.parametrize(
-    "unit", ["second", "minute", "hour", "day", "week", "month", "quarter", "year"]
-)
-def test_date_add_renders_timestampadd_with_unit_keyword(unit: str):
-    rendered = render_expr(DIALECT.date_add(unit, SqlLiteral(3), _col("t", "ts")))
-    assert rendered == f"TIMESTAMPADD({unit.upper()}, 3, t.ts)"
-
-
-def test_first_and_last_value_render_min_by_max_by():
-    first = render_expr(DIALECT.first_value(_col("t", "x"), _col("t", "ts")))
-    last = render_expr(DIALECT.last_value(_col("t", "x"), _col("t", "ts")))
-    assert first == "MIN_BY(t.x, t.ts)"
-    assert last == "MAX_BY(t.x, t.ts)"
-
-
-def test_conditional_aggregate_count_renders_count_if():
-    condition = DIALECT.null_safe_eq(_col("t", "status"), SqlLiteral("paid"))
-    rendered = render_expr(DIALECT.conditional_aggregate("count", condition, None))
-    assert rendered == "COUNT_IF((t.status <=> 'paid'))"
-
-
-def test_conditional_aggregate_sum_keeps_portable_case_form():
-    from semantic_rails.sql_ast import SqlBinary
-
-    condition = SqlBinary(_col("t", "status"), "=", SqlLiteral("paid"))
-    rendered = render_expr(DIALECT.conditional_aggregate("sum", condition, _col("t", "amount")))
-    assert rendered == "SUM(CASE WHEN t.status = 'paid' THEN t.amount END)"
-
-
-def test_timestamp_type_is_plain_timestamp():
+    for unit in ["week", "isoweek"]:
+        rendered.append(
+            (
+                DIALECT.date_diff(unit, _col("s"), _col("e")),
+                f"CAST(TIMESTAMPDIFF(DAY, {_trunc('day', 's')}, {_trunc('day', 'e')}) / 7 AS BIGINT)",
+            )
+        )
+    for unit in ["second", "minute", "hour", "day", "week", "month", "quarter", "year"]:
+        rendered.append(
+            (
+                DIALECT.date_add(unit, SqlLiteral(3), _col("t", "ts")),
+                f"TIMESTAMPADD({unit.upper()}, 3, t.ts)",
+            )
+        )
+    for expr, expected in rendered:
+        assert render_expr(expr) == expected
     assert DIALECT.timestamp_type_name() == "TIMESTAMP"
-    assert render_expr(DIALECT.timestamp_cast(_col("t", "ts"))) == "CAST(t.ts AS TIMESTAMP)"
 
 
 # ---------------------------------------------------------------------------
@@ -202,21 +180,21 @@ def test_adapter_normalizes_connection_options():
     assert adapter.options == {"host_env": "SR_TEST_DBX_HOST", "catalog": "main"}
 
 
-def test_adapter_rejects_literal_secret_options():
-    with pytest.raises(SemanticLayerError) as exc:
-        DatabricksNativeAdapter(_adapter_options(token="dapi-literal-secret"))
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "dapi-literal-secret" not in str(exc.value)
+def test_adapter_rejects_literal_secret_and_unsupported_options():
+    for overrides, named in [
+        ({"token": "dapi-literal-secret"}, "token"),
+        ({"warehouse_id": "abc"}, "unsupported package.connection option 'warehouse_id'"),
+    ]:
+        with pytest.raises(SemanticLayerError) as exc:
+            DatabricksNativeAdapter(_adapter_options(**overrides))
+        assert exc.value.code == "INVALID_CONFIG"
+        assert named in str(exc.value)
+        assert "dapi-literal-secret" not in str(exc.value)
 
 
-def test_adapter_rejects_unsupported_options():
-    with pytest.raises(SemanticLayerError) as exc:
-        DatabricksNativeAdapter(_adapter_options(warehouse_id="abc"))
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "unsupported package.connection option 'warehouse_id'" in str(exc.value)
-
-
-def test_adapter_reports_missing_env_without_leaking_values(monkeypatch: pytest.MonkeyPatch):
+def test_adapter_reports_missing_env_and_options_without_leaking_values(
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setenv("SR_TEST_DBX_HOST", "adb-123.4.azuredatabricks.net")
     monkeypatch.setenv("SR_TEST_DBX_TOKEN", "dapi-super-secret")
     monkeypatch.delenv("SR_TEST_DBX_HTTP_PATH", raising=False)
@@ -230,45 +208,45 @@ def test_adapter_reports_missing_env_without_leaking_values(monkeypatch: pytest.
     assert "dapi-super-secret" not in str(exc.value)
     assert "dapi-super-secret" not in repr(exc.value.details)
 
-
-def test_adapter_requires_host_http_path_and_token():
-    adapter = DatabricksNativeAdapter({"catalog": "main"})
+    # The message names every missing option (the details carry only the keys given).
     with pytest.raises(SemanticLayerError) as exc:
-        adapter._connect_kwargs()
+        DatabricksNativeAdapter({"catalog": "main"})._connect_kwargs()
     assert exc.value.code == "INVALID_CONFIG"
     message = str(exc.value)
     assert "host" in message and "http_path" in message and "token" in message
 
 
-@pytest.mark.parametrize(
-    ("timeouts", "socket_timeout"),
-    [({}, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 45)],
-)
-def test_adapter_connects_with_namespace_and_stripped_host(
-    monkeypatch: pytest.MonkeyPatch, timeouts, socket_timeout
+def test_adapter_connects_with_namespace_stripped_host_and_inline_results(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    captured: dict = {}
-    _install_fake_driver(monkeypatch, captured)
     _set_connection_env(monkeypatch)
+    for timeouts, socket_timeout in [
+        ({}, 65),
+        ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 45),
+    ]:
+        captured: dict = {}
+        _install_fake_driver(monkeypatch, captured)
+        adapter = DatabricksNativeAdapter(_adapter_options(**timeouts))
+        rows = adapter.query("select 1")
+        adapter.close()
 
-    adapter = DatabricksNativeAdapter(_adapter_options(**timeouts))
-    rows = adapter.query("select 1")
-    adapter.close()
-
-    assert rows == [{"ONE": 1, "TWO": "x"}]
-    kwargs = captured["connect_kwargs"]
-    # https:// scheme and trailing slash stripped from server_hostname.
-    assert kwargs["server_hostname"] == "adb-123.4.azuredatabricks.net"
-    assert kwargs["http_path"] == "/sql/1.0/warehouses/abc123"
-    assert kwargs["access_token"] == "dapi-super-secret"
-    # Namespace defaults from connection options so unqualified table
-    # names (jaffle_order, …) resolve.
-    assert kwargs["catalog"] == "sr_catalog"
-    assert kwargs["schema"] == "sr_schema"
-    assert kwargs["_socket_timeout"] == socket_timeout
-    assert captured["statements"] == ["select 1"]
-    assert captured["cursor_closed"] is True
-    assert captured["connection_closed"] is True
+        assert rows == [{"ONE": 1, "TWO": "x"}]
+        kwargs = captured["connect_kwargs"]
+        # https:// scheme and trailing slash stripped from server_hostname.
+        assert kwargs["server_hostname"] == "adb-123.4.azuredatabricks.net"
+        assert kwargs["http_path"] == "/sql/1.0/warehouses/abc123"
+        assert kwargs["access_token"] == "dapi-super-secret"
+        # Namespace defaults from connection options so unqualified table
+        # names (jaffle_order, …) resolve.
+        assert kwargs["catalog"] == "sr_catalog"
+        assert kwargs["schema"] == "sr_schema"
+        assert kwargs["_socket_timeout"] == socket_timeout
+        # CloudFetch downloads result batches from links the server hands back; the
+        # adapter asks for results inline instead.
+        assert kwargs["use_cloud_fetch"] is False
+        assert captured["statements"] == ["select 1"]
+        assert captured["cursor_closed"] is True
+        assert captured["connection_closed"] is True
 
 
 def test_adapter_applies_and_resets_statement_timeout(monkeypatch: pytest.MonkeyPatch):
@@ -287,12 +265,15 @@ def test_adapter_applies_and_resets_statement_timeout(monkeypatch: pytest.Monkey
     ]
 
 
-def test_query_rewrites_double_quoted_identifiers_to_backticks(monkeypatch: pytest.MonkeyPatch):
+def test_query_requotes_identifiers_and_floats_nullif_divisions(monkeypatch: pytest.MonkeyPatch):
     # Spark SQL parses "double quoted" tokens as STRING LITERALS, so the
     # renderer's ANSI-quoted dot-aliases (AS "dimension.x") would select
-    # a constant. The adapter's compat pass re-quotes them with
-    # backticks before execution — and never touches single-quoted
-    # string literals (including '' escapes and embedded double quotes).
+    # a constant: the adapter's compat pass re-quotes them with backticks
+    # before execution. Spark DECIMAL / DECIMAL keeps DECIMAL with a
+    # REDUCED result scale (a DECIMAL revenue share came back as 0.064117
+    # live), so the pass also casts the compiler's NULLIF divide-by-zero
+    # guard to DOUBLE, recursively for nested ratios. Neither touches
+    # single-quoted string literals ('' escapes, embedded double quotes).
     captured: dict = {}
     _install_fake_driver(monkeypatch, captured)
     _set_connection_env(monkeypatch)
@@ -302,29 +283,13 @@ def test_query_rewrites_double_quoted_identifiers_to_backticks(monkeypatch: pyte
         'SELECT t.product_type AS "dimension.jaffle_product_type", '
         "'it''s a \"literal\"' AS note FROM jaffle_order t"
     )
-
-    assert captured["statements"] == [
-        "SELECT t.product_type AS `dimension.jaffle_product_type`, "
-        "'it''s a \"literal\"' AS note FROM jaffle_order t"
-    ]
-
-
-def test_query_floats_nullif_divisions(monkeypatch: pytest.MonkeyPatch):
-    # Spark DECIMAL / DECIMAL keeps DECIMAL with a REDUCED result scale
-    # (a DECIMAL revenue share came back as 0.064117 live), so ratio
-    # metrics lose precision vs DuckDB's float division. The compat
-    # pass casts the compiler's NULLIF divide-by-zero guard to DOUBLE,
-    # recursively for nested ratios, skipping string literals.
-    captured: dict = {}
-    _install_fake_driver(monkeypatch, captured)
-    _set_connection_env(monkeypatch)
-
-    adapter = DatabricksNativeAdapter(_adapter_options())
     adapter.query("SELECT a / NULLIF(b / NULLIF(c, 0), 0) AS r, ' / NULLIF(' AS note FROM t")
 
     assert captured["statements"] == [
+        "SELECT t.product_type AS `dimension.jaffle_product_type`, "
+        "'it''s a \"literal\"' AS note FROM jaffle_order t",
         "SELECT a / CAST(NULLIF(b / CAST(NULLIF(c, 0) AS DOUBLE), 0) AS DOUBLE) AS r, "
-        "' / NULLIF(' AS note FROM t"
+        "' / NULLIF(' AS note FROM t",
     ]
 
 
@@ -380,12 +345,10 @@ def test_create_warehouse_adapter_selects_databricks_native():
     assert adapter.options["host_env"] == "SR_TEST_DBX_HOST"
     assert adapter.options["catalog"] == "sr_catalog"
 
-
-def test_create_adapter_rejects_unknown_connection_kind():
     with pytest.raises(SemanticLayerError) as exc:
         create_adapter(_databricks_package(kind="databricks_cli"))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "databricks_cli" in str(exc.value)
+    assert exc.value.details["connection_kind"] == "databricks_cli"
 
 
 # ---------------------------------------------------------------------------
@@ -443,35 +406,17 @@ def test_databricks_compiles_full_battery_offline():
             assert forbidden not in sql, f"{case.name}: '{forbidden}' leaked into databricks SQL"
 
 
-def test_adapter_fetches_results_inline_not_from_result_links(monkeypatch: pytest.MonkeyPatch):
-    # CloudFetch downloads result batches from links the server hands back; the
-    # adapter asks for results inline instead.
-    captured: dict = {}
-    _install_fake_driver(monkeypatch, captured)
+def test_databricks_long_request_uses_a_bounded_temporary_connection(monkeypatch):
     _set_connection_env(monkeypatch)
-
-    adapter = DatabricksNativeAdapter(_adapter_options())
-    adapter.query("select 1")
-    adapter.close()
-
-    assert captured["connect_kwargs"]["use_cloud_fetch"] is False
-
-
-@pytest.mark.parametrize("prepared", [False, True])
-def test_databricks_long_request_uses_a_bounded_temporary_connection(monkeypatch, prepared):
-    from semantic_rails.dialects import dialect_for_warehouse
-
-    log = {}
-    _install_fake_driver(monkeypatch, log)
-    _set_connection_env(monkeypatch)
-    adapter = DatabricksNativeAdapter(_adapter_options())
-    if prepared:
-        adapter.query_prepared(
-            dialect_for_warehouse("databricks").prepare_query("select 1"),
-            limits={"statement_timeout_ms": 120000},
-        )
-    else:
-        adapter.query("select 1", limits={"statement_timeout_ms": 120000})
-    assert log["connect_kwargs"]["_socket_timeout"] == 125
-    assert log["connection_closed"] is True
-    assert adapter._conn is None
+    limits = {"statement_timeout_ms": 120000}
+    for prepared in [False, True]:
+        log: dict = {}
+        _install_fake_driver(monkeypatch, log)
+        adapter = DatabricksNativeAdapter(_adapter_options())
+        if prepared:
+            adapter.query_prepared(DIALECT.prepare_query("select 1"), limits=limits)
+        else:
+            adapter.query("select 1", limits=limits)
+        assert log["connect_kwargs"]["_socket_timeout"] == 125
+        assert log["connection_closed"] is True
+        assert adapter._conn is None

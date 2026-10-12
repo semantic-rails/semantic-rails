@@ -23,7 +23,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-import textwrap
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -106,193 +105,26 @@ graph:
     order_line: {label: Order line, key: [line_id], model: order_lines}
     receipt: {label: Receipt, key: [row_id], model: receipts}
   relationships:
-    post_owner:
-      id: relationship.post_owner
-      entities: [post, user]
-      cardinality: many_to_one
-      via: [owner_user_id]
-      target: [user_id]
-    post_editor:
-      id: relationship.post_editor
-      entities: [post, user]
-      cardinality: many_to_one
-      via: [editor_user_id]
-      target: [user_id]
-    post_topic:
-      id: relationship.post_topic
-      entities: [post, topic]
-      cardinality: many_to_many
-      via: [topic_code]
-      target: [topic_code]
-    consumption_segment_history:
-      id: relationship.consumption_segment_history
-      entities: [consumption, segment_history]
-      cardinality: many_to_one
-      via: [customer_id]
-      target: [customer_id]
-      temporal_validity:
-        valid_from: segment_history.valid_from
-        valid_to: segment_history.valid_to
-    consumption_receipt:
-      id: relationship.consumption_receipt
-      entities: [consumption, receipt]
-      cardinality: one_to_one
-      via: [row_id]
-      target: [row_id]
+    post_owner: {id: relationship.post_owner, entities: [post, user], cardinality: many_to_one,
+      via: [owner_user_id], target: [user_id]}
+    post_editor: {id: relationship.post_editor, entities: [post, user],
+      cardinality: many_to_one, via: [editor_user_id], target: [user_id]}
+    post_topic: {id: relationship.post_topic, entities: [post, topic],
+      cardinality: many_to_many, via: [topic_code], target: [topic_code]}
+    consumption_segment_history: {id: relationship.consumption_segment_history,
+      entities: [consumption, segment_history], cardinality: many_to_one, via: [customer_id],
+      target: [customer_id], temporal_validity: {valid_from: segment_history.valid_from,
+        valid_to: segment_history.valid_to}}
+    consumption_receipt: {id: relationship.consumption_receipt,
+      entities: [consumption, receipt], cardinality: one_to_one, via: [row_id], target: [row_id]}
 """
 
 
 def _pin(relationship: str) -> str:
     return (
         "  path_preferences:\n"
-        "    - source_entity: post\n"
-        "      target_entity: user\n"
-        f"      relationship_path: [{relationship}]\n"
+        f"    - {{source_entity: post, target_entity: user, relationship_path: [{relationship}]}}\n"
     )
-
-
-MODELS = {
-    "customers": """
-        model:
-          id: customers
-          relation: customers
-          entities: {customer: {}}
-          dimensions:
-            currency: {label: Currency, kind: categorical}
-            segment: {label: Segment, kind: categorical}
-        """,
-    "segment_history": """
-        model:
-          id: segment_history
-          relation: segment_history
-          entities: {segment_history: {}}
-          dimensions:
-            segment: {label: Historic segment, kind: categorical}
-        """,
-    "consumption": """
-        model:
-          id: consumption
-          relation: consumption
-          entities: {consumption: {}, customer: {}}
-          dimensions:
-            period: {label: Period, kind: categorical}
-          measures:
-            amount: {label: Amount, kind: aggregate, expr: amount, default_agg: sum,
-              accumulation: {kind: flow}}
-            consumption_count: {label: Consumption rows, kind: entity_count,
-              entity_key: row_id, accumulation: {kind: event}}
-            consuming_customers: {label: Consuming customers, kind: entity_count,
-              entity_key: customer_id, accumulation: {kind: event}}
-            eur_amount:
-              label: Amount in euros
-              kind: aggregate
-              default_agg: sum
-              accumulation: {kind: flow}
-              expr:
-                kind: case
-                whens:
-                  - when:
-                      kind: comparison
-                      op: "="
-                      left: {kind: column, entity: entity.shop_customer, column: currency}
-                      right: {kind: literal, value: EUR}
-                    then: {kind: column, column: amount}
-            null_currency_amount:
-              label: Amount with no customer currency
-              kind: aggregate
-              default_agg: sum
-              accumulation: {kind: flow}
-              expr:
-                kind: case
-                whens:
-                  - when:
-                      kind: comparison
-                      op: IS
-                      left: {kind: column, entity: entity.shop_customer, column: currency}
-                      right: {kind: literal, value: null}
-                    then: {kind: column, column: amount}
-        """,
-    "users": """
-        model:
-          id: users
-          relation: users
-          entities: {user: {}}
-          dimensions:
-            age: {label: Age, kind: integer}
-        """,
-    "posts": """
-        model:
-          id: posts
-          relation: posts
-          entities: {post: {}}
-          measures:
-            post_count: {label: Posts, kind: entity_count, entity_key: post_id,
-              accumulation: {kind: event}}
-            view_count: {label: Views, kind: aggregate, expr: view_count, default_agg: sum,
-              accumulation: {kind: flow}}
-        """,
-    "topics": """
-        model:
-          id: topics
-          relation: topics
-          entities: {topic: {}}
-          dimensions:
-            topic_name: {label: Topic, kind: categorical}
-        """,
-    "tags": """
-        model:
-          id: tags
-          relation: tags
-          entities: {tag: {}}
-          dimensions:
-            tag_name: {label: Tag, kind: categorical}
-        """,
-    "post_tags": """
-        model:
-          id: post_tags
-          relation: post_tags
-          entities: {post_tag: {}, post: {}, tag: {}}
-        """,
-    "orders": """
-        model:
-          id: orders
-          relation: orders
-          entities: {order: {}, customer: {}}
-        """,
-    "order_lines": """
-        model:
-          id: order_lines
-          relation: order_lines
-          entities: {order_line: {}, order: {}}
-          measures:
-            line_count: {label: Order lines, kind: entity_count, entity_key: line_id,
-              accumulation: {kind: event}}
-            quantity: {label: Quantity, kind: aggregate, expr: quantity, default_agg: sum,
-              accumulation: {kind: flow}}
-            eur_quantity:
-              label: Quantity for euro customers
-              kind: aggregate
-              default_agg: sum
-              accumulation: {kind: flow}
-              expr:
-                kind: case
-                whens:
-                  - when:
-                      kind: comparison
-                      op: "="
-                      left: {kind: column, entity: entity.shop_customer, column: currency}
-                      right: {kind: literal, value: EUR}
-                    then: {kind: column, column: quantity}
-        """,
-    "receipts": """
-        model:
-          id: receipts
-          relation: receipts
-          entities: {receipt: {}}
-          dimensions:
-            channel: {label: Channel, kind: categorical}
-        """,
-}
 
 
 def _col(entity: str, column: str) -> dict[str, Any]:
@@ -304,7 +136,13 @@ def _lit(value: Any) -> dict[str, Any]:
 
 
 def _cmp(left: dict[str, Any], op: str, right: Any) -> dict[str, Any]:
-    return {"kind": "comparison", "op": op, "left": left, "right": _lit(right)}
+    """A comparison; a ``right`` that is no expression is a literal."""
+    right = right if isinstance(right, dict) else _lit(right)
+    return {"kind": "comparison", "op": op, "left": left, "right": right}
+
+
+def _bool(op: str, *args: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "boolean", "op": op, "args": list(args)}
 
 
 def _aggif(aggregation: str, condition: dict[str, Any], value: Any = None) -> dict[str, Any]:
@@ -314,9 +152,10 @@ def _aggif(aggregation: str, condition: dict[str, Any], value: Any = None) -> di
     return expression
 
 
-EUR = _cmp(_col("customer", "currency"), "=", "EUR")
-CZK = _cmp(_col("customer", "currency"), "=", "CZK")
-NO_CURRENCY = _cmp(_col("customer", "currency"), "IS", None)
+CUSTOMER_CURRENCY = _col("customer", "currency")
+EUR = _cmp(CUSTOMER_CURRENCY, "=", "EUR")
+CZK = _cmp(CUSTOMER_CURRENCY, "=", "CZK")
+NO_CURRENCY = _cmp(CUSTOMER_CURRENCY, "IS", None)
 OVER_65 = _cmp(_col("user", "age"), ">", 65)
 AMOUNT = _col("consumption", "amount")
 SUM_EUR = _aggif("sum", EUR, AMOUNT)
@@ -326,6 +165,89 @@ CURRENCY = "dimension.shop_customer_currency"
 SEGMENT = "dimension.shop_customer_segment"
 PERIOD = "dimension.shop_consumption_period"
 AGE = "dimension.shop_user_age"
+
+
+def _case_measure(label: str, condition: dict[str, Any], column: str) -> dict[str, Any]:
+    """An authored measure summing ``column`` over the rows ``condition`` holds for."""
+    then = {"kind": "column", "column": column}
+    return {
+        "label": label,
+        "kind": "aggregate",
+        "default_agg": "sum",
+        "accumulation": {"kind": "flow"},
+        "expr": {"kind": "case", "whens": [{"when": condition, "then": then}]},
+    }
+
+
+# Authored measures whose expression reads the customer's currency, per model.
+AUTHORED = {
+    "consumption": {
+        "eur_amount": _case_measure("Amount in euros", EUR, "amount"),
+        "null_currency_amount": _case_measure(
+            "Amount with no customer currency", NO_CURRENCY, "amount"
+        ),
+    },
+    "order_lines": {"eur_quantity": _case_measure("Quantity for euro customers", EUR, "quantity")},
+}
+
+# Each model's id and relation are its name; AUTHORED adds to its measures.
+MODELS = {
+    "customers": """
+        entities: {customer: {}}
+        dimensions:
+          currency: {label: Currency, kind: categorical}
+          segment: {label: Segment, kind: categorical}
+        """,
+    "segment_history": """
+        entities: {segment_history: {}}
+        dimensions: {segment: {label: Historic segment, kind: categorical}}
+        """,
+    "consumption": """
+        entities: {consumption: {}, customer: {}}
+        dimensions: {period: {label: Period, kind: categorical}}
+        measures:
+          amount: {label: Amount, kind: aggregate, expr: amount, default_agg: sum,
+            accumulation: {kind: flow}}
+          consumption_count: {label: Consumption rows, kind: entity_count,
+            entity_key: row_id, accumulation: {kind: event}}
+          consuming_customers: {label: Consuming customers, kind: entity_count,
+            entity_key: customer_id, accumulation: {kind: event}}
+        """,
+    "users": """
+        entities: {user: {}}
+        dimensions: {age: {label: Age, kind: integer}}
+        """,
+    "posts": """
+        entities: {post: {}}
+        measures:
+          post_count: {label: Posts, kind: entity_count, entity_key: post_id,
+            accumulation: {kind: event}}
+          view_count: {label: Views, kind: aggregate, expr: view_count, default_agg: sum,
+            accumulation: {kind: flow}}
+        """,
+    "topics": """
+        entities: {topic: {}}
+        dimensions: {topic_name: {label: Topic, kind: categorical}}
+        """,
+    "tags": """
+        entities: {tag: {}}
+        dimensions: {tag_name: {label: Tag, kind: categorical}}
+        """,
+    "post_tags": "entities: {post_tag: {}, post: {}, tag: {}}",
+    "orders": "entities: {order: {}, customer: {}}",
+    "order_lines": """
+        entities: {order_line: {}, order: {}}
+        measures:
+          line_count: {label: Order lines, kind: entity_count, entity_key: line_id,
+            accumulation: {kind: event}}
+          quantity: {label: Quantity, kind: aggregate, expr: quantity, default_agg: sum,
+            accumulation: {kind: flow}}
+        """,
+    "receipts": """
+        entities: {receipt: {}}
+        dimensions: {channel: {label: Channel, kind: categorical}}
+        """,
+}
 
 # Scalar subqueries: NULL where the lookup finds no row, independently of any join.
 SQL_CUR = "(SELECT c.currency FROM customers AS c WHERE c.customer_id = t.customer_id)"
@@ -342,51 +264,67 @@ def _sql_age(role: str) -> str:
 
 
 def _write_package(
-    root: Path, *, pin: str = "relationship.post_owner", seed: str = SEED_SQL, **files: Any
+    root: Path,
+    *,
+    pin: str = "relationship.post_owner",
+    seed: str = SEED_SQL,
+    measures: dict[str, Any] | None = None,
+    **files: Any,
 ) -> Path:
+    """``measures`` adds authored measures per model, as AUTHORED does; ``files`` are YAML."""
     pkg = root / "shop"
-    (pkg / "data").mkdir(parents=True)
-    (pkg / "models").mkdir()
+    (pkg / "models").mkdir(parents=True)
+    (pkg / "data").mkdir()
     (pkg / "data" / "seed.sql").write_text(seed)
     (pkg / "package.yml").write_text(PACKAGE)
     (pkg / "graph.yml").write_text(GRAPH + (_pin(pin) if pin else ""))
     for name, body in MODELS.items():
-        (pkg / "models" / f"{name}.yml").write_text(textwrap.dedent(body))
+        model = {"id": name, "relation": name, **yaml.safe_load(body)}
+        added = {**AUTHORED.get(name, {}), **(measures or {}).get(name, {})}
+        if added:
+            model["measures"] = {**model["measures"], **added}
+        (pkg / "models" / f"{name}.yml").write_text(yaml.safe_dump({"model": model}))
     for name, doc in files.items():
         (pkg / f"{name}.yml").write_text(yaml.safe_dump(doc, sort_keys=False))
     return pkg
 
 
+def _measure(name: str, aggregation: str = "") -> Any:
+    measure = f"measure.shop.{name}"
+    if aggregation:
+        return {"kind": "aggregate", "measure": measure, "aggregation": aggregation}
+    return measure
+
+
+def _query(expression: Any, **extra: Any) -> dict[str, Any]:
+    return {"select": [{"as": "value", "expression": expression}], **extra}
+
+
+def _metric(name: str, kind: str, expression: Any) -> dict[str, Any]:
+    """The metrics file entry of ``metric.shop.<name>``."""
+    metric = {"as": f"metric.shop.{name}", "kind": kind, "value_type": "number"}
+    return {f"shop.{name}": {**metric, "expression": expression}}
+
+
 @pytest.fixture(scope="module")
 def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    recipe = {
-        "as": "metric.shop.euro_share",
-        "kind": "derived",
-        "value_type": "number",
-        "expression": SUM_EUR,
+    january = {"all": [{"field": PERIOD, "op": "is", "value": "2026-01"}]}
+    metrics = {
+        **_metric("euro_share", "derived", SUM_EUR),
+        **_metric("filtered_amount", "aggregate", {**_measure("amount", "sum"), "filter": january}),
     }
-    filtered = {
-        "as": "metric.shop.filtered_amount",
-        "kind": "aggregate",
-        "value_type": "number",
-        "expression": {
-            "kind": "aggregate",
-            "measure": "measure.shop.amount",
-            "aggregation": "sum",
-            "filter": {"all": [{"field": PERIOD, "op": "is", "value": "2026-01"}]},
-        },
-    }
-    return _write_package(
-        tmp_path_factory.mktemp("aggif"),
-        metrics={"metrics": {"shop.euro_share": recipe, "shop.filtered_amount": filtered}},
-    )
+    return _write_package(tmp_path_factory.mktemp("aggif"), metrics={"metrics": metrics})
+
+
+def _runtime(package: Path):
+    runtime = Runtime.from_path(str(package))
+    yield opened(runtime)
+    runtime.close()
 
 
 @pytest.fixture(scope="module")
 def runtime(package: Path):
-    runtime = Runtime.from_path(str(package))
-    yield opened(runtime)
-    runtime.close()
+    yield from _runtime(package)
 
 
 @pytest.fixture(scope="module")
@@ -420,33 +358,29 @@ def _operations(runtime: Runtime, query: dict[str, Any], context: Any = None) ->
     call = {key: value for key, value in query.items() if key != "metric_filters"}
     payload = runtime.engine_payload(call, context=context)
     payload["metric_filters"] = query["metric_filters"]
-    return [
-        partial(operation, payload)
-        for operation in (
-            runtime.validate_internal,
-            runtime.compile_internal,
-            runtime.query_internal,
-        )
-    ]
+    internal = (runtime.validate_internal, runtime.compile_internal, runtime.query_internal)
+    return [partial(operation, payload) for operation in internal]
 
 
 def _ask(
     runtime: Runtime, expression: Any, *, group_by: str = "", context: Any = None, **extra: Any
 ) -> dict[Any, float | None]:
-    query: dict[str, Any] = {"select": [{"as": "value", "expression": expression}], **extra}
-    if group_by:
-        query["group_by"] = [group_by]
+    query = _query(expression, **extra, **({"group_by": [group_by]} if group_by else {}))
     return {
         row.get(group_by) if group_by else None: _number(row["value"])
         for row in _operations(runtime, query, context)[2]()["rows"]
     }
 
 
-def _measure(name: str, aggregation: str = "") -> Any:
-    measure = f"measure.shop.{name}"
-    if aggregation:
-        return {"kind": "aggregate", "measure": measure, "aggregation": aggregation}
-    return measure
+def _metric_filter(entity: str, measure_input: Any, op: str, value: Any) -> dict[str, Any]:
+    """The engine's metric filter, which no call spells: its set is matched on the query's
+    grouped entities too."""
+    predicate = {"kind": "metric_predicate", "entity": f"entity.shop_{entity}"}
+    return {
+        "expression": {**predicate, "input": measure_input, "op": op, "value": value},
+        "op": "=",
+        "value": True,
+    }
 
 
 # (aggregate_if, gold SQL, the filtered-measure leaf asking the same question, its where)
@@ -521,40 +455,36 @@ def test_a_condition_across_many_to_one_hops_matches_gold_and_the_filtered_leaf(
     assert value == pytest.approx(_ask(runtime, leaf, where=[where]))
 
 
-# An entity filter that every consumption row passes, on each row alone.
+# An entity filter that every consumption row passes, on each row alone, and the engine's
+# contextual one.
 EVERY_ROW = {
     "entity": "entity.shop_consumption",
     "having": [{"field": _measure("consumption_count"), "op": "gt", "value": 0}],
     "over": "all_time",
 }
-# The engine's contextual metric filter, which no call spells: its set is matched on the
-# query's grouped entities too.
-EVERY_ROW_IN_CONTEXT = {
-    "expression": {
-        "kind": "metric_predicate",
-        "entity": "entity.shop_consumption",
-        "input": {"measure": _measure("consumption_count")},
-        "op": ">",
-        "value": 0,
-    },
-    "op": "=",
-    "value": True,
-}
+EVERY_ROW_IN_CONTEXT = _metric_filter(
+    "consumption", {"measure": _measure("consumption_count")}, ">", 0
+)
 # A March row of a customer with no record (C9): it has no currency, so March reads 0.
 MARCH_ROW = "INSERT INTO consumption VALUES (10, 'C9', 8, '2026-03');\n"
 
 
 @pytest.fixture(scope="module")
 def march_runtime(tmp_path_factory: pytest.TempPathFactory):
-    package = _write_package(tmp_path_factory.mktemp("march"), seed=SEED_SQL + MARCH_ROW)
-    runtime = Runtime.from_path(str(package))
-    yield opened(runtime)
-    runtime.close()
+    yield from _runtime(_write_package(tmp_path_factory.mktemp("march"), seed=SEED_SQL + MARCH_ROW))
 
 
-@pytest.mark.parametrize("group_by", ["", PERIOD, SEGMENT], ids=["total", "base", "one"])
+# Each consumption aggregation once, and each grouping: none, the base's own column, the
+# looked-up one.
 @pytest.mark.parametrize(
-    "case", sorted(case for case, row in ONE_HOP.items() if "FROM consumption" in row[1])
+    ("case", "group_by"),
+    [
+        ("avg", PERIOD),
+        ("sum", PERIOD),
+        ("count", SEGMENT),
+        ("count_distinct", ""),
+        ("one_to_one", SEGMENT),
+    ],
 )
 def test_a_metric_filter_every_row_passes_changes_no_value(march_runtime, case, group_by):
     """The filter keeps the condition's lookup LEFT, so every row stays: March, whose one row
@@ -578,15 +508,13 @@ def test_a_metric_filter_every_row_passes_changes_no_value(march_runtime, case, 
     assert contextual == plain
 
 
-def _in(kind: str, values: list[Any]) -> dict[str, Any]:
-    return {"kind": kind, "expr": _col("customer", "currency"), "values": values}
-
-
+EUR_OR_LARGE = _bool("or", EUR, _cmp(AMOUNT, ">", 500))
+# COALESCE(currency, 'EUR'): a row with no customer reads 'EUR'.
+EUR_IF_NONE = {"kind": "call", "name": "COALESCE", "args": [CUSTOMER_CURRENCY, _lit("EUR")]}
 # Conditions on a consumption row's customer: (condition, refused because a row with no
 # customer could satisfy it).
 CONDITION_SHAPES = {
-    "in": (_in("in", ["EUR", "CZK"]), False),
-    "not_in": (_in("not_in", ["CZK"]), False),
+    "not_in": ({"kind": "not_in", "expr": CUSTOMER_CURRENCY, "values": ["CZK"]}, False),
     "between": (
         {
             "kind": "between",
@@ -596,44 +524,16 @@ CONDITION_SHAPES = {
         },
         False,
     ),
-    "column_on_the_right": (
-        {
-            "kind": "comparison",
-            "op": "=",
-            "left": _lit("EUR"),
-            "right": _col("customer", "currency"),
-        },
-        False,
-    ),
-    "is_not_null": (_cmp(_col("customer", "currency"), "IS NOT", None), False),
+    "column_on_the_right": (_cmp(_lit("EUR"), "=", CUSTOMER_CURRENCY), False),
     "or_inside_an_and": (
-        {
-            "kind": "boolean",
-            "op": "and",
-            "args": [
-                {"kind": "boolean", "op": "or", "args": [EUR, _cmp(AMOUNT, ">", 500)]},
-                _cmp(_col("customer", "currency"), "IS NOT", None),
-            ],
-        },
+        _bool("and", EUR_OR_LARGE, _cmp(CUSTOMER_CURRENCY, "IS NOT", None)),
         False,
     ),
-    "equals_null": (_cmp(_col("customer", "currency"), "=", None), True),
-    "is_not_a_value": (_cmp(_col("customer", "currency"), "IS NOT", "EUR"), True),
-    "not": ({"kind": "boolean", "op": "not", "args": [CZK]}, True),
-    "in_with_null": (_in("in", ["EUR", None]), True),
-    "inside_a_call": (
-        {
-            "kind": "comparison",
-            "op": "=",
-            "left": {
-                "kind": "call",
-                "name": "COALESCE",
-                "args": [_col("customer", "currency"), _lit("EUR")],
-            },
-            "right": _lit("EUR"),
-        },
-        True,
-    ),
+    "equals_null": (_cmp(CUSTOMER_CURRENCY, "=", None), True),
+    "is_not_a_value": (_cmp(CUSTOMER_CURRENCY, "IS NOT", "EUR"), True),
+    "not": (_bool("not", CZK), True),
+    "in_with_null": ({"kind": "in", "expr": CUSTOMER_CURRENCY, "values": ["EUR", None]}, True),
+    "inside_a_call": (_cmp(EUR_IF_NONE, "=", "EUR"), True),
 }
 
 
@@ -696,15 +596,13 @@ def test_grouped_by_a_base_or_a_one_side_dimension(runtime, gold, group_by, grou
         assert value[None] == 0.0  # rows 7 and 8 group under NULL
 
 
-@pytest.mark.parametrize(
-    ("pin", "role"),
-    [("relationship.post_owner", "owner"), ("relationship.post_editor", "editor")],
-)
-def test_the_path_preference_picks_the_role(tmp_path, gold, pin, role):
+def test_the_path_preference_picks_the_role(tmp_path, gold):
+    # The shared package pins the owner, whose answer ONE_HOP checks; this one pins the editor.
+    pin, role = "relationship.post_editor", "editor"
     runtime = Runtime.from_path(str(_write_package(tmp_path, pin=pin)))
     try:
         expression = _aggif("sum", OVER_65, _col("post", "view_count"))
-        plan = plan_query(runtime.config, None, {"select": [{"as": "v", "expression": expression}]})
+        plan = plan_query(runtime.config, None, _query(expression))
         value = _ask(runtime, expression)
     finally:
         runtime.close()
@@ -716,46 +614,58 @@ def test_the_path_preference_picks_the_role(tmp_path, gold, pin, role):
     )
 
 
-# (aggregate_if, details["reason"], words the message must name)
+def _hop(base: str, target: str, cardinality: str, *path: str, to: str = "") -> dict[str, Any]:
+    """A refused first hop, from ``base`` to ``to`` (else ``target``), on the way to ``target``."""
+    relationships = [f"relationship.{name}" for name in path]
+    return {
+        "base_entity": f"entity.shop_{base}",
+        "entity": f"entity.shop_{target}",
+        "reason": "fanout_hop",
+        "path": relationships,
+        "relationship": relationships[0],
+        "from_entity": f"entity.shop_{base}",
+        "to_entity": f"entity.shop_{to or target}",
+        "cardinality": cardinality,
+    }
+
+
+def _entities(reason: str, *names: str) -> dict[str, Any]:
+    return {"entities": [f"entity.shop_{name}" for name in names], "reason": reason}
+
+
+NULL_ACCEPTING = {
+    "base_entity": "entity.shop_consumption",
+    "entity": "entity.shop_customer",
+    "reason": "null_accepting_condition",
+}
+
+# (aggregate_if, its refusal's details besides the hint)
 REFUSALS = {
-    "is_null_on_the_one_side": (
-        _aggif("sum", NO_CURRENCY, AMOUNT),
-        "null_accepting_condition",
-        ["entity.shop_consumption", "entity.shop_customer"],
-    ),
+    "is_null_on_the_one_side": (_aggif("sum", NO_CURRENCY, AMOUNT), NULL_ACCEPTING),
     "or_with_the_value_entity": (
-        _aggif(
-            "count",
-            {"kind": "boolean", "op": "or", "args": [EUR, _cmp(AMOUNT, ">", 500)]},
-            _col("consumption", "row_id"),
-        ),
-        "null_accepting_condition",
-        ["entity.shop_consumption", "entity.shop_customer"],
+        _aggif("count", EUR_OR_LARGE, _col("consumption", "row_id")),
+        NULL_ACCEPTING,
     ),
     "condition_on_the_many_side": (
         _aggif("count_distinct", _cmp(AMOUNT, ">", 10), _col("customer", "customer_id")),
-        "fanout_hop",
-        ["entity.shop_customer", "entity.shop_consumption", "1:N"],
+        _hop("customer", "consumption", "1:N", "consumption_customer"),
     ),
     "bridge": (
         _aggif("count", _cmp(_col("tag", "tag_name"), "=", "r"), _col("post", "post_id")),
-        "fanout_hop",
-        ["entity.shop_post", "entity.shop_post_tag", "1:N"],
+        _hop("post", "tag", "1:N", "post_tags_post", "post_tags_tag", to="post_tag"),
     ),
     "many_to_many": (
         _aggif("count", _cmp(_col("topic", "topic_name"), "=", "ML"), _col("post", "post_id")),
-        "fanout_hop",
-        ["relationship.post_topic", "entity.shop_topic", "M:N"],
+        _hop("post", "topic", "M:N", "post_topic"),
     ),
+    # A many-to-one hop, refused because it is valid over time.
     "valid_over_time": (
         _aggif("sum", _cmp(_col("segment_history", "segment"), "=", "SME"), AMOUNT),
-        "fanout_hop",
-        ["relationship.consumption_segment_history", "valid over time"],
+        _hop("consumption", "segment_history", "N:1", "consumption_segment_history"),
     ),
     "count_without_value_across_entities": (
-        _aggif("count", {"kind": "boolean", "op": "and", "args": [EUR, _cmp(AMOUNT, ">", 5)]}),
-        "ambiguous_grain",
-        ["entity.shop_consumption", "entity.shop_customer"],
+        _aggif("count", _bool("and", EUR, _cmp(AMOUNT, ">", 5))),
+        _entities("ambiguous_grain", "consumption", "customer"),
     ),
     "value_across_entities": (
         _aggif(
@@ -763,24 +673,19 @@ REFUSALS = {
             EUR,
             {"kind": "arithmetic", "op": "add", "left": AMOUNT, "right": _col("user", "age")},
         ),
-        "value_spans_entities",
-        ["entity.shop_consumption", "entity.shop_user"],
+        _entities("value_spans_entities", "consumption", "user"),
     ),
 }
 
 
-@pytest.mark.parametrize("case", sorted(REFUSALS))
-def test_every_other_path_is_refused_with_the_failing_hop_and_a_hint(runtime, case):
-    expression, reason, named = REFUSALS[case]
-
-    with pytest.raises(SemanticLayerError) as raised:
-        plan_query(runtime.config, None, {"select": [{"as": "v", "expression": expression}]})
-
-    error = raised.value
-    assert error.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
-    assert error.details["reason"] == reason
-    assert error.details["hint"]
-    assert all(word in str(error) for word in named), str(error)
+def test_every_other_path_is_refused_with_the_failing_hop_and_a_hint(runtime):
+    for case, (expression, details) in REFUSALS.items():
+        with pytest.raises(SemanticLayerError) as raised:
+            plan_query(runtime.config, None, _query(expression))
+        error = raised.value
+        assert error.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE", case
+        assert error.details["hint"], case
+        assert {key: value for key, value in error.details.items() if key != "hint"} == details
 
 
 def test_two_roles_with_no_preference_are_refused_never_picked(tmp_path):
@@ -788,7 +693,7 @@ def test_two_roles_with_no_preference_are_refused_never_picked(tmp_path):
     expression = _aggif("count", OVER_65, _col("post", "post_id"))
 
     with pytest.raises(SemanticLayerError) as raised:
-        plan_query(config, None, {"select": [{"as": "v", "expression": expression}]})
+        plan_query(config, None, _query(expression))
 
     error = raised.value
     assert error.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
@@ -800,18 +705,8 @@ def test_two_roles_with_no_preference_are_refused_never_picked(tmp_path):
 
 
 def _predicate(expression: dict[str, Any]) -> dict[str, Any]:
-    """A metric filter keeping the customers whose ``expression`` is over 15 (engine form)."""
-    return {
-        "expression": {
-            "kind": "metric_predicate",
-            "entity": "entity.shop_customer",
-            "input": expression,
-            "op": ">",
-            "value": 15,
-        },
-        "op": "=",
-        "value": True,
-    }
+    """A metric filter keeping the customers whose ``expression`` is over 15."""
+    return _metric_filter("customer", expression, ">", 15)
 
 
 def test_inside_a_metric_predicate_it_computes_gold_or_refuses(runtime, gold):
@@ -835,14 +730,12 @@ def test_inside_a_metric_recipe_it_is_refused(runtime):
     with pytest.raises(SemanticLayerError) as raised:
         _ask(runtime, "metric.shop.euro_share")
 
+    # The refusal carries no details: the expression kind it names is the only pointer.
     assert raised.value.code == "INVALID_QUERY"
     assert "aggregate_if" in str(raised.value)
 
 
-@pytest.mark.parametrize("aggif_first", [False, True], ids=["authored_first", "aggif_first"])
-def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
-    package, gold, aggif_first
-):
+def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(package, gold):
     # The authored measure reads the customer through a lookup that keeps its rows, so rows 7
     # and 8 (no customer) have no currency and count, as `where currency IS NULL` counts them.
     # Named with its own table as its source, as a fact model names it and as the
@@ -864,8 +757,7 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
     ]
     try:
         alone = _ask(runtime, _measure("null_currency_amount"))
-        query = {"select": select[::-1] if aggif_first else select}
-        [row] = runtime.query(query)["rows"]
+        rows = [runtime.query({"select": ordered})["rows"] for ordered in (select, select[::-1])]
     finally:
         runtime.close()
 
@@ -873,8 +765,9 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
         f"SELECT SUM(CASE WHEN {SQL_CUR} IS NULL THEN t.amount END) FROM consumption AS t"
     )
     assert alone == null_currency == {None: 1053.0}  # rows 6, 7 and 8
-    assert _number(row["authored"]) == 1053.0
-    assert {None: _number(row["value"])} == pytest.approx(gold(ONE_HOP["sum"][1]))
+    for [row] in rows:
+        assert _number(row["authored"]) == 1053.0
+        assert {None: _number(row["value"])} == pytest.approx(gold(ONE_HOP["sum"][1]))
 
 
 @pytest.mark.parametrize(
@@ -883,7 +776,7 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
 def test_a_measure_reading_an_entity_two_hops_away_aggregates_after_its_joins(
     runtime, gold, expression
 ):
-    payload = runtime.engine_payload({"select": [{"as": "value", "expression": expression}]})
+    payload = runtime.engine_payload(_query(expression))
     performance = compile_query(runtime.config, None, payload)["explain"].performance_plan
 
     assert _ask(runtime, expression) == pytest.approx(gold(ONE_HOP["two_hops"][1]))
@@ -901,30 +794,21 @@ def test_a_row_filter_on_the_one_side_applies_as_it_does_to_a_where_filter(tmp_p
         "attribute": "segment",
         "audiences": ["customer"],
     }
-    runtime = Runtime.from_path(
-        str(_write_package(tmp_path, policies={"semantic_policies": [policy]}))
-    )
+    package = _write_package(tmp_path, policies={"semantic_policies": [policy]})
+    runtime = Runtime.from_path(str(package))
     context = RequestContext(actor="end-user", audience="customer", attributes={"segment": "SME"})
-
-    def ask(expression: Any, **extra: Any) -> Any:
-        return _ask(runtime, expression, context=context, **extra)
-
+    where_eur = {"where": [ONE_HOP["sum"][3]]}
     try:
-        reasons = set()
-        for call in (
-            lambda: ask(SUM_EUR),
-            lambda: ask(_measure("amount"), where=[ONE_HOP["sum"][3]]),
-        ):
+        for expression, extra in ((SUM_EUR, {}), (_measure("amount"), where_eur)):
             with pytest.raises(SemanticLayerError) as raised:
-                call()
+                _ask(runtime, expression, context=context, **extra)
             assert raised.value.code == "POLICY_DENIED"
-            reasons.add(raised.value.details["reason"])
+            assert raised.value.details["reason"] == "row_filter_unsupported_query"
         # An aggregate_if on the filtered entity alone reads only its own rows (C1, C4).
-        customers = ask(_aggif("count", _cmp(_col("customer", "currency"), "IS", None)))
+        customers = _ask(runtime, _aggif("count", NO_CURRENCY), context=context)
     finally:
         runtime.close()
 
-    assert reasons == {"row_filter_unsupported_query"}
     assert customers == {None: 1.0}
 
 
@@ -941,7 +825,7 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
     runtime = Runtime.from_config(
         dataclasses.replace(config, semantic_policies=[policy]), source_path=str(package)
     )
-    query = {"select": [{"as": "value", "expression": SUM_EUR}]}
+    query = _query(SUM_EUR)
     try:
         result = runtime.validate(query)
     finally:
@@ -961,16 +845,6 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
 POLICY_KINDS = {"deny": "object_access", "hidden": "object_visibility"}
 # A raw column read while anything is hidden: refused, naming nothing.
 NOTHING_NAMED = {"blocked_objects": [], "policy_effects": [], "policy_violations": []}
-
-# Queries whose aggregate_if reads the customer's currency across a hop.
-READS_CURRENCY = {
-    "select": {"select": [{"as": "value", "expression": SUM_EUR}]},
-    "metric_predicate": {
-        "select": [{"as": "value", "expression": _measure("amount")}],
-        "metric_filters": [_predicate(SUM_EUR)],
-    },
-    "two_hops": {"select": [{"as": "value", "expression": ONE_HOP["two_hops"][0]}]},
-}
 RESTRICTED = {"audience": "restricted"}
 INTERNAL = {"audience": "internal"}
 
@@ -1024,34 +898,77 @@ def _refusals(
     return refusals
 
 
-@pytest.mark.parametrize("placement", sorted(READS_CURRENCY))
+# Queries whose aggregate_if reads a dimension's column, across a hop or on its own entity,
+# including through wrappers that could hide the dependency: (query, dimension, answer).
+READS = {
+    "currency_select": (_query(SUM_EUR), CURRENCY, 130),
+    "currency_metric_predicate": (
+        _query(_measure("amount"), metric_filters=[_predicate(SUM_EUR)]),
+        CURRENCY,
+        130,
+    ),
+    "currency_two_hops": (_query(ONE_HOP["two_hops"][0]), CURRENCY, 7),
+    "period_select": (_query(SUM_PERIOD), PERIOD, 165),
+    "period_arithmetic": (
+        _query({"kind": "arithmetic", "op": "add", "left": SUM_PERIOD, "right": _lit(1)}),
+        PERIOD,
+        166,
+    ),
+    "period_count": (_query(_aggif("count", OWN_PERIOD)), PERIOD, 4),
+    "period_having": (
+        {
+            "select": [
+                {"as": "value", "expression": _measure("amount")},
+                {"as": "january", "expression": SUM_PERIOD},
+            ],
+            "having": [{"field": "january", "op": "gt", "value": 0}],
+        },
+        PERIOD,
+        1195,
+    ),
+    "period_metric_predicate": (
+        _query(_measure("amount"), metric_filters=[_predicate(SUM_PERIOD)]),
+        PERIOD,
+        150,
+    ),
+    "period_authored_filter": (_query("metric.shop.filtered_amount"), PERIOD, 165),
+}
+
+
+@pytest.mark.parametrize("placement", sorted(READS))
 @pytest.mark.parametrize("action", sorted(POLICY_KINDS))
 def test_a_policy_on_a_dimension_the_condition_reads_refuses_it(
     package, monkeypatch, action, placement
 ):
     # The condition reads the dimension's column, as a where filter on it would.
-    query = READS_CURRENCY[placement]
-    runtime = _governed(package, _policy(action, CURRENCY))
+    query, dimension, expected = READS[placement]
+    runtime = _governed(package, _policy(action, dimension))
     try:
-        validate, compile_sql, _ = _operations(runtime, query, INTERNAL)
+        validate, compile_sql, answer = _operations(runtime, query, INTERNAL)
         assert validate()["ok"]
         assert compile_sql()["rendered_sql"]
-        refusals = _refusals(runtime, monkeypatch, query)
+        [row] = answer()["rows"]
+        assert float(row["value"]) == expected
+        # An authored metric reading the hidden period is hidden with it: unknown.
+        unknown = action == "hidden" and placement == "period_authored_filter"
+        code = "OBJECT_NOT_FOUND" if unknown else "POLICY_DENIED"
+        refusals = _refusals(runtime, monkeypatch, query, code=code)
     finally:
         runtime.close()
 
     for error in refusals:
-        assert error.code == "POLICY_DENIED"
         if action == "hidden":
-            assert error.details == NOTHING_NAMED
+            assert dimension not in str(error) and dimension not in json.dumps(error.details)
+            if not unknown:
+                assert error.details == NOTHING_NAMED
             continue
-        assert error.details["blocked_objects"] == [CURRENCY]
+        assert error.details["blocked_objects"] == [dimension]
         assert [row["action"] for row in error.details["policy_effects"]] == [action]
 
 
 def test_a_column_no_dimension_declares_is_refused_under_an_object_policy(package, monkeypatch):
     # With no dimension on the currency column, no policy can name what the condition reads.
-    query = {"select": [{"as": "value", "expression": SUM_EUR}]}
+    query = _query(SUM_EUR)
     ungoverned = _governed(package, without=CURRENCY)
     governed = _governed(package, _policy("deny", PERIOD), without=CURRENCY)
     try:
@@ -1070,83 +987,6 @@ def test_a_column_no_dimension_declares_is_refused_under_an_object_policy(packag
         )
 
 
-# Each query reads the period, including through wrappers that could hide its dependency.
-READS_OWN_PERIOD = {
-    "select": ({"select": [{"as": "value", "expression": SUM_PERIOD}]}, 165),
-    "arithmetic": (
-        {
-            "select": [
-                {
-                    "as": "value",
-                    "expression": {
-                        "kind": "arithmetic",
-                        "op": "add",
-                        "left": SUM_PERIOD,
-                        "right": _lit(1),
-                    },
-                }
-            ]
-        },
-        166,
-    ),
-    "count": (
-        {"select": [{"as": "value", "expression": _aggif("count", OWN_PERIOD)}]},
-        4,
-    ),
-    "having": (
-        {
-            "select": [
-                {"as": "value", "expression": _measure("amount")},
-                {"as": "january", "expression": SUM_PERIOD},
-            ],
-            "having": [{"field": "january", "op": "gt", "value": 0}],
-        },
-        1195,
-    ),
-    "metric_predicate": (
-        {
-            "select": [{"as": "value", "expression": _measure("amount")}],
-            "metric_filters": [_predicate(SUM_PERIOD)],
-        },
-        150,
-    ),
-    "authored_filter": (
-        {"select": [{"as": "value", "expression": "metric.shop.filtered_amount"}]},
-        165,
-    ),
-}
-
-
-@pytest.mark.parametrize("placement", sorted(READS_OWN_PERIOD))
-@pytest.mark.parametrize("action", sorted(POLICY_KINDS))
-def test_a_policy_on_a_dimension_a_single_entity_condition_reads_refuses_it(
-    package, monkeypatch, action, placement
-):
-    query, expected = READS_OWN_PERIOD[placement]
-    runtime = _governed(package, _policy(action, PERIOD))
-    try:
-        validate, compile_sql, answer = _operations(runtime, query, INTERNAL)
-        assert validate()["ok"]
-        assert compile_sql()["rendered_sql"]
-        [row] = answer()["rows"]
-        assert float(row["value"]) == expected
-        # An authored metric reading the hidden period is hidden with it: unknown.
-        unknown = action == "hidden" and placement == "authored_filter"
-        code = "OBJECT_NOT_FOUND" if unknown else "POLICY_DENIED"
-        refusals = _refusals(runtime, monkeypatch, query, code=code)
-    finally:
-        runtime.close()
-
-    for error in refusals:
-        if action == "hidden":
-            assert PERIOD not in str(error) and PERIOD not in json.dumps(error.details)
-            if not unknown:
-                assert error.details == NOTHING_NAMED
-            continue
-        assert error.details["blocked_objects"] == [PERIOD]
-        assert [row["action"] for row in error.details["policy_effects"]] == [action]
-
-
 @pytest.mark.parametrize("read", ["condition", "value"])
 @pytest.mark.parametrize("wrapper", ["column", "call", "cast", "table"])
 @pytest.mark.parametrize("action", sorted(POLICY_KINDS))
@@ -1159,23 +999,20 @@ def test_every_dimension_on_an_own_column_is_bound(package, monkeypatch, action,
         id="dimension.shop_consumption_guarded",
         column="period" if read == "condition" else "amount",
     )
-    column = _col("consumption", dimension.column)
-    if wrapper == "call":
-        column = {"kind": "call", "name": "COALESCE", "args": [column, _lit(None)]}
-    elif wrapper == "cast":
-        column = {
-            "kind": "call",
-            "name": "CAST",
-            "args": [column, _lit("VARCHAR" if read == "condition" else "DOUBLE")],
-        }
-    elif wrapper == "table":
-        column = {"kind": "column", "table": "consumption", "column": dimension.column.upper()}
+    plain = _col("consumption", dimension.column)
+    cast_to = _lit("VARCHAR" if read == "condition" else "DOUBLE")
+    column = {
+        "column": plain,
+        "call": {"kind": "call", "name": "COALESCE", "args": [plain, _lit(None)]},
+        "cast": {"kind": "call", "name": "CAST", "args": [plain, cast_to]},
+        "table": {"kind": "column", "table": "consumption", "column": dimension.column.upper()},
+    }[wrapper]
     expression = _aggif(
         "sum",
         _cmp(column, "=", "2026-01") if read == "condition" else _cmp(AMOUNT, ">", 0),
         AMOUNT if read == "condition" else column,
     )
-    query = {"select": [{"as": "value", "expression": expression}]}
+    query = _query(expression)
     runtime = Runtime.from_config(
         dataclasses.replace(
             config,
@@ -1212,104 +1049,73 @@ def test_an_own_column_with_no_governed_dimension_remains_allowed(package, witho
         runtime.close()
 
 
+@pytest.fixture(scope="module")
+def conditional_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A derived metric and an authored measure whose expression is an aggregate_if."""
+    measure = {"kind": "aggregate", "expr": SUM_PERIOD, "default_agg": "sum"}
+    measure["accumulation"] = {"kind": "flow"}
+    return _write_package(
+        tmp_path_factory.mktemp("conditional"),
+        measures={"consumption": {"conditional_measure": measure}},
+        metrics={"metrics": _metric("conditional", "derived", SUM_PERIOD)},
+    )
+
+
 @pytest.mark.parametrize("placement", ["derived", "distribution", "authored_measure"])
 @pytest.mark.parametrize("action", sorted(POLICY_KINDS))
 def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
-    tmp_path, monkeypatch, action, placement
+    conditional_package, monkeypatch, action, placement
 ):
-    # These placements have no aggregate_if lowering; keep their existing refusal.
-    package = _write_package(
-        tmp_path,
-        metrics={
-            "metrics": {
-                "shop.conditional": {
-                    "as": "metric.shop.conditional",
-                    "kind": "derived",
-                    "value_type": "number",
-                    "expression": SUM_PERIOD,
-                }
-            }
-        },
-    )
-    model_path = package / "models" / "consumption.yml"
-    model = yaml.safe_load(model_path.read_text())
-    model["model"]["measures"]["conditional_measure"] = {
-        "kind": "aggregate",
-        "expr": SUM_PERIOD,
-        "default_agg": "sum",
-        "accumulation": {"kind": "flow"},
-    }
-    model_path.write_text(yaml.safe_dump(model))
+    # These placements have no aggregate_if lowering; keep their existing refusal, whose only
+    # pointer is the expression kind it names.
+    per_row = {"kind": "entity_value", "entity": "entity.shop_consumption", "input": SUM_PERIOD}
     expression = {
         "derived": "metric.shop.conditional",
-        "distribution": {
-            "kind": "distribution",
-            "function": "avg",
-            "over": {
-                "kind": "entity_value",
-                "entity": "entity.shop_consumption",
-                "input": SUM_PERIOD,
-            },
-        },
+        "distribution": {"kind": "distribution", "function": "avg", "over": per_row},
         "authored_measure": _measure("conditional_measure"),
     }[placement]
-    query = {"select": [{"as": "value", "expression": expression}]}
+    query = _query(expression)
     code = "INVALID_EXPRESSION_AST" if placement == "authored_measure" else "INVALID_QUERY"
-    runtime = _governed(package, _policy(action, PERIOD))
+    runtime = _governed(conditional_package, _policy(action, PERIOD))
     try:
         for audience in ("internal", "restricted"):
             # A metric that cannot be bound is hidden while anything is: unknown, as if absent.
             unknown = (action, audience, placement) == ("hidden", "restricted", "derived")
-            refusals = _refusals(
-                runtime,
-                monkeypatch,
-                query,
-                context={"audience": audience},
-                code="OBJECT_NOT_FOUND" if unknown else code,
-            )
+            context, expected = {"audience": audience}, "OBJECT_NOT_FOUND" if unknown else code
+            refusals = _refusals(runtime, monkeypatch, query, context=context, code=expected)
             assert all(unknown or "aggregate_if" in str(error) for error in refusals)
     finally:
         runtime.close()
 
 
 # The lookup join type (ClickHouse keeps lookups inner, as for a where filter) and the
-# value-less count on one entity, which keeps its native form where a dialect has one.
+# value-less count on one entity, which keeps its native form where a dialect has one. One
+# warehouse per dialect family: MotherDuck and DuckLake render as DuckDB does.
 DIALECTS = {
     "athena": ("LEFT", "COUNT(CASE WHEN"),
     "bigquery": ("LEFT", "COUNTIF("),
     "clickhouse": ("INNER", "COUNT(CASE WHEN"),
     "databricks": ("LEFT", "COUNT_IF("),
     "duckdb": ("LEFT", "COUNT(CASE WHEN"),
-    "ducklake": ("LEFT", "COUNT(CASE WHEN"),
-    "motherduck": ("LEFT", "COUNT(CASE WHEN"),
     "postgres": ("LEFT", "COUNT(CASE WHEN"),
     "snowflake": ("LEFT", "COUNT_IF("),
 }
 
 
-def test_every_warehouse_has_a_rendering():
-    assert set(DIALECTS) == set(_WAREHOUSE_CONNECTORS)
-
-
-@pytest.mark.parametrize("warehouse", sorted(DIALECTS))
-def test_the_rendered_sql_per_dialect(package, warehouse):
-    base = load_package_config(str(package))
-    config = dataclasses.replace(
-        base, package=dataclasses.replace(base.package, warehouse=warehouse)
-    )
+def test_the_rendered_sql_per_dialect_family(runtime):
+    assert {*DIALECTS, "ducklake", "motherduck"} == set(_WAREHOUSE_CONNECTORS)
     query = {
         "select": [
             {"as": "eur", "expression": SUM_EUR},
             {"as": "large", "expression": _aggif("count", _cmp(AMOUNT, ">", 10))},
         ],
     }
-
-    sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
-
-    join_type, count_if = DIALECTS[warehouse]
-    assert re.findall(r"\b(\w+) JOIN customers\b", sql) == [join_type]
-    assert re.search(
-        r"SUM\(CASE WHEN customers\.currency = 'EUR' THEN consumption\.amount END\)", sql
-    )
-    assert "SUM_IF(" not in sql
-    assert count_if in sql
+    for warehouse, (join_type, count_if) in DIALECTS.items():
+        package = dataclasses.replace(runtime.config.package, warehouse=warehouse)
+        config = dataclasses.replace(runtime.config, package=package)
+        sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
+        assert re.findall(r"\b(\w+) JOIN customers\b", sql) == [join_type], warehouse
+        assert re.search(
+            r"SUM\(CASE WHEN customers\.currency = 'EUR' THEN consumption\.amount END\)", sql
+        ), warehouse
+        assert "SUM_IF(" not in sql and count_if in sql, warehouse

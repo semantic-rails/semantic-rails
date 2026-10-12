@@ -82,34 +82,29 @@ HOSTILE_COLUMNS = [
 ]
 
 
-@pytest.mark.parametrize(
-    ("table", "column"),
-    [*((table, "ordered_at") for table in HOSTILE_TABLES)]
-    + [("orders", column) for column in HOSTILE_COLUMNS],
-)
-def test_names_that_are_not_plain_identifiers_never_reach_the_warehouse(
-    table: str, column: str
-) -> None:
-    adapter = _RecordingAdapter()
+def test_names_that_are_not_plain_identifiers_never_reach_the_warehouse() -> None:
+    hostile = [(table, "ordered_at") for table in HOSTILE_TABLES]
+    hostile += [("orders", column) for column in HOSTILE_COLUMNS]
+    for table, column in hostile:
+        adapter = _RecordingAdapter()
 
-    assert _probe(adapter, table, column) == {}
-    assert adapter.sql == []
+        assert _probe(adapter, table, column) == {}, (table, column)
+        assert adapter.sql == []
 
-    with pytest.raises(SemanticLayerError) as exc:
-        _coverage_probe_query(
-            "duckdb", table, column, entity="entity.order", dimension="dimension.ordered_at"
-        )
-    assert exc.value.code == "INVALID_CONFIG"
-    assert exc.value.details == {
-        "reason": "probe_identifier_not_plain",
-        "entity": "entity.order",
-        "dimension": "dimension.ordered_at",
-    }
+        with pytest.raises(SemanticLayerError) as exc:
+            _coverage_probe_query(
+                "duckdb", table, column, entity="entity.order", dimension="dimension.ordered_at"
+            )
+        assert exc.value.code == "INVALID_CONFIG"
+        assert exc.value.details == {
+            "reason": "probe_identifier_not_plain",
+            "entity": "entity.order",
+            "dimension": "dimension.ordered_at",
+        }
 
 
-@pytest.mark.parametrize(
-    ("warehouse", "table", "column", "sql"),
-    [
+def test_plain_names_render_as_the_compiler_renders_them_and_report_the_coverage() -> None:
+    for warehouse, table, column, sql in [
         (
             "duckdb",
             "analytics.orders",
@@ -120,18 +115,12 @@ def test_names_that_are_not_plain_identifiers_never_reach_the_warehouse(
         ("duckdb", "orders", "order", 'MIN("order") AS "min_t"'),
         ("bigquery", "shop.orders", "order", "MIN(`order`) AS `min_t`"),
         ("snowflake", "DB.SHOP.ORDERS", "ORDERED_AT", "FROM DB.SHOP.ORDERS"),
-    ],
-)
-def test_plain_names_render_as_the_compiler_renders_them(
-    warehouse: str, table: str, column: str, sql: str
-) -> None:
-    query = _coverage_probe_query(
-        warehouse, table, column, entity="entity.order", dimension="dimension.ordered_at"
-    )
-    assert sql in query.sql
+    ]:
+        query = _coverage_probe_query(
+            warehouse, table, column, entity="entity.order", dimension="dimension.ordered_at"
+        )
+        assert sql in query.sql, warehouse
 
-
-def test_plain_names_report_the_data_coverage() -> None:
     adapter = _RecordingAdapter()
 
     assert _probe(adapter, "orders", "ordered_at") == {"min": "2016-09-01", "max": "2017-08-31"}

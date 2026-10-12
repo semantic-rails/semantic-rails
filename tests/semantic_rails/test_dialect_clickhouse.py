@@ -31,7 +31,7 @@ from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.schema import ConnectionSpec, PackageMeta
-from semantic_rails.sql_ast import SqlIdentifier, SqlLiteral
+from semantic_rails.sql_ast import SqlIdentifier, SqlLiteral, SqlOrderTerm
 
 DIALECT = ClickHouseDialect()
 
@@ -45,100 +45,75 @@ def _ident(name: str) -> SqlIdentifier:
 # ---------------------------------------------------------------------------
 
 
-def test_registry_returns_clickhouse_dialect():
+def _nullable(value: str) -> str:
+    return f"CAST({value} AS Nullable(DateTime64(6)))"
+
+
+def test_registry_returns_clickhouse_dialect_rendering_clickhouse_forms():
     assert isinstance(dialect_for_warehouse("clickhouse"), ClickHouseDialect)
     connector = warehouse_connector("clickhouse")
     assert connector is not None
     assert connector.connection_kinds == ("clickhouse_native",)
     assert connector.adapter == "semantic_rails.db_parts.clickhouse:create_adapter"
 
-
-def test_percentile_cont_renders_parameterized_quantile():
-    rendered = render_expr(DIALECT.percentile_cont(_ident("x"), 0.95))
-    assert rendered == "quantileExactInclusive(0.95)(x)"
-
-
-def test_median_renders_quantile_half():
-    rendered = render_expr(DIALECT.median(_ident("x")))
-    assert rendered == "quantileExactInclusive(0.5)(x)"
-
-
-def test_first_and_last_value_render_argmin_argmax():
-    assert render_expr(DIALECT.first_value(_ident("x"), _ident("ts"))) == "argMin(x, ts)"
-    assert render_expr(DIALECT.last_value(_ident("x"), _ident("ts"))) == "argMax(x, ts)"
-
-
-def test_date_trunc_recasts_result_to_timestamp():
-    # ClickHouse date_trunc returns Date for week-and-coarser grains —
-    # the outer cast restores timestamp parity with DuckDB.
-    rendered = render_expr(DIALECT.date_trunc("month", _ident("ts")))
-    assert rendered == "CAST(DATE_TRUNC('month', CAST(ts AS TIMESTAMP)) AS TIMESTAMP)"
-
-
-def test_null_safe_eq_renders_spaceship_operator():
-    rendered = render_expr(DIALECT.null_safe_eq(_ident("a"), _ident("b")))
-    assert "<=>" in rendered
-    assert rendered.replace("(", "").replace(")", "") == "a <=> b"
-
-
-def test_date_diff_nullable_casts_and_portable_date_add_and_conditional_aggregate():
-    # Nullable timestamp targets preserve missing endpoints independently of settings.
-    diff = render_expr(DIALECT.date_diff("day", _ident("s"), _ident("e")))
-    assert (
-        diff
-        == "DATE_DIFF('day', CAST(s AS Nullable(DateTime64(6))), CAST(e AS Nullable(DateTime64(6))))"
-    )
-    from semantic_rails.sql_ast import SqlLiteral
-
-    add = render_expr(DIALECT.date_add("day", SqlLiteral(3), _ident("d")))
-    assert add == "DATE_ADD(d, INTERVAL (3) DAY)"
-    agg = render_expr(DIALECT.conditional_aggregate("count", _ident("cond"), None))
-    assert agg == "COUNT(CASE WHEN cond THEN 1 END)"
-
-
-@pytest.mark.parametrize(
-    "start,end",
-    [
+    rendered = [
+        (DIALECT.percentile_cont(_ident("x"), 0.95), "quantileExactInclusive(0.95)(x)"),
+        (DIALECT.median(_ident("x")), "quantileExactInclusive(0.5)(x)"),
+        (DIALECT.first_value(_ident("x"), _ident("ts")), "argMin(x, ts)"),
+        (DIALECT.last_value(_ident("x"), _ident("ts")), "argMax(x, ts)"),
+        # ClickHouse date_trunc returns Date for week-and-coarser grains —
+        # the outer cast restores timestamp parity with DuckDB.
+        (
+            DIALECT.date_trunc("month", _ident("ts")),
+            "CAST(DATE_TRUNC('month', CAST(ts AS TIMESTAMP)) AS TIMESTAMP)",
+        ),
+        (DIALECT.null_safe_eq(_ident("a"), _ident("b")), "(a <=> b)"),
+        # Nullable timestamp targets preserve missing endpoints independently of settings.
+        (
+            DIALECT.date_diff("day", _ident("s"), _ident("e")),
+            f"DATE_DIFF('day', {_nullable('s')}, {_nullable('e')})",
+        ),
+        (DIALECT.date_add("day", SqlLiteral(3), _ident("d")), "DATE_ADD(d, INTERVAL (3) DAY)"),
+        (
+            DIALECT.conditional_aggregate("count", _ident("cond"), None),
+            "COUNT(CASE WHEN cond THEN 1 END)",
+        ),
+        # ClickHouse 24.x has no LAG window function; window_lag builds the
+        # exact-equivalent CASE/COUNT/argMin form (verified live against
+        # lagInFrame, including partitions and NULL leading rows).
+        (
+            DIALECT.window_lag(
+                _ident("m1"),
+                12,
+                partition_by=[_ident("g1")],
+                order_by=[SqlOrderTerm(expr=_ident("t"), direction="ASC")],
+            ),
+            "CASE WHEN COUNT(1) OVER (PARTITION BY g1 ORDER BY t ASC "
+            "ROWS BETWEEN 12 PRECEDING AND CURRENT ROW) = 13 "
+            "THEN argMin(m1, t) OVER (PARTITION BY g1 ORDER BY t ASC "
+            "ROWS BETWEEN 12 PRECEDING AND CURRENT ROW) END",
+        ),
+    ]
+    # Authored DATE_DIFF keeps pre-epoch and NULL endpoints.
+    for start, end in [
         ("1950-01-01", "2024-01-01"),
         ("2024-01-01", "1950-01-01"),
         (None, "1950-01-01"),
         ("1950-01-01", None),
         (None, None),
-    ],
-)
-def test_authored_date_diff_preserves_pre_epoch_and_nullable_endpoints(start, end):
-    rendered = render_expr(
-        DIALECT.scalar_call("DATE_DIFF", [SqlLiteral("year"), SqlLiteral(start), SqlLiteral(end)])
-    )
-    assert rendered == (
-        f"DATE_DIFF('year', CAST({render_expr(SqlLiteral(start))} AS Nullable(DateTime64(6))), "
-        f"CAST({render_expr(SqlLiteral(end))} AS Nullable(DateTime64(6))))"
-    )
-
-
-def test_window_lag_emulates_lag_with_argmin_over_bounded_frame():
-    # ClickHouse 24.x has no LAG window function; window_lag builds the
-    # exact-equivalent CASE/COUNT/argMin form (verified live against
-    # lagInFrame, including partitions and NULL leading rows).
-    from semantic_rails.sql_ast import SqlOrderTerm
-
-    rendered = render_expr(
-        DIALECT.window_lag(
-            _ident("m1"),
-            12,
-            partition_by=[_ident("g1")],
-            order_by=[SqlOrderTerm(expr=_ident("t"), direction="ASC")],
+    ]:
+        endpoints = [render_expr(SqlLiteral(start)), render_expr(SqlLiteral(end))]
+        rendered.append(
+            (
+                DIALECT.scalar_call(
+                    "DATE_DIFF", [SqlLiteral("year"), SqlLiteral(start), SqlLiteral(end)]
+                ),
+                f"DATE_DIFF('year', {_nullable(endpoints[0])}, {_nullable(endpoints[1])})",
+            )
         )
-    )
-    assert rendered == (
-        "CASE WHEN COUNT(1) OVER (PARTITION BY g1 ORDER BY t ASC "
-        "ROWS BETWEEN 12 PRECEDING AND CURRENT ROW) = 13 "
-        "THEN argMin(m1, t) OVER (PARTITION BY g1 ORDER BY t ASC "
-        "ROWS BETWEEN 12 PRECEDING AND CURRENT ROW) END"
-    )
+    for expr, expected in rendered:
+        assert render_expr(expr) == expected
 
-
-def test_capabilities_reflect_clickhouse_reality():
     caps = DIALECT.capabilities()
     assert caps["timestamp_type"] == "TIMESTAMP"
     assert caps["percentile_cont"] is True
@@ -234,25 +209,37 @@ def _adapter_options() -> dict[str, str]:
     }
 
 
-def test_adapter_normalizes_connection_options():
+def _set_connection_env(monkeypatch: pytest.MonkeyPatch, password: str = "pw") -> None:
+    monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
+    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
+    monkeypatch.setenv("SR_CH_TEST_PASSWORD", password)
+
+
+def test_adapter_normalizes_connection_options_and_rejects_secrets():
     adapter = ClickHouseAdapter({"HOST-ENV": "SR_CH_TEST_HOST", "database": " sr_jaffle "})
     assert adapter.options == {"host_env": "SR_CH_TEST_HOST", "database": "sr_jaffle"}
     assert adapter.supports_statement_timeout is True
 
+    for options, named in [
+        ({"password": "hunter2"}, "password_env"),
+        ({"warehouse_size": "XL"}, "unsupported package.connection option 'warehouse_size'"),
+    ]:
+        with pytest.raises(SemanticLayerError) as exc:
+            ClickHouseAdapter(options)
+        assert exc.value.code == "INVALID_CONFIG"
+        assert named in str(exc.value)
+        assert "hunter2" not in str(exc.value)
 
-def test_adapter_rejects_literal_secret_options():
-    with pytest.raises(SemanticLayerError) as exc:
-        ClickHouseAdapter({"password": "hunter2"})
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "password_env" in str(exc.value)
-    assert "hunter2" not in str(exc.value)
-
-
-def test_adapter_rejects_unsupported_options():
-    with pytest.raises(SemanticLayerError) as exc:
-        ClickHouseAdapter({"warehouse_size": "XL"})
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "unsupported package.connection option 'warehouse_size'" in str(exc.value)
+    package = PackageMeta(
+        package_id="ch_demo",
+        name="ch_demo",
+        description="clickhouse demo",
+        warehouse="clickhouse",
+        connection=ConnectionSpec(kind="clickhouse_native", options=_adapter_options()),
+    )
+    adapter = create_warehouse_adapter(package)
+    assert isinstance(adapter, ClickHouseAdapter)
+    assert adapter.options == _adapter_options()
 
 
 def test_adapter_reports_missing_env_without_leaking_values(monkeypatch: pytest.MonkeyPatch):
@@ -273,48 +260,36 @@ def test_adapter_reports_missing_env_without_leaking_values(monkeypatch: pytest.
     assert "super-secret" not in repr(exc.value.details)
 
 
-@pytest.mark.parametrize(
-    ("timeouts", "connect_timeout", "read_timeout"),
-    [({}, 10, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45)],
-)
-def test_adapter_queries_and_maps_rows(
-    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout
-):
-    captured: dict = {}
-    _install_fake_driver(monkeypatch, captured)
-    monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
-    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
-    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
+def test_adapter_queries_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
+    _set_connection_env(monkeypatch)
+    for timeouts, connect_timeout, read_timeout in [
+        ({}, 10, 65),
+        ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45),
+    ]:
+        captured: dict = {}
+        _install_fake_driver(monkeypatch, captured)
+        adapter = ClickHouseAdapter({**_adapter_options(), **timeouts})
+        rows = adapter.query("select 1")
+        adapter.close()
 
-    adapter = ClickHouseAdapter({**_adapter_options(), **timeouts})
-    rows = adapter.query("select 1")
-    adapter.close()
+        assert rows == [{"one": 1, "two": "x"}, {"one": 2, "two": "y"}]
+        kwargs = captured["connect_kwargs"]
+        assert kwargs["host"] == "ch.example.com"
+        assert kwargs["port"] == 9000
+        assert kwargs["username"] == "svc_user"
+        assert kwargs["password"] == "pw"
+        assert kwargs["database"] == "sr_jaffle"
+        assert kwargs["secure"] is False
+        assert kwargs["settings"] == {"allow_experimental_join_condition": 1}
+        assert kwargs["connect_timeout"] == connect_timeout
+        assert kwargs["send_receive_timeout"] == read_timeout
+        assert captured["settings"] is None  # no limits -> no per-query settings
+        assert captured["closed"] is True
 
-    assert rows == [{"one": 1, "two": "x"}, {"one": 2, "two": "y"}]
-    kwargs = captured["connect_kwargs"]
-    assert kwargs["host"] == "ch.example.com"
-    assert kwargs["port"] == 9000
-    assert kwargs["username"] == "svc_user"
-    assert kwargs["password"] == "pw"
-    assert kwargs["database"] == "sr_jaffle"
-    assert kwargs["secure"] is False
-    assert kwargs["settings"] == {"allow_experimental_join_condition": 1}
-    assert kwargs["connect_timeout"] == connect_timeout
-    assert kwargs["send_receive_timeout"] == read_timeout
-    assert captured["settings"] is None  # no limits -> no per-query settings
-    assert captured["closed"] is True
-
-
-def test_adapter_applies_statement_timeout_and_row_clip(monkeypatch: pytest.MonkeyPatch):
-    captured: dict = {}
-    _install_fake_driver(monkeypatch, captured)
-    monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
-    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
-    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
-
-    adapter = ClickHouseAdapter(_adapter_options())
-    rows = adapter.query("select 1", limits={"statement_timeout_ms": 2500, "max_rows": 1})
-
+    # A request's limits become the statement's settings and clip the rows.
+    rows = ClickHouseAdapter(_adapter_options()).query(
+        "select 1", limits={"statement_timeout_ms": 2500, "max_rows": 1}
+    )
     assert captured["settings"] == {"max_execution_time": 3}
     assert rows == [{"one": 1, "two": "x"}]
 
@@ -322,9 +297,7 @@ def test_adapter_applies_statement_timeout_and_row_clip(monkeypatch: pytest.Monk
 def test_adapter_redacts_query_errors(monkeypatch: pytest.MonkeyPatch):
     captured: dict = {}
     _install_fake_driver(monkeypatch, captured, fail="boom " + "x" * 600)
-    monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
-    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
-    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "super-secret")
+    _set_connection_env(monkeypatch, password="super-secret")
 
     adapter = ClickHouseAdapter(_adapter_options())
     with pytest.raises(SemanticLayerError) as exc:
@@ -340,19 +313,6 @@ def test_adapter_redacts_query_errors(monkeypatch: pytest.MonkeyPatch):
     assert "boom" not in str(exc.value)
     assert "super-secret" not in str(exc.value)
     assert "secret_table" not in repr(details)
-
-
-def test_create_warehouse_adapter_selects_clickhouse(monkeypatch: pytest.MonkeyPatch):
-    package = PackageMeta(
-        package_id="ch_demo",
-        name="ch_demo",
-        description="clickhouse demo",
-        warehouse="clickhouse",
-        connection=ConnectionSpec(kind="clickhouse_native", options=_adapter_options()),
-    )
-    adapter = create_warehouse_adapter(package)
-    assert isinstance(adapter, ClickHouseAdapter)
-    assert adapter.options == _adapter_options()
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +358,8 @@ def test_battery_compiles_for_clickhouse():
             result = compile_query(config, registry, read_call(case.payload, config=config)[0])
         except SemanticLayerError as exc:
             # ClickHouse has no implicit calendar, which every filled series uses.
-            assert "no implicit calendar" in str(exc), (case.name, exc)
+            assert exc.code == "REWRITE_NOT_SUPPORTED", (case.name, exc)
+            assert exc.details == {"warehouse": "clickhouse", "rewrite": "day_series"}
             refused.append(case.name)
             continue
         sql = result["sql"]
@@ -435,9 +396,7 @@ def test_adapter_client_pool_does_not_follow_redirects(monkeypatch: pytest.Monke
         return make_client(**kwargs)
 
     module.get_client = get_client
-    monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
-    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
-    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
+    _set_connection_env(monkeypatch)
 
     adapter = ClickHouseAdapter(_adapter_options())
     client = adapter._client_handle()
@@ -461,9 +420,7 @@ def test_adapter_uses_driver_https_proxy_pool(monkeypatch: pytest.MonkeyPatch):
         return "http://proxy.local:8080"
 
     httputil.check_env_proxy = proxy_for
-    monkeypatch.setenv("SR_CH_TEST_HOST", "ch.example.com")
-    monkeypatch.setenv("SR_CH_TEST_USER", "svc_user")
-    monkeypatch.setenv("SR_CH_TEST_PASSWORD", "pw")
+    _set_connection_env(monkeypatch)
     adapter = ClickHouseAdapter({**_adapter_options(), "secure": "true"})
     adapter._client_handle()
     adapter.close()
@@ -642,9 +599,7 @@ def test_real_driver_constructor_cannot_follow_redirect(monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize("timeout_ms, expected_wait", [(1000, 65), (120000, 125)])
-def test_clickhouse_request_deadline_extends_and_restores_client_wait(
-    monkeypatch, timeout_ms, expected_wait
-):
+def test_clickhouse_request_deadline_extends_and_restores_client_wait(timeout_ms, expected_wait):
     adapter = ClickHouseAdapter()
     from urllib3.util import Timeout
 

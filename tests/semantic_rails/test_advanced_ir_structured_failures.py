@@ -1,132 +1,126 @@
-"""Invalid advanced IR must fail structured, never internal or silent.
+"""Invalid advanced IR fails structured, never internal or silent.
 
-External-agent feedback round three: a probe battery of questionable
-advanced expressions surfaced (a) an internal KeyError for unknown
-``constant_properties`` dimensions, and (b) shapes that validated "ok"
-while a semantic component was silently dropped (aggregate-level
-``window`` specs) or silently misread (unknown ``dimension_bindings``
-side values behaving as base-side; window units that only blow up at
-warehouse execution). These tests pin the structured failure envelope.
+Unknown ``constant_properties`` dimensions once raised an internal KeyError; an aggregate-level
+``window`` was silently dropped; an unknown ``dimension_bindings`` side acted as base-side; and
+an unsupported window unit failed only at warehouse execution. Each is now a structured refusal
+at validate, while the supported shapes still validate.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from semantic_rails.package_snapshot import load_package_snapshot
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 
-def _conversion_expr(**overrides) -> dict:
-    expr = {
+STORE = "dimension.jaffle_store_name"
+REVENUE = {"kind": "aggregate", "measure": "measure.jaffle.revenue_usd"}
+
+
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
+    runtime = Runtime.from_snapshot(load_package_snapshot(path))
+    yield runtime
+    runtime.close()
+
+
+def _conversion(**overrides) -> dict:
+    return {
         "kind": "conversion",
         "entity": "entity.jaffle_customer",
         "window": {"unit": "day", "value": 28},
         "matching_mode": "first_converted_after_base",
         "base": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
         "converted": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
+        **overrides,
     }
-    expr.update(overrides)
-    return expr
-
-
-def _validate_expr(runtime, expr: dict, **query_extra) -> dict:
-    return runtime.validate(
-        {"version": 1, "select": [{"as": "probe", "expression": expr}], **query_extra}
-    )
-
-
-def _codes(report: dict) -> list[str]:
-    return [error.get("code") for error in report.get("errors", [])]
-
-
-def test_unknown_constant_property_is_object_not_found_not_internal(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    report = _validate_expr(
-        runtime, _conversion_expr(constant_properties=["dimension.does_not_exist"])
-    )
-    assert report["ok"] is False
-    assert _codes(report) == ["OBJECT_NOT_FOUND"]
-
-
-def test_unsupported_conversion_window_unit_fails_at_validate(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    report = _validate_expr(runtime, _conversion_expr(window={"unit": "fortnight", "value": 2}))
-    assert report["ok"] is False
-    assert _codes(report) == ["CONVERSION_WINDOW_REQUIRED"]
-    details = report["errors"][0].get("details") or {}
-    assert "supported_units" in details
-
-
-def test_unknown_dimension_binding_side_is_rejected_not_silently_base(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    report = _validate_expr(
-        runtime,
-        _conversion_expr(dimension_bindings={"dimension.jaffle_store_name": {"side": "sideways"}}),
-        group_by=["dimension.jaffle_store_name"],
-    )
-    assert report["ok"] is False
-    assert _codes(report) == ["INVALID_EXPRESSION_AST"]
 
 
 @pytest.mark.parametrize(
-    "binding",
+    ("expression", "extra", "code", "listed"),
     [
-        pytest.param({"denominator_policy": "x"}, id="unknown-binding-key"),
         pytest.param(
-            {"side": "converted", "denominator": "matched_base_events"},
+            _conversion(constant_properties=["dimension.does_not_exist"]),
+            {},
+            "OBJECT_NOT_FOUND",
+            None,
+            id="unknown-constant-property",
+        ),
+        pytest.param(
+            _conversion(window={"unit": "fortnight", "value": 2}),
+            {},
+            "CONVERSION_WINDOW_REQUIRED",
+            ("supported_units", "day"),
+            id="unsupported-window-unit",
+        ),
+        pytest.param(
+            _conversion(dimension_bindings={STORE: {"side": "sideways"}}),
+            {"group_by": [STORE]},
+            "INVALID_EXPRESSION_AST",
+            None,
+            id="unknown-binding-side",
+        ),
+        pytest.param(
+            _conversion(dimension_bindings={STORE: {"denominator_policy": "x"}}),
+            {},
+            "INVALID_EXPRESSION_AST",
+            None,
+            id="unknown-binding-key",
+        ),
+        pytest.param(
+            _conversion(
+                dimension_bindings={
+                    STORE: {"side": "converted", "denominator": "matched_base_events"}
+                }
+            ),
+            {},
+            "INVALID_EXPRESSION_AST",
+            None,
             id="unsupported-denominator-policy",
+        ),
+        pytest.param(
+            {**REVENUE, "window": {"kind": "rolling", "unit": "day", "value": 7}},
+            {},
+            "INVALID_EXPRESSION_AST",
+            ("supported_window_kinds", "rolling"),
+            id="aggregate-level-window",
+        ),
+        # The supported shapes the refusals point to still validate.
+        pytest.param(
+            {"kind": "rolling", "input": REVENUE, "window": {"unit": "day", "value": 7}},
+            {"time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"}},
+            None,
+            None,
+            id="rolling",
+        ),
+        pytest.param(
+            _conversion(
+                dimension_bindings={
+                    "dimension.jaffle_product_type": {
+                        "side": "converted",
+                        "denominator": "all_base_events",
+                    }
+                }
+            ),
+            {"group_by": ["dimension.jaffle_product_type"]},
+            None,
+            None,
+            id="dimension-binding",
         ),
     ],
 )
-def test_invalid_dimension_binding_is_rejected(runtime_factory, binding):
-    runtime = runtime_factory("jaffle_shop")
-    report = _validate_expr(
-        runtime,
-        _conversion_expr(dimension_bindings={"dimension.jaffle_store_name": binding}),
+def test_advanced_ir_validates_or_fails_structured(runtime, expression, extra, code, listed):
+    report = runtime.validate(
+        {"version": 1, "select": [{"as": "probe", "expression": expression}], **extra}
     )
+    codes = [error.get("code") for error in report.get("errors", [])]
+    if code is None:
+        assert report["ok"] is True, codes
+        return
     assert report["ok"] is False
-    assert _codes(report) == ["INVALID_EXPRESSION_AST"]
-
-
-def test_aggregate_level_window_is_rejected_not_silently_dropped(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    report = _validate_expr(
-        runtime,
-        {
-            "kind": "aggregate",
-            "measure": "measure.jaffle.revenue_usd",
-            "window": {"kind": "rolling", "unit": "day", "value": 7},
-        },
-    )
-    assert report["ok"] is False
-    assert _codes(report) == ["INVALID_EXPRESSION_AST"]
-    assert "rolling" in report["errors"][0]["message"]
-
-
-def test_supported_rolling_kind_still_validates(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    report = _validate_expr(
-        runtime,
-        {
-            "kind": "rolling",
-            "input": {"kind": "aggregate", "measure": "measure.jaffle.revenue_usd"},
-            "window": {"unit": "day", "value": 7},
-        },
-        time={"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
-    )
-    assert report["ok"] is True, _codes(report)
-
-
-def test_valid_dimension_binding_still_validates(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    report = _validate_expr(
-        runtime,
-        _conversion_expr(
-            dimension_bindings={
-                "dimension.jaffle_product_type": {
-                    "side": "converted",
-                    "denominator": "all_base_events",
-                }
-            }
-        ),
-        group_by=["dimension.jaffle_product_type"],
-    )
-    assert report["ok"] is True, _codes(report)
+    assert codes == [code]
+    if listed is not None:
+        key, member = listed
+        assert member in report["errors"][0]["details"][key]

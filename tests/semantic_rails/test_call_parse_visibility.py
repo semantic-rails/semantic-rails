@@ -17,11 +17,21 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.request_context import RequestContext
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config, opened
 
 HIDDEN = "measure.jaffle.lifetime_spend_before_tax_usd"
 # Unknown, and a near twin of the hidden id, so both get the same name suggestions.
 INVENTED = "measure.jaffle.lifetime_spend_before_tax_usx"
 OPS = RequestContext(audience="ops")
+
+
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
+    runtime = Runtime.from_path(str(path))
+    yield opened(runtime)
+    runtime.close()
 
 
 def _call(measure: str, aggregation: str | None) -> dict[str, Any]:
@@ -61,7 +71,6 @@ def _shape(refusal: dict[str, Any], measure: str) -> str:
     return json.dumps(refusal, sort_keys=True, default=str).replace(measure, "<id>")
 
 
-@pytest.mark.parametrize("aggregation", ["bogus", "median", None])
 @pytest.mark.parametrize(
     "entry",
     [
@@ -76,19 +85,16 @@ def _shape(refusal: dict[str, Any], measure: str) -> str:
         "http_query",
     ],
 )
-def test_a_hidden_measure_is_refused_like_an_unknown_one(runtime_factory, entry, aggregation):
-    runtime = runtime_factory("jaffle_shop")
-    try:
+def test_a_hidden_measure_is_refused_like_an_unknown_one(runtime, entry):
+    for aggregation in ("bogus", "median", None):
         hidden = _refusal(runtime, entry, _call(HIDDEN, aggregation))
         invented = _refusal(runtime, entry, _call(INVENTED, aggregation))
-    finally:
-        runtime.close()
-    assert hidden["code"] == invented["code"] == "OBJECT_NOT_FOUND"
-    assert _shape(hidden, HIDDEN) == _shape(invented, INVENTED)
-    # Nothing of the hidden measure's definition is disclosed.
-    serialized = json.dumps(hidden, default=str)
-    for leak in ('"allowed"', '"default"', "percentile", "UNSUPPORTED_AGGREGATION"):
-        assert leak not in serialized
+        assert hidden["code"] == invented["code"] == "OBJECT_NOT_FOUND"
+        assert _shape(hidden, HIDDEN) == _shape(invented, INVENTED)
+        # Nothing of the hidden measure's definition is disclosed.
+        serialized = json.dumps(hidden, default=str)
+        for leak in ('"allowed"', '"default"', "percentile", "UNSUPPORTED_AGGREGATION"):
+            assert leak not in serialized
 
 
 # --- Identity claims anywhere in a request ---------------------------------------------------
@@ -102,22 +108,14 @@ def test_a_hidden_measure_is_refused_like_an_unknown_one(runtime_factory, entry,
         ({"version": {"policy_context": {}}}, "version.policy_context"),
     ],
 )
-def test_a_claim_inside_an_annotation_is_refused_at_its_path(runtime_factory, call_extra, path):
-    runtime = runtime_factory("jaffle_shop")
+def test_a_claim_inside_an_annotation_is_refused_at_its_path(runtime, call_extra, path):
     call = {"select": ["measure.jaffle.order_count"], **call_extra}
-    try:
-        # Behind credentials (MCP with a resolved caller): IDENTITY_CLAIM_REFUSED at the path.
-        out = SemanticLayerMCPAdapter(runtime).call_tool(
-            "execute", {"query": call, "mode": "validate"}, request_context=OPS
-        )
-        (error,) = out["errors"]
-        assert (error["code"], error["details"]["path"]) == (
-            "IDENTITY_CLAIM_REFUSED",
-            f"query.{path}",
-        )
-        # A trusted local caller: the key is refused like any key that is not part of a call.
-        local = runtime.validate(call)
-        (error,) = local["errors"]
-        assert error["code"] == "INVALID_QUERY" and error["details"]["path"] == path
-    finally:
-        runtime.close()
+    # Behind credentials (MCP with a resolved caller): IDENTITY_CLAIM_REFUSED at the path.
+    out = SemanticLayerMCPAdapter(runtime).call_tool(
+        "execute", {"query": call, "mode": "validate"}, request_context=OPS
+    )
+    (error,) = out["errors"]
+    assert (error["code"], error["details"]["path"]) == ("IDENTITY_CLAIM_REFUSED", f"query.{path}")
+    # A trusted local caller: the key is refused like any key that is not part of a call.
+    (error,) = runtime.validate(call)["errors"]
+    assert error["code"] == "INVALID_QUERY" and error["details"]["path"] == path

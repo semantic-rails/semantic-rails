@@ -434,56 +434,17 @@ def test_parse_config_emits_authoring_profile_warnings(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "columns, min_rows, code",
+    "empty_window, columns, min_rows, code",
     [
-        (["period", "orders"], 0, None),
-        (["wrong", "orders"], 0, "EXAMPLE_SHAPE_MISMATCH"),
-        (["period", "orders"], 1, "EXAMPLE_ROW_COUNT_MISMATCH"),
+        (False, ["period", "orders"], 2, None),
+        (True, ["period", "orders"], 0, None),
+        (False, ["wrong", "orders"], 2, "EXAMPLE_SHAPE_MISMATCH"),
+        (True, ["wrong", "orders"], 0, "EXAMPLE_SHAPE_MISMATCH"),
+        (True, ["period", "orders"], 1, "EXAMPLE_ROW_COUNT_MISMATCH"),
     ],
+    ids=["nonempty", "empty-window", "wrong-columns", "empty-wrong-columns", "empty-too-few"],
 )
-def test_empty_window_example_checks_declared_columns(tmp_path, columns, min_rows, code):
-    package_dir = tmp_path / "empty_window"
-    _write_package(package_dir)
-    _write_yaml(
-        package_dir / "examples" / "orders.yml",
-        {
-            "examples": {
-                "empty": {
-                    "query": {
-                        "select": ["metric.sales.orders"],
-                        # An open window after the data: no row (a named one answers
-                        # every day it holds).
-                        "time": {
-                            "temporal_role": "temporal_role.demo_order_time",
-                            "grain": "day",
-                            "start": "2026-04-01",
-                        },
-                    },
-                    "now": "2026-05-04",
-                    "expected_shape": {"columns": columns, "min_rows": min_rows, "max_rows": 0},
-                }
-            }
-        },
-    )
-    report = run_examples_report(resolve_package_reference(path=str(package_dir)))
-    assert report["ok"] is (code is None), report
-    if code:
-        assert report["errors"][0]["code"] == code
-    else:
-        assert report["examples"][0]["columns"] == columns
-        assert report["examples"][0]["row_count"] == 0
-
-
-@pytest.mark.parametrize(
-    "empty_window, columns, code",
-    [
-        (False, ["period", "orders"], None),
-        (True, ["period", "orders"], None),
-        (False, ["wrong", "orders"], "EXAMPLE_SHAPE_MISMATCH"),
-    ],
-    ids=["nonempty", "empty-window", "wrong-columns"],
-)
-def test_example_checks_declared_columns(tmp_path, empty_window, columns, code):
+def test_example_checks_declared_columns(tmp_path, empty_window, columns, min_rows, code):
     package_dir = tmp_path / "minimal_example"
     _write_package(package_dir)
     query = {
@@ -493,22 +454,13 @@ def test_example_checks_declared_columns(tmp_path, empty_window, columns, code):
     row_count = 0 if empty_window else 2
     example = {"query": query}
     if empty_window:
-        query["time"]["start"] = "2026-04-01"  # open, after the data: no row
+        # An open window after the data: no row (a named one answers every day it holds).
+        query["time"]["start"] = "2026-04-01"
         example["now"] = "2026-05-04"
+    expected_shape = {"columns": columns, "min_rows": min_rows, "max_rows": row_count}
     _write_yaml(
         package_dir / "examples" / "orders.yml",
-        {
-            "examples": {
-                "orders": {
-                    **example,
-                    "expected_shape": {
-                        "columns": columns,
-                        "min_rows": row_count,
-                        "max_rows": row_count,
-                    },
-                }
-            }
-        },
+        {"examples": {"orders": {**example, "expected_shape": expected_shape}}},
     )
     report = run_examples_report(resolve_package_reference(path=str(package_dir)))
     assert report["ok"] is (code is None), report

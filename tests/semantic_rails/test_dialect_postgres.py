@@ -41,7 +41,7 @@ END_TS = "CAST(t.ended_at AS TIMESTAMP)"
 
 
 # ---------------------------------------------------------------------------
-# Dialect rendering — one assertion per overridden method.
+# Dialect rendering — every overridden method, every date unit.
 # ---------------------------------------------------------------------------
 
 
@@ -52,130 +52,96 @@ def test_registry_wires_postgres_dialect_and_adapter():
     assert connector.connection_kinds == ("postgres_native",)
     assert connector.adapter == "semantic_rails.db_parts.postgres:create_adapter"
     assert isinstance(dialect_for_warehouse("postgres"), PostgresDialect)
-
-
-@pytest.mark.parametrize(
-    ("method", "args", "expected"),
-    [
-        ("percentile_cont", (X, 0.95), "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t.x ASC)"),
-        ("median", (X,), "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.x ASC)"),
-        ("first_value", (X, ORDER), "(ARRAY_AGG(t.x ORDER BY t.snapshot_at ASC))[1]"),
-        ("last_value", (X, ORDER), "(ARRAY_AGG(t.x ORDER BY t.snapshot_at DESC))[1]"),
-        ("date_diff", ("day", START, END), f"CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)"),
-        (
-            "date_diff",
-            ("week", START, END),
-            f"(CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)) / 7",
-        ),
-        (
-            "date_diff",
-            ("month", START, END),
-            f"CAST((DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS})) * 12 + (DATE_PART('month', {END_TS}) - DATE_PART('month', {START_TS})) AS BIGINT)",
-        ),
-        (
-            "date_diff",
-            ("quarter", START, END),
-            f"CAST((DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS})) * 4 + (DATE_PART('quarter', {END_TS}) - DATE_PART('quarter', {START_TS})) AS BIGINT)",
-        ),
-        (
-            "date_diff",
-            ("year", START, END),
-            f"CAST(DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS}) AS BIGINT)",
-        ),
-        (
-            "date_diff",
-            ("second", START, END),
-            f"CAST(DATE_PART('epoch', DATE_TRUNC('second', {END_TS})) - DATE_PART('epoch', DATE_TRUNC('second', {START_TS})) AS BIGINT)",
-        ),
-        # FULL JOIN needs both a hash-joinable clause and exact NULL equality.
-        (
-            "null_safe_eq",
-            (X, ORDER),
-            "COALESCE(CAST(t.x AS TEXT), '__sr_null__') = COALESCE(CAST(t.snapshot_at AS TEXT), '__sr_null__') AND t.x IS NOT DISTINCT FROM t.snapshot_at",
-        ),
-    ],
-)
-def test_dialect_method_rendering(method, args, expected):
-    assert render_expr(getattr(DIALECT, method)(*args)) == expected
-
-
-@pytest.mark.parametrize(
-    ("unit", "divisor"),
-    [("hour", 3600), ("minute", 60)],
-)
-def test_date_diff_subdaily_renders_truncated_epoch_delta(unit: str, divisor: int):
-    assert render_expr(DIALECT.date_diff(unit, START, END)) == (
-        f"CAST((DATE_PART('epoch', DATE_TRUNC('{unit}', {END_TS}))"
-        f" - DATE_PART('epoch', DATE_TRUNC('{unit}', {START_TS}))) / {divisor} AS BIGINT)"
-    )
-
-
-def test_date_diff_never_emits_datediff_functions():
-    for unit in ("second", "minute", "hour", "day", "week", "month", "quarter", "year"):
-        sql = render_expr(DIALECT.date_diff(unit, START, END))
-        assert "DATE_DIFF(" not in sql and "DATEDIFF(" not in sql, (unit, sql)
-
-
-@pytest.mark.parametrize(
-    ("unit", "upper", "lower"),
-    [
-        ("day", "2000-01-02", "2000-01-01"),
-        ("week", "2000-01-08", "2000-01-01"),
-        ("hour", "2000-01-01 01:00:00", "2000-01-01 00:00:00"),
-        ("minute", "2000-01-01 00:01:00", "2000-01-01 00:00:00"),
-        ("second", "2000-01-01 00:00:01", "2000-01-01 00:00:00"),
-    ],
-)
-def test_date_add_fixed_units_render_scaled_timestamp_difference(unit: str, upper: str, lower: str):
-    assert render_expr(DIALECT.date_add(unit, SqlLiteral(3), X)) == (
-        "CAST(t.x AS TIMESTAMP) + 3 * "
-        f"(CAST('{upper}' AS TIMESTAMP) - CAST('{lower}' AS TIMESTAMP))"
-    )
-
-
-@pytest.mark.parametrize("unit", ["month", "quarter", "year"])
-def test_date_add_month_family_renders_clamped_calendar_reconstruction(unit: str):
-    sql = render_expr(DIALECT.date_add(unit, SqlLiteral(2), X))
-    # Target month rebuilt as text (PG renders no INTERVAL literal
-    # through this AST) with day-of-month clamping for short months.
-    assert "CONCAT(" in sql
-    assert "'-01') AS TIMESTAMP)" in sql
-    assert "CASE WHEN DATE_PART('day', CAST(t.x AS TIMESTAMP)) <=" in sql
-    assert "FLOOR(" in sql
-
-
-def test_date_add_never_emits_interval_keyword():
-    # `INTERVAL (n) UNIT` is a Postgres syntax error (the parenthesized
-    # form is a precision spec), so no PG lowering may contain it.
-    for unit in ("second", "minute", "hour", "day", "week", "month", "quarter", "year"):
-        sql = render_expr(DIALECT.date_add(unit, SqlLiteral(2), X))
-        assert "INTERVAL" not in sql, (unit, sql)
-        assert "DATE_ADD(" not in sql and "DATEADD(" not in sql, (unit, sql)
-
-
-def test_conditional_aggregate_keeps_portable_case_form():
-    condition = SqlBinary(X, ">", SqlLiteral(0))
-    assert (
-        render_expr(DIALECT.conditional_aggregate("sum", condition, ORDER))
-        == "SUM(CASE WHEN t.x > 0 THEN t.snapshot_at END)"
-    )
-    assert (
-        render_expr(DIALECT.conditional_aggregate("count", condition, None))
-        == "COUNT(CASE WHEN t.x > 0 THEN 1 END)"
-    )
-
-
-def test_timestamp_type_is_plain_timestamp():
-    assert DIALECT.timestamp_type_name() == "TIMESTAMP"
-    assert render_expr(DIALECT.timestamp_cast(X)) == "CAST(t.x AS TIMESTAMP)"
-
-
-def test_capabilities_advertise_postgres_features():
     capabilities = DIALECT.capabilities()
     assert capabilities["percentile_cont"] is True
     assert capabilities["null_safe_equality_function"] == "IS NOT DISTINCT FROM"
     assert capabilities["timestamp_type"] == "TIMESTAMP"
     assert capabilities["qualify"] is False
+
+
+def _epoch_delta(unit: str) -> str:
+    return (
+        f"DATE_PART('epoch', DATE_TRUNC('{unit}', {END_TS}))"
+        f" - DATE_PART('epoch', DATE_TRUNC('{unit}', {START_TS}))"
+    )
+
+
+def test_dialect_renders_postgres_forms():
+    condition = SqlBinary(X, ">", SqlLiteral(0))
+    rendered = [
+        (DIALECT.percentile_cont(X, 0.95), "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t.x ASC)"),
+        (DIALECT.median(X), "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.x ASC)"),
+        (DIALECT.first_value(X, ORDER), "(ARRAY_AGG(t.x ORDER BY t.snapshot_at ASC))[1]"),
+        (DIALECT.last_value(X, ORDER), "(ARRAY_AGG(t.x ORDER BY t.snapshot_at DESC))[1]"),
+        (
+            DIALECT.date_diff("day", START, END),
+            f"CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)",
+        ),
+        (
+            DIALECT.date_diff("week", START, END),
+            f"(CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)) / 7",
+        ),
+        (
+            DIALECT.date_diff("month", START, END),
+            f"CAST((DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS})) * 12 + (DATE_PART('month', {END_TS}) - DATE_PART('month', {START_TS})) AS BIGINT)",
+        ),
+        (
+            DIALECT.date_diff("quarter", START, END),
+            f"CAST((DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS})) * 4 + (DATE_PART('quarter', {END_TS}) - DATE_PART('quarter', {START_TS})) AS BIGINT)",
+        ),
+        (
+            DIALECT.date_diff("year", START, END),
+            f"CAST(DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS}) AS BIGINT)",
+        ),
+        (DIALECT.date_diff("second", START, END), f"CAST({_epoch_delta('second')} AS BIGINT)"),
+        (
+            DIALECT.date_diff("minute", START, END),
+            f"CAST(({_epoch_delta('minute')}) / 60 AS BIGINT)",
+        ),
+        (DIALECT.date_diff("hour", START, END), f"CAST(({_epoch_delta('hour')}) / 3600 AS BIGINT)"),
+        # FULL JOIN needs both a hash-joinable clause and exact NULL equality.
+        (
+            DIALECT.null_safe_eq(X, ORDER),
+            "COALESCE(CAST(t.x AS TEXT), '__sr_null__') = COALESCE(CAST(t.snapshot_at AS TEXT), '__sr_null__') AND t.x IS NOT DISTINCT FROM t.snapshot_at",
+        ),
+        (
+            DIALECT.conditional_aggregate("sum", condition, ORDER),
+            "SUM(CASE WHEN t.x > 0 THEN t.snapshot_at END)",
+        ),
+        (
+            DIALECT.conditional_aggregate("count", condition, None),
+            "COUNT(CASE WHEN t.x > 0 THEN 1 END)",
+        ),
+        (DIALECT.timestamp_cast(X), "CAST(t.x AS TIMESTAMP)"),
+    ]
+    # Fixed-length units add a scaled timestamp difference: `INTERVAL (n) UNIT` is a
+    # Postgres syntax error (the parenthesized form is a precision spec).
+    for unit, upper, lower in [
+        ("day", "2000-01-02", "2000-01-01"),
+        ("week", "2000-01-08", "2000-01-01"),
+        ("hour", "2000-01-01 01:00:00", "2000-01-01 00:00:00"),
+        ("minute", "2000-01-01 00:01:00", "2000-01-01 00:00:00"),
+        ("second", "2000-01-01 00:00:01", "2000-01-01 00:00:00"),
+    ]:
+        rendered.append(
+            (
+                DIALECT.date_add(unit, SqlLiteral(3), X),
+                f"CAST(t.x AS TIMESTAMP) + 3 * (CAST('{upper}' AS TIMESTAMP) - CAST('{lower}' AS TIMESTAMP))",
+            )
+        )
+    for expr, expected in rendered:
+        assert render_expr(expr) == expected
+    assert DIALECT.timestamp_type_name() == "TIMESTAMP"
+
+    for unit in ("month", "quarter", "year"):
+        sql = render_expr(DIALECT.date_add(unit, SqlLiteral(2), X))
+        # Target month rebuilt as text (PG renders no INTERVAL literal
+        # through this AST) with day-of-month clamping for short months.
+        assert "CONCAT(" in sql
+        assert "'-01') AS TIMESTAMP)" in sql
+        assert "CASE WHEN DATE_PART('day', CAST(t.x AS TIMESTAMP)) <=" in sql
+        assert "FLOOR(" in sql
+        assert "INTERVAL" not in sql and "DATE_ADD(" not in sql and "DATEADD(" not in sql, unit
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +223,6 @@ def test_adapter_normalizes_options_and_escapes_libpq_values(monkeypatch: pytest
     monkeypatch.setenv("SR_PG_TEST_PASSWORD", "quote' and slash\\")
     assert "password='quote\\' and slash\\\\'" in adapter._connect_uri()
 
-
-def test_adapter_defaults_port_and_preserves_sslmode(monkeypatch: pytest.MonkeyPatch):
-    _set_pg_env(monkeypatch)
     options = {key: value for key, value in VALID_OPTIONS.items() if key != "port"}
     options.update({"sslmode": "require", "statement_timeout_seconds": "30"})
     uri = AdbcAdapter(options)._connect_uri()
@@ -267,33 +230,37 @@ def test_adapter_defaults_port_and_preserves_sslmode(monkeypatch: pytest.MonkeyP
     assert "sslmode='require'" in uri
 
 
-def test_adapter_rejects_unsupported_option():
-    with pytest.raises(SemanticLayerError) as exc:
-        AdbcAdapter({**VALID_OPTIONS, "warehouse": "COMPUTE_WH"})
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "unsupported package.connection option 'warehouse'" in str(exc.value)
-
-
-def test_adapter_rejects_literal_password_without_leaking_it():
-    with pytest.raises(SemanticLayerError) as exc:
-        AdbcAdapter({**VALID_OPTIONS, "password": "hunter2"})
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "password" in str(exc.value)
-    assert "hunter2" not in str(exc.value)
-    assert "hunter2" not in repr(exc.value.details)
+def test_adapter_rejects_unsupported_and_literal_secret_options():
+    for option, value, named in [
+        ("warehouse", "COMPUTE_WH", "unsupported package.connection option 'warehouse'"),
+        ("password", "hunter2", "password"),
+    ]:
+        with pytest.raises(SemanticLayerError) as exc:
+            AdbcAdapter({**VALID_OPTIONS, option: value})
+        assert exc.value.code == "INVALID_CONFIG"
+        assert named in str(exc.value)
+        assert "hunter2" not in str(exc.value) + repr(exc.value.details)
 
 
-def test_adapter_rejects_non_integer_port(monkeypatch: pytest.MonkeyPatch):
+def test_adapter_rejects_invalid_numeric_options_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _set_pg_env(monkeypatch)
-    with pytest.raises(SemanticLayerError) as exc:
-        AdbcAdapter({**VALID_OPTIONS, "port": "fivefourthreetwo"})._connect_uri()
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert exc.value.details["option"] == "port"
-    # Option VALUES never appear in error envelopes.
-    assert "fivefourthreetwo" not in str(exc.value)
+    for option, value in [
+        ("port", "fivefourthreetwo"),
+        ("connect_timeout_seconds", "0"),
+        ("read_timeout_seconds", "-1"),
+        ("connect_timeout_seconds", "invalid"),
+    ]:
+        captured: dict = {}
+        _install_fake_adbc(monkeypatch, captured)
+        with pytest.raises(SemanticLayerError) as exc:
+            AdbcAdapter({**VALID_OPTIONS, option: value}).query("select 1")
+        assert exc.value.code == "INVALID_CONFIG"
+        assert exc.value.details["option"] == option
+        # Option VALUES never appear in error envelopes.
+        assert value not in str(exc.value)
+        assert "uri" not in captured
 
 
 def test_adapter_reports_every_missing_env_var_without_secret_values(
@@ -316,80 +283,58 @@ def test_adapter_reports_every_missing_env_var_without_secret_values(
     assert exc.value.details["connection_kind"] == "postgres_native"
 
 
-@pytest.mark.parametrize(
-    ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
-    [
-        ({}, 10, 65, None),
-        ({"statement_timeout_seconds": "0"}, 10, 65, None),
-        ({"statement_timeout_seconds": "30"}, 10, 65, "30000"),
-        ({"statement_timeout_seconds": "120"}, 10, 125, "120000"),
+def test_adapter_queries_with_fake_driver_and_sets_then_restores_the_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_pg_env(monkeypatch)
+    set_timeout = "SELECT set_config('statement_timeout', $1, false)"
+    for timeouts, limits, connect_timeout, read_timeout, statement_timeout in [
+        ({}, None, 10, 65, None),
+        ({"statement_timeout_seconds": "0"}, None, 10, 65, None),
+        ({"statement_timeout_seconds": "30"}, None, 10, 65, "30000"),
+        ({"statement_timeout_seconds": "120"}, None, 10, 125, "120000"),
         (
             {
                 "connect_timeout_seconds": "7",
                 "read_timeout_seconds": "45",
                 "statement_timeout_seconds": "40",
             },
+            None,
             7,
             45,
             "40000",
         ),
-    ],
-)
-def test_adapter_queries_with_fake_driver_and_maps_rows(
-    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout, statement_timeout
-):
-    _set_pg_env(monkeypatch)
-    captured: dict = {}
-    _install_fake_adbc(monkeypatch, captured)
-    adapter = AdbcAdapter({**VALID_OPTIONS, **timeouts})
+        # A request's deadline wins over the configured one; none (or 0) keeps it.
+        ({}, {"statement_timeout_ms": 1500}, 10, 65, "1500"),
+        ({"statement_timeout_seconds": "30"}, {"statement_timeout_ms": 0}, 10, 65, "30000"),
+        ({"statement_timeout_seconds": "30"}, {"statement_timeout_ms": 250}, 10, 65, "250"),
+    ]:
+        captured: dict = {}
+        _install_fake_adbc(monkeypatch, captured)
+        adapter = AdbcAdapter({**VALID_OPTIONS, **timeouts})
+        assert adapter.supports_statement_timeout is True
 
-    rows = adapter.query("select 1")
-    adapter.close()
+        rows = adapter.query("select 1", limits=limits)
+        adapter.close()
 
-    assert rows == [{"one": 1, "two": "x"}]
-    assert ("select 1", None) in captured["sql"]
-    assert captured["kwargs"]["autocommit"] is True
-    assert captured["sql"][0] == ("SELECT set_config('search_path', $1, false)", ('"analytics"',))
-    assert f"connect_timeout='{connect_timeout}'" in captured["uri"]
-    assert f"keepalives_idle='{read_timeout}'" in captured["uri"]
-    expected = [
-        ("SELECT current_setting('TimeZone'), current_setting('statement_timeout')", None),
-        ("select 1", None),
-    ]
-    if statement_timeout is not None:
-        expected.insert(
-            1, ("SELECT set_config('statement_timeout', $1, false)", (statement_timeout,))
+        assert rows == [{"one": 1, "two": "x"}]
+        assert captured["kwargs"]["autocommit"] is True
+        assert captured["sql"][0] == (
+            "SELECT set_config('search_path', $1, false)",
+            ('"analytics"',),
         )
-        expected.append(("SELECT set_config('statement_timeout', $1, false)", ("5s",)))
-    assert captured["sql"][1:] == expected
-    assert captured["cursor_closed"] is True
-    assert captured["connection_closed"] is True
-
-
-def test_adapter_applies_and_restores_statement_timeout(monkeypatch: pytest.MonkeyPatch):
-    _set_pg_env(monkeypatch)
-    captured: dict = {}
-    _install_fake_adbc(monkeypatch, captured)
-    adapter = AdbcAdapter(VALID_OPTIONS)
-    assert adapter.supports_statement_timeout is True
-
-    adapter.query("select 1", limits={"statement_timeout_ms": 1500})
-
-    assert ("SELECT set_config('statement_timeout', $1, false)", ("1500",)) in captured["sql"]
-    assert ("select 1", None) in captured["sql"]
-    assert ("SELECT set_config('statement_timeout', $1, false)", ("5s",)) in captured["sql"]
-
-
-@pytest.mark.parametrize("timeout", [None, 0, 250])
-def test_configured_timeout_is_the_default(monkeypatch, timeout):
-    _set_pg_env(monkeypatch)
-    captured = {}
-    _install_fake_adbc(monkeypatch, captured)
-    adapter = AdbcAdapter({**VALID_OPTIONS, "statement_timeout_seconds": "30"})
-    limits = {} if timeout is None else {"statement_timeout_ms": timeout}
-    adapter.query("select 1", limits=limits)
-    expected = "30000" if not timeout else "250"
-    assert ("SELECT set_config('statement_timeout', $1, false)", (expected,)) in captured["sql"]
+        assert f"connect_timeout='{connect_timeout}'" in captured["uri"]
+        assert f"keepalives_idle='{read_timeout}'" in captured["uri"]
+        expected = [
+            ("SELECT current_setting('TimeZone'), current_setting('statement_timeout')", None),
+            ("select 1", None),
+        ]
+        if statement_timeout is not None:
+            expected.insert(1, (set_timeout, (statement_timeout,)))
+            expected.append((set_timeout, ("5s",)))
+        assert captured["sql"][1:] == expected, (timeouts, limits)
+        assert captured["cursor_closed"] is True
+        assert captured["connection_closed"] is True
 
 
 def test_adapter_redacts_query_errors(monkeypatch: pytest.MonkeyPatch):
@@ -444,14 +389,11 @@ def test_create_warehouse_adapter_selects_postgres_native():
     assert isinstance(adapter, AdbcAdapter)
     assert adapter.options == VALID_OPTIONS
 
-
-@pytest.mark.parametrize("kind", ["postgres_cli", "removed_kind"])
-def test_create_adapter_rejects_unknown_connection_kind(kind):
-    with pytest.raises(SemanticLayerError) as exc:
-        create_adapter(_package(kind))
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert kind in str(exc.value)
+    for kind in ["postgres_cli", "removed_kind"]:
+        with pytest.raises(SemanticLayerError) as exc:
+            create_adapter(_package(kind))
+        assert exc.value.code == "INVALID_CONFIG"
+        assert exc.value.details["connection_kind"] == kind
 
 
 # ---------------------------------------------------------------------------
@@ -459,9 +401,7 @@ def test_create_adapter_rejects_unknown_connection_kind(kind):
 # ---------------------------------------------------------------------------
 
 
-def test_compat_pass_shortens_colliding_long_identifiers():
-    from semantic_rails.dialects import dialect_for_warehouse
-
+def test_compat_pass_shortens_long_identifiers_and_floats_nullif_divisions():
     name_a = "conversion_leaf_1__" + "a" * 50 + "_first"
     name_b = "conversion_leaf_1__" + "a" * 50 + "_second"
     assert len(name_a) > 63 and name_a[:63] == name_b[:63]  # would collide raw
@@ -469,7 +409,7 @@ def test_compat_pass_shortens_colliding_long_identifiers():
         f"WITH {name_a} AS (SELECT 1 AS v), {name_b} AS (SELECT 2 AS v)\n"
         f"SELECT {name_a}.v FROM {name_a} CROSS JOIN {name_b}"
     )
-    rewritten = dialect_for_warehouse("postgres").prepare_query(sql).sql
+    rewritten = DIALECT.prepare_query(sql).sql
 
     new_names = {
         token
@@ -486,30 +426,11 @@ def test_compat_pass_shortens_colliding_long_identifiers():
         assert len(bare.encode()) <= 63
         assert rewritten.count(bare) >= 1
 
-
-def test_compat_pass_keeps_short_identifiers_and_literals_untouched():
-    from semantic_rails.dialects import dialect_for_warehouse
-
-    long_in_literal = "x" * 80
-    sql = f"SELECT name FROM jaffle_order WHERE name = '{long_in_literal}'"
-    assert dialect_for_warehouse("postgres").prepare_query(sql).sql == sql
-
-
-def test_compat_pass_casts_nullif_divisions_to_float():
-    from semantic_rails.dialects import dialect_for_warehouse
-
-    sql = "SELECT a / NULLIF(b, 0) AS r FROM t"
-    assert (
-        dialect_for_warehouse("postgres").prepare_query(sql).sql
-        == "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE PRECISION) AS r FROM t"
-    )
-
-
-def test_compat_pass_handles_nested_nullif_divisions_and_literals():
-    from semantic_rails.dialects import dialect_for_warehouse
-
+    # Short identifiers and long literals stay; the ratio guard divides as floats.
+    sql = f"SELECT name FROM jaffle_order WHERE name = '{'x' * 80}'"
+    assert DIALECT.prepare_query(sql).sql == sql
     sql = "SELECT a / NULLIF(b / NULLIF(c, 0), 0), ') / NULLIF(' FROM t"
-    assert dialect_for_warehouse("postgres").prepare_query(sql).sql == (
+    assert DIALECT.prepare_query(sql).sql == (
         "SELECT a / CAST(NULLIF(b / CAST(NULLIF(c, 0) AS DOUBLE PRECISION), 0)"
         " AS DOUBLE PRECISION), ') / NULLIF(' FROM t"
     )
@@ -571,16 +492,3 @@ def test_postgres_compiles_every_battery_case():
             "EQUAL_NULL(",
         ):
             assert forbidden not in sql, f"{case.name}: forbidden fragment {forbidden}\n{sql}"
-
-
-@pytest.mark.parametrize("option", ["connect_timeout_seconds", "read_timeout_seconds"])
-@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
-def test_adapter_rejects_invalid_client_timeout_before_connecting(monkeypatch, option, value):
-    captured = {}
-    _install_fake_adbc(monkeypatch, captured)
-    with pytest.raises(SemanticLayerError) as exc:
-        AdbcAdapter({option: value}).query("select 1")
-    assert exc.value.code == "INVALID_CONFIG"
-    assert exc.value.details["option"] == option
-    assert value not in str(exc.value)
-    assert "uri" not in captured

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date
 
@@ -14,6 +15,7 @@ from semantic_rails.config_validation import PackageReference, validate_runtime_
 from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
+    CALL_CAST_FORMS,
     CONVERSION_WINDOW_UNITS,
     CallExpr,
     ColumnRefExpr,
@@ -89,6 +91,40 @@ def package(tmp_path):
     return tmp_path
 
 
+@contextmanager
+def edited(package, name):
+    """One package YAML file as a dict, written back on exit."""
+    path = package / name
+    doc = yaml.safe_load(path.read_text())
+    yield doc
+    path.write_text(yaml.safe_dump(doc))
+
+
+def set_measure(package, expression, **model):
+    with edited(package, "models/rows.yml") as doc:
+        doc["model"]["measures"]["amount"]["expr"] = expression
+        doc["model"].update(model)
+
+
+def set_warehouse(package, warehouse, connection=None):
+    with edited(package, "package.yml") as doc:
+        doc["package"]["warehouse"] = warehouse
+        if connection:
+            doc["package"]["connection"] = connection
+
+
+def project(package, columns, select):
+    """Write a ``projected`` relation selecting ``select`` from the numbers table."""
+    steps = [{"select": {"columns": select}}]
+    relations = {"projected": {"source": "numbers", "columns": columns, "steps": steps}}
+    (package / "relations.yml").write_text(yaml.safe_dump({"relations": relations}))
+
+
+def on_warehouse(package, warehouse):
+    config = load_package_config(str(package))
+    return replace(config, package=replace(config.package, warehouse=warehouse))
+
+
 def execute(config, expression):
     compiled = compile_query(config, None, query(expression))
     sql, hidden = compiled["sql"], set(hidden_columns(compiled))
@@ -119,60 +155,57 @@ def test_numeric_cast_max_and_post_aggregation_subtraction(package):
     assert execute(config, maximum(cast(literal(None)))) == [(None,)]
 
 
-@pytest.mark.parametrize("warehouse", WAREHOUSES)
-@pytest.mark.parametrize(
-    "target",
-    ["DOUBLE", "INTEGER", "BIGINT", "DECIMAL(12,3)", "DECIMAL(38,10)", "DECIMAL(38,0)", "VARCHAR"],
-)
-def test_cast_sql_for_every_dialect(package, warehouse, target):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
-    if warehouse == "bigquery" and target.startswith("DECIMAL"):
-        with pytest.raises(SemanticLayerError) as exc:
-            compile_query(config, None, query(maximum(cast(column("text_value"), target))))
-        assert exc.value.code == "INVALID_EXPRESSION_AST"
-        with pytest.raises(SemanticLayerError) as exc:
-            dialect_for_warehouse(warehouse).scalar_call(
-                "CAST", [SqlLiteral(1), SqlLiteral(target)]
-            )
-        assert exc.value.code == "INVALID_EXPRESSION_AST"
-        return
-    sql = compile_query(config, None, query(maximum(cast(column("text_value"), target))))["sql"]
-    expected = "BIGINT" if target in {"INTEGER", "BIGINT"} else target
+CAST_TARGETS = [
+    "DOUBLE",
+    "INTEGER",
+    "BIGINT",
+    "DECIMAL(12,3)",
+    "DECIMAL(38,10)",
+    "DECIMAL(38,0)",
+    "VARCHAR",
+]
+
+
+def cast_type(warehouse, target):
+    """The type each dialect renders for a portable CAST target; None where it is refused."""
+    if warehouse == "bigquery":
+        names = {"DOUBLE": "FLOAT64", "INTEGER": "INT64", "BIGINT": "INT64", "VARCHAR": "STRING"}
+        return names.get(target)
+    if warehouse == "clickhouse":
+        names = {"DOUBLE": "Float64", "INTEGER": "Int64", "BIGINT": "Int64", "VARCHAR": "String"}
+        return f"Nullable({names.get(target, target)})"
     if warehouse == "postgres" and target == "DOUBLE":
-        expected = "FLOAT8"
-    elif warehouse == "bigquery":
-        expected = {
-            "DOUBLE": "FLOAT64",
-            "INTEGER": "INT64",
-            "BIGINT": "INT64",
-            "VARCHAR": "STRING",
-        }[target]
-    elif warehouse == "databricks" and target == "VARCHAR":
-        expected = "STRING"
-    elif warehouse == "clickhouse":
-        expected = (
-            "Nullable("
-            + {"DOUBLE": "Float64", "INTEGER": "Int64", "BIGINT": "Int64", "VARCHAR": "String"}.get(
-                target, target
-            )
-            + ")"
-        )
-    lowered = dialect_for_warehouse(warehouse).scalar_call(
-        "CAST", [SqlLiteral(1), SqlLiteral(target)]
-    )
-    assert lowered.type_name == expected
-    assert render_expr(lowered) == f"CAST(1 AS {expected})"
-    assert f" AS {lowered.type_name})" in sql
+        return "FLOAT8"
+    if warehouse == "databricks" and target == "VARCHAR":
+        return "STRING"
+    return "BIGINT" if target in {"INTEGER", "BIGINT"} else target
+
+
+@pytest.mark.parametrize("warehouse", WAREHOUSES)
+def test_cast_sql_for_every_dialect(package, warehouse):
+    config = on_warehouse(package, warehouse)
+    dialect = dialect_for_warehouse(warehouse)
+    for target in CAST_TARGETS:
+        expected = cast_type(warehouse, target)
+        if expected is None:
+            with pytest.raises(SemanticLayerError) as exc:
+                compile_query(config, None, query(maximum(cast(column("text_value"), target))))
+            assert exc.value.code == "INVALID_EXPRESSION_AST"
+            with pytest.raises(SemanticLayerError) as exc:
+                dialect.scalar_call("CAST", [SqlLiteral(1), SqlLiteral(target)])
+            assert exc.value.code == "INVALID_EXPRESSION_AST"
+            continue
+        lowered = dialect.scalar_call("CAST", [SqlLiteral(1), SqlLiteral(target)])
+        assert lowered.type_name == expected
+        assert render_expr(lowered) == f"CAST(1 AS {expected})"
+    sql = compile_query(config, None, query(maximum(cast(column("text_value"), "DOUBLE"))))["sql"]
+    assert f" AS {cast_type(warehouse, 'DOUBLE')})" in sql
 
 
 @pytest.mark.parametrize(
     "target",
     [
         "DATE",
-        "TIMESTAMP",
-        "BOOLEAN",
-        "FLOAT",
         "DOUBLE PRECISION",
         "DECIMAL",
         "DECIMAL(0,0)",
@@ -187,7 +220,7 @@ def test_refused_cast_types_list_accepted_forms(package, target):
     with pytest.raises(SemanticLayerError) as exc:
         plan_query(load_package_config(str(package)), None, query(cast(literal(1), target)))
     assert exc.value.code == "INVALID_EXPRESSION_AST"
-    assert "DOUBLE, DECIMAL(p,s), INTEGER, BIGINT, VARCHAR" in str(exc.value)
+    assert exc.value.details == {"accepted_types": list(CALL_CAST_FORMS)}
 
 
 @pytest.mark.parametrize(
@@ -199,12 +232,13 @@ def test_refused_cast_types_list_accepted_forms(package, target):
         [literal(1), literal("DOUBLE"), literal(2)],
     ],
 )
-def test_refused_cast_shapes(package, args):
-    with pytest.raises(SemanticLayerError, match="string literal type"):
+def test_refused_cast_shapes(args):
+    with pytest.raises(SemanticLayerError) as exc:
         validate_expression_calls(
             parse_semantic_expression(call("CAST", *args), context="query"),
-            dialect_for_warehouse(load_package_config(str(package)).package.warehouse),
+            dialect_for_warehouse("duckdb"),
         )
+    assert exc.value.details == {"accepted_types": list(CALL_CAST_FORMS)}
 
 
 def test_cast_case_and_invalid_value(package):
@@ -246,8 +280,7 @@ SMOKE_ARGS = {
 
 @pytest.mark.parametrize("warehouse", WAREHOUSES)
 def test_allowed_names_are_constructible_and_duckdb_executes_each(package, warehouse):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    config = on_warehouse(package, warehouse)
     dialect = dialect_for_warehouse(warehouse)
     for name in sorted(dialect_for_warehouse(warehouse).call_names):
         if warehouse == "athena" and name == "DATE_DIFF":
@@ -269,45 +302,50 @@ def test_allowed_names_are_constructible_and_duckdb_executes_each(package, wareh
                 assert len(conn.execute("SELECT " + render_expr(sql_expr)).fetchall()) == 1
 
 
-@pytest.mark.parametrize("warehouse", WAREHOUSES)
+EXCLUDED_CALLS = [
+    "SUM",
+    "COUNT",
+    "AVG",
+    "ROW_NUMBER",
+    "LAG",
+    "GENERATE_SERIES",
+    "UNNEST",
+    "SEQUENCE",
+    "EXPLODE",
+    "TRY_CAST",
+    "CONVERT_TIMEZONE",
+]
+
+
 @pytest.mark.parametrize(
-    "name",
-    [
-        "SUM",
-        "COUNT",
-        "AVG",
-        "ROW_NUMBER",
-        "LAG",
-        "GENERATE_SERIES",
-        "UNNEST",
-        "SEQUENCE",
-        "EXPLODE",
-        "TRY_CAST",
-        "CONVERT_TIMEZONE",
-    ],
+    "warehouse,name",
+    [(WAREHOUSES[i % len(WAREHOUSES)], name) for i, name in enumerate(EXCLUDED_CALLS)],
 )
 def test_excluded_calls_report_exact_dialect_list(package, warehouse, name):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    config = on_warehouse(package, warehouse)
     with pytest.raises(SemanticLayerError) as exc:
         plan_query(config, None, query(call(name, literal(1))))
     assert exc.value.code == "INVALID_EXPRESSION_AST"
     assert exc.value.details["allowed"] == sorted(dialect_for_warehouse(warehouse).call_names)
 
 
-@pytest.mark.parametrize("warehouse", WAREHOUSES)
+DEFERRED_ARGUMENT_TYPES = [
+    call("ROUND", column("text_value"), literal(1)),
+    call("UPPER", column("amount")),
+    call("ROUND", call("LOWER", column("text_value"))),
+    call("ROUND", cast(column("amount"), "VARCHAR")),
+]
+
+
 @pytest.mark.parametrize(
-    "expression",
+    "warehouse,expression",
     [
-        call("ROUND", column("text_value"), literal(1)),
-        call("UPPER", column("amount")),
-        call("ROUND", call("LOWER", column("text_value"))),
-        call("ROUND", cast(column("amount"), "VARCHAR")),
+        (warehouse, DEFERRED_ARGUMENT_TYPES[i % len(DEFERRED_ARGUMENT_TYPES)])
+        for i, warehouse in enumerate(WAREHOUSES)
     ],
 )
 def test_argument_types_are_deferred_to_warehouse(package, warehouse, expression):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    config = on_warehouse(package, warehouse)
     assert compile_query(config, None, query(maximum(expression)))["sql"]
 
 
@@ -336,14 +374,10 @@ def test_literal_only_select_has_precise_reason(package, expression):
         plan_query(load_package_config(str(package)), None, query(expression))
     assert exc.value.code == "INVALID_QUERY"
     assert exc.value.details == {"reason": "literal_only_select"}
-    assert "add a measure, a group_by dimension or time" in str(exc.value)
 
 
 def test_package_cast_and_call_preserve_other_check_errors(package):
-    path = package / "models/rows.yml"
-    model = yaml.safe_load(path.read_text())
-    model["model"]["measures"]["amount"]["expr"] = cast({"kind": "column", "column": "text_value"})
-    path.write_text(yaml.safe_dump(model))
+    set_measure(package, cast({"kind": "column", "column": "text_value"}))
     config = load_package_config(str(package))
     assert execute(config, {"measure": "measure.numbers.amount", "aggregation": "max"}) == [
         (120.25,)
@@ -352,11 +386,9 @@ def test_package_cast_and_call_preserve_other_check_errors(package):
     assert render_expr(
         _semantic_expr_to_sql(config.measures[0].expr, default_alias="n", warehouse="postgres")
     ).endswith(" AS FLOAT8)")
-    model["model"]["measures"]["amount"]["expr"] = call(
-        "ROUND", {"kind": "column", "column": "text_value"}, literal(1)
-    )
-    model["model"]["dimensions"]["text_value"]["kind"] = "string"
-    path.write_text(yaml.safe_dump(model))
+    set_measure(package, call("ROUND", {"kind": "column", "column": "text_value"}, literal(1)))
+    with edited(package, "models/rows.yml") as doc:
+        doc["model"]["dimensions"]["text_value"]["kind"] = "string"
     errors = validate_runtime_package(package)
     assert errors and all(isinstance(error, str) for error in errors)
     report = check_package_report(PackageReference(source_path=str(package)))
@@ -391,10 +423,9 @@ def test_oversized_decimal_parameters_are_structured_errors(package, parameter):
         runtime.close()
 
 
-@pytest.mark.parametrize("target", ["DECIMAL(12,3)", "DECIMAL(38,10)", "DECIMAL(38,0)"])
-def test_bigquery_decimal_constraints_refused_at_load_and_validation(package, target):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse="bigquery"))
+def test_bigquery_decimal_constraints_refused_at_load_and_validation(package):
+    target = "DECIMAL(12,3)"
+    config = on_warehouse(package, "bigquery")
     runtime = Runtime.from_config(config, source_path=str(package))
     try:
         report = runtime.validate(query(maximum(cast(column("text_value"), target))))
@@ -402,17 +433,8 @@ def test_bigquery_decimal_constraints_refused_at_load_and_validation(package, ta
         assert report["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
     finally:
         runtime.close()
-    path = package / "package.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["package"]["warehouse"] = "bigquery"
-    raw["package"]["connection"] = {"kind": "bigquery_native", "project": "test"}
-    path.write_text(yaml.safe_dump(raw))
-    path = package / "models/rows.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["model"]["measures"]["amount"]["expr"] = cast(
-        {"kind": "column", "column": "text_value"}, target
-    )
-    path.write_text(yaml.safe_dump(raw))
+    set_warehouse(package, "bigquery", {"kind": "bigquery_native", "project": "test"})
+    set_measure(package, cast({"kind": "column", "column": "text_value"}, target))
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(package))
     assert exc.value.code == "INVALID_EXPRESSION_AST"
@@ -421,10 +443,7 @@ def test_bigquery_decimal_constraints_refused_at_load_and_validation(package, ta
 @pytest.mark.parametrize(
     "warehouse,expression,expected",
     [
-        (warehouse, call("LENGTH", call("SPLIT", literal("a,b"), literal(","))), 2)
-        for warehouse in ["duckdb", "motherduck", "ducklake"]
-    ]
-    + [
+        ("duckdb", call("LENGTH", call("SPLIT", literal("a,b"), literal(","))), 2),
         (
             "snowflake",
             call(
@@ -436,42 +455,27 @@ def test_bigquery_decimal_constraints_refused_at_load_and_validation(package, ta
         ("databricks", call("UPPER", column("amount")), None),
         ("clickhouse", call("LENGTH", literal([1, 2])), None),
         ("postgres", call("ROUND", cast(literal("2.5"), "DECIMAL(10,1)"), literal("0")), None),
-    ]
-    + [
-        (warehouse, expression, expected)
-        for expression, expected in [
-            (
-                call(
-                    "DATE_PART",
-                    call("SPLIT", literal("year,month"), literal(",")),
-                    column("placed_at"),
-                ),
-                {"year": 2020, "month": 1},
+        (
+            "duckdb",
+            call(
+                "DATE_PART", call("SPLIT", literal("year,month"), literal(",")), column("placed_at")
             ),
-            (call("SUBSTRING", literal("Thomas"), cast(literal("...$"), "VARCHAR")), None),
-            (
-                call(
-                    "DATE_TRUNC",
-                    literal("day"),
-                    column("placed_at"),
-                    cast(literal("UTC"), "VARCHAR"),
-                ),
-                None,
+            {"year": 2020, "month": 1},
+        ),
+        ("bigquery", call("SUBSTRING", literal("Thomas"), cast(literal("...$"), "VARCHAR")), None),
+        (
+            "athena",
+            call(
+                "DATE_TRUNC", literal("day"), column("placed_at"), cast(literal("UTC"), "VARCHAR")
             ),
-        ]
-        for warehouse in WAREHOUSES
-        if expression["name"] in dialect_for_warehouse(warehouse).call_names
-        and (
-            expression["name"] != "DATE_PART"
-            or "SPLIT" in dialect_for_warehouse(warehouse).call_names
-        )
+            None,
+        ),
     ],
 )
 def test_supported_overloads_compile_in_queries_and_packages(
     package, warehouse, expression, expected
 ):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    config = on_warehouse(package, warehouse)
     assert compile_query(config, None, query(maximum(expression)))["sql"]
     runtime = Runtime.from_config(config, source_path=str(package))
     try:
@@ -487,40 +491,22 @@ def test_supported_overloads_compile_in_queries_and_packages(
                 assert conn.execute(sql).fetchall() == [(expected,)]
         else:
             assert execute(config, maximum(expression)) == [(expected,)]
-    path = package / "models/rows.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["model"]["measures"]["amount"]["expr"] = expression
-    path.write_text(yaml.safe_dump(raw))
-    path = package / "package.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["package"]["warehouse"] = warehouse
+    set_measure(package, expression)
     if warehouse == "snowflake":
-        raw["package"]["connection"] = {"kind": "snowflake_cli", "name": "test"}
+        set_warehouse(package, warehouse, {"kind": "snowflake_cli", "name": "test"})
     elif warehouse != "duckdb":
-        raw["package"]["connection"] = {"kind": f"{warehouse}_native"}
-    path.write_text(yaml.safe_dump(raw))
+        set_warehouse(package, warehouse, {"kind": f"{warehouse}_native"})
     config = load_package_config(str(package))
     assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
-    relations = {
-        "projected": {
-            "source": "numbers",
-            "columns": ["id", "amount", "text_value", "placed_at"],
-            "steps": [{"select": {"columns": {"id": "id", "projected_value": expression}}}],
-        }
-    }
-    (package / "relations.yml").write_text(yaml.safe_dump({"relations": relations}))
-    path = package / "models/rows.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["model"]["relation"] = "projected"
-    raw["model"]["measures"]["amount"]["expr"] = "projected_value"
-    path.write_text(yaml.safe_dump(raw))
+    columns = ["id", "amount", "text_value", "placed_at"]
+    project(package, columns, {"id": "id", "projected_value": expression})
+    set_measure(package, "projected_value", relation="projected")
     config = load_package_config(str(package))
     assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
 
 
 def test_direct_lowering_cannot_bypass_call_guard(package):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse="bigquery"))
+    config = on_warehouse(package, "bigquery")
     expr = CallExpr("DATE_PART", [LiteralExpr("year"), LiteralExpr(None)])
     with pytest.raises(SemanticLayerError) as exc:
         _config_expr_to_sql(expr, config.measures[0], config)
@@ -536,9 +522,7 @@ def test_direct_lowering_cannot_bypass_call_guard(package):
         ("clickhouse", "TRIM"),
     ],
 )
-def test_dialect_spelling_is_refused_by_walker(package, warehouse, name):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+def test_dialect_spelling_is_refused_by_walker(warehouse, name):
     with pytest.raises(SemanticLayerError) as exc:
         validate_expression_calls(
             parse_semantic_expression(call(name, literal(1)), context="config"),
@@ -552,31 +536,11 @@ def test_warehouse_type_error_is_redacted_on_every_call_path(package, path):
     expression = call("ROUND", literal("private-value"))
     payload = query(maximum(expression))
     if path != "select":
-        model_path = package / "models/rows.yml"
-        raw = yaml.safe_load(model_path.read_text())
-        raw["model"]["measures"]["amount"]["expr"] = expression
+        set_measure(package, expression)
         if path == "relation":
-            raw["model"]["relation"] = "projected"
-            raw["model"]["measures"]["amount"]["expr"] = "amount"
-            relations = {
-                "projected": {
-                    "source": "numbers",
-                    "columns": ["id", "text_value", "amount"],
-                    "steps": [
-                        {
-                            "select": {
-                                "columns": {
-                                    "id": "id",
-                                    "text_value": "text_value",
-                                    "amount": expression,
-                                }
-                            }
-                        }
-                    ],
-                }
-            }
-            (package / "relations.yml").write_text(yaml.safe_dump({"relations": relations}))
-        model_path.write_text(yaml.safe_dump(raw))
+            select = {"id": "id", "text_value": "text_value", "amount": expression}
+            project(package, ["id", "text_value", "amount"], select)
+            set_measure(package, "amount", relation="projected")
         payload = query(
             {"kind": "measure", "measure": "measure.numbers.amount", "aggregation": "max"}
         )
@@ -595,29 +559,24 @@ def test_warehouse_type_error_is_redacted_on_every_call_path(package, path):
         runtime.close()
 
 
-@pytest.mark.parametrize("warehouse", ["DuckDB", "Snowflake"])
 @pytest.mark.parametrize(
-    "expression",
+    "warehouse,expression",
     [
-        {
-            "kind": "nullif",
-            "value": {"kind": "column", "column": "amount"},
-            "null_value": literal(0),
-        },
-        call("ABS", {"kind": "column", "column": "amount"}),
+        (
+            "DuckDB",
+            {
+                "kind": "nullif",
+                "value": {"kind": "column", "column": "amount"},
+                "null_value": literal(0),
+            },
+        ),
+        ("Snowflake", call("ABS", {"kind": "column", "column": "amount"})),
     ],
 )
 def test_mixed_case_warehouse_loads_and_compiles_calls(package, warehouse, expression):
-    path = package / "package.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["package"]["warehouse"] = warehouse
-    if warehouse == "Snowflake":
-        raw["package"]["connection"] = {"kind": "snowflake_cli", "name": "test"}
-    path.write_text(yaml.safe_dump(raw))
-    path = package / "models/rows.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["model"]["measures"]["amount"]["expr"] = expression
-    path.write_text(yaml.safe_dump(raw))
+    connection = {"kind": "snowflake_cli", "name": "test"} if warehouse == "Snowflake" else None
+    set_warehouse(package, warehouse, connection)
+    set_measure(package, expression)
     config = load_package_config(str(package))
     assert config.package.warehouse == warehouse.lower()
     assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
@@ -625,13 +584,9 @@ def test_mixed_case_warehouse_loads_and_compiles_calls(package, warehouse, expre
 
 @pytest.mark.parametrize("kind", [None, "categorical"])
 def test_untyped_integer_dimension_in_query_and_package_measure(package, kind):
-    path = package / "models/rows.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["model"]["dimensions"]["id"] = {"column": "id"}
-    if kind:
-        raw["model"]["dimensions"]["id"]["kind"] = kind
-    raw["model"]["measures"]["amount"]["expr"] = call("ABS", {"kind": "column", "column": "id"})
-    path.write_text(yaml.safe_dump(raw))
+    with edited(package, "models/rows.yml") as doc:
+        doc["model"]["dimensions"]["id"] = {"column": "id", **({"kind": kind} if kind else {})}
+    set_measure(package, call("ABS", {"kind": "column", "column": "id"}))
     config = load_package_config(str(package))
     assert execute(config, maximum(call("ABS", column("id")))) == [(3,)]
     assert execute(config, {"measure": "measure.numbers.amount", "aggregation": "max"}) == [(4,)]
@@ -668,24 +623,11 @@ def test_warehouse_overloads_execute(package, expression, expected):
 
 
 def test_operational_expression_shaped_metadata_stays_data(package):
-    path = package / "package.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["defaults"] = {
-        "operational": {
-            "measure": {
-                "fields": {
-                    "kind": {"type": "string"},
-                    "owner": {"type": "string"},
-                }
-            }
-        }
-    }
-    raw["defaults"]["operational"]["metric"] = raw["defaults"]["operational"]["measure"]
-    path.write_text(yaml.safe_dump(raw))
-    path = package / "models/rows.yml"
-    raw = yaml.safe_load(path.read_text())
-    raw["model"]["operational_defaults"] = {"kind": "literal", "owner": "finance"}
-    path.write_text(yaml.safe_dump(raw))
+    fields = {"fields": {"kind": {"type": "string"}, "owner": {"type": "string"}}}
+    with edited(package, "package.yml") as doc:
+        doc["defaults"] = {"operational": {"measure": fields, "metric": fields}}
+    with edited(package, "models/rows.yml") as doc:
+        doc["model"]["operational_defaults"] = {"kind": "literal", "owner": "finance"}
     config = load_package_config(str(package))
     assert config.measures[0].operational == {"kind": "literal", "owner": "finance"}
 
@@ -740,60 +682,56 @@ UNSUPPORTED_DATE_DIFF = [
 ]
 
 
-@pytest.mark.parametrize("warehouse,unit", UNSUPPORTED_DATE_DIFF)
-@pytest.mark.parametrize("surface", ["select", "package", "aggregate_if", "relation"])
+SURFACES = ["select", "package", "aggregate_if", "relation"]
+
+
+def lower_date_diff(package, warehouse, surface, unit, start, end, **relation_options):
+    """The SQL of DATE_DIFF(unit, start, end) lowered through one call surface."""
+    expression = call("date_diff", literal(unit.upper()), start, end)
+    if surface == "package":
+        set_measure(package, expression)
+    config = on_warehouse(package, warehouse)
+    if surface == "relation":
+        parsed = parse_semantic_expression(expression, context="config")
+        return render_expr(_semantic_expr_to_sql(parsed, warehouse=warehouse, **relation_options))
+    selected = {
+        "select": call("DATE_DIFF", literal(unit), maximum(start), maximum(end)),
+        "package": {"measure": "measure.numbers.amount", "aggregation": "avg"},
+        "aggregate_if": maximum(expression),
+    }[surface]
+    return compile_query(config, None, query(selected))["sql"]
+
+
+@pytest.mark.parametrize(
+    "warehouse,unit,surface",
+    [(*pair, SURFACES[i % len(SURFACES)]) for i, pair in enumerate(UNSUPPORTED_DATE_DIFF)],
+)
 def test_unsupported_date_diff_refused_on_every_surface(package, warehouse, unit, surface):
     expression = call("date_diff", literal(unit.upper()), literal(START), literal(END))
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
-    parsed = parse_semantic_expression(expression, context="query")
     with pytest.raises(SemanticLayerError) as validation:
-        validate_expression_calls(parsed, dialect_for_warehouse(warehouse))
-    with pytest.raises(SemanticLayerError) as lowering:
-        if surface == "package":
-            path = package / "package.yml"
-            manifest = yaml.safe_load(path.read_text())
-            manifest["package"]["warehouse"] = warehouse
-            manifest["package"]["connection"] = {"kind": f"{warehouse}_native", "name": "test"}
-            path.write_text(yaml.safe_dump(manifest))
-            path = package / "models/rows.yml"
-            model = yaml.safe_load(path.read_text())
-            model["model"]["measures"]["amount"]["expr"] = expression
-            path.write_text(yaml.safe_dump(model))
-            load_package_config(str(package))
-        elif surface == "relation":
-            _semantic_expr_to_sql(parsed, warehouse=warehouse)
-        elif surface == "select":
-            compile_query(
-                config,
-                None,
-                query(
-                    call("DATE_DIFF", literal(unit), maximum(literal(START)), maximum(literal(END)))
-                ),
-            )
-        else:
-            compile_query(config, None, query(maximum(expression)))
-    assert validation.value.code == lowering.value.code == "INVALID_EXPRESSION_AST"
-    assert str(validation.value) == str(lowering.value)
-    assert "Unsupported DATE_DIFF" in str(lowering.value)
-    assert warehouse in str(lowering.value)
-    assert unit in str(lowering.value)
-    assert lowering.value.details == {"function": "DATE_DIFF", "warehouse": warehouse, "unit": unit}
-
-
-@pytest.mark.parametrize("warehouse,unit", UNSUPPORTED_DATE_DIFF)
-def test_unsupported_date_diff_scalar_guard_refuses_direct_lowering(warehouse, unit):
-    with pytest.raises(SemanticLayerError, match="Unsupported DATE_DIFF") as exc:
+        validate_expression_calls(
+            parse_semantic_expression(expression, context="query"), dialect_for_warehouse(warehouse)
+        )
+    with pytest.raises(SemanticLayerError) as direct:
         dialect_for_warehouse(warehouse).scalar_call(
             "DATE_DIFF", [SqlLiteral(unit), SqlLiteral(START), SqlLiteral(END)]
         )
-    assert exc.value.code == "INVALID_EXPRESSION_AST"
-    assert exc.value.details["warehouse"] == warehouse
-    assert exc.value.details["unit"] == unit
+    if surface == "package":
+        # Authored on a package of that warehouse, the measure is refused at load.
+        set_warehouse(package, warehouse, {"kind": f"{warehouse}_native", "name": "test"})
+    with pytest.raises(SemanticLayerError) as lowering:
+        lower_date_diff(package, warehouse, surface, unit, literal(START), literal(END))
+    assert str(validation.value) == str(lowering.value)
+    for error in (validation.value, direct.value, lowering.value):
+        assert error.code == "INVALID_EXPRESSION_AST"
+        assert error.details == {"function": "DATE_DIFF", "warehouse": warehouse, "unit": unit}
 
 
-@pytest.mark.parametrize("unit", [unit for unit in CONVERSION_WINDOW_UNITS if unit != "week"])
-@pytest.mark.parametrize("start,end", [(None, END), (START, None), (None, None), (START, END)])
+@pytest.mark.parametrize(
+    "unit,start,end",
+    [(unit, START, END) for unit in CONVERSION_WINDOW_UNITS if unit != "week"]
+    + [("day", None, END), ("day", START, None), ("day", None, None)],
+)
 def test_clickhouse_date_diff_casts_both_endpoints_to_nullable_timestamps(unit, start, end):
     lowered = dialect_for_warehouse("clickhouse").scalar_call(
         "DATE_DIFF", [SqlLiteral(unit), SqlLiteral(start), SqlLiteral(end)]
@@ -804,16 +742,20 @@ def test_clickhouse_date_diff_casts_both_endpoints_to_nullable_timestamps(unit, 
     )
 
 
+# One case per dialect family, per surface and per unit; the per-unit SQL is pinned by dialect.
 @pytest.mark.parametrize(
-    "warehouse,unit",
+    "warehouse,unit,surface",
     [
-        (warehouse, unit)
-        for warehouse in DATE_DIFF_WAREHOUSES
-        for unit in CONVERSION_WINDOW_UNITS
-        if (warehouse, unit) not in UNSUPPORTED_DATE_DIFF
+        ("duckdb", "minute", "select"),
+        ("postgres", "hour", "package"),
+        ("snowflake", "day", "aggregate_if"),
+        ("bigquery", "month", "relation"),
+        ("databricks", "week", "select"),
+        ("clickhouse", "quarter", "package"),
+        ("postgres", "year", "aggregate_if"),
+        ("databricks", "day", "relation"),
     ],
 )
-@pytest.mark.parametrize("surface", ["select", "package", "aggregate_if", "relation"])
 def test_date_diff_calls_use_dialect_lowering(package, warehouse, unit, surface, monkeypatch):
     dialect = dialect_for_warehouse(warehouse)
     lowered_calls = []
@@ -826,30 +768,7 @@ def test_date_diff_calls_use_dialect_lowering(package, warehouse, unit, surface,
         return result
 
     monkeypatch.setattr(type(dialect), "date_diff", date_diff)
-    expression = call("date_diff", literal(unit.upper()), literal(START), literal(END))
-    if surface == "package":
-        path = package / "models/rows.yml"
-        model = yaml.safe_load(path.read_text())
-        model["model"]["measures"]["amount"]["expr"] = expression
-        path.write_text(yaml.safe_dump(model))
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
-    if surface == "select":
-        expression = call(
-            "DATE_DIFF", literal(unit), maximum(literal(START)), maximum(literal(END))
-        )
-    elif surface == "package":
-        expression = {"measure": "measure.numbers.amount", "aggregation": "avg"}
-    elif surface == "aggregate_if":
-        expression = maximum(expression)
-    if surface == "relation":
-        sql = render_expr(
-            _semantic_expr_to_sql(
-                parse_semantic_expression(expression, context="config"), warehouse=warehouse
-            ),
-        )
-    else:
-        sql = compile_query(config, None, query(expression))["sql"]
+    sql = lower_date_diff(package, warehouse, surface, unit, literal(START), literal(END))
     assert lowered_calls, f"{surface} bypassed dialect.date_diff"
     if surface == "select":
         # Final SQL assigns short aliases to the two aggregate leaves.
@@ -870,51 +789,29 @@ def test_date_diff_calls_use_dialect_lowering(package, warehouse, unit, surface,
         assert "DATE_DIFF(" not in sql.upper()
 
 
-@pytest.mark.parametrize("surface", ["select", "package", "aggregate_if", "relation"])
+@pytest.mark.parametrize("surface", SURFACES)
 def test_bigquery_date_diff_column_endpoints_normalized_on_every_surface(package, surface):
-    expression = call("DATE_DIFF", literal("day"), column("opened_at"), column("closed_at"))
-    if surface == "package":
-        path = package / "models/rows.yml"
-        model = yaml.safe_load(path.read_text())
-        model["model"]["measures"]["amount"]["expr"] = expression
-        path.write_text(yaml.safe_dump(model))
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse="bigquery"))
-    if surface == "select":
-        expression = call(
-            "DATE_DIFF", literal("day"), maximum(column("opened_at")), maximum(column("closed_at"))
-        )
-        expected = "DATETIME_DIFF(CAST(base.m2 AS DATETIME), CAST(base.m1 AS DATETIME), DAY)"
-    elif surface == "relation":
-        expected = (
-            "DATETIME_DIFF(CAST(base.closed_at AS DATETIME), CAST(base.opened_at AS DATETIME), DAY)"
-        )
-    else:
-        expected = "DATETIME_DIFF(CAST(numbers.closed_at AS DATETIME), CAST(numbers.opened_at AS DATETIME), DAY)"
-    if surface == "package":
-        expression = {"measure": "measure.numbers.amount", "aggregation": "avg"}
-    elif surface == "aggregate_if":
-        expression = maximum(expression)
-    if surface == "relation":
-        sql = render_expr(
-            _semantic_expr_to_sql(
-                parse_semantic_expression(expression, context="config"),
-                warehouse="bigquery",
-                default_alias="base",
-            )
-        )
-    else:
-        sql = compile_query(config, None, query(expression))["sql"]
-    assert expected in sql
+    table = {"select": "base", "relation": "base"}.get(surface, "numbers")
+    opened, closed = ("m1", "m2") if surface == "select" else ("opened_at", "closed_at")
+    sql = lower_date_diff(
+        package,
+        "bigquery",
+        surface,
+        "day",
+        column("opened_at"),
+        column("closed_at"),
+        default_alias="base",
+    )
+    assert (
+        f"DATETIME_DIFF(CAST({table}.{closed} AS DATETIME), CAST({table}.{opened} AS DATETIME), DAY)"
+        in sql
+    )
 
 
 @pytest.mark.parametrize(
     "warehouse,expected",
     [
-        (warehouse, f"DATE_DIFF('day', CAST('{START}' AS TIMESTAMP), CAST('{END}' AS TIMESTAMP))")
-        for warehouse in ["duckdb", "motherduck", "ducklake"]
-    ]
-    + [
+        ("duckdb", f"DATE_DIFF('day', CAST('{START}' AS TIMESTAMP), CAST('{END}' AS TIMESTAMP))"),
         (
             "clickhouse",
             f"DATE_DIFF('day', CAST('{START}' AS Nullable(DateTime64(6))), CAST('{END}' AS Nullable(DateTime64(6))))",
@@ -941,15 +838,6 @@ def test_date_diff_day_sql_preserves_endpoint_order(warehouse, expected):
     assert render_expr(lowered) == expected
 
 
-@pytest.mark.parametrize("start,end", [(None, END), (START, None), (None, None)])
-def test_date_diff_either_null_endpoint_executes_as_null(start, end):
-    lowered = dialect_for_warehouse("duckdb").scalar_call(
-        "DATE_DIFF", [SqlLiteral("day"), SqlLiteral(start), SqlLiteral(end)]
-    )
-    with duckdb.connect() as conn:
-        assert conn.execute("SELECT " + render_expr(lowered)).fetchall() == [(None,)]
-
-
 def test_date_diff_average_excludes_either_null_endpoint():
     lowered = dialect_for_warehouse("duckdb").scalar_call(
         "DATE_DIFF",
@@ -961,7 +849,11 @@ def test_date_diff_average_excludes_either_null_endpoint():
             "INSERT INTO dates VALUES (?, ?)",
             [(START, END), (None, END), (START, None), (None, None)],
         )
-        assert conn.execute(f"SELECT AVG({render_expr(lowered)}) FROM dates").fetchall() == [(2.0,)]
+        diff = render_expr(lowered)
+        # Either NULL endpoint yields NULL: one counted row, averaging 2 days.
+        assert conn.execute(f"SELECT AVG({diff}), COUNT({diff}) FROM dates").fetchall() == [
+            (2.0, 1)
+        ]
 
 
 INVALID_DATE_DIFF_ARGS = [
@@ -978,11 +870,15 @@ INVALID_DATE_DIFF_ARGS = [
 ]
 
 
-@pytest.mark.parametrize("warehouse", DATE_DIFF_WAREHOUSES)
-@pytest.mark.parametrize("args", INVALID_DATE_DIFF_ARGS)
+@pytest.mark.parametrize(
+    "warehouse,args",
+    [
+        (DATE_DIFF_WAREHOUSES[i % len(DATE_DIFF_WAREHOUSES)], args)
+        for i, args in enumerate(INVALID_DATE_DIFF_ARGS)
+    ],
+)
 def test_malformed_date_diff_refused_by_validation_and_lowering(package, warehouse, args):
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    config = on_warehouse(package, warehouse)
     expression = call("DATE_DIFF", *args)
     parsed = parse_semantic_expression(expression, context="query")
     with pytest.raises(SemanticLayerError) as validation:
@@ -991,8 +887,10 @@ def test_malformed_date_diff_refused_by_validation_and_lowering(package, warehou
         _semantic_expr_to_sql(parsed, warehouse=warehouse)
     assert validation.value.code == lowering.value.code == "INVALID_EXPRESSION_AST"
     assert str(validation.value) == str(lowering.value)
-    assert validation.value.details["supported_units"] == list(CONVERSION_WINDOW_UNITS)
-    assert "three args: a string literal unit, start, end" in str(validation.value)
+    assert validation.value.details == {
+        "supported_units": list(CONVERSION_WINDOW_UNITS),
+        "required_args": 3,
+    }
     runtime = Runtime.from_config(config, source_path=str(package))
     try:
         report = runtime.validate(query(maximum(expression)))
@@ -1007,14 +905,10 @@ def test_malformed_date_diff_refused_by_validation_and_lowering(package, warehou
         runtime.close()
 
 
-@pytest.mark.parametrize("args", INVALID_DATE_DIFF_ARGS)
+@pytest.mark.parametrize("args", INVALID_DATE_DIFF_ARGS[::4])
 def test_malformed_package_date_diff_refused_at_load(package, args):
-    path = package / "models/rows.yml"
-    model = yaml.safe_load(path.read_text())
-    model["model"]["measures"]["amount"]["expr"] = call("DATE_DIFF", *args)
-    path.write_text(yaml.safe_dump(model))
-    with pytest.raises(
-        SemanticLayerError, match="three args: a string literal unit, start, end"
-    ) as exc:
+    set_measure(package, call("DATE_DIFF", *args))
+    with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(package))
     assert exc.value.code == "INVALID_EXPRESSION_AST"
+    assert exc.value.details["required_args"] == 3

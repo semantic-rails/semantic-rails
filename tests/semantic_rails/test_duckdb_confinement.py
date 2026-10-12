@@ -148,19 +148,23 @@ def test_confined_duckdb_connects_with_the_validated_real_path(
         adapter.close()
 
 
+def _confined_runtime(
+    constructor: str, package: Path, directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> Runtime:
+    """A runtime confined to ``directory``, opened by package id or from a snapshot."""
+    if constructor == "package_id":
+        monkeypatch.setattr(config_module, "list_package_paths", lambda: {"shop": str(package)})
+        return Runtime("shop", confine_to=directory)
+    return Runtime.from_snapshot(load_package_snapshot(str(package)), confine_to=directory)
+
+
 @pytest.mark.parametrize("constructor", ["package_id", "snapshot"])
 def test_runtime_preserves_confinement_after_reload_and_close(
     paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, constructor: str
 ) -> None:
     package = write_orders_package(paths.inside)
     build_dbt_warehouse(package / "data" / "warehouse.duckdb")
-    if constructor == "package_id":
-        monkeypatch.setattr(config_module, "list_package_paths", lambda: {"shop": str(package)})
-        runtime = Runtime("shop", confine_to=paths.inside)
-    else:
-        runtime = Runtime.from_snapshot(
-            load_package_snapshot(str(package)), confine_to=paths.inside
-        )
+    runtime = _confined_runtime(constructor, package, paths.inside, monkeypatch)
     try:
         for reset in (None, runtime.reload, runtime.close):
             if reset:
@@ -193,13 +197,7 @@ def test_confined_runtime_refuses_outside_views_when_reconnecting(
         conn.execute(f"CREATE VIEW fct_orders AS SELECT * FROM read_csv('{csv_literal}')")
     finally:
         conn.close()
-    if constructor == "package_id":
-        monkeypatch.setattr(config_module, "list_package_paths", lambda: {"shop": str(package)})
-        runtime = Runtime("shop", confine_to=paths.inside)
-    else:
-        runtime = Runtime.from_snapshot(
-            load_package_snapshot(str(package)), confine_to=paths.inside
-        )
+    runtime = _confined_runtime(constructor, package, paths.inside, monkeypatch)
     monkeypatch.setattr(
         "semantic_rails.runtime.create_warehouse_adapter",
         lambda *a, **k: pytest.fail("opened serving adapter"),
@@ -238,13 +236,7 @@ def test_confined_runtime_never_builds_a_missing_seed(
 ) -> None:
     package = write_orders_package(paths.inside)
     monkeypatch.setattr(Runtime, "_publish_seed", lambda *a: pytest.fail("built seed"))
-    if constructor == "package_id":
-        monkeypatch.setattr(config_module, "list_package_paths", lambda: {"shop": str(package)})
-        runtime = Runtime("shop", confine_to=paths.inside)
-    else:
-        runtime = Runtime.from_snapshot(
-            load_package_snapshot(str(package)), confine_to=paths.inside
-        )
+    runtime = _confined_runtime(constructor, package, paths.inside, monkeypatch)
     before = sorted(package.rglob("*"))
     try:
         with pytest.raises(SemanticLayerError) as exc:
