@@ -373,12 +373,11 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
         )
         return line, "Read it in select instead of in an entity filter's having.", {}
     if kind == "disallowed_temporal_role":
-        role = violation.get("temporal_role")
-        line = f"can't be read on {role}; it is read on {_listed(allowed, 'or')}"
+        line = f"can't be read on {violation.get('temporal_role')}"
         if not allowed:
             return line, "", {}
         return (
-            line,
+            f"{line}; it is read on {_listed(allowed, 'or')}",
             f"Set time.temporal_role to {allowed[0]}.",
             {"time": {"temporal_role": allowed[0]}},
         )
