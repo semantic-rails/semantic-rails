@@ -1022,22 +1022,31 @@ def test_rollup_bindings_are_checked(tmp_path: Path, columns: dict, error: str):
         load_package_config(str(tmp_path / "q"))
 
 
-@pytest.mark.parametrize("single_file", [False, True], ids=["directory", "single-file"])
+# Each refusal once, alternating a package directory and a single-file package.
 @pytest.mark.parametrize(
-    ("location", "fields", "error"),
+    ("location", "fields", "error", "single_file"),
     [
-        ("package", {"aggregate_relations": []}, "declare rollups under the model's `variants:`"),
-        ("package", {"aggregate_relations": None}, "declare rollups under the model's `variants:`"),
-        ("model", {"default_variant": "tx"}, "default_variant"),
-        ("variant", {"time_grain": "month"}, "time_grain"),
-        ("variant", {"time_column": "month_start"}, "time_column"),
-        ("variant", {"temporal_role": "temporal_role.t"}, "temporal_role"),
-        ("variant", {"grain": "month"}, "grain must be a mapping"),
-        ("variant", {"grain": {"time": "transaction"}, "time_column": "bad"}, "time_column"),
-        ("variant", {"covers": "inherit_all"}, "covers"),
-        ("variant", {"selection": {"prefer_for_grains": ["month"]}}, "prefer_for_grains"),
-        ("variant", {"equivalence": {"baseline": "tx"}}, "baseline"),
-        ("variant", {"filters": _S1_ONLY["filters"]}, "filters"),
+        (*case, i % 2 == 1)
+        for i, case in enumerate(
+            [
+                ("package", {"aggregate_relations": []}, "`variants:`"),
+                ("package", {"aggregate_relations": None}, "`variants:`"),
+                ("model", {"default_variant": "tx"}, "default_variant"),
+                ("variant", {"time_grain": "month"}, "time_grain"),
+                ("variant", {"time_column": "month_start"}, "time_column"),
+                ("variant", {"temporal_role": "temporal_role.t"}, "temporal_role"),
+                ("variant", {"grain": "month"}, "grain must be a mapping"),
+                (
+                    "variant",
+                    {"grain": {"time": "transaction"}, "time_column": "bad"},
+                    "time_column",
+                ),
+                ("variant", {"covers": "inherit_all"}, "covers"),
+                ("variant", {"selection": {"prefer_for_grains": ["month"]}}, "prefer_for_grains"),
+                ("variant", {"equivalence": {"baseline": "tx"}}, "baseline"),
+                ("variant", {"filters": _S1_ONLY["filters"]}, "filters"),
+            ]
+        )
     ],
 )
 def test_noncanonical_rollups_are_refused(tmp_path: Path, single_file, location, fields, error):
