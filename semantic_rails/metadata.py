@@ -1785,6 +1785,17 @@ def _dimension_builder_score(
     return score, list(dict.fromkeys(reasons))
 
 
+_DISCOVER_BUCKETS = (
+    "measures",
+    "metrics",
+    "segments",
+    "dimensions",
+    "dimension_values",
+    "entities",
+    "blocked",
+)
+
+
 @runtime_request_scope
 def discover_payload(
     runtime: Runtime,
@@ -1817,8 +1828,9 @@ def discover_payload(
     # Internal guided flows leave ``enforce_scope=False`` so builder and
     # planner candidate generation can keep working with partial context.
     if enforce_scope and str(terms or "").strip():
-        classification = classify_question(str(terms))
-        if classification.category != "data_query":
+
+        def gated(key: str, block: dict[str, Any]) -> dict[str, Any]:
+            """The empty answer to a question the gate stops, with the gate's block."""
             return {
                 "terms": terms,
                 "stage": stage,
@@ -1829,40 +1841,21 @@ def discover_payload(
                     "selected_measure_ids": [],
                     "selected_metric_recipe_ids": [],
                 },
-                "measures": [],
-                "metrics": [],
-                "segments": [],
-                "dimensions": [],
-                "dimension_values": [],
-                "entities": [],
-                "blocked": [],
-                "out_of_scope": _scope_block_payload(str(terms), classification),
+                **{bucket: [] for bucket in _DISCOVER_BUCKETS},
+                key: block,
             }
+
+        classification = classify_question(str(terms))
+        if classification.category != "data_query":
+            return gated("out_of_scope", _scope_block_payload(str(terms), classification))
         catalog_tokens = _catalog_token_index(config, search_index=search_index)
         passes, overlap = _intent_passes_relevance_floor(str(terms), catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]
-            return {
-                "terms": terms,
-                "stage": stage,
-                "verbosity": verbosity,
-                "query_state": _query_state(partial_query, runtime._config),
-                "selection_context": {
-                    "root_entity": "",
-                    "selected_measure_ids": [],
-                    "selected_metric_recipe_ids": [],
-                },
-                "measures": [],
-                "metrics": [],
-                "segments": [],
-                "dimensions": [],
-                "dimension_values": [],
-                "entities": [],
-                "blocked": [],
-                "low_relevance": _low_relevance_block(
-                    str(terms), overlap_tokens=overlap, catalog_token_sample=sample
-                ),
-            }
+            block = _low_relevance_block(
+                str(terms), overlap_tokens=overlap, catalog_token_sample=sample
+            )
+            return gated("low_relevance", block)
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
     stage = _infer_stage(partial_query, stage, terms)
@@ -2235,17 +2228,9 @@ def discover_payload(
                     if _is_real_match(row_proxy):
                         per_token_dimval_scores[tok][row["id"]] = (score, reasons)
             # Intersect the per-token matcher sets.
-            shared_ids = (
-                set.intersection(*(set(per_token_scores[tok].keys()) for tok in unique_tokens))
-                if unique_tokens
-                else set()
-            )
-            shared_dimval_ids = (
-                set.intersection(
-                    *(set(per_token_dimval_scores[tok].keys()) for tok in unique_tokens)
-                )
-                if unique_tokens
-                else set()
+            shared_ids = set.intersection(*(set(per_token_scores[tok]) for tok in unique_tokens))
+            shared_dimval_ids = set.intersection(
+                *(set(per_token_dimval_scores[tok]) for tok in unique_tokens)
             )
             if shared_ids or shared_dimval_ids:
                 fallback_token_match_reason = (
@@ -2359,7 +2344,6 @@ def discover_payload(
     # this deliberately with terms="").
     if not str(terms or "").strip():
         payload["warnings"] = [
-            *list(payload.get("warnings", []) or []),
             {
                 "code": "DISCOVER_NO_TERMS",
                 "message": (
@@ -2374,11 +2358,7 @@ def discover_payload(
                 ),
             },
         ]
-    if verbosity == "full":
-        return payload
-    if verbosity == "minimal":
-        return _slim_discover_minimal(payload)
-    return payload
+    return _slim_discover_minimal(payload) if verbosity == "minimal" else payload
 
 
 _MINIMAL_DISCOVER_RECORD_KEYS = (
