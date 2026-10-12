@@ -164,10 +164,17 @@ COUPON = "dimension.hop_coupon_id"
 SEGMENT = "dimension.hop_customer_segment"
 Q4_2016 = {"temporal_role": ROLE, "grain": "quarter", "start": "2016-10-01", "end": "2017-01-01"}
 IN_Q4 = "o.ordered_at >= TIMESTAMP '2016-10-01' AND o.ordered_at < TIMESTAMP '2017-01-01'"
-BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
-WEB = {"field": CHANNEL, "op": "=", "value": "web"}
-HOT_ITEM = {"field": HOT, "op": "=", "value": True}
-COUPON_1 = {"field": COUPON, "op": "=", "value": 1}
+
+
+def _is(field: str, value: Any, op: str = "=") -> dict[str, Any]:
+    return {"field": field, "op": op, "value": value}
+
+
+BEVERAGE = _is(TYPE, "beverage")
+WEB = _is(CHANNEL, "web")
+HOT_ITEM = _is(HOT, True)
+COUPON_1 = _is(COUPON, 1)
+MONTHLY = {"temporal_role": ROLE, "grain": "month"}
 ORDER = "entity.hop_order"
 ITEM = "entity.hop_item"
 
@@ -192,12 +199,12 @@ def _bound(
     return {"expression": expression, "as": alias or measure}
 
 
-def _revenue(**query: Any) -> dict[str, Any]:
-    return {"select": [_measure("revenue")], **query}
+def _ask(measure: str = "revenue", aggregation: str = "", **query: Any) -> dict[str, Any]:
+    return {"select": [_measure(measure, aggregation)], **query}
 
 
 def _where(op: str, value: Any, field: str = TYPE) -> dict[str, Any]:
-    return _revenue(where=[{"field": field, "op": op, "value": value}])
+    return _ask(where=[_is(field, value, op)])
 
 
 def _bound_filter(clause: dict[str, Any]) -> dict[str, Any]:
@@ -210,12 +217,8 @@ def _conditional(expression: dict[str, Any], **query: Any) -> dict[str, Any]:
 
 def _compare(column: str, op: str, value: Any, entity: str = ORDER) -> dict[str, Any]:
     left = {"kind": "column", "entity": entity, "column": column}
-    return {
-        "kind": "comparison",
-        "op": op,
-        "left": left,
-        "right": {"kind": "literal", "value": value},
-    }
+    right = {"kind": "literal", "value": value}
+    return {"kind": "comparison", "op": op, "left": left, "right": right}
 
 
 def _if(
@@ -232,7 +235,7 @@ def _ratio(numerator: dict[str, Any], denominator: Any) -> dict[str, Any]:
     return {"kind": "ratio", "numerator": numerator, "denominator": denominator}
 
 
-FILTERED_SUM = _revenue(where=[BEVERAGE])
+FILTERED_SUM = _ask(where=[BEVERAGE])
 GROUPED_COUNT = {"select": [_measure("order_count", alias="orders")], "group_by": [TYPE]}
 # Customer 10's orders, and their revenue: the conditional forms of order_count and revenue.
 OWN_ORDERS_IF = _if("count_distinct", _compare("customer_id", "=", 10), "order_id")
@@ -463,7 +466,7 @@ def test_revenue_of_orders_with_a_beverage_counts_each_order_once(package: Path)
 def test_child_filters_use_exists_without_multiplying_parent_rows(
     package: Path, measure: str, field: str, value: str, reference: str, expected: int
 ) -> None:
-    query = {"select": [_measure(measure)], "where": [{"field": field, "op": "is", "value": value}]}
+    query = _ask(measure, where=[_is(field, value, "is")])
     rows, sql = _answer(package, query)
     assert rows == _reference(package, reference) == [(expected,)]
     assert "EXISTS (" in sql
@@ -472,8 +475,9 @@ def test_child_filters_use_exists_without_multiplying_parent_rows(
 
 
 def test_measure_bound_child_filter_does_not_change_unfiltered_sibling(package: Path) -> None:
-    app = {"field": CHANNEL, "op": "=", "value": "app"}
-    query = {"select": [_bound(app, alias="matching"), _measure("revenue", alias="all")]}
+    query = {
+        "select": [_bound(_is(CHANNEL, "app"), alias="matching"), _measure("revenue", alias="all")]
+    }
     reference = (
         f"SELECT ({ORDERS_SUM.format(_has_session('app'))}), (SELECT SUM(total) FROM orders)"
     )
@@ -489,8 +493,8 @@ HOT_BEVERAGE = "i.product_type = 'beverage' AND i.is_hot"
         (FILTERED_SUM, "", "i.product_type = 'beverage'"),
         (_bound_filter(BEVERAGE), "", "i.product_type = 'beverage'"),
         # A child group lowers in the same semi-join leaf as a flat child filter.
-        (_revenue(where=[{"entity": ITEM, "any": [BEVERAGE, HOT_ITEM]}]), "", HOT_BEVERAGE),
-        (_revenue(where=[{"entity": ITEM, "none": [BEVERAGE, HOT_ITEM]}]), "NOT ", HOT_BEVERAGE),
+        (_ask(where=[{"entity": ITEM, "any": [BEVERAGE, HOT_ITEM]}]), "", HOT_BEVERAGE),
+        (_ask(where=[{"entity": ITEM, "none": [BEVERAGE, HOT_ITEM]}]), "NOT ", HOT_BEVERAGE),
     ],
     ids=["query_filter", "measure_filter", "any_group", "none_group"],
 )
@@ -578,13 +582,13 @@ def test_clickhouse_uses_equivalent_parent_deduplication(
 @pytest.mark.parametrize(
     "query",
     [
-        {"select": [_measure("face_value")], "where": [BEVERAGE]},
-        {"select": [_measure("order_count")], "where": [WEB]},
-        _revenue(where=[WEB]),
+        _ask("face_value", where=[BEVERAGE]),
+        _ask("order_count", where=[WEB]),
+        _ask(where=[WEB]),
         _conditional(OWN_REVENUE_IF, where=[WEB]),
         _conditional(OWN_SHARE, where=[WEB]),
         # Beside a lookup: filtered by it, or grouped by it under the measure's own filter.
-        {"select": [_measure("order_count")], "where": [WEB, COUPON_1]},
+        _ask("order_count", where=[WEB, COUPON_1]),
         {"select": [_bound(WEB, "order_count", "count_distinct")], "group_by": [COUPON]},
     ],
     ids=[
@@ -697,7 +701,7 @@ BRANCH_ROUTE = [
     "relationship.zone_branch",
     "relationship.district_zone",
 ]
-PREMIUM_DISTRICT = {"field": "dimension.diamond_district_category", "op": "=", "value": "premium"}
+PREMIUM_DISTRICT = _is("dimension.diamond_district_category", "premium")
 
 
 @pytest.fixture(scope="module")
@@ -832,19 +836,11 @@ OWN_ORDERS = {"dimension": "dimension.hop_order_customer_id", "attribute": "cust
 def _under_row_policy(
     package: Path, policy: dict[str, Any], attributes: dict[str, Any], query: dict[str, Any]
 ) -> dict[str, Any]:
-    config = load_package_config(str(package))
-    config = replace(
-        config,
-        semantic_policies=[SemanticPolicyConfig(id="policy.hop.rows", kind="row_filter",
-                                                config=policy)],
-    )  # fmt: skip
+    policies = [SemanticPolicyConfig(id="policy.hop.rows", kind="row_filter", config=policy)]
+    config = replace(load_package_config(str(package)), semantic_policies=policies)
     context = RequestContext(attributes=attributes).to_policy_context()
-    return compile_query(
-        config,
-        Registry(config),
-        {"version": 1, **query},
-        row_filters=row_filters_for_context(config, context),
-    )
+    filters = row_filters_for_context(config, context)
+    return compile_query(config, Registry(config), {"version": 1, **query}, row_filters=filters)
 
 
 @pytest.mark.parametrize(
@@ -874,7 +870,7 @@ def test_child_filters_stay_denied_under_a_row_policy(
 
 
 def test_a_parent_row_policy_still_answers_without_a_child_filter(package: Path) -> None:
-    prepared = _under_row_policy(package, OWN_ORDERS, {"customer": 10}, _revenue())
+    prepared = _under_row_policy(package, OWN_ORDERS, {"customer": 10}, _ask())
     actual = _reference(package, prepared["prepared_query"].sql, [10])
     reference = "SELECT SUM(total) FROM orders WHERE customer_id = 10"
     assert actual == _reference(package, reference) == [(30.0,)]
@@ -893,14 +889,14 @@ def test_a_lookup_beside_a_child_filter_keeps_parents_it_finds_no_match_for(
     package: Path, measure: str, clause: dict[str, Any], child: str, expected: list[tuple[Any, ...]]
 ) -> None:
     """Grouped by coupon, orders without one stay in a NULL group, as in the ordinary leaf."""
-    rows = _rows(package, {"select": [_measure(measure)], "group_by": [COUPON], "where": [clause]})
+    rows = _rows(package, _ask(measure, group_by=[COUPON], where=[clause]))
     value = "COUNT(*)" if measure == "order_count" else "SUM(o.total)"
     reference = f"""
         SELECT c.coupon_id, {value} FROM orders o LEFT JOIN coupons c ON c.code = o.coupon_code
         WHERE {child} GROUP BY 1
     """
     assert rows == _reference(package, reference) == _normal(expected)
-    ungrouped = _rows(package, {"select": [_measure(measure)], "where": [clause]})
+    ungrouped = _rows(package, _ask(measure, where=[clause]))
     assert ungrouped == _normal([(sum(row[-1] for row in rows),)])
 
 
@@ -909,7 +905,7 @@ def test_a_lookup_beside_a_child_grouping_keeps_parents_it_finds_no_match_for(
 ) -> None:
     """Grouped by type and coupon, the de-duplicated leaf keeps orders 4 and 6 (a beverage
     each, no coupon) under a NULL coupon, so its groups add up to the count by type alone."""
-    by_coupon = _rows(package, {"select": [_measure("order_count")], "group_by": [TYPE, COUPON]})
+    by_coupon = _rows(package, _ask("order_count", group_by=[TYPE, COUPON]))
     reference = """
         SELECT i.product_type, c.coupon_id, COUNT(DISTINCT o.order_id) FROM orders o
         JOIN order_items i ON i.order_id = o.order_id LEFT JOIN coupons c ON c.code = o.coupon_code
@@ -920,9 +916,7 @@ def test_a_lookup_beside_a_child_grouping_keeps_parents_it_finds_no_match_for(
     by_type: dict[str, int] = {}
     for product_type, _coupon, orders in by_coupon:
         by_type[product_type] = by_type.get(product_type, 0) + orders
-    assert _rows(package, {"select": [_measure("order_count")], "group_by": [TYPE]}) == sorted(
-        by_type.items()
-    )
+    assert _rows(package, _ask("order_count", group_by=[TYPE])) == sorted(by_type.items())
 
 
 def test_a_lookup_joined_outside_exists_is_scanned_again_inside_it(package: Path) -> None:
@@ -1078,14 +1072,14 @@ def test_two_distinct_counts_grouped_across_the_hop(package: Path) -> None:
 
 def test_a_lookup_after_the_hop_and_a_second_hop_down(package: Path) -> None:
     """orders -> items -> products, and customers -> orders -> items."""
-    orders = {"select": [_measure("order_count")], "group_by": [CATEGORY]}
+    orders = _ask("order_count", group_by=[CATEGORY])
     reference = """
         SELECT p.category, COUNT(DISTINCT o.order_id) FROM orders o
         JOIN order_items i ON i.order_id = o.order_id JOIN products p ON p.sku = i.sku GROUP BY 1
     """
     assert _rows(package, orders) == _reference(package, reference)
 
-    hot = _revenue(where=[{"field": CATEGORY, "op": "=", "value": "hot"}])
+    hot = _ask(where=[_is(CATEGORY, "hot")])
     reference = """
         SELECT SUM(o.total) FROM orders o WHERE EXISTS (
           SELECT 1 FROM order_items i JOIN products p ON p.sku = i.sku
@@ -1093,10 +1087,7 @@ def test_a_lookup_after_the_hop_and_a_second_hop_down(package: Path) -> None:
     """
     assert _rows(package, hot) == _reference(package, reference)
 
-    credit = {
-        "select": [_measure("credit")],
-        "where": [{"field": TYPE, "op": "=", "value": "jaffle"}],
-    }
+    credit = _ask("credit", where=[_is(TYPE, "jaffle")])
     reference = """
         SELECT SUM(c.credit) FROM customers c WHERE EXISTS (
           SELECT 1 FROM orders o JOIN order_items i ON i.order_id = o.order_id
@@ -1105,7 +1096,7 @@ def test_a_lookup_after_the_hop_and_a_second_hop_down(package: Path) -> None:
     # Customer 10 once, though two of its orders hold a jaffle and one holds two beverages.
     assert _rows(package, credit) == _reference(package, reference) == [(300.0,)]
 
-    buyers = {"select": [_measure("customer_count")], "group_by": [TYPE]}
+    buyers = _ask("customer_count", group_by=[TYPE])
     reference = """
         SELECT i.product_type, COUNT(DISTINCT o.customer_id)
         FROM order_items i JOIN orders o ON o.order_id = i.order_id GROUP BY 1
@@ -1113,6 +1104,7 @@ def test_a_lookup_after_the_hop_and_a_second_hop_down(package: Path) -> None:
     assert _rows(package, buyers) == _reference(package, reference)
 
 
+RUNNING_REVENUE = {"kind": "cumulative", "input": "measure.hop.revenue"}
 NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
 TWO_CONDITIONS = "both cross a one-to-many hop"
 
@@ -1121,53 +1113,30 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
     ("query", "reason"),
     [
         # Order revenue by product type: split over the items, or each order's full total?
-        (_revenue(group_by=[TYPE]), "is ambiguous across"),
-        ({"select": [_measure("revenue", "avg")], "group_by": [TYPE]}, "is ambiguous across"),
+        (_ask(group_by=[TYPE]), "is ambiguous across"),
+        (_ask("revenue", "avg", group_by=[TYPE]), "is ambiguous across"),
         # A measure's own filter has no child scope to state (query filters do: see below).
-        (_bound_filter({"field": TYPE, "op": "!=", "value": "beverage"}), NEGATED),
+        (_bound_filter(_is(TYPE, "beverage", "!=")), NEGATED),
         # At most one condition may cross a one-to-many hop: with two, one row may have to meet
         # both, or any rows each. On siblings under a shared hop, or both groups, and a
         # measure's own filter cannot bypass the rule.
         ({**GROUPED_COUNT, "where": [HOT_ITEM]}, TWO_CONDITIONS),
-        (
-            {**GROUPED_COUNT, "where": [{"field": CATEGORY, "op": "=", "value": "hot"}]},
-            TWO_CONDITIONS,
-        ),
-        (
-            {
-                "select": [_measure("credit")],
-                "where": [
-                    {"field": TYPE, "op": "=", "value": "jaffle"},
-                    {"field": METHOD, "op": "=", "value": "card"},
-                ],
-            },
-            TWO_CONDITIONS,
-        ),
-        (
-            {
-                "select": [_measure("customer_count")],
-                "group_by": [TYPE],
-                "where": [{"field": METHOD, "op": "=", "value": "card"}],
-            },
-            TWO_CONDITIONS,
-        ),
-        ({"select": [_measure("customer_count")], "group_by": [TYPE, METHOD]}, TWO_CONDITIONS),
+        ({**GROUPED_COUNT, "where": [_is(CATEGORY, "hot")]}, TWO_CONDITIONS),
+        (_ask("credit", where=[_is(TYPE, "jaffle"), _is(METHOD, "card")]), TWO_CONDITIONS),
+        (_ask("customer_count", group_by=[TYPE], where=[_is(METHOD, "card")]), TWO_CONDITIONS),
+        (_ask("customer_count", group_by=[TYPE, METHOD]), TWO_CONDITIONS),
         ({**_bound_filter(WEB), "where": [BEVERAGE]}, TWO_CONDITIONS),
         # On a boolean only "= true" reads one way.
-        (_bound_filter({"field": HOT, "op": "<", "value": True}), NEGATED),
-        (_bound_filter({"field": HOT, "op": "=", "value": 0}), NEGATED),
+        (_bound_filter(_is(HOT, True, "<")), NEGATED),
+        (_bound_filter(_is(HOT, 0)), NEGATED),
         # orders -> customer -> sessions: many-to-many through the customer.
-        ({"select": [_measure("order_count")], "group_by": [CHANNEL]}, "many-to-many"),
+        (_ask("order_count", group_by=[CHANNEL]), "many-to-many"),
         # Grouping still requires the declared parent key, unlike filter-only EXISTS.
-        ({"select": [_measure("face_value")], "group_by": [TYPE]}, "join off the declared key"),
+        (_ask("face_value", group_by=[TYPE]), "join off the declared key"),
         # A pre-aggregated value has no one row per key to count.
-        ({"select": [_measure("score", "avg")], "where": [BEVERAGE]}, "not defined over one row"),
+        (_ask("score", "avg", where=[BEVERAGE]), "not defined over one row"),
         (
-            {
-                **_conditional({"kind": "cumulative", "input": "measure.hop.revenue"}),
-                "where": [BEVERAGE],
-                "time": {"temporal_role": ROLE, "grain": "month"},
-            },
+            _conditional(RUNNING_REVENUE, where=[BEVERAGE], time=MONTHLY),
             "not supported across a one-to-many hop",
         ),
         # A conditional aggregate, alone or inside a ratio, refuses what its measure refuses.
@@ -1210,7 +1179,7 @@ PAID_REFERENCE = "SELECT SUM(amount) FROM payments p WHERE " + _has_item(
     "i.product_type = 'beverage'", "p.order_id"
 )
 PAID_QUESTIONS = {
-    "measure": ({"select": [_measure("paid")], "where": [BEVERAGE]}, PAID_REFERENCE),
+    "measure": (_ask("paid", where=[BEVERAGE]), PAID_REFERENCE),
     "conditional": (_conditional(PAID_IF, where=[BEVERAGE]), PAID_REFERENCE),
     "conditional_ratio": (
         _conditional(PAID_SHARE, where=[BEVERAGE]),
@@ -1273,7 +1242,7 @@ def _readings(any_not: str, none: str, value: str = "SUM(o.total)") -> dict[str,
         (_where("in", [False], HOT), _readings("i.is_hot IN (false)", "i.is_hot NOT IN (false)")),
         # One item that is both, or a beverage and some jaffle?
         (
-            _revenue(where=[BEVERAGE, {**BEVERAGE, "value": "jaffle"}]),
+            _ask(where=[BEVERAGE, {**BEVERAGE, "value": "jaffle"}]),
             {
                 "same_row": ORDERS_SUM.format(
                     _has_item("i.product_type = 'beverage' AND i.product_type = 'jaffle'")
@@ -1356,9 +1325,7 @@ def test_positive_null_and_boolean_tests_mean_exists(package: Path) -> None:
 
 def test_a_refusal_names_the_path_at_fault(package: Path) -> None:
     """The grouped sum is at fault, not the filter beside it, so the allocation hint shows."""
-    error = _refusal(
-        package, _revenue(group_by=[TYPE], where=[{"field": CATEGORY, "op": "is", "value": "hot"}])
-    )
+    error = _refusal(package, _ask(group_by=[TYPE], where=[_is(CATEGORY, "hot", "is")]))
     assert error["details"]["purpose"] == "group_by"
     assert error["details"]["target_entity"] == ITEM
     kinds = [hint["kind"] for hint in error["recovery_hints"]]
@@ -1367,7 +1334,7 @@ def test_a_refusal_names_the_path_at_fault(package: Path) -> None:
 
 def test_a_refusal_never_offers_a_different_measure(package: Path) -> None:
     """A recovery used to hand back item revenue in place of order revenue, ready to run."""
-    error = _refusal(package, _revenue(group_by=[TYPE]))
+    error = _refusal(package, _ask(group_by=[TYPE]))
     assert "measure.hop.item_revenue" in error["details"]["compatible_measures"]  # named only
     queries = [error.get("closest_valid_query") or {}]
     queries += [hint.get("closest_valid_query") or {} for hint in error["recovery_hints"]]
@@ -1497,7 +1464,7 @@ MEDIAN = {
 SHAPES = {
     "filtered": FILTERED_SUM,
     "grouped": GROUPED_COUNT,
-    "monthly": {**FILTERED_SUM, "time": {"temporal_role": ROLE, "grain": "month"}},
+    "monthly": {**FILTERED_SUM, "time": MONTHLY},
     "median": {
         "select": [_measure("revenue", "median", alias="median_revenue")],
         "where": [BEVERAGE],
