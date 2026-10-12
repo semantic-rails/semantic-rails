@@ -2656,9 +2656,13 @@ model:
   same connection, read over a plain table or view (not a relation pipeline). A
   date means the load completed through the end of that day in the query clock's zone (the
   next local midnight, on the clock, across daylight-saving changes); a timestamp is that
-  instant. A period reads `0` only when it ends by then; the week the load stopped in, and
-  every later one, reads `NULL` with `NO_DATA_YET`: "its data is loaded through 2026-10-11, so
-  later weeks read NULL, not 0". Rows that exist keep their values, but a stray row after the
+  instant. A period reads `0` when it ends by then. A load that reached the start of today (a
+  nightly that ran) also covers a period that starts before its edge and runs into today, such
+  as "this month so far", whose unfinished part the answer states (`PARTIAL_PERIOD`); today's
+  own day, which nothing of is loaded yet, reads `NULL`. A load that stalled a whole day or more
+  covers only the periods that end by its edge: the week it stopped in, and every later one,
+  reads `NULL` with `NO_DATA_YET`: "its data is loaded through 2026-10-11, so later weeks read
+  NULL, not 0". Rows that exist keep their values, but a stray row after the
   edge never makes the empty periods around it `0`. An empty load log (no date) reads `NULL`
   for every empty period: "its loaded-through date is unavailable". `window.data_through` is the
   loaded-through date and `window.data_through_source` names the load log as declared
@@ -2676,6 +2680,13 @@ load log's own model refuses the query for the callers it applies to (`POLICY_DE
 `row_filter_on_load_log`), so the log is never read unfiltered. ClickHouse reads no loaded
 coverage, so a ClickHouse package refuses any value but `data` (`INVALID_CONFIG`). Name one
 load log per load job; a model that another job loads declares its own.
+
+Known limits:
+
+- A window total (a window with no grain) answers its one row only on DuckDB, MotherDuck,
+  DuckLake and Postgres. On Snowflake, BigQuery, Databricks, Athena and ClickHouse it groups by
+  a constant with no one-row spine, so a quiet window total returns no row at all, whatever the
+  edge. A named window's series is covered by the edge on every warehouse but ClickHouse.
 
 ## Examples and tests
 

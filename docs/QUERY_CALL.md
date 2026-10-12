@@ -989,7 +989,8 @@ future-dated rows. `NO_DATA_YET` names each affected output and measure with its
 date of the measure's last row, and `edge_source` `last_row`: nothing says the data is loaded
 past that row. A table whose package declares its edge (`zero_through`, see
 ["Empty periods"](PACKAGE_AUTHORING.md#empty-periods)) reads `0` in an empty period only when
-the period ends by that edge: a load log's loaded-through date (`edge_source` `loaded`; `edge`
+the period ends by that edge (or, after a load that reached the start of today, starts before
+it): a load log's loaded-through date (`edge_source` `loaded`; `edge`
 is null and the message says "loaded-through date unavailable" when the log holds none) or
 `now` (`edge_source` `now`, with the note `ZERO_AFTER_LAST_ROW` when the answer reaches past the
 last row). Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an

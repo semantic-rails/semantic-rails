@@ -13,6 +13,8 @@ graph:
     ticket_row: {label: Ticket row, key: [ticket_id], model: ticket_rows}
     ticket_feed: {label: Ticket feed, key: [ticket_id], model: ticket_feed}
     ticket_audited: {label: Audited ticket, key: [ticket_id], model: ticket_audited}
+    ticket_export: {label: Ticket export, key: [run_id], model: ticket_exports}
+    ticket_exported: {label: Exported ticket, key: [ticket_id], model: ticket_exported}
     default_calendar: {label: Calendar, kind: time, key: [date_day], model: default_calendar,
       allowed_as_root: false}
     fiscal_calendar: {label: Fiscal calendar, kind: time, key: [date_day],

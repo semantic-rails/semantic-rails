@@ -9,8 +9,9 @@ and non-additive values remain NULL.
 
 A table's declared edge (``zero_through``: ``now``, or a load log's loaded-through mark)
 replaces its last row as the upper bound of loaded coverage: an empty period reads 0 only when
-it ends at or before that edge, and NULL after it even beside a later stray row. The lower
-bound (the first row) and observation are unchanged.
+it ends at or before that edge (or, under a load log that reached today, starts before it), and
+NULL after it even beside a later stray row. The lower bound (the first row) and observation
+are unchanged.
 
 ``observation_scope`` says where "observed" is judged: ``dataset`` (the default) in the
 measure's own rows under its authored conditions, ``query`` inside the query's filters too.
@@ -497,13 +498,19 @@ def declared_edge(
     local midnight; a timestamp at its instant), or ``now``, capped at ``now``. A bucket is
     certified when its period, inside the window, ends at or before the edge: every bucket
     before the edge's own, or all of them when the window ends by then. A window total's one
-    bucket (0) is certified when the window ends by then."""
+    bucket (0) is certified when the window ends by then.
+
+    A load log that reaches the start of today (a nightly that ran) also certifies every
+    period, or window, that starts before its mark: today's unfinished part is the period "so
+    far", which the answer states, and a period that starts at or after the mark stays NULL.
+    A load that stalled a whole day or more keeps the strict rule."""
     now = request_now()
-    window_end = engine_window(time, now=now, timezone=zone).end
+    window = engine_window(time, now=now, timezone=zone)
     clock = _wall_time(now, zone, dialect)
-    end = _wall_time(window_end, zone, dialect) if window_end else clock
+    end = _wall_time(window.end, zone, dialect) if window.end else clock
     rows = None
     through: Any = clock
+    nightly: Any = None
     if edge.kind == "loaded":
         mark = SqlIdentifier(parts=["watermark"])
         if edge.data_type == "date":
@@ -519,14 +526,21 @@ def declared_edge(
             from_table=SqlTableRef(name=edge.relation),
             observation_scan=True,
         )
-    certified = SqlBinary(through, ">=", end)
+        today = local_now(now, zone).replace(hour=0, minute=0, second=0, microsecond=0)
+        nightly = SqlBinary(through, ">=", _wall_time(today, zone, dialect))
+    certified: Any = SqlBinary(through, ">=", end)
     # An ungrained series' buckets are the times themselves.
     own = dialect.date_trunc(time["grain"], through) if time.get("grain") else through
-    before = (
-        SqlCase([SqlCaseWhen(certified, SqlLiteral(1))], else_expr=SqlLiteral(0))
-        if time.get("window_total")
-        else SqlCase([SqlCaseWhen(certified, end)], else_expr=own)
-    )
+    if time.get("window_total"):
+        if nightly is not None:
+            if window.start is not None:
+                start = _wall_time(window.start, zone, dialect)
+                nightly = SqlBinary(nightly, "AND", SqlBinary(start, "<", through))
+            certified = SqlBinary(nightly, "OR", certified)
+        before = SqlCase([SqlCaseWhen(certified, SqlLiteral(1))], else_expr=SqlLiteral(0))
+    else:
+        cases = [SqlCaseWhen(nightly, through)] if nightly is not None else []
+        before = SqlCase([*cases, SqlCaseWhen(certified, end)], else_expr=own)
     bound = SqlSelect(
         select=[
             SqlField(before, "loaded_before"),

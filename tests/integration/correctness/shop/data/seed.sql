@@ -114,6 +114,9 @@ CREATE TABLE ticket_loads (run_id INTEGER, through_day DATE);
 INSERT INTO ticket_loads VALUES
   (1, DATE '2024-09-15'), (2, DATE '2024-09-22'), (3, DATE '2024-09-29');
 CREATE TABLE ticket_audits (run_id INTEGER, through_day DATE);
+-- ticket_exports, a nightly that ran through Thursday 2024-11-14: November has no ticket.
+CREATE TABLE ticket_exports (run_id INTEGER, through_day DATE);
+INSERT INTO ticket_exports VALUES (1, DATE '2024-11-13'), (2, DATE '2024-11-14');
 
 -- A monthly rollup of orders by store, keyed by a DATE (the base table's key is a TIMESTAMP).
 CREATE TABLE orders_monthly AS

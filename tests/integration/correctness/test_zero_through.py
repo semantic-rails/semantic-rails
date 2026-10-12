@@ -122,6 +122,39 @@ def test_an_always_loaded_table_notes_its_zero_after_the_last_row(request, backe
     ]
 
 
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_last_nights_load_covers_the_month_so_far_but_not_today(request, backend_name):
+    """A load through yesterday leaves only today's unfinished part unloaded: the month so far
+    reads 0 and says it is so far, today's own day reads NULL, and a load a whole day older
+    keeps the month NULL."""
+    so_far = _answer(
+        request, backend_name, "a-quiet-month-so-far-after-last-nights-load-reads-zero"
+    )
+    assert so_far["window"]["data_through"] == "2024-11-14"
+    assert so_far["window"]["data_through_source"] == "ticket_exports.through_day"
+    assert not so_far.get("warnings")
+    assert [row["code"] for row in so_far["assumptions"]] == ["WINDOW_TOTAL", "PARTIAL_PERIOD"]
+    stalled = _answer(request, backend_name, "a-quiet-month-so-far-after-a-stalled-load-reads-null")
+    [warning] = _warnings(stalled, "NO_DATA_YET")
+    assert warning["message"] == (
+        "No data yet for measure.shop.exported_tickets: its data is loaded through 2024-11-14, "
+        "so this window's total reads NULL, not 0."
+    )
+    assert _warnings(stalled, "PARTIAL_DATA")[0]["details"] == {
+        "through": "2024-11-14",
+        "days_covered": 14,
+        "days": 16,
+    }
+    week = _answer(
+        request, backend_name, "today-in-a-week-by-day-after-last-nights-load-reads-null"
+    )
+    [warning] = _warnings(week, "NO_DATA_YET")
+    assert warning["details"]["measures"] == [
+        {"id": "measure.shop.exported_tickets", "edge": "2024-11-14", "edge_source": "loaded"}
+    ]
+    assert not _warnings(week, "PARTIAL_DATA")
+
+
 def test_a_caller_who_cant_see_the_load_log_reads_loaded(packages):
     base = _runtime(packages["utc_authored"])
     config, source_path = base.config, base.source_path
