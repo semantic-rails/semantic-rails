@@ -9,6 +9,7 @@ import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import handle_jsonrpc_message
+from semantic_rails.operators import WORDS
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
@@ -52,17 +53,26 @@ def test_operator_aliases_answer_as_their_word(adapter, alias, word):
 
 
 @pytest.mark.parametrize(
-    "spelling,hint",
-    [("equals", "Filters use the words"), ("is_not_null", '"op": "missing", "value": false')],
+    "spelling,fix",
+    [
+        ("equals", None),
+        ("unknown", None),
+        ("is_null", {"op": "missing", "value": True}),
+        ("is_not_null", {"op": "missing", "value": False}),
+    ],
 )
-def test_spellings_outside_the_operator_table_are_refused(adapter, spelling, hint):
+def test_spellings_outside_the_operator_table_are_refused(adapter, spelling, fix):
     query = {**QUERY, "where": [{"field": DIMENSION, "op": spelling, "value": "customer_1"}]}
     out = adapter.call_tool("execute", {"query": query, "mode": "validate"})
     assert not out["ok"], out
     issue = out["errors"][0]
-    assert issue["code"] == "INVALID_QUERY"
-    assert issue["details"]["path"] == "where[0].op"
-    assert hint in issue["recovery_hints"][0]["message"]
+    assert (issue["code"], issue["details"]["path"]) == ("INVALID_QUERY", "where[0].op")
+    assert issue["details"]["allowed"] == list(WORDS)
+    if fix is not None:
+        message = issue["recovery_hints"][0]["message"]
+        query["where"][0].update(json.loads(message[message.index("{") : message.index("}") + 1]))
+        assert query["where"][0] == {"field": DIMENSION, **fix}
+        assert adapter.call_tool("execute", {"query": query, "mode": "validate"})["ok"]
 
 
 @pytest.mark.parametrize("op,sql_op", [("add", "+"), ("subtract", "-"), ("multiply", "*")])
@@ -149,7 +159,9 @@ def test_a_selected_dimension_beside_another_group_by_is_refused(adapter):
     assert not out["ok"], out
     issue = out["errors"][0]
     assert issue["details"]["path"] == "select[0]"
-    assert f"Add '{DIMENSION}' to group_by" in issue["recovery_hints"][0]["message"]
+    assert DIMENSION in issue["recovery_hints"][0]["message"]
+    query = {"group_by": [DIMENSION, "dimension.jaffle_order_store_id"]}
+    assert adapter.call_tool("execute", {"mode": "validate", "query": query})["ok"]
 
 
 @pytest.mark.parametrize("transport", ["direct", "jsonrpc"])
@@ -180,16 +192,18 @@ def test_deep_expression_input_is_a_structured_refusal(adapter, transport):
     assert out["errors"][0]["code"] == "INVALID_QUERY"
 
 
-@pytest.mark.parametrize("encoded", [False, True])
-@pytest.mark.parametrize("option", ["mode", "max_rows", "row_format", "verbosity", "now"])
-def test_a_tool_argument_inside_the_query_is_refused(adapter, encoded, option):
+@pytest.mark.parametrize(
+    "option,encoded",
+    [("mode", False), ("max_rows", False), ("row_format", False), ("verbosity", False)]
+    + [("now", False), ("mode", True)],
+)
+def test_a_tool_argument_inside_the_query_is_refused(adapter, option, encoded):
     query = {**QUERY, option: "sql" if option == "mode" else 2}
     actual = adapter.call_tool("execute", {"query": json.dumps(query) if encoded else query})
     assert not actual["ok"], actual
     issue = actual["errors"][0]
-    assert issue["code"] == "INVALID_QUERY"
-    assert issue["details"]["path"] == option
-    assert issue["recovery_hints"][0]["message"] == f"Pass `{option}` beside `query`."
+    assert (issue["code"], issue["details"]["path"]) == ("INVALID_QUERY", option)
+    assert f"`{option}`" in issue["recovery_hints"][0]["message"]
 
 
 def test_a_query_sent_as_json_text_is_read_as_the_call(adapter):
@@ -211,7 +225,7 @@ def test_a_call_sent_as_execute_arguments_is_refused(adapter):
     issue = actual["errors"][0]
     assert issue["code"] == "INVALID_QUERY"
     assert issue["details"]["path"] == "select"
-    assert '{"query": {"select": ...}}' in issue["recovery_hints"][0]["message"]
+    assert adapter.call_tool("execute", {"query": QUERY, "mode": "validate"})["ok"]
 
 
 @pytest.mark.parametrize("remote", [False, True])

@@ -1,30 +1,4 @@
-"""Recovery hints and payload sizes on the MCP surface.
-
-First batch — three reviewer complaints:
-
-1. ``INVALID_EXPRESSION_AST`` for malformed inline ``prior_period``
-   (e.g. ``offset: {unit: "month", n: 1}``) used to come back with no
-   recovery hints. The enriched envelope now carries the authored
-   counterpart in ``closest_matches`` and a structured fix-shape hint.
-2. ``PATH_NOT_FOUND`` used to ship empty ``recovery_hints``. The
-   enrichment attaches ``reachable_targets`` and an "isolated source"
-   hint when no path exists at all.
-3. ``catalog`` at compact verbosity used to weigh ~830 KB on jaffle.
-   The stripped row schema is now < 250 KB at compact and < 50 KB
-   at minimal. ``plan`` honours both modes too.
-
-Second batch (recovery-hint papercuts) — four extensions:
-
-4. A misnamed ``parameters`` key is refused with the hint to write
-   ``parameters``; a percentile without ``p`` discloses the parameter schema.
-5. A ``dimension`` key in a ``where`` or ``order_by`` item is refused with
-   the hint to write ``field``.
-6. ``OBJECT_NOT_FOUND`` for an id with no semantic neighbours returns
-   empty ``closest_matches`` and a ``call_discover_to_locate`` handoff.
-7. Execute returning zero rows with a time filter attaches a
-   ``data_diagnostics`` field so the agent knows the data is sparse,
-   not that the query silently dropped rows.
-"""
+"""Recovery hints, closest matches and payload sizes on the MCP surface."""
 
 from __future__ import annotations
 
@@ -38,6 +12,8 @@ from semantic_rails.metadata import catalog_payload
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 
 def _counterpart_config(config, missing_kind, with_policy):
@@ -214,630 +190,260 @@ def test_unavailable_visibility_cannot_add_a_counterpart(
         runtime.close()
 
 
-@pytest.mark.parametrize(
-    "op,hint", [("is_null", '"op": "missing", "value": true'), ("unknown", "use the words")]
-)
-def test_where_operator_refusal_names_the_words_and_the_missing_form(runtime_factory, op, hint):
-    from semantic_rails.operators import WORDS
+@pytest.fixture(scope="module")
+def runtime(jaffle_snapshot):
+    runtime = opened(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
+    yield runtime
+    runtime.close()
 
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        adapter = SemanticLayerMCPAdapter(runtime)
-        query = {
-            "select": ["measure.jaffle.order_count"],
-            "where": [{"field": "dimension.jaffle_store_name", "op": op}],
+
+def test_inline_prior_period_with_offset_alias_returns_authored_alternative(runtime):
+    # ``n`` for the offset's ``value``: the hint names the authored prior-period metric.
+    expression = {
+        "kind": "prior_period",
+        "input": "measure.jaffle.revenue_usd",
+        "offset": {"unit": "month", "n": 1},
+    }
+    first = runtime.validate({"select": [{"expression": expression, "as": "prev"}]})["errors"][0]
+    assert first["code"] == "INVALID_EXPRESSION_AST"
+    details = first["details"]
+    assert details["expression_kind"] == "prior_period"
+    assert "n" in details["unknown_offset_keys"]
+    assert any(cid.startswith("metric.") and "prior" in cid for cid in details["closest_matches"])
+    hints = {hint["kind"]: hint for hint in first["recovery_hints"]}
+    assert {"use_authored_prior_period_metric", "fix_prior_period_offset_shape"} <= set(hints)
+    assert hints["use_prior_period_ir_shape"]["shape"]["input"] == "measure.jaffle.revenue_usd"
+
+
+def test_path_not_found_envelope_carries_reachable_targets_and_hints(runtime):
+    # Segment membership is modeled with `bridge: false`, so order-grain measures
+    # can't reach its dimensions.
+    (first,) = runtime.validate(
+        {
+            "select": [{"expression": "measure.jaffle.revenue_usd", "as": "rev"}],
+            "group_by": ["dimension.jaffle_membership_status"],
         }
-        response = adapter.call_tool("execute", {"query": query, "mode": "validate"})
-        issue = response["errors"][0]
-        assert issue["code"] == "INVALID_QUERY"
-        assert issue["details"]["path"] == "where[0].op"
-        assert issue["details"]["allowed"] == list(WORDS)
-        assert hint in issue["recovery_hints"][0]["message"]
-        for missing in (True, False):
-            query["where"][0].update(op="missing", value=missing)
-            assert adapter.call_tool("execute", {"query": query, "mode": "validate"})["ok"]
-    finally:
-        runtime.close()
+    )["errors"]
+    assert first["code"] == "PATH_NOT_FOUND"
+    details = first["details"]
+    assert details["start"] == "entity.jaffle_order"
+    assert details["target"] == "entity.jaffle_customer_segment_membership"
+    assert details["target"] not in details["reachable_targets"]
+    compatible = details["compatible_group_by_dimensions"]
+    assert compatible and "dimension.jaffle_membership_status" not in compatible
+    hint_kinds = {hint["kind"] for hint in first["recovery_hints"]}
+    assert hint_kinds & {"isolated_source_entity", "use_reachable_target"}
+    assert {"author_relationship", "switch_group_by_dimension"} <= hint_kinds
 
 
-def test_inline_prior_period_with_offset_alias_returns_authored_alternative(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # The reviewer's exact malformed shape — ``offset: {unit: "month", n: 1}``
-        # used to bubble up as "expression must be an object" with no hint
-        # because the IR-shape path recursed on a missing ``input``.
-        result = runtime.validate(
+def test_catalog_minimal_returns_skeleton_rows_and_counts(runtime):
+    minimal = catalog_payload(runtime, verbosity="minimal")
+    for bucket in ("measures", "metrics", "dimensions", "entities"):
+        for row in minimal[bucket]:
+            assert set(row) <= {"id", "kind", "name", "label", "available"}, row
+    assert "aliases" not in minimal and "alias_index" not in minimal
+    assert minimal["counts"]["measures"] > 0
+    assert len(json.dumps(minimal)) < 50_000
+
+
+def test_plan_minimal_strips_heavy_validation_payload(runtime):
+    full, minimal = (
+        plan_candidate_envelope(runtime, intent="revenue this year", limit=3, verbosity=verbosity)
+        for verbosity in ("full", "minimal")
+    )
+    assert len(json.dumps(minimal)) < min(len(json.dumps(full)) // 2, 5_000)
+    for cand in minimal["candidates"]:
+        assert {"candidate_ir", "confidence", "validation_ok"} <= set(cand)
+        assert "validation" not in cand and "query_patch" not in cand
+
+
+_P90 = {"kind": "aggregate", "measure": "measure.jaffle.revenue_usd", "aggregation": "percentile"}
+_STORE = "dimension.jaffle_store_name"
+
+
+@pytest.mark.parametrize(
+    ("query", "path", "fix"),
+    [
+        (
+            {"select": [{"expression": {**_P90, "aggregation_params": {"p": 0.9}}, "as": "p90"}]},
+            "select[0].expression.aggregation_params",
+            {"select": [{"expression": {**_P90, "parameters": {"p": 0.9}}, "as": "p90"}]},
+        ),
+        (
+            {"select": ["measure.jaffle.order_count"], "order_by": [{"dimension": "orders"}]},
+            "order_by[0].dimension",
             {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "prior_period",
-                            "input": "measure.jaffle.revenue_usd",
-                            "offset": {"unit": "month", "n": 1},
-                        },
-                        "as": "prev",
-                    }
-                ],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors, f"expected an INVALID_EXPRESSION_AST envelope, got {result!r}"
-        first = errors[0]
-        assert first["code"] == "INVALID_EXPRESSION_AST"
-        details = first.get("details") or {}
-        assert details.get("expression_kind") == "prior_period"
-        assert "n" in details.get("unknown_offset_keys", [])
-        # Authored counterpart suggestion is the headline fix — the
-        # reviewer's "path forward is the authored measure (which is
-        # the better answer anyway)".
-        closest = details.get("closest_matches") or []
-        assert any(cid.startswith("metric.") and "prior" in cid.lower() for cid in closest), (
-            f"expected an authored prior-period metric in closest_matches, got {closest!r}"
-        )
-        hint_kinds = {hint.get("kind") for hint in (first.get("recovery_hints") or [])}
-        assert "use_authored_prior_period_metric" in hint_kinds
-        assert "fix_prior_period_offset_shape" in hint_kinds
-        shape = next(h for h in first["recovery_hints"] if h["kind"] == "use_prior_period_ir_shape")
-        assert shape["shape"]["input"] == "measure.jaffle.revenue_usd"
-    finally:
-        runtime.close()
-
-
-def test_path_not_found_envelope_carries_reachable_targets_and_hint(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # `customer_segment_membership` is modeled with `bridge: false`,
-        # so order-grain measures can't reach its dimensions — a clean
-        # PATH_NOT_FOUND scenario.
-        result = runtime.validate(
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+                "order_by": [{"field": "orders"}],
+            },
+        ),
+        (
             {
-                "select": [
-                    {
-                        "expression": "measure.jaffle.revenue_usd",
-                        "as": "rev",
-                    }
-                ],
-                "group_by": ["dimension.jaffle_membership_status"],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors, f"expected PATH_NOT_FOUND envelope, got {result!r}"
-        first = errors[0]
-        assert first["code"] == "PATH_NOT_FOUND"
-        details = first.get("details") or {}
-        assert details.get("start") == "entity.jaffle_order"
-        assert details.get("target") == "entity.jaffle_customer_segment_membership"
-        # ``reachable_targets`` is always present (may be empty for
-        # truly isolated entities). The recovery hints must be non-empty.
-        assert "reachable_targets" in details
-        assert details["target"] not in details["reachable_targets"]
-        assert "dimension.jaffle_membership_status" not in details["compatible_group_by_dimensions"]
-        hints = first.get("recovery_hints") or []
-        assert hints, f"expected non-empty recovery_hints, got {first!r}"
-        hint_kinds = {hint.get("kind") for hint in hints}
-        # Either the "isolated source" branch (no reachable targets) or
-        # the "use reachable target" branch (some reachable) — never neither.
-        assert hint_kinds & {"isolated_source_entity", "use_reachable_target"}
-        # The author-relationship escape hatch is always present.
-        assert "author_relationship" in hint_kinds
-    finally:
-        runtime.close()
-
-
-def test_catalog_minimal_returns_skeleton_rows_and_counts(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        minimal = catalog_payload(runtime, verbosity="minimal")
-        # Skeleton rows only — id, kind, name, label, available.
-        valid_keys = {"id", "kind", "name", "label", "available"}
-        for bucket in ("measures", "metrics", "dimensions", "entities"):
-            for row in minimal[bucket]:
-                assert set(row.keys()).issubset(valid_keys), (
-                    f"minimal {bucket} row has stray keys: {set(row.keys()) - valid_keys}"
-                )
-        # No alias dictionaries at minimal — agents inspect by id.
-        assert "aliases" not in minimal
-        assert "alias_index" not in minimal
-        # Counts give agents the rough catalog shape without paying for the rows.
-        assert "counts" in minimal
-        assert minimal["counts"]["measures"] > 0
-        # Sanity: minimal jaffle catalog fits in a 50KB envelope.
-        size = len(json.dumps(minimal))
-        assert size < 50_000, f"minimal catalog still too large: {size} bytes"
-    finally:
-        runtime.close()
-
-
-def test_plan_minimal_strips_heavy_validation_payload(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        full = plan_candidate_envelope(
-            runtime, intent="revenue this year", limit=3, verbosity="full"
-        )
-        minimal = plan_candidate_envelope(
-            runtime, intent="revenue this year", limit=3, verbosity="minimal"
-        )
-        # Minimal must shrink the response materially.
-        assert len(json.dumps(minimal)) < len(json.dumps(full)) // 2
-        # Each candidate at minimal exposes the IR, confidence, and a
-        # boolean ``validation_ok`` echo — not the full validation report.
-        for cand in minimal["candidates"]:
-            assert "candidate_ir" in cand
-            assert "confidence" in cand
-            assert "validation_ok" in cand
-            assert "validation" not in cand
-            assert "query_patch" not in cand
-        # Sanity: minimal jaffle plan fits in a 5KB envelope.
-        assert len(json.dumps(minimal)) < 5_000
-    finally:
-        runtime.close()
-
-
-# ---------- Phase 1 — recovery-hint papercut tests ----------
-
-
-def test_misnamed_parameters_key_points_at_parameters(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # An agent typed ``aggregation_params`` for ``parameters``: the refusal names the
-        # key and the one to write instead.
-        result = runtime.validate(
+                "select": ["measure.jaffle.order_count"],
+                "where": [{"dimension": _STORE, "op": "is", "value": "Brooklyn"}],
+            },
+            "where[0].dimension",
             {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "percentile",
-                            "aggregation_params": {"p": 0.9},
-                        },
-                        "as": "p90",
-                    }
-                ],
-            }
-        )
-        first = result["errors"][0]
-        assert first["code"] == "INVALID_QUERY"
-        assert first["details"]["path"] == "select[0].expression.aggregation_params"
-        assert first["recovery_hints"] == [
-            {"code": "FIX_QUERY_CALL", "message": "Use 'parameters'."}
-        ]
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("position", ["order_by", "where"])
-def test_dimension_key_points_at_field(runtime_factory, position):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # ``order_by`` and ``where`` items name their column with ``field``.
-        item = (
-            {"dimension": "orders", "direction": "desc"}
-            if position == "order_by"
-            else {"dimension": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
-        )
-        result = runtime.validate({"select": ["measure.jaffle.order_count"], position: [item]})
-        first = result["errors"][0]
-        assert first["code"] == "INVALID_QUERY"
-        assert first["details"]["path"] == f"{position}[0].dimension"
-        assert first["recovery_hints"] == [{"code": "FIX_QUERY_CALL", "message": "Use 'field'."}]
-    finally:
-        runtime.close()
-
-
-def test_object_not_found_with_no_close_matches_routes_to_discover(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # The reviewer's complaint: ``measure.jaffle.nonexistent_measure``
-        # returned three irrelevant matches (open_store_count_eop,
-        # item_margin_usd, item_count). After the floor tightening,
-        # ``zxqv_nonsense`` must return [] + a discover handoff.
-        result = runtime.validate(
+                "select": ["measure.jaffle.order_count"],
+                "where": [{"field": _STORE, "op": "is", "value": "Brooklyn"}],
+            },
+        ),
+        # A where value is a scalar or a list, never an expression stringified into SQL.
+        (
             {
-                "select": [
-                    {
-                        "expression": "measure.jaffle.zxqv_nonsense",
-                        "as": "x",
-                    }
-                ],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors, f"expected OBJECT_NOT_FOUND, got {result!r}"
-        first = errors[0]
-        assert first["code"] == "OBJECT_NOT_FOUND"
-        closest = list(first.get("details", {}).get("closest_matches", []) or [])
-        # No fuzzy match should meet the new floor for "zxqv_nonsense".
-        assert closest == [], f"expected empty closest_matches, got {closest!r}"
-        hints = first.get("recovery_hints") or []
-        discover_hints = [h for h in hints if h.get("kind") == "call_discover_to_locate"]
-        assert discover_hints, f"expected call_discover_to_locate hint, got {hints!r}"
-        discover_term = discover_hints[0].get("recommended_terms", "")
-        assert "zxqv" in discover_term or "nonsense" in discover_term
-    finally:
-        runtime.close()
+                "select": ["measure.jaffle.revenue_usd"],
+                "where": [{"field": _STORE, "op": "is", "value": {"kind": "percentile", "p": 0.9}}],
+            },
+            "where[0].value",
+            None,
+        ),
+    ],
+    ids=["parameters", "order-by-field", "where-field", "where-expression-value"],
+)
+def test_misshaped_call_is_refused_at_its_path_with_one_hint(runtime, query, path, fix):
+    first = runtime.validate(query)["errors"][0]
+    assert (first["code"], first["details"]["path"]) == ("INVALID_QUERY", path)
+    [hint] = first["recovery_hints"]
+    assert hint["code"] == ("FIX_QUERY_CALL" if fix else "USE_FILTER_VALUE_SHAPE")
+    if fix is not None:
+        assert runtime.validate(fix)["ok"]
 
 
-# ---------- Round-three Phase 1 tests ----------
+def test_object_not_found_with_no_close_matches_routes_to_discover(runtime):
+    # No id is near enough to suggest: the hint hands off to discover instead.
+    query = {"select": [{"expression": "measure.jaffle.zxqv_nonsense", "as": "x"}]}
+    first = runtime.validate(query)["errors"][0]
+    assert first["code"] == "OBJECT_NOT_FOUND"
+    assert first["details"].get("closest_matches", []) == []
+    discover = [h for h in first["recovery_hints"] if h["kind"] == "call_discover_to_locate"]
+    assert {"zxqv", "nonsense"} & set(discover[0]["recommended_terms"].split())
 
 
-def test_unsupported_aggregation_discloses_parameter_schema(runtime_factory):
-    """Percentile without ``parameters.p`` must surface
-    ``parameters_schema`` so the agent learns the inner shape on the
-    first error — symmetry with INVALID_EXPRESSION_KEY (round-two 1A)."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "percentile",
-                            # Note: ``parameters`` block is missing — the
-                            # raise site at bind.py:_aggregation_expr
-                            # surfaces the schema disclosure.
-                        },
-                        "as": "p",
-                    }
-                ],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors, f"expected UNSUPPORTED_AGGREGATION envelope, got {result!r}"
-        first = errors[0]
-        assert first["code"] == "UNSUPPORTED_AGGREGATION"
-        hints = first.get("recovery_hints") or []
-        disclose_hints = [h for h in hints if h.get("kind") == "disclose_parameters_schema"]
-        assert disclose_hints, f"expected disclose_parameters_schema hint, got {hints!r}"
-        assert disclose_hints[0].get("parameters_schema", {}).get("p")
-        assert disclose_hints[0].get("aggregation") == "percentile"
-    finally:
-        runtime.close()
+def test_unsupported_aggregation_discloses_parameter_schema(runtime):
+    # A percentile without ``parameters`` learns the inner shape on the first error.
+    expression = {
+        "kind": "aggregate",
+        "measure": "measure.jaffle.revenue_usd",
+        "aggregation": "percentile",
+    }
+    first = runtime.validate({"select": [{"expression": expression, "as": "p"}]})["errors"][0]
+    assert first["code"] == "UNSUPPORTED_AGGREGATION"
+    [disclose] = [h for h in first["recovery_hints"] if h["kind"] == "disclose_parameters_schema"]
+    assert disclose["aggregation"] == "percentile"
+    assert disclose["parameters_schema"]["p"]
 
 
-def test_path_not_found_envelope_lists_compatible_dimensions(runtime_factory):
-    """PATH_NOT_FOUND must include concrete ``dimension.<id>`` ids the
-    agent can paste into ``group_by`` directly."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # `customer_segment_membership` is `bridge: false`, so order-grain
-        # measures hit PATH_NOT_FOUND when grouped by its dimensions.
-        result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": "measure.jaffle.revenue_usd",
-                        "as": "rev",
-                    }
-                ],
-                "group_by": ["dimension.jaffle_membership_status"],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors and errors[0]["code"] == "PATH_NOT_FOUND"
-        details = errors[0].get("details") or {}
-        # New envelope field — list of concrete dimension ids.
-        assert "compatible_group_by_dimensions" in details
-        # The hint surfaces them in the recovery_hints list too.
-        hints = errors[0].get("recovery_hints") or []
-        switch_dim = [h for h in hints if h.get("kind") == "switch_group_by_dimension"]
-        # Empty list is OK if the start entity has no local dimensions —
-        # but the hint structure must be present whenever the details
-        # carries them.
-        if details.get("compatible_group_by_dimensions"):
-            assert switch_dim, f"expected switch_group_by_dimension hint, got {hints!r}"
-    finally:
-        runtime.close()
-
-
-def test_dict_in_where_value_is_rejected_with_structured_envelope(runtime_factory):
-    """A ``where[].value`` is a scalar or a list: a dict (an expression) is refused at the
-    front door, naming the path, instead of being stringified into SQL."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                        },
-                        "as": "rev",
-                    }
-                ],
-                "where": [
-                    {
-                        "field": "dimension.jaffle_store_name",
-                        "op": "=",
-                        "value": {"kind": "percentile", "p": 0.9},
-                    }
-                ],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors, f"expected INVALID_QUERY envelope, got {result!r}"
-        first = errors[0]
-        assert first["code"] == "INVALID_QUERY"
-        assert first["details"]["path"] == "where[0].value"
-        # The hint says how to filter by a computed threshold.
-        assert "own query" in first["recovery_hints"][0]["message"]
-    finally:
-        runtime.close()
-
-
-# ---------- Round four — bloat / redundancy regressions ----------
-
-
-def test_inspect_drops_preferred_alias_fields(runtime_factory):
-    """``recommended_dimensions``/``recommended_filters`` (and their
-    ``preferred_*`` aliases) were sourced from the ``related_dimensions``
-    authoring field, which has been removed. The cards no longer emit any
-    of these fields."""
+def test_inspect_drops_preferred_alias_fields(runtime):
     from semantic_rails.metadata import inspect_payload
 
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        measure_card = inspect_payload(runtime, object_id="measure.jaffle.order_count")["card"]
-        metric_card = inspect_payload(runtime, object_id="metric.sales.aov_usd")["card"]
-        for card, label in [(measure_card, "measure"), (metric_card, "metric")]:
-            assert "recommended_dimensions" not in card, (
-                f"{label} card still emits recommended_dimensions"
-            )
-            assert "recommended_filters" not in card, (
-                f"{label} card still emits recommended_filters"
-            )
-            assert "preferred_dimensions" not in card, (
-                f"{label} card still emits preferred_dimensions alias"
-            )
-            assert "preferred_filters" not in card, (
-                f"{label} card still emits preferred_filters alias"
-            )
-    finally:
-        runtime.close()
+    for object_id in ("measure.jaffle.order_count", "metric.sales.aov_usd"):
+        card = inspect_payload(runtime, object_id=object_id)["card"]
+        for kind in ("recommended", "preferred"):
+            assert f"{kind}_dimensions" not in card and f"{kind}_filters" not in card, object_id
 
 
-def test_plan_candidate_emits_only_candidate_ir(runtime_factory):
-    """``candidate_ir``, ``query``, and ``query_patch`` were three keys
-    holding the exact same dict on every planned candidate. They are now
-    collapsed to a single canonical ``candidate_ir`` at every verbosity;
-    compact also slims the validation report down to ok / errors / warnings."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        for verbosity in ("full", "compact"):
-            result = plan_candidate_envelope(
-                runtime, intent="revenue this year", limit=3, verbosity=verbosity
-            )
-            candidates = result.get("candidates") or []
-            assert candidates, (
-                f"{verbosity}: expected at least one candidate for the revenue intent"
-            )
-            for cand in candidates:
-                assert "candidate_ir" in cand, f"{verbosity}: candidate missing candidate_ir"
-                assert isinstance(cand["candidate_ir"], dict)
-                assert cand["candidate_ir"].get("select"), (
-                    f"{verbosity}: candidate_ir has no select"
-                )
-                assert "query" not in cand, (
-                    f"{verbosity}: redundant ``query`` alias of candidate_ir"
-                )
-                assert "query_patch" not in cand, (
-                    f"{verbosity}: redundant ``query_patch`` alias of candidate_ir"
-                )
+def test_plan_candidate_emits_only_candidate_ir(runtime):
+    # One canonical ``candidate_ir`` at every verbosity; compact slims the validation report.
+    for verbosity in ("full", "compact"):
+        result = plan_candidate_envelope(
+            runtime, intent="revenue this year", limit=3, verbosity=verbosity
+        )
+        assert result["candidates"], verbosity
+        for cand in result["candidates"]:
+            assert cand["candidate_ir"]["select"], verbosity
+            assert "query" not in cand and "query_patch" not in cand, verbosity
             if verbosity == "compact":
-                for cand in candidates:
-                    validation = cand.get("validation") or {}
-                    # Heavy keys must be gone — explain / logical_plan / etc.
-                    assert "explain" not in validation
-                    assert "logical_plan" not in validation
-                    assert "normalized_query" not in validation
-                    # ok / errors / warnings remain so callers can still gate on validity.
-                    assert "ok" in validation
-    finally:
-        runtime.close()
+                validation = cand["validation"]
+                assert "ok" in validation
+                assert not {"explain", "logical_plan", "normalized_query"} & set(validation)
 
 
-def test_catalog_compact_drops_alias_index_and_caps_rows(runtime_factory):
-    """Compact catalog used to emit ``aliases`` + ``alias_index`` — both
-    grew unbounded with the catalog and drowned token budgets even
-    when narrowed with ``search=``. Round four moved those maps to
-    ``verbosity=full`` and added a per-kind row cap so the compact
-    payload stays bounded by construction."""
+def test_catalog_compact_drops_alias_index_and_caps_rows(runtime):
     from semantic_rails.catalog_format import _CATALOG_COMPACT_BUCKET_CAP
 
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        compact = catalog_payload(runtime, verbosity="compact")
-        # Alias maps are gone — agents request ``verbosity=full`` if they
-        # need them (typo-resolution etc.).
-        assert "aliases" not in compact, "compact still emits aliases dict"
-        assert "alias_index" not in compact, "compact still emits alias_index dict"
-        # ``payload`` is the 19KB+/object source of catalog bloat — must
-        # also be absent on measure/metric rows at compact.
-        for row in compact["measures"]:
-            assert "payload" not in row, f"compact measure carries payload: {row['id']}"
-        for row in compact["metrics"]:
-            assert "payload" not in row, f"compact metric carries payload: {row['id']}"
-        # ``counts`` (per-bucket actually emitted) and ``counts_total``
-        # (pre-cap totals) let agents see what got truncated.
-        assert "counts" in compact and "counts_total" in compact
-        for bucket_key, count in compact["counts"].items():
-            assert count <= _CATALOG_COMPACT_BUCKET_CAP, (
-                f"compact bucket {bucket_key} exceeded cap: {count}"
-            )
-            total = compact["counts_total"].get(bucket_key, 0)
-            assert count <= total, f"compact bucket {bucket_key} emitted more rows than its total"
-        # Full verbosity still ships the alias maps, uncapped — opt-in.
-        full = catalog_payload(runtime, verbosity="full")
-        assert "alias_index" in full and "aliases" in full
-        assert "truncated" not in full, "full verbosity must never truncate"
-    finally:
-        runtime.close()
+    compact = catalog_payload(runtime, verbosity="compact")
+    assert "aliases" not in compact and "alias_index" not in compact
+    for row in [*compact["measures"], *compact["metrics"]]:
+        assert "payload" not in row, row["id"]
+    for bucket, count in compact["counts"].items():
+        assert count <= min(_CATALOG_COMPACT_BUCKET_CAP, compact["counts_total"][bucket]), bucket
+    # Full verbosity keeps the alias maps, uncapped.
+    full = catalog_payload(runtime, verbosity="full")
+    assert "alias_index" in full and "aliases" in full
+    assert "truncated" not in full
 
 
-# ---------- Round five — orientation + windowed hints + naming ----------
-
-
-def test_capabilities_payload_returns_under_5kb_envelope(runtime_factory):
-    """The new ``capabilities`` MCP tool is the cheapest cold-start
-    orientation call — under 5KB for jaffle_shop so an agent can ask
-    'what can this package do?' without paying for a 227KB catalog."""
+def test_capabilities_payload_returns_under_5kb_envelope(runtime):
     from semantic_rails.metadata_parts.capabilities import capabilities_payload
 
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = capabilities_payload(runtime)
-        size = len(json.dumps(payload))
-        assert size < 5_000, f"capabilities payload too large: {size} bytes"
-        assert payload["package_id"] == "jaffle_shop"
-        assert payload["schema_version"] >= 1
-        kinds = {row["kind"] for row in payload["capabilities"]}
-        # Sanity: a few canonical capabilities must be present.
-        assert "rolling_windows" in kinds
-        assert "metric_predicates" in kinds
-        # Unsupported list exists even when empty (some packages have gaps).
-        assert isinstance(payload["unsupported_capabilities"], list)
-    finally:
-        runtime.close()
+    payload = capabilities_payload(runtime)
+    assert len(json.dumps(payload)) < 5_000
+    assert payload["package_id"] == "jaffle_shop"
+    assert payload["schema_version"] >= 1
+    assert {"rolling_windows", "metric_predicates"} <= {
+        row["kind"] for row in payload["capabilities"]
+    }
+    assert isinstance(payload["unsupported_capabilities"], list)
 
 
-def test_catalog_summary_returns_counts_plus_id_lists_under_10kb(runtime_factory):
-    """``verbosity=summary`` returns counts + flat ID list per kind +
-    capabilities. No row dicts — agents inspect specific ids by id."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        summary = catalog_payload(runtime, verbosity="summary")
-        size = len(json.dumps(summary))
-        assert size < 10_000, f"summary catalog too large: {size} bytes"
-        # Singular id-list keys (entity_ids, not entitie_ids).
-        for key in (
-            "measure_ids",
-            "metric_ids",
-            "dimension_ids",
-            "entity_ids",
-            "segment_ids",
-            "temporal_role_ids",
-            "relationship_ids",
-            "value_domain_ids",
-        ):
-            assert key in summary, f"summary missing {key}"
-            assert isinstance(summary[key], list)
-            for item in summary[key]:
-                assert isinstance(item, str) and item, f"{key} has bad id"
-        assert "counts" in summary
-        assert "capabilities" in summary
-        # Row dicts MUST be absent — that's the whole point of summary.
-        for bucket in ("measures", "metrics", "dimensions", "entities"):
-            assert bucket not in summary, (
-                f"summary leaked row dicts under {bucket} — should be ids only"
-            )
-    finally:
-        runtime.close()
+def test_catalog_summary_returns_counts_plus_id_lists_under_10kb(runtime):
+    summary = catalog_payload(runtime, verbosity="summary")
+    assert len(json.dumps(summary)) < 10_000
+    for kind in (
+        "measure",
+        "metric",
+        "dimension",
+        "entity",
+        "segment",
+        "temporal_role",
+        "relationship",
+        "value_domain",
+    ):
+        assert all(isinstance(item, str) and item for item in summary[f"{kind}_ids"]), kind
+    assert "counts" in summary and "capabilities" in summary
+    assert not {"measures", "metrics", "dimensions", "entities"} & set(summary)
 
 
-def test_windowed_time_filter_unsupported_emits_widen_and_drop_hints(runtime_factory):
-    """A bounded ``query.time.start`` against a prior_period / rolling
-    metric used to ship the error with empty ``recovery_hints``. It now
-    attaches two concrete patches the agent can mechanically apply:
-    ``drop_time_start`` first, then ``widen_time_window`` with a computed
-    ``suggested_start``."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": "metric.sales.prior_week_revenue_direct",
-                        "as": "v",
-                    }
-                ],
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "day",
-                    "start": "2017-03-15",
-                },
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors, "expected a WINDOWED_TIME_FILTER_UNSUPPORTED envelope"
-        first = errors[0]
-        assert first["code"] == "WINDOWED_TIME_FILTER_UNSUPPORTED"
-        # Lookback is attached so the enricher can compute the patch.
-        lookback = first.get("details", {}).get("lookback") or {}
-        assert lookback.get("unit") == "day"
-        assert lookback.get("value", 0) >= 1
-        # Both hints must be present.
-        hints = list(first.get("recovery_hints") or [])
-        hint_kinds = [h.get("kind") for h in hints]
-        assert "widen_time_window" in hint_kinds
-        assert "drop_time_start" in hint_kinds
-        # ``drop_time_start`` is always safe; ``widen_time_window`` can still
-        # fail for prior_period at month grain. Callers tend to apply the first
-        # hint, so the safe one must come first.
-        assert hint_kinds[0] == "drop_time_start", f"expected drop_time_start first, got {hints!r}"
-        assert hint_kinds.index("widen_time_window") > 0
-        widen = next(h for h in hints if h.get("kind") == "widen_time_window")
-        # ``suggested_start`` is concrete: 2017-03-15 minus 7 days.
-        assert widen["suggested_start"] == "2017-03-08"
-    finally:
-        runtime.close()
+def test_windowed_time_filter_unsupported_emits_widen_and_drop_hints(runtime):
+    # A bounded start on a prior-period metric: the safe hint (drop the start) comes first.
+    query = {
+        "select": [{"expression": "metric.sales.prior_week_revenue_direct", "as": "v"}],
+        "time": {
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "grain": "day",
+            "start": "2017-03-15",
+        },
+    }
+    first = runtime.validate(query)["errors"][0]
+    assert first["code"] == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+    lookback = first["details"]["lookback"]
+    assert lookback["unit"] == "day" and lookback["value"] >= 1
+    hints = first["recovery_hints"]
+    assert [h["kind"] for h in hints][:1] == ["drop_time_start"]
+    widen = next(h for h in hints if h["kind"] == "widen_time_window")
+    assert widen["suggested_start"] == "2017-03-08"
 
 
-def test_empty_time_window_reports_diagnostics_warning_and_data_coverage(runtime_factory):
-    """A valid query whose time window holds no data (jaffle data is
-    2016-2017; the window is 2099) executes and returns zero rows. The
-    result must say the data is missing rather than imply a query bug:
-    ``data_diagnostics`` with a bounded ``requested_window`` and the root
-    entity's ``actual_data_coverage`` (min/max of its time column), and an
-    ``EMPTY_RESULT_WINDOW`` warning carrying the same fields for readers
-    that only look at warnings."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.query(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "measure",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                        },
-                        "as": "rev",
-                    }
-                ],
-                # An open window: a named one would answer its every day, NULL, no data yet.
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "day",
-                    "start": "2099-01-01",
-                },
-            }
-        )
-        assert result.get("row_count") == 0
-        diag = result.get("data_diagnostics")
-        assert diag, f"expected data_diagnostics on empty result, got keys={list(result.keys())}"
-        assert diag.get("rows_returned") == 0
-        assert diag.get("applied_time_filter", {}).get("start") == "2099-01-01"
-        assert "inspect(" in diag.get("hint", ""), f"expected an inspect handoff, got {diag!r}"
-        requested = diag.get("requested_window") or {}
-        assert requested.get("start") == "2099-01-01"
-        coverage = diag.get("actual_data_coverage") or {}
-        assert coverage, "actual_data_coverage missing — probe failed silently"
-        assert coverage.get("min"), "coverage min should be populated"
-        assert coverage.get("max"), "coverage max should be populated"
-        # Sanity: requested 2099 falls outside actual 2016-2017 coverage.
-        assert coverage["min"] < "2099"
-        warnings = result.get("warnings") or []
-        empty_window = [w for w in warnings if w.get("code") == "EMPTY_RESULT_WINDOW"]
-        assert empty_window, f"expected EMPTY_RESULT_WINDOW warning, got warnings={warnings!r}"
-        details = empty_window[0].get("details", {})
-        assert details.get("applied_time_filter", {}).get("start") == "2099-01-01"
-        assert details.get("actual_data_coverage") == coverage
-    finally:
-        runtime.close()
+def test_empty_time_window_reports_diagnostics_warning_and_data_coverage(runtime):
+    # The data is 2016-2017: an open window from 2099 says the data is missing.
+    measure = {"kind": "measure", "measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
+    window = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"}
+    result = runtime.query(
+        {
+            "select": [{"expression": measure, "as": "rev"}],
+            "time": {**window, "start": "2099-01-01"},
+        }
+    )
+    assert result["row_count"] == 0
+    diag = result["data_diagnostics"]
+    assert diag["rows_returned"] == 0
+    assert diag["applied_time_filter"]["start"] == diag["requested_window"]["start"] == "2099-01-01"
+    assert "inspect(" in diag["hint"]
+    coverage = diag["actual_data_coverage"]
+    assert coverage["max"] and coverage["min"] < "2099"
+    (empty,) = [w for w in result["warnings"] if w["code"] == "EMPTY_RESULT_WINDOW"]
+    assert empty["details"]["applied_time_filter"]["start"] == "2099-01-01"
+    assert empty["details"]["actual_data_coverage"] == coverage
 
 
 def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory):

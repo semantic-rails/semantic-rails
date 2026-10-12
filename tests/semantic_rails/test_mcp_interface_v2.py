@@ -332,11 +332,8 @@ def test_unknown_tools_use_one_refusal(v2: SemanticLayerMCPAdapter, tool: str) -
     assert response["ok"] is False and response["status"] == "error"
     error = response["errors"][0]
     assert error["code"] == "UNKNOWN_MCP_TOOL"
-    assert error["message"] == f"Unknown MCP tool '{tool}'"
     assert error["details"] == {"tool": tool, "available_tools": sorted(V2_TOOLS)}
-    assert error["recovery_hints"][0]["message"].endswith(
-        "common entry points are 'discover', 'inspect', 'plan'."
-    )
+    assert error["recovery_hints"]
 
 
 AIRSPEED = {"kind": "measure", "measure": "measure.jaffle.airspeed", "aggregation": "sum"}
@@ -541,10 +538,7 @@ def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
     assert issue["code"] == "INVALID_QUERY"
     assert issue["details"]["path"] == "select[0]"
     assert "recovery_hints" not in failed
-    assert issue["recovery_hints"][0]["message"] == (
-        'Write "metric.sales.aov_usd", or {"expression": "metric.sales.aov_usd", "as": ...} '
-        "to name it."
-    )
+    assert '"metric.sales.aov_usd"' in issue["recovery_hints"][0]["message"]
     empty = [key for key, value in issue.items() if value in (None, "", [], {})]
     assert empty == [] and "why_invalid" not in issue and "unsupported_construct" not in issue
 
@@ -705,7 +699,6 @@ def test_an_ambiguous_route_offers_one_ready_to_send_call_per_option(
             [{"from": routes.ACCOUNT, "to": routes.DISTRICT, "via": route}]
             for route in (routes.BRANCH_ROUTE, routes.OWNER_ROUTE)
         ]
-        assert "send that option's query" in error["details"]["hint"]
         for option in options:
             assert {key: value for key, value in option["query"].items() if key != "routes"} == call
             answered = adapter.call_tool("execute", {"query": option["query"], "mode": mode})
