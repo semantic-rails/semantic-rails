@@ -11,3 +11,7 @@
   declare `data`. See "Empty periods" in `docs/PACKAGE_AUTHORING.md`.
 - `NO_DATA_YET` under the last-row edge now says how to declare a load log ("If the load ran
   and nothing happened, declare zero_through").
+- An entity filter whose threshold 0 passes, taken per period or over the window, on a
+  measure whose table declares `zero_through` is refused (`INVALID_METRIC_PREDICATE`) rather
+  than counting a period after the edge as 0. With `sql_profile: "off"`, no response names a
+  load log the caller can't see, and the full `explain` leaves out the SQL too.

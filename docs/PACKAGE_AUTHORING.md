@@ -2672,7 +2672,9 @@ model:
   edge never makes the empty periods around it `0`. An empty load log (no date) reads `NULL`
   for every empty period: "its loaded-through date is unavailable". `window.data_through` is the
   loaded-through date and `window.data_through_source` names the load log as declared
-  (`export_runs.through_day`), or says `loaded` to a caller whose view hides that model.
+  (`export_runs.through_day`), or says `loaded` to a caller whose view hides that model; with
+  `sql_profile: "off"` no plan descriptor names it either. A caller who may read the SQL sees
+  the load log's table and column in it (one `MAX` read beside the coverage it bounds).
 - **`now`.** Every empty period up to `now` reads `0` once the table has data, and the answer
   carries the note `ZERO_AFTER_LAST_ROW`: "reads 0 after its last row (2026-09-12) because the
   package says this table is always loaded; a stalled load would also read 0".
@@ -2689,6 +2691,11 @@ load log per load job; a model that another job loads declares its own.
 
 Known limits:
 
+- An entity filter whose threshold an entity with no rows passes (`lte 0`, `is 0`, `lt 1`),
+  taken per period or over the window, on a measure whose table declares an edge is refused
+  (`INVALID_METRIC_PREDICATE`): it can't yet read each entity's 0 in a period after the edge as
+  NULL. A threshold 0 fails (`gte 1`) answers, and so does `over: "all_time"`, which reads every
+  row the way an answer without a window does.
 - A window total (a window with no grain) answers its one row only on DuckDB, MotherDuck,
   DuckLake and Postgres. On Snowflake, BigQuery, Databricks, Athena and ClickHouse it groups by
   a constant with no one-row spine, so a quiet window total returns no row at all, whatever the

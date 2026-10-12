@@ -122,12 +122,13 @@ def apply_row_filters(
         and _observes(scan_of[id(node)])
     }
     marked = {node.name for node in nodes if id(node) in marks}
-    if logged := sorted({row.policy_id for row in filters if row.table in marked}):
+    if any(row.table in marked for row in filters):
+        # The load log may be hidden from this caller, so the refusal names no policy.
         raise SemanticLayerError(
             "POLICY_DENIED",
             "A row filter applies to the load log this request reads to know how far its data "
             "is loaded (zero_through), so that date can't be read for this caller.",
-            details={"reason": "row_filter_on_load_log", "policy_ids": logged},
+            details={"reason": "row_filter_on_load_log"},
         )
     reads = [
         node

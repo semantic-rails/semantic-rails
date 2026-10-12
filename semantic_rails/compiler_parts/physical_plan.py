@@ -824,10 +824,16 @@ def build_performance_plan(
 
     # These reads deliberately omit the request window. Count the emitted AST nodes,
     # including nested probes, rather than inferring them from the logical leaves.
+    # A load log (zero_through) whose model the caller's view hides is not described.
+    hidden_logs = {
+        row.zero_through.relation
+        for row in config.measures
+        if row.zero_through is not None and row.zero_through.kind == "loaded"
+    } - {row.table for row in config.entities}
     for read in sql_nodes(sql_ast):
         if not isinstance(read, SqlSelect) or not read.observation_scan:
             continue
-        if not isinstance(read.from_table, SqlTableRef):
+        if not isinstance(read.from_table, SqlTableRef) or read.from_table.name in hidden_logs:
             continue
         relation = read.from_table.name
         scan_id = f"scope_scan_{len(estimated_scan_relations) + 1}"

@@ -36,6 +36,7 @@ from ..ir import (
     LogicalPlan,
     MeasurePlan,
 )
+from ..query_call import refusal
 from ..schema import (
     PackageConfig,
 )
@@ -50,6 +51,7 @@ from ..sql_ast import (
     SqlSelect,
     SqlTableRef,
     build_filter_condition,
+    sql_nodes,
 )
 from . import nested
 from .bind import (
@@ -70,6 +72,7 @@ from .empty_groups import (
 from .indexes import (
     _dimension_index,
     _entity_index,
+    _measure_index,
     _recipe_index,
     _temporal_role_index,
 )
@@ -141,6 +144,49 @@ def _require_predicate_over_rows(
             ),
             details={"entity": predicate.entity, "predicate": expr_to_dict(predicate)},
         )
+
+
+def _refuse_unsettled_edges(predicate: MetricPredicateExpr, config: PackageConfig) -> None:
+    """Refuse a threshold that 0 passes, per period or over the window, on a measure whose
+    table declares how far it is loaded (``zero_through``).
+
+    Each entity's 0 would have to be read as NULL in the periods after that edge, as the
+    answer's own periods are, including for entities with no rows there; the predicate's
+    source can't settle that yet, so it would count an unloaded period as 0.
+    """
+    declared = sorted(
+        {
+            node.measure
+            for node in _input_measures(predicate.input, config)
+            if _measure_index(config)[node.measure].zero_through is not None
+        }
+    )
+    if declared:
+        raise refusal(
+            "where",
+            f"an entity filter on {predicate.entity} whose threshold "
+            f"'{predicate.op} {predicate.value}' an entity with no rows passes, taken per period "
+            f"or over the window, reads {', '.join(declared)}, whose table declares how far it is "
+            "loaded (zero_through). Its periods after that edge can't settle each entity's 0 or "
+            "NULL yet, so the query is refused rather than counting an unloaded period as 0",
+            fix='Send the entity filter with "over": "all_time", or a threshold that 0 fails '
+            '(such as {"op": "gte", "value": 1}).',
+            code="INVALID_METRIC_PREDICATE",
+            entity=predicate.entity,
+            measures=declared,
+        )
+
+
+def _input_measures(expr: SemanticExpr, config: PackageConfig) -> list[Any]:
+    """The measure references an input reads, through the metrics it names."""
+    found: list[Any] = []
+    for node in sql_nodes(expr):
+        if isinstance(node, MetricRecipeRefExpr):
+            recipe = _recipe_index(config).get(node.metric_recipe)
+            found.extend(_input_measures(recipe.expression, config) if recipe else [])
+        elif isinstance(node, MeasureRefExpr | AggregateExpr):
+            found.append(node)
+    return found
 
 
 def _predicate_input_zero_on_missing(expr: SemanticExpr, config: PackageConfig) -> bool:
@@ -956,6 +1002,8 @@ def _predicate_ctes_and_join(
     with binding_cut():
         _entity_index(config)[predicate.entity]
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
+    if without_rows and scope["time_spec"] is not None:
+        _refuse_unsettled_edges(predicate, config)
     # Over several measures an entity's value is NULL where one operand is unknown, though the
     # others have data, and the gate below would read that as no data in scope. So that
     # source keeps the earlier settlement, which reads an operand's unknown amounts as 0
