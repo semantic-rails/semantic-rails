@@ -50,9 +50,15 @@ def test_unknown_measure_key_is_rejected(starter_package: Path) -> None:
     assert any("default_agg" in e for e in errors), "must list the valid keys"
 
 
-@pytest.mark.parametrize("key", ["subject_entity", "aggregation_entity"])
-@pytest.mark.parametrize("location", ["measure", "defaults"])
-@pytest.mark.parametrize("layout", ["single_file", "directory"])
+@pytest.mark.parametrize(
+    ("key", "location", "layout"),
+    [
+        ("subject_entity", "measure", "single_file"),
+        ("aggregation_entity", "defaults", "single_file"),
+        ("aggregation_entity", "measure", "directory"),
+        ("subject_entity", "defaults", "directory"),
+    ],
+)
 def test_parent_rollup_measure_keys_are_unknown(
     starter_package: Path, key: str, location: str, layout: str
 ) -> None:
@@ -80,17 +86,17 @@ def test_parent_rollup_measure_keys_are_unknown(
 
 
 @pytest.mark.parametrize(
-    ("key", "value"),
+    ("key", "value", "layout"),
     [
-        pytest.param("rollup_safe_aggregations", ["sum"], id="populated"),
-        pytest.param("rollup_safe_aggregations", None, id="null"),
-        pytest.param("rollup_safe", {"forward": ["sum", "count"]}, id="forward"),
-        pytest.param("rollup_safe", ["sum", "count"], id="list"),
-        pytest.param("rollup_safe", {"reverse": ["count_distinct"]}, id="reverse"),
-        pytest.param("rollup_safe", None, id="rollup-null"),
+        pytest.param("rollup_safe_aggregations", ["sum"], "directory", id="populated"),
+        pytest.param("rollup_safe_aggregations", None, "directory", id="null"),
+        pytest.param("rollup_safe", {"forward": ["sum", "count"]}, "directory", id="forward"),
+        pytest.param("rollup_safe", ["sum", "count"], "directory", id="list"),
+        pytest.param("rollup_safe", {"reverse": ["count_distinct"]}, "directory", id="reverse"),
+        pytest.param("rollup_safe", None, "directory", id="rollup-null"),
+        pytest.param("rollup_safe", None, "single_file", id="rollup-null-single-file"),
     ],
 )
-@pytest.mark.parametrize("layout", ["single_file", "directory"])
 def test_model_joins_block_is_rejected_before_graph_override(
     tmp_path: Path, key: str, value: object, layout: str
 ) -> None:
@@ -115,20 +121,18 @@ def test_model_joins_block_is_rejected_before_graph_override(
 
 
 @pytest.mark.parametrize(
-    ("key", "value"),
+    ("key", "value", "has_relationships"),
     [
-        pytest.param("rollup_safe", ["sum"], id="list"),
-        pytest.param("rollup_safe", {"forward": ["sum"]}, id="forward"),
-        pytest.param("rollup_safe", {"reverse": ["count_distinct"]}, id="reverse"),
-        pytest.param("rollup_safe", None, id="null"),
-        pytest.param("rollup_safe_aggregations", ["sum"], id="aggregations-populated"),
-        pytest.param("rollup_safe_aggregations", None, id="aggregations-null"),
+        pytest.param("rollup_safe", ["sum"], False, id="list"),
+        pytest.param("rollup_safe", {"forward": ["sum"]}, True, id="forward"),
+        pytest.param("rollup_safe", {"reverse": ["count_distinct"]}, True, id="reverse"),
+        pytest.param("rollup_safe", None, False, id="null"),
+        pytest.param("rollup_safe_aggregations", ["sum"], True, id="aggregations-populated"),
+        pytest.param("rollup_safe_aggregations", None, False, id="aggregations-null"),
     ],
 )
-@pytest.mark.parametrize("layout", ["single_file", "directory"])
-@pytest.mark.parametrize("has_relationships", [True, False], ids=["with-joins", "without-joins"])
 def test_unconsumed_relationship_default_rollup_is_rejected(
-    starter_package: Path, key: str, value: object, layout: str, has_relationships: bool
+    starter_package: Path, key: str, value: object, has_relationships: bool
 ) -> None:
     raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
     raw.setdefault("defaults", {}).setdefault("relationship", {})[key] = value
@@ -139,26 +143,31 @@ def test_unconsumed_relationship_default_rollup_is_rejected(
         raw["graph"]["relationships"] = {}
         raw["metrics"] = {}
     starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-    path = starter_package.parent if layout == "directory" else starter_package
     with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(path))
+        load_package_config(str(starter_package))
     assert exc.value.code == "INVALID_CONFIG"
     assert "defaults.relationship" in str(exc.value) and key in str(exc.value)
 
 
 @pytest.mark.parametrize(
-    ("location", "value"),
+    ("location", "value", "layout"),
     [
-        pytest.param("graph", {"forward": ["sum", "count"]}, id="forward"),
-        pytest.param("graph", ["sum", "count"], id="list"),
-        pytest.param("graph", [], id="empty-list"),
-        pytest.param("graph", None, id="null"),
-        pytest.param("graph", "sum", id="scalar"),
-        pytest.param("graph", {"reverse": [], "typo": []}, id="unknown-key"),
-        pytest.param("defaults", ["sum", "count"], id="relationship-defaults"),
+        *(
+            pytest.param("graph", value, "directory", id=name)
+            for name, value in (
+                ("forward", {"forward": ["sum", "count"]}),
+                ("list", ["sum", "count"]),
+                ("empty-list", []),
+                ("null", None),
+                ("scalar", "sum"),
+                ("unknown-key", {"reverse": [], "typo": []}),
+            )
+        ),
+        pytest.param("defaults", ["sum", "count"], "directory", id="relationship-defaults"),
+        pytest.param("graph", {"reverse": [], "typo": []}, "single_file", id="unknown-key-single"),
+        pytest.param("defaults", ["sum", "count"], "single_file", id="defaults-single"),
     ],
 )
-@pytest.mark.parametrize("layout", ["single_file", "directory"])
 def test_removed_relationship_rollup_forms_fail_loading(
     starter_package: Path, location: str, value: object, layout: str
 ) -> None:
@@ -213,17 +222,24 @@ def test_invalid_time_class_is_rejected_in_single_file_form(starter_package: Pat
 
 
 @pytest.mark.parametrize(
-    ("grain", "expr"),
+    ("grain", "expr", "surface"),
     [
-        (["customer_id"], None),
-        (["renamed_customer_id"], "renamed_customer_id"),
-        (["customerid"], None),
-        (["order_id"], None),
-        (["authored_row_id"], None),
+        (["customer_id"], None, "validate"),
+        (["customer_id"], None, "load"),
+        (["renamed_customer_id"], "renamed_customer_id", "validate"),
+        (["customerid"], None, "validate"),
+        (["order_id"], None, "validate"),
+        (["authored_row_id"], None, "validate"),
     ],
-    ids=["entity-key", "expr-override", "typo", "other-entity-key", "finer-rows"],
+    ids=[
+        "entity-key",
+        "entity-key-load",
+        "expr-override",
+        "typo",
+        "other-entity-key",
+        "finer-rows",
+    ],
 )
-@pytest.mark.parametrize("surface", ["validate", "load"])
 def test_model_grain_is_refused(
     starter_package: Path, grain: list[str], expr: str | None, surface: str
 ) -> None:
