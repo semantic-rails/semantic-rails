@@ -8,7 +8,7 @@ need from this module and its siblings (``time_phrases``, ``time_windows``,
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -160,7 +160,9 @@ def _best(
     terms: Iterable[str],
     *,
     exclude: Iterable[str] = (),
+    bonus: Callable[[Any], int] | None = None,
 ) -> Any | None:
+    """The row the terms score highest (``bonus`` adds to a matching row), ties by label, id."""
     term_list = [term for term in terms if term]
     excluded = set(exclude)
     ranked = []
@@ -169,6 +171,7 @@ def _best(
             continue
         row_score = _score(row, term_list)
         if row_score > 0:
+            row_score += bonus(row) if bonus is not None else 0
             ranked.append((row_score, getattr(row, "label", ""), getattr(row, "id", ""), row))
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
     return ranked[0][3] if ranked else None
@@ -540,16 +543,10 @@ def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
 
 
 def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False) -> Any | None:
-    candidates = []
-    for row in visible_dimensions(config):
-        row_score = _score(row, terms)
-        if row_score <= 0:
-            continue
-        if prefer_parent and "parent" in _object_text(row):
-            row_score += 2
-        candidates.append((row_score, getattr(row, "label", ""), getattr(row, "id", ""), row))
-    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return candidates[0][3] if candidates else None
+    def parent_bonus(row: Any) -> int:
+        return 2 if "parent" in _object_text(row) else 0
+
+    return _best(visible_dimensions(config), terms, bonus=parent_bonus if prefer_parent else None)
 
 
 def _runtime_composition_terms(text: str) -> set[str]:
