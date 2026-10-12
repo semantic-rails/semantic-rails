@@ -16,6 +16,8 @@ structured ``why`` instead of a confident wrong answer.
 
 from __future__ import annotations
 
+import pytest
+
 from semantic_rails.planner.plan import plan_payload
 
 
@@ -27,40 +29,37 @@ def _best_time(payload: dict) -> dict:
     return ((payload.get("best") or {}).get("query") or {}).get("time") or {}
 
 
-def test_month_range_with_both_years_lands_in_query_ir(runtime_factory):
+@pytest.mark.parametrize(
+    ("intent", "start", "end", "grain"),
+    [
+        (
+            "monthly revenue by store from January 2017 through June 2017",
+            "2017-01-01",
+            "2017-07-01",
+            "month",
+        ),
+        ("revenue from Jan-Jun 2017 by month", "2017-01-01", "2017-07-01", None),
+        ("revenue by store for March 2017", "2017-03-01", "2017-04-01", None),
+        (
+            "revenue from October 2017 through December 2017 by month",
+            "2017-10-01",
+            "2018-01-01",
+            None,
+        ),
+    ],
+    ids=["both-years", "shared-year", "single-month", "year-rollover"],
+)
+def test_month_bounds_land_in_query_ir(runtime_factory, intent, start, end, grain):
     runtime = runtime_factory("jaffle_shop")
-    payload = _plan(runtime, "monthly revenue by store from January 2017 through June 2017")
+    try:
+        payload = _plan(runtime, intent)
+    finally:
+        runtime.close()
     assert payload["status"] == "ok"
     time_spec = _best_time(payload)
-    assert time_spec.get("start") == "2017-01-01"
-    assert time_spec.get("end") == "2017-07-01"
-    assert time_spec.get("grain") == "month"
-
-
-def test_month_range_with_shared_year_lands_in_query_ir(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    payload = _plan(runtime, "revenue from Jan-Jun 2017 by month")
-    assert payload["status"] == "ok"
-    time_spec = _best_time(payload)
-    assert time_spec.get("start") == "2017-01-01"
-    assert time_spec.get("end") == "2017-07-01"
-
-
-def test_single_month_with_year_lands_in_query_ir(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    payload = _plan(runtime, "revenue by store for March 2017")
-    assert payload["status"] == "ok"
-    time_spec = _best_time(payload)
-    assert time_spec.get("start") == "2017-03-01"
-    assert time_spec.get("end") == "2017-04-01"
-
-
-def test_december_range_rolls_end_bound_into_next_year(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    payload = _plan(runtime, "revenue from October 2017 through December 2017 by month")
-    time_spec = _best_time(payload)
-    assert time_spec.get("start") == "2017-10-01"
-    assert time_spec.get("end") == "2018-01-01"
+    assert (time_spec.get("start"), time_spec.get("end")) == (start, end)
+    if grain is not None:
+        assert time_spec.get("grain") == grain
 
 
 def test_conversion_intent_with_non_conversion_draft_is_low_confidence(runtime_factory):

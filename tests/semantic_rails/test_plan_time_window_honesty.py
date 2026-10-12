@@ -51,24 +51,17 @@ def test_relative_windows_resolve_to_last(text: str, unit: str, value: int) -> N
     assert bounds == {"last": {"unit": unit, "value": value}}
 
 
-def test_yesterday_resolves_to_the_last_day() -> None:
-    assert _time_bounds_from_text("orders yesterday") == {"last": {"unit": "day", "value": 1}}
-
-
-def test_this_year_resolves_to_this_year() -> None:
-    assert _time_bounds_from_text("revenue this year") == {"this": "year"}
-
-
-def test_quarter_year_bounds_still_resolve() -> None:
-    # Pre-existing behavior that must survive the resolver rework.
-    assert _time_bounds_from_text("revenue in Q2 2025") == {
-        "start": "2025-04-01",
-        "end": "2025-07-01",
-    }
-
-
-def test_this_month_still_resolves() -> None:
-    assert _time_bounds_from_text("revenue this month") == {"this": "month"}
+@pytest.mark.parametrize(
+    ("text", "bounds"),
+    [
+        ("orders yesterday", {"last": {"unit": "day", "value": 1}}),
+        ("revenue this year", {"this": "year"}),
+        ("revenue in Q2 2025", {"start": "2025-04-01", "end": "2025-07-01"}),
+        ("revenue this month", {"this": "month"}),
+    ],
+)
+def test_named_windows_resolve(text, bounds) -> None:
+    assert _time_bounds_from_text(text) == bounds
 
 
 @pytest.mark.parametrize(

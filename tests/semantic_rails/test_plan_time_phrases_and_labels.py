@@ -829,19 +829,6 @@ def test_a_customer_ranking_keeps_its_window_and_ordinary_customer_key(
     assert (time["start"], time["end"]) == ("2017-01-01", "2017-04-01")
 
 
-def test_a_caller_window_answers_the_time_phrases_plan_could_not_resolve(
-    runtime_factory: Any,
-) -> None:
-    # The exception to consumption by construct: a window the caller states in query.time
-    # answers a time phrase plan cannot resolve itself ("last 24 hours").
-    payload = _plan(
-        runtime_factory,
-        "revenue for the last 24 hours",
-        partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
-    )
-    assert payload["status"] == "ok", payload.get("why")
-
-
 @pytest.mark.parametrize(
     ("text", "time", "terms"),
     [

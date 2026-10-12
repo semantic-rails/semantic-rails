@@ -9,7 +9,6 @@ from typing import Any
 
 import duckdb
 import pytest
-import yaml
 
 from semantic_rails.planner import compose, plan_payload
 from semantic_rails.planner.call import Call
@@ -18,6 +17,7 @@ from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
+from tests.semantic_rails.test_plan_named_groupings import _write_retail_package
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
 
 STORE_ID = "dimension.retail_store_id"
@@ -55,66 +55,14 @@ def _alias(item: Any) -> str:
     return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
+@pytest.fixture(scope="module")
+def retail_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write_retail_package(tmp_path_factory.mktemp("retail"), explicit_columns=True)
+
+
 @pytest.fixture()
-def retail(tmp_path: Path) -> Iterator[Runtime]:
-    (tmp_path / "models").mkdir()
-    (tmp_path / "data" / "csv").mkdir(parents=True)
-    (tmp_path / "data" / "csv" / "stores.csv").write_text(
-        "store_id,store_name,store_label,reported_at,revenue\n"
-        "a,Central,East,2026-01-01T09:00:00,10\n"
-        "b,Central,West,2026-01-02T09:00:00,25\n"
-        "c,Harbor,South,2026-02-01T09:00:00,7\n",
-        encoding="utf-8",
-    )
-    files = {
-        "package.yml": {
-            "schema_version": 1,
-            "package": {
-                "id": "retail",
-                "namespace": "retail",
-                "name": "Retail",
-                "warehouse": "duckdb",
-                "default_db": "data/retail.duckdb",
-                "seed": {"kind": "csv_dir_duckdb", "source": "data/csv"},
-            },
-        },
-        "graph.yml": {"graph": {"entities": {"store": {"key": ["store_id"], "model": "stores"}}}},
-        "models/stores.yml": {
-            "model": {
-                "id": "stores",
-                "relation": "stores",
-                "entities": {"store": {}},
-                "times": {
-                    "reported_at": {"column": "reported_at", "kind": "timestamp", "default": True}
-                },
-                "dimensions": {
-                    "store_id": {
-                        "as": STORE_ID,
-                        "column": "store_id",
-                        "label": "Store id",
-                        "synonyms": ["Store code", "Store key", "Store number"],
-                    },
-                    "store_name": {"as": STORE_NAME, "column": "store_name", "label": "Store name"},
-                    "store_label": {
-                        "as": STORE_LABEL,
-                        "column": "store_label",
-                        "label": "Store label",
-                    },
-                },
-                "measures": {
-                    "revenue": {
-                        "label": "Revenue",
-                        "kind": "aggregate",
-                        "expr": "revenue",
-                        "default_agg": "sum",
-                    }
-                },
-            }
-        },
-    }
-    for name, body in files.items():
-        (tmp_path / name).write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
-    runtime = Runtime.from_path(str(tmp_path))
+def retail(retail_package: Path) -> Iterator[Runtime]:
+    runtime = Runtime.from_path(str(retail_package))
     try:
         yield runtime
     finally:

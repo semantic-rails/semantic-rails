@@ -52,8 +52,7 @@ def jaffle(runtime_factory: Any) -> Iterator[Runtime]:
         runtime.close()
 
 
-@pytest.fixture()
-def retail(tmp_path: Path) -> Iterator[Runtime]:
+def _write_retail_package(tmp_path: Path, *, explicit_columns: bool = False) -> Path:
     (tmp_path / "models").mkdir()
     (tmp_path / "data" / "csv").mkdir(parents=True)
     (tmp_path / "data" / "csv" / "stores.csv").write_text(
@@ -88,7 +87,11 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
                     "store_id": {
                         "as": STORE_ID,
                         "label": "Store id",
-                        "synonyms": ["Store key", "Store number", "Store code"],
+                        "synonyms": (
+                            ["Store code", "Store key", "Store number"]
+                            if explicit_columns
+                            else ["Store key", "Store number", "Store code"]
+                        ),
                     },
                     "store_name": {"as": STORE_NAME, "label": "Store name"},
                     "store_label": {"as": STORE_LABEL, "label": "Store label"},
@@ -104,9 +107,27 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
             }
         },
     }
+    if explicit_columns:
+        for column, dimension in files["models/stores.yml"]["model"]["dimensions"].items():
+            dimension["column"] = column
     for name, body in files.items():
         (tmp_path / name).write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
     runtime = Runtime.from_path(str(tmp_path))
+    try:
+        runtime._get_adapter()
+    finally:
+        runtime.close()
+    return tmp_path
+
+
+@pytest.fixture(scope="module")
+def retail_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write_retail_package(tmp_path_factory.mktemp("retail"))
+
+
+@pytest.fixture()
+def retail(retail_package: Path) -> Iterator[Runtime]:
+    runtime = Runtime.from_path(str(retail_package))
     try:
         yield runtime
     finally:
