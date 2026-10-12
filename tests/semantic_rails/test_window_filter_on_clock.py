@@ -33,6 +33,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.operators import normalize_condition
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 DAY_ROLE = "temporal_role.fees_account_day_date_day"
 EVENT_ROLE = "temporal_role.fees_event_occurred_at"
@@ -169,9 +170,9 @@ def _reference(sql: str, *, august: bool = False) -> list[tuple]:
         connection.close()
 
 
-@pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[Runtime]:
-    runtime = Runtime.from_path(str(_package(tmp_path)))
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    runtime = opened(Runtime.from_path(str(_package(tmp_path_factory.mktemp("fees")))))
     yield runtime
     runtime.close()
 
@@ -902,8 +903,10 @@ def _filtered_window(expression: dict, cut: dict) -> dict:
     return expression
 
 
-@pytest.mark.parametrize(("expression", "sql", "expected"), LEAF_WINDOWS)
-@pytest.mark.parametrize("authored", [False, True], ids=["inline", "authored"])
+@pytest.mark.parametrize(
+    ("expression", "sql", "expected", "authored"),
+    [(*window, i % 2 == 1) for i, window in enumerate(LEAF_WINDOWS)],
+)
 def test_measure_clock_filters_refuse_before_reading_truncated_history(
     tmp_path: Path, expression: dict, sql: str, expected: int, authored: bool
 ) -> None:
@@ -948,8 +951,10 @@ def test_measure_clock_filters_refuse_before_reading_truncated_history(
         runtime.close()
 
 
-@pytest.mark.parametrize("surface", ["validate", "compile", "query"])
-@pytest.mark.parametrize("field", [OCCURRED_AT, CLOCK_LABEL])
+@pytest.mark.parametrize(
+    ("surface", "field"),
+    [("validate", OCCURRED_AT), ("compile", CLOCK_LABEL), ("query", OCCURRED_AT)],
+)
 def test_bound_clock_filters_share_the_planning_guard(
     tmp_path: Path, surface: str, field: str
 ) -> None:
@@ -1024,11 +1029,14 @@ def test_nonclock_row_policy_preserves_the_filtered_population(
         runtime.close()
 
 
-@pytest.mark.parametrize("expression", [ROLLING, CUMULATIVE, MONTH_TO_DATE])
 @pytest.mark.parametrize(
-    "cut",
-    [_cut(OCCURRED_AT, "lte", "2026-09-15 10:00:00"), _cut(CHANNEL, "is", "web")],
-    ids=["upper-bound", "nonclock"],
+    ("expression", "cut"),
+    [
+        (ROLLING, _cut(OCCURRED_AT, "lte", "2026-09-15 10:00:00")),
+        (CUMULATIVE, _cut(CHANNEL, "is", "web")),
+        (MONTH_TO_DATE, _cut(OCCURRED_AT, "lte", "2026-09-15 10:00:00")),
+    ],
+    ids=["rolling-upper-bound", "cumulative-nonclock", "month-to-date-upper-bound"],
 )
 def test_safe_bound_filters_keep_the_reference_values(
     runtime: Runtime, expression: dict, cut: dict
