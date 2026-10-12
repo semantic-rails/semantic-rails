@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 from semantic_rails.architect_introspection import open_duckdb, profile_columns, suggest_model
@@ -10,8 +9,7 @@ from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import ORDER_COUNT_QUERY, write_orders_package
 
 
-@pytest.fixture
-def timestamp_package(tmp_path: Path) -> Path:
+def test_timestamptz_values_query_bucket_by_day_and_profile(tmp_path: Path) -> None:
     package = write_orders_package(tmp_path, schema="", with_customers=False)
     (package / "data/seed.sql").write_text(
         "CREATE TABLE fct_orders (order_id INTEGER PRIMARY KEY, ordered_at TIMESTAMPTZ);"
@@ -25,28 +23,18 @@ def timestamp_package(tmp_path: Path) -> Path:
     model = yaml.safe_load(model_path.read_text())
     model["model"]["dimensions"] = {"ordered_at": {"kind": "categorical", "column": "ordered_at"}}
     model_path.write_text(yaml.safe_dump(model), encoding="utf-8")
-    return package
-
-
-def test_query_returns_raw_timestamptz(timestamp_package: Path) -> None:
-    runtime = Runtime.from_path(str(timestamp_package))
+    runtime = Runtime.from_path(str(package))
     field = "dimension.shop_order_ordered_at"
     try:
+        # A raw value keeps its zone.
         result = runtime.query({**ORDER_COUNT_QUERY, "group_by": [field]})
         assert sorted(result["rows"], key=lambda row: row[field]) == [
             {field: "2024-01-01T12:00:00+00:00", "orders": 2},
             {field: "2024-01-02T12:00:00+00:00", "orders": 1},
         ]
         assert result["column_types"][field] == {"type": "timestamp", "timezone": "aware"}
-    finally:
-        runtime.close()
-
-
-def test_time_axis_buckets_timestamptz_by_day(timestamp_package: Path) -> None:
-    """The time axis has a grain; a day's period is its ISO date."""
-    runtime = Runtime.from_path(str(timestamp_package))
-    time = {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "day"}
-    try:
+        # The time axis has a grain; a day's period is its ISO date.
+        time = {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "day"}
         result = runtime.query({**ORDER_COUNT_QUERY, "time": time})
         assert sorted(result["rows"], key=lambda row: row["period"]) == [
             {"period": "2024-01-01", "period_partial": False, "orders": 2},
@@ -55,15 +43,7 @@ def test_time_axis_buckets_timestamptz_by_day(timestamp_package: Path) -> None:
         assert result["column_types"]["period"] == {"type": "date"}
     finally:
         runtime.close()
-
-
-def test_architect_profiles_timestamptz(timestamp_package: Path) -> None:
-    runtime = Runtime.from_path(str(timestamp_package))
-    try:
-        runtime.query(ORDER_COUNT_QUERY)  # Create the seeded database without fetching timestamps.
-    finally:
-        runtime.close()
-    with open_duckdb(timestamp_package / "data/warehouse.duckdb") as warehouse:
+    with open_duckdb(package / "data/warehouse.duckdb") as warehouse:
         warehouse.connection.execute("SET TimeZone = 'UTC'")
         profile = profile_columns(warehouse, "fct_orders", ["ordered_at"])
         suggestion = suggest_model(warehouse, "fct_orders")
