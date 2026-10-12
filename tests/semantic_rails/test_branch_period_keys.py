@@ -138,8 +138,9 @@ def test_every_warehouse_joins_the_items_on_the_period_as_its_date_trunc_type(
     query = _ask("month", *SHAPES["beside_both"])
     if warehouse == "clickhouse":
         # ClickHouse has no implicit calendar, and an authored one takes no part in a series.
-        with pytest.raises(SemanticLayerError, match="no implicit calendar"):
+        with pytest.raises(SemanticLayerError) as refused:
             _sql(packages["authored"], warehouse, query)
+        assert refused.value.details == {"warehouse": warehouse, "rewrite": "day_series"}
         return
     sql = _sql(packages["authored"], warehouse, query)
     # BigQuery renames the alias to period_<hash>.
