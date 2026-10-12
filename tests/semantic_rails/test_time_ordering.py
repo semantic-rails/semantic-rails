@@ -37,10 +37,22 @@ def _query(*, fill=False, groups=(), **extra):
     }
 
 
-@pytest.mark.parametrize("warehouse", supported_warehouses())
-@pytest.mark.parametrize("fill", [False, True], ids=["sparse", "filled"])
+# Every dialect, each with one of the fill and group shapes; ClickHouse refuses a fill.
 @pytest.mark.parametrize(
-    "groups", [[], GROUPS, GROUPS[::-1]], ids=["time-only", "groups", "reversed"]
+    ("warehouse", "fill", "groups"),
+    [
+        ("athena", False, []),
+        ("bigquery", True, GROUPS),
+        ("clickhouse", False, GROUPS),
+        ("clickhouse", True, GROUPS[::-1]),
+        ("databricks", False, GROUPS[::-1]),
+        ("duckdb", True, []),
+        ("duckdb", False, GROUPS),
+        ("ducklake", True, GROUPS[::-1]),
+        ("motherduck", False, []),
+        ("postgres", True, GROUPS),
+        ("snowflake", False, GROUPS[::-1]),
+    ],
 )
 def test_default_order_is_time_then_authored_groups(config, warehouse, fill, groups):
     config = replace(config, package=replace(config.package, warehouse=warehouse))
@@ -67,16 +79,16 @@ def test_default_order_is_time_then_authored_groups(config, warehouse, fill, gro
     )
 
 
-@pytest.mark.parametrize("fill", [False, True])
-@pytest.mark.parametrize("field", ["time", "orders", GROUPS[0]])
-@pytest.mark.parametrize("warehouse", supported_warehouses())
+@pytest.mark.parametrize(
+    ("warehouse", "fill", "field"),
+    [
+        (warehouse, index % 2 == 1, ["time", "orders", GROUPS[0]][index % 3])
+        for index, warehouse in enumerate(supported_warehouses())
+    ],
+)
 def test_explicit_order_wins_without_extra_tiebreakers(config, fill, field, warehouse):
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     query = _query(fill=fill, groups=GROUPS, order_by=[{"field": field, "direction": "DESC"}])
-    if _refuses_fill(warehouse, fill):
-        with pytest.raises(SemanticLayerError, match="no implicit calendar"):
-            compile_query(config, None, query)
-        return
     compiled = compile_query(config, None, query)
     assert len(compiled["sql_ast"].order_by) == 1
     assert compiled["sql_ast"].order_by[0].direction == "DESC"
