@@ -73,7 +73,7 @@ _NAIVE_DATE = "TIMEZONE('America/New_York', TIMEZONE('UTC', CAST(source_day AS T
 # the others keep the conversion they emitted before that cast existed.
 DATE_CLOCK_CONVERSIONS = {
     "athena": "AT_TIMEZONE(WITH_TIMEZONE(source_day, 'UTC'), 'America/New_York')",
-    "bigquery": "DATETIME(TIMESTAMP(source_day, 'UTC'), 'America/New_York')",
+    "bigquery": "DATETIME(CAST(source_day AS TIMESTAMP), 'America/New_York')",
     "clickhouse": "toTimeZone(toDateTime(source_day, 'UTC'), 'America/New_York')",
     "databricks": "CONVERT_TIMEZONE('UTC', 'America/New_York', source_day)",
     "duckdb": _NAIVE_DATE,

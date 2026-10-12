@@ -815,14 +815,18 @@ class BigQueryDialect(SqlDialect):
         return _day_rows(SqlIdentifier(parts=["series_day"]), source, series)
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
-        # BigQuery has no CONVERT_TIMEZONE. TIMESTAMP(datetime, tz) reads a
-        # naive DATETIME as wall-clock in `tz`; DATETIME(timestamp, tz)
-        # renders it back to naive wall-clock in the target zone. This
-        # matches the DATETIME_* family the rest of this dialect uses.
-        return SqlCall(
-            "DATETIME",
-            [SqlCall("TIMESTAMP", [ts_expr, SqlLiteral(source_tz)]), SqlLiteral(target_tz)],
-        )
+        # BigQuery has no CONVERT_TIMEZONE. DATETIME(timestamp, tz) renders an instant as
+        # naive wall time in the target zone, matching the DATETIME_* family the rest of this
+        # dialect uses. Stored in UTC, the value becomes its instant through CAST AS TIMESTAMP,
+        # which reads a DATETIME or a DATE in UTC and keeps a TIMESTAMP as it is, so the one
+        # form serves a DATETIME, DATE or TIMESTAMP column (an instant column declares UTC).
+        # Stored as wall time in another zone, the value is a DATETIME or a DATE, and
+        # TIMESTAMP(value, tz) reads it in that zone; TIMESTAMP(...) takes no TIMESTAMP.
+        if source_tz == "UTC":
+            instant: Any = SqlCast(ts_expr, "TIMESTAMP")
+        else:
+            instant = SqlCall("TIMESTAMP", [ts_expr, SqlLiteral(source_tz)])
+        return SqlCall("DATETIME", [instant, SqlLiteral(target_tz)])
 
     def prepare_query(self, sql: str) -> PreparedQuery:
         sql, alias_map = bigquery_compat_sql(sql)

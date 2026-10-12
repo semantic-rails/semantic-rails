@@ -282,6 +282,45 @@ def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: Pack
         return _config_expr_to_sql_inner(expr, measure, config)
 
 
+def _temporal_result(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> bool:
+    """Whether ``expr`` reads a date or timestamp: a column that a date or timestamp dimension
+    declares, a ``date_add`` or ``DATE_TRUNC``, or a COALESCE, NULLIF, GREATEST, LEAST or CASE
+    whose result is one."""
+    if isinstance(expr, ColumnRefExpr):
+        entity_id = _resolve_expr_entity(expr, measure, config)
+        return any(
+            dim.entity == entity_id
+            and dim.column == expr.column
+            and dim.data_type in {"date", "timestamp"}
+            for dim in _dimension_index(config).values()
+        )
+    if isinstance(expr, DateAddExpr):
+        return True
+    if isinstance(expr, CaseExpr):
+        results = [item.then for item in expr.whens]
+        results += [expr.else_expr] if expr.else_expr is not None else []
+        return any(_temporal_result(result, measure, config) for result in results)
+    if isinstance(expr, CallExpr):
+        name = expr.name.strip().upper()
+        if name == "DATE_TRUNC":
+            return True
+        args = expr.args[:1] if name == "NULLIF" else expr.args
+        if name in {"COALESCE", "NULLIF", "GREATEST", "LEAST"}:
+            return any(_temporal_result(arg, measure, config) for arg in args)
+    return False
+
+
+def _operand_sql(
+    expr: SemanticExpr, temporal: bool, measure: MeasureConfig, config: PackageConfig
+) -> Any:
+    """One side of a comparison or an operand of ``in``: text compared with a date or timestamp
+    (``temporal``) is a temporal literal (``SqlLiteral.temporal``); text compared with anything
+    else stays text."""
+    if temporal and isinstance(expr, LiteralExpr) and isinstance(expr.value, str):
+        return SqlLiteral(expr.value, temporal=True)
+    return _config_expr_to_sql(expr, measure, config)
+
+
 def _config_expr_to_sql_inner(
     expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig
 ) -> Any:
@@ -306,14 +345,16 @@ def _config_expr_to_sql_inner(
         )
     if isinstance(expr, ComparisonExpr):
         return build_comparison_condition(
-            _config_expr_to_sql(expr.left, measure, config),
+            _operand_sql(expr.left, _temporal_result(expr.right, measure, config), measure, config),
             expr.op,
-            _config_expr_to_sql(expr.right, measure, config),
+            _operand_sql(expr.right, _temporal_result(expr.left, measure, config), measure, config),
         )
     if isinstance(expr, InExpr):
+        operands = [expr.expr, *expr.values]
+        temporal = any(_temporal_result(item, measure, config) for item in operands)
         return SqlIn(
-            expr=_config_expr_to_sql(expr.expr, measure, config),
-            values=[_config_expr_to_sql(value, measure, config) for value in expr.values],
+            expr=_operand_sql(expr.expr, temporal, measure, config),
+            values=[_operand_sql(value, temporal, measure, config) for value in expr.values],
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):

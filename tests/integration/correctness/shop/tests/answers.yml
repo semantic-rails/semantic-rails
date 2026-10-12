@@ -7706,3 +7706,118 @@ tests:
           WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2024-04-15 12:00:00'
           GROUP BY customer_id HAVING COUNT(*) >= 2)
       GROUP BY 1
+  shop/text-compared-with-the-order-clock-reads-as-its-instant:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The condition compares the order clock with the text 2024-01-01 and reads the text as that instant, a typed literal where the warehouse refuses a timestamp beside text: the orders from January 2024 on count, the earlier ones do not.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_CALL.md#inline-expression-kinds]
+    tags: [clock]
+    query:
+      select:
+      - expression:
+          kind: aggregate_if
+          aggregation: count
+          value: {kind: column, column: order_id, entity: entity.shop_order}
+          condition:
+            kind: comparison
+            op: '>='
+            left: {kind: column, column: ordered_at, entity: entity.shop_order}
+            right: {kind: literal, value: '2024-01-01'}
+        as: orders
+    expected_rows:
+      - {orders: 8}
+    reference_sql: |
+      SELECT COUNT(*) FROM orders WHERE ordered_at >= TIMESTAMP '2024-01-01'
+  shop/text-compared-with-a-computed-time-reads-as-its-instant:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Each condition compares a time computed from the order clocks (a day after the order, the close or else the order time, the order time in store a and the close time elsewhere) with date text, and reads the text as that instant: the orders whose computed time is on or after it count.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, docs/QUERY_CALL.md#inline-expression-kinds]
+    tags: [clock]
+    query:
+      select:
+      - expression:
+          kind: aggregate_if
+          aggregation: count
+          value: {kind: column, column: order_id, entity: entity.shop_order}
+          condition:
+            kind: comparison
+            op: '>='
+            left: {kind: date_add, unit: day, value: {kind: literal, value: 1}, date: {kind: column, column: ordered_at, entity: entity.shop_order}}
+            right: {kind: literal, value: '2024-01-02'}
+        as: day_after
+      - expression:
+          kind: aggregate_if
+          aggregation: count
+          value: {kind: column, column: order_id, entity: entity.shop_order}
+          condition:
+            kind: comparison
+            op: '>='
+            left: {kind: call, name: COALESCE, args: [{kind: column, column: closed_at, entity: entity.shop_order}, {kind: column, column: ordered_at, entity: entity.shop_order}]}
+            right: {kind: literal, value: '2024-01-01'}
+        as: closed_or_ordered
+      - expression:
+          kind: aggregate_if
+          aggregation: count
+          value: {kind: column, column: order_id, entity: entity.shop_order}
+          condition:
+            kind: comparison
+            op: '>='
+            left:
+              kind: case
+              whens:
+              - when: {kind: comparison, op: '=', left: {kind: column, column: store_id, entity: entity.shop_order}, right: {kind: literal, value: a}}
+                then: {kind: column, column: ordered_at, entity: entity.shop_order}
+              else: {kind: column, column: closed_at, entity: entity.shop_order}
+            right: {kind: literal, value: '2024-01-01'}
+        as: by_store
+    expected_rows:
+      - {day_after: 8, closed_or_ordered: 8, by_store: 4}
+    reference_sql: |
+      SELECT COUNT(CASE WHEN ordered_at + INTERVAL '1 day' >= TIMESTAMP '2024-01-02' THEN 1 END),
+             COUNT(CASE WHEN COALESCE(closed_at, ordered_at) >= TIMESTAMP '2024-01-01' THEN 1 END),
+             COUNT(CASE WHEN (CASE WHEN store_id = 'a' THEN ordered_at ELSE closed_at END) >= TIMESTAMP '2024-01-01' THEN 1 END)
+      FROM orders
+  shop/having-alone-keeps-every-quiet-day-of-a-named-window:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'No order falls in February 2024, so each of its 29 days counts 0 orders and passes the filter. A result filter reads the count as a select of it would, so the named window answers every day it holds, not only the days with rows.'
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#having, docs/QUERY_CALL.md#time]
+    tags: [time-window, null-vs-zero]
+    query:
+      having: [{field: measure.shop.order_count, op: is, value: 0}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-02-01', end: '2024-03-01', grain: day}
+    now: '2024-03-02T00:00:00Z'
+    expected_rows:
+      - {period: '2024-02-01'}
+      - {period: '2024-02-02'}
+      - {period: '2024-02-03'}
+      - {period: '2024-02-04'}
+      - {period: '2024-02-05'}
+      - {period: '2024-02-06'}
+      - {period: '2024-02-07'}
+      - {period: '2024-02-08'}
+      - {period: '2024-02-09'}
+      - {period: '2024-02-10'}
+      - {period: '2024-02-11'}
+      - {period: '2024-02-12'}
+      - {period: '2024-02-13'}
+      - {period: '2024-02-14'}
+      - {period: '2024-02-15'}
+      - {period: '2024-02-16'}
+      - {period: '2024-02-17'}
+      - {period: '2024-02-18'}
+      - {period: '2024-02-19'}
+      - {period: '2024-02-20'}
+      - {period: '2024-02-21'}
+      - {period: '2024-02-22'}
+      - {period: '2024-02-23'}
+      - {period: '2024-02-24'}
+      - {period: '2024-02-25'}
+      - {period: '2024-02-26'}
+      - {period: '2024-02-27'}
+      - {period: '2024-02-28'}
+      - {period: '2024-02-29'}
+    reference_sql: |
+      SELECT g.b FROM generate_series(TIMESTAMP '2024-02-01', TIMESTAMP '2024-02-29', INTERVAL '1 day') AS g(b)
+      WHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.ordered_at >= g.b AND o.ordered_at < g.b + INTERVAL '1 day')
