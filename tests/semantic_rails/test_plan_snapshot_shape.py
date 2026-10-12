@@ -529,3 +529,83 @@ def test_a_required_grouping_hidden_from_the_caller_is_never_added(tmp_path: Pat
     assert plan["why"]["code"] == "VALIDATION_FAILED"
     assert "execute" not in plan["next"].get("ready_for", [])
     assert "account_name" not in str(plan)
+    [error] = plan["why"]["errors"]
+    assert error["message"] == f"{MRR_ALL} can't be read this way under policy."
+
+
+MRR_ALL = f"measure.{NS}.mrr_all"
+
+
+def test_a_day_policy_refusal_names_the_cut_and_the_fragment_that_meets_it(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path / NS, policies=[DAY_POLICY], days_only=True)
+    try:
+        call = {"select": [MRR_ALL], "time": {"last": {"unit": "month", "value": 1}}}
+        [error] = runtime.validate(call, now=NOW["now"])["errors"]
+        assert (error["code"], error["message"]) == (
+            "POLICY_DENIED",
+            f"{MRR_ALL} can only be read by day: group by {DAY}, or set time.grain to day.",
+        )
+        [hint] = error["recovery_hints"]
+        assert hint == {
+            "code": "FIX_QUERY_CALL",
+            "message": "Set time.grain to day.",
+            "patch": {"merge": {"time": {"grain": "day"}}},
+        }
+        fixed = {**call, "time": {**call["time"], **hint["patch"]["merge"]["time"]}}
+        rows = runtime.query(fixed, now=NOW["now"])["rows"]
+        assert [row["period"] for row in rows] == [f"2026-09-{day:02}" for day in range(1, 31)]
+        closing = "SELECT SUM(mrr) FROM account_day WHERE day = DATE '2026-09-30'"
+        assert {(): rows[-1]["mrr_all"]} == _reference(closing) == {(): 396}
+        # A call with no time names the clock in its fragment too.
+        call = {"select": [MRR_ALL], "group_by": [NAME]}
+        [hint] = runtime.validate(call, now=NOW["now"])["errors"][0]["recovery_hints"]
+        assert hint["message"] == f"Set time.grain to day on {CLOCK}."
+        assert hint["patch"] == {"merge": {"time": {"temporal_role": CLOCK, "grain": "day"}}}
+        fixed = {**call, **hint["patch"]["merge"]}
+        assert runtime.validate(fixed, now=NOW["now"])["ok"] is True
+    finally:
+        runtime.close()
+
+
+def _daily_flow(root: Path) -> Runtime:
+    """The policy package with MRR as a published daily amount that is no balance."""
+    _package(root, policies=[DAY_POLICY], days_only=True)
+    (root / "metrics" / "accounts.yml").unlink()
+    model = root / "models" / "account_day.yml"
+    doc = yaml.safe_load(model.read_text(encoding="utf-8"))
+    doc["model"]["measures"]["mrr_all"] = {"kind": "aggregate", "expr": "mrr", "label": "MRR"}
+    model.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    return Runtime.from_path(str(root))
+
+
+def test_a_day_policy_on_a_daily_amount_reads_one_day_or_asks(tmp_path: Path) -> None:
+    runtime = _daily_flow(tmp_path / NS)
+    try:
+        # One day named: read at day grain, the same number on one row.
+        for intent, window in [
+            ("MRR on 2026-09-30", {"start": "2026-09-30", "end": "2026-10-01"}),
+            ("MRR yesterday", {"last": {"unit": "day", "value": 1}}),
+        ]:
+            plan = _plan(runtime, intent)
+            assert plan["status"] == "ok", plan.get("why")
+            assert plan["best"]["query"]["time"] == {
+                "temporal_role": CLOCK,
+                "grain": "day",
+                **window,
+            }
+        day = "SELECT SUM(mrr) FROM account_day WHERE day = DATE '2026-09-30'"
+        assert _answer(runtime, _plan(runtime, "MRR on 2026-09-30")) == _reference(day)
+        # No one day: plan asks which day, or daily values, naming the cut the policy needs.
+        for intent in ("MRR last month", "What was MRR at the end of last month?", "MRR"):
+            plan = _plan(runtime, intent)
+            assert plan["status"] == "needs_clarification", plan.get("why")
+            assert plan["next"] == {"action": "clarify"}
+            assert [gap["kind"] for gap in plan["why"]["details"]["gaps"]] == ["day_read_required"]
+            assert plan["why"]["details"]["clarification"]["question"] == (
+                "MRR is read per day: which day, or daily values?"
+            )
+            assert "('daily MRR')" in plan["why"]["recovery_hints"][0]["message"]
+    finally:
+        runtime.close()

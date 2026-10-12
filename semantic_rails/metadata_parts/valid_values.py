@@ -179,7 +179,8 @@ def _anchor_measure_id(
         raise first_refusal
     if policy_denied:
         raise SemanticLayerError(
-            "POLICY_DENIED", "Query references a semantic object blocked by policy."
+            "POLICY_DENIED",
+            f"Policy denies you every measure that could list the values of '{dimension}'.",
         )
     raise SemanticLayerError(
         "NO_VALID_VALUES_SOURCE",

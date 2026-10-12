@@ -478,6 +478,12 @@ def test_raw_conditional_aggregate_cannot_bypass_gate_without_binding(engine, by
         "blocked_objects": [],
         "policy_effects": [],
         "policy_violations": [],
+        "recovery_hints": [
+            {
+                "code": "FIX_QUERY_CALL",
+                "message": "Select a measure or metric in place of the aggregate.",
+            }
+        ],
     }
 
 

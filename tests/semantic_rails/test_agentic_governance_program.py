@@ -396,7 +396,16 @@ def test_metric_constraint_policy_restricts_role_scoped_revenue_cuts(runtime_fac
         )
         assert denied_group["ok"] is False
         assert denied_group["errors"][0]["code"] == "POLICY_DENIED"
-        assert denied_group["recovery_hints"][0]["kind"] == "adjust_metric_cuts"
+        assert denied_group["errors"][0]["message"] == (
+            "measure.jaffle.revenue_usd can't be grouped by dimension.jaffle_customer_type; it "
+            "can be grouped only by dimension.jaffle_store_name."
+        )
+        assert denied_group["recovery_hints"] == [
+            {
+                "code": "FIX_QUERY_CALL",
+                "message": "Remove dimension.jaffle_customer_type from group_by.",
+            }
+        ]
         assert denied_group["policy_effects"][0]["violations"][0]["kind"] == "disallowed_group_by"
 
         denied_filter = runtime.validate(

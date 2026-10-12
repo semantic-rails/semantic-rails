@@ -1530,8 +1530,13 @@ aggregate) is answered only for complete days: `plan` holds a draft of it that r
 an open window, with `stock_as_of_unrealized`. To have
 every query read a balance per day, declare a `metric_constraint` on the stock with
 `required_group_by: [<the clock's date dimension>]` (and `supported_grains: [day]` on the
-clock if weeks or months are never meaningful). `plan` then adds that grouping to its drafts,
-and asks which day for a question by week or month rather than drafting against the policy.
+clock if weeks or months are never meaningful). `plan` then reads the balance at day grain,
+which meets the grouping, and asks which day for a question by week or month rather than
+drafting against the policy. Under such a policy a measure that is no balance is read at day
+grain when the question names one day, and otherwise `plan` asks which day or daily values
+(`day_read_required`). A call that misses the day is refused naming the cut ("can only be read
+by day: group by ..., or set time.grain to day."), with the fragment that meets it in the
+hint's `patch.merge`.
 
 The snapshot is chosen per series per period first. A grouped attribute stored on the
 snapshot rows, such as an account's plan that changes mid-week, is read from that

@@ -163,7 +163,10 @@ Dimension ids. Each becomes a column named by its full id, so a reader keys on i
 guessing. Time is never a `group_by` item: ask for `time.grain` and the answer has a `period`
 column. Groups with no rows stay absent: the engine never cross-joins dimension values. A
 policy's `required_group_by` on the clock's own date dimension is met by any `time.grain` at or
-below that dimension's grain.
+below that dimension's grain. A call that meets no required cut is refused with `POLICY_DENIED`
+naming it ("measure.x can only be read by day: group by dimension.d, or set time.grain to
+day."), and the one hint's `patch.merge` is the call fragment that meets it
+(`{"time": {"grain": "day"}}`), built from the policy's own cuts.
 
 A dimension the package declares as an entity's `display` (the name of one row, see
 [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)) groups by the entity's key too: the key column
