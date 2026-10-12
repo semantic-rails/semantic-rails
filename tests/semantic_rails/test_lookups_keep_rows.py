@@ -13,9 +13,9 @@ NULL foreign key, one a foreign key with no record, and one a match whose attrib
 order 10 has no customer, order 11 a customer with no record (C9) and C8 no segment; C6 has no
 region, C7 a region with no record (R9) and R5 no name; R3 has no country, R4 a country with no
 record (K9) and K2 no name. Orders hold items (one-to-many), each a lookup of a product: item
-104 has no product, item 105 one with no record and melt no category. Gold values come from
-SQL written independently of the engine: scalar subqueries read NULL where a lookup finds no
-row, with no joins.
+104 has no product, item 105 one with no record and melt no category; item 111 names an order
+with no record (999). Gold values come from SQL written independently of the engine: scalar
+subqueries read NULL where a lookup finds no row, with no joins.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from __future__ import annotations
 import ast
 import dataclasses
 import re
-import textwrap
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -36,6 +35,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import (
     leaves,
     lowering_common,
+    paths,
     physical_plan,
     plan_checks,
     predicate_sets,
@@ -114,62 +114,40 @@ ROLLUP_SAFE_ITEMS = """
         reverse: [count_distinct]
 """
 
+# Each model's id and relation are its name.
 MODELS = {
     "countries": """
-        model:
-          id: countries
-          relation: countries
-          entities: {country: {}}
-          dimensions:
-            country_name: {label: Country, kind: categorical}
+        entities: {country: {}}
+        dimensions: {country_name: {label: Country, kind: categorical}}
         """,
     "regions": """
-        model:
-          id: regions
-          relation: regions
-          entities: {region: {}, country: {}}
-          dimensions:
-            region_name: {label: Region, kind: categorical}
+        entities: {region: {}, country: {}}
+        dimensions: {region_name: {label: Region, kind: categorical}}
         """,
     "customers": """
-        model:
-          id: customers
-          relation: customers
-          entities: {customer: {}, region: {}}
-          dimensions:
-            segment: {label: Segment, kind: categorical}
+        entities: {customer: {}, region: {}}
+        dimensions: {segment: {label: Segment, kind: categorical}}
         """,
     "orders": """
-        model:
-          id: orders
-          relation: orders
-          entities: {order: {}, customer: {}}
-          times:
-            ordered_at: {label: Ordered at, column: ordered_at, kind: timestamp,
-              class: event_time, supported_grains: [day, month], default: true}
-          measures:
-            amount: {label: Amount, kind: aggregate, expr: amount, default_agg: sum,
-              accumulation: {kind: flow}}
-            order_count: {label: Orders, kind: entity_count, entity_key: order_id,
-              accumulation: {kind: event}}
-            order_population: {label: Order population, kind: entity_count,
-              entity_key: order_id, accumulation: {kind: population}}
+        entities: {order: {}, customer: {}}
+        times:
+          ordered_at: {label: Ordered at, column: ordered_at, kind: timestamp,
+            class: event_time, supported_grains: [day, month], default: true}
+        measures:
+          amount: {label: Amount, kind: aggregate, expr: amount, default_agg: sum,
+            accumulation: {kind: flow}}
+          order_count: {label: Orders, kind: entity_count, entity_key: order_id,
+            accumulation: {kind: event}}
+          order_population: {label: Order population, kind: entity_count,
+            entity_key: order_id, accumulation: {kind: population}}
         """,
     "items": """
-        model:
-          id: items
-          relation: items
-          entities: {item: {}, order: {}, product: {expr: sku}}
-          dimensions:
-            item_type: {label: Item type, kind: categorical}
+        entities: {item: {}, order: {}, product: {expr: sku}}
+        dimensions: {item_type: {label: Item type, kind: categorical}}
         """,
     "products": """
-        model:
-          id: products
-          relation: products
-          entities: {product: {}}
-          dimensions:
-            category: {label: Category, kind: categorical}
+        entities: {product: {}}
+        dimensions: {category: {label: Category, kind: categorical}}
         """,
 }
 
@@ -178,6 +156,7 @@ REGION = "dimension.geo_region_region_name"
 COUNTRY = "dimension.geo_country_country_name"
 TYPE = "dimension.geo_item_item_type"
 CATEGORY = "dimension.geo_product_category"
+ORDER_COUNT = "measure.geo.order_count"
 MONTHLY = {"temporal_role": "temporal_role.geo_order_ordered_at", "grain": "month"}
 LOOKUP_TABLES = ("customers", "regions", "countries", "products")
 
@@ -205,20 +184,13 @@ def _column(entity: str, column: str) -> dict[str, Any]:
     return {"kind": "column", "entity": f"entity.geo_{entity}", "column": column}
 
 
-def _comparison(left: dict[str, Any], op: str, value: Any) -> dict[str, Any]:
-    return {
-        "kind": "comparison",
-        "op": op,
-        "left": left,
-        "right": {"kind": "literal", "value": value},
-    }
-
-
-def _aggregate_if(condition: dict[str, Any]) -> dict[str, Any]:
+def _count_if(column: dict[str, Any], op: str, value: Any) -> dict[str, Any]:
+    """An aggregate_if counting the orders whose ``column`` compares to ``value``."""
+    right = {"kind": "literal", "value": value}
     return {
         "kind": "aggregate_if",
         "aggregation": "count",
-        "condition": condition,
+        "condition": {"kind": "comparison", "op": op, "left": column, "right": right},
         "value": _column("order", "order_id"),
     }
 
@@ -227,7 +199,7 @@ def _aggregate_if(condition: dict[str, Any]) -> dict[str, Any]:
 # so a grouping two hops away takes the pre-aggregation shortcut, as the sum does.
 AGGREGATIONS = {
     "sum": ("measure.geo.amount", "SUM(o.amount)"),
-    "count": (_aggregate_if(_comparison(_column("order", "amount"), ">", 0)), "COUNT(o.order_id)"),
+    "count": (_count_if(_column("order", "amount"), ">", 0), "COUNT(o.order_id)"),
     "count_distinct": ("measure.geo.order_count", "COUNT(DISTINCT o.order_id)"),
     "avg": (
         {"kind": "aggregate", "measure": "measure.geo.amount", "aggregation": "avg"},
@@ -241,25 +213,27 @@ CONDITIONS = {
     "north": ({"field": REGION, "op": "is", "value": "North"}, f"{SQL_REGION} = 'North'"),
     "no_country": ({"field": COUNTRY, "op": "missing", "value": True}, f"{SQL_COUNTRY} IS NULL"),
 }
+METRICS = """
+metrics:
+  geo.order_amount: {as: metric.geo.order_amount, kind: derived, value_type: number,
+    expression: {measure: measure.geo.amount}}
+"""
 
 
-def _write_package(root: Path, *, rollup_safe: bool = False, extra_seed: str = "") -> Path:
+def _write_package(
+    root: Path, *, rollup_safe: bool = False, extra_seed: str = "", graph: str = ""
+) -> Path:
+    """``graph`` is YAML appended to the rollup-safe graph, after the items' relationship."""
     pkg = root / "geo"
-    (pkg / "data").mkdir(parents=True)
-    (pkg / "models").mkdir()
-    (pkg / "segments").mkdir()
+    for folder in ("data", "models", "segments"):
+        (pkg / folder).mkdir(parents=True)
     (pkg / "data" / "seed.sql").write_text(SEED_SQL + extra_seed)
     (pkg / "package.yml").write_text(PACKAGE)
-    (pkg / "graph.yml").write_text(GRAPH + (ROLLUP_SAFE_ITEMS if rollup_safe else ""))
+    (pkg / "graph.yml").write_text(GRAPH + (ROLLUP_SAFE_ITEMS + graph if rollup_safe else ""))
     for name, body in MODELS.items():
-        (pkg / "models" / f"{name}.yml").write_text(textwrap.dedent(body))
-    recipe = {
-        "as": "metric.geo.order_amount",
-        "kind": "derived",
-        "value_type": "number",
-        "expression": {"measure": "measure.geo.amount"},
-    }
-    (pkg / "metrics.yml").write_text(yaml.safe_dump({"metrics": {"geo.order_amount": recipe}}))
+        model = {"id": name, "relation": name, **yaml.safe_load(body)}
+        (pkg / "models" / f"{name}.yml").write_text(yaml.safe_dump({"model": model}))
+    (pkg / "metrics.yml").write_text(METRICS)
     segments = {
         name: {
             "id": f"segment.geo.{name}",
@@ -274,31 +248,31 @@ def _write_package(root: Path, *, rollup_safe: bool = False, extra_seed: str = "
     return pkg
 
 
-@pytest.fixture(scope="module")
-def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return _write_package(tmp_path_factory.mktemp("lookups"))
+# Item 111 names order 999, which has no record: the shared packages and the gold hold it.
+ORPHAN_ITEM_SEED = "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage');\n"
 
 
-@pytest.fixture(scope="module")
-def runtime(package: Path) -> Iterator[Runtime]:
+def _runtime(root: Path, rollup_safe: bool) -> Iterator[Runtime]:
+    package = _write_package(root, rollup_safe=rollup_safe, extra_seed=ORPHAN_ITEM_SEED)
     runtime = Runtime.from_path(str(package))
     yield opened(runtime)
     runtime.close()
 
 
 @pytest.fixture(scope="module")
+def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    yield from _runtime(tmp_path_factory.mktemp("lookups"), rollup_safe=False)
+
+
+@pytest.fixture(scope="module")
 def rollup_safe_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    runtime = Runtime.from_path(
-        str(_write_package(tmp_path_factory.mktemp("rollup_safe"), rollup_safe=True))
-    )
-    yield opened(runtime)
-    runtime.close()
+    yield from _runtime(tmp_path_factory.mktemp("rollup_safe"), rollup_safe=True)
 
 
 @pytest.fixture(scope="module")
 def gold() -> Iterator[Any]:
     connection = duckdb.connect()
-    connection.execute(SEED_SQL)
+    connection.execute(SEED_SQL + ORPHAN_ITEM_SEED)
 
     def run(sql: str) -> dict[Any, float | None]:
         rows = connection.execute(sql).fetchall()
@@ -338,26 +312,42 @@ def _lookup_joins(sql: str) -> list[tuple[str, str]]:
     return re.findall(rf"\b(\w+) JOIN ({'|'.join(LOOKUP_TABLES)})\b", sql)
 
 
+# Orders of at least 10: every order but 3 and 4. It reads the orders alone.
+EVERY_TENNER = {
+    "entity": "entity.geo_order",
+    "having": [{"field": "measure.geo.amount", "op": "gte", "value": 10}],
+    "over": "all_time",
+}
+
+
 @pytest.mark.parametrize(
-    ("aggregation", "dimension"),
+    ("aggregation", "dimension", "metric_filter"),
     [
-        *[(aggregation, COUNTRY) for aggregation in AGGREGATIONS],
-        ("sum", SEGMENT),
-        ("count_distinct", REGION),
+        # The sum and the distinct count by country are leaves below.
+        ("count", COUNTRY, False),
+        ("avg", COUNTRY, False),
+        ("sum", SEGMENT, False),
+        ("count_distinct", REGION, False),
+        # A metric filter leaves the groups adding up too.
+        ("sum", COUNTRY, True),
     ],
 )
-def test_grouped_rows_add_up_to_the_total(runtime, gold, aggregation, dimension):
+def test_grouped_rows_add_up_to_the_total(runtime, gold, aggregation, dimension, metric_filter):
     expression, gold_value = AGGREGATIONS[aggregation]
-    query = _query(expression, group_by=[dimension])
+    where = {"where": [EVERY_TENNER]} if metric_filter else {}
+    gold_where = "WHERE o.amount >= 10" if metric_filter else ""
+    query = _query(expression, group_by=[dimension], **where)
 
     grouped = _rows(runtime, query)
 
     assert grouped == pytest.approx(
-        gold(f"SELECT {GOLD_FIELD[dimension]}, {gold_value} FROM orders AS o GROUP BY 1")
+        gold(
+            f"SELECT {GOLD_FIELD[dimension]}, {gold_value} FROM orders AS o {gold_where} GROUP BY 1"
+        )
     )
     assert None in grouped  # a NULL key, a key with no record and a NULL attribute
     if aggregation in {"sum", "count"}:
-        total = _rows(runtime, _query(expression))[None]
+        total = _rows(runtime, _query(expression, **where))[None]
         assert sum(value or 0 for value in grouped.values()) == total
     assert _lookup_joins(_sql(runtime.config, query)) == [
         ("LEFT", table) for table in HOPS[dimension]
@@ -367,56 +357,26 @@ def test_grouped_rows_add_up_to_the_total(runtime, gold, aggregation, dimension)
 @pytest.mark.parametrize("condition", list(CONDITIONS))
 def test_one_answer_however_the_filter_is_written(runtime, gold, condition):
     clause, gold_condition = CONDITIONS[condition]
-    count = "measure.geo.order_count"
     expected = gold(f"SELECT COUNT(*) FROM orders AS o WHERE {gold_condition}")[None]
 
-    as_where = _rows(runtime, _query(count, where=[clause]))[None]
-    measure_filter = {"kind": "aggregate", "measure": count, "filter": {"all": [clause]}}
+    as_where = _rows(runtime, _query(ORDER_COUNT, where=[clause]))[None]
+    measure_filter = {"kind": "aggregate", "measure": ORDER_COUNT, "filter": {"all": [clause]}}
     as_measure_filter = _rows(runtime, _query(measure_filter))[None]
     as_segment = runtime.segment_preview(f"segment.geo.{condition}")["member_count"]
 
     assert as_where == as_measure_filter == as_segment == expected
-    entity, column = {REGION: ("region", "region_name"), COUNTRY: ("country", "country_name")}[
-        clause["field"]
-    ]
-    null_test = clause["op"] == "missing"
-    value = None if null_test else clause["value"]
-    as_aggregate_if = _aggregate_if(
-        _comparison(_column(entity, column), "IS" if null_test else "=", value)
-    )
-    if null_test:
+    entity = "region" if clause["field"] == REGION else "country"
+    column = _column(entity, f"{entity}_name")
+    if clause["op"] == "missing":
         # A few reads still join a lookup inner (on ClickHouse, inside a metric predicate's own
         # query, beside a time role), so a condition a row with no match could satisfy is
         # refused, never answered differently by where it is read.
         with pytest.raises(SemanticLayerError) as raised:
-            _rows(runtime, _query(as_aggregate_if))
+            _rows(runtime, _query(_count_if(column, "IS", None)))
         assert raised.value.details["reason"] == "null_accepting_condition"
     else:
+        as_aggregate_if = _count_if(column, "=", clause["value"])
         assert _rows(runtime, _query(as_aggregate_if))[None] == expected
-
-
-# Orders of at least 10: every order but 3 and 4. It reads the orders alone.
-EVERY_TENNER = {
-    "entity": "entity.geo_order",
-    "having": [{"field": "measure.geo.amount", "op": "gte", "value": 10}],
-    "over": "all_time",
-}
-
-
-def test_a_metric_filter_leaves_the_groups_adding_up(runtime, gold):
-    query = _query("measure.geo.amount", where=[EVERY_TENNER])
-    dimension = COUNTRY  # through all three hops
-
-    grouped = _rows(runtime, {**query, "group_by": [dimension]})
-
-    assert grouped == gold(
-        f"SELECT {GOLD_FIELD[dimension]}, SUM(o.amount) FROM orders AS o"
-        " WHERE o.amount >= 10 GROUP BY 1"
-    )
-    assert sum(grouped.values()) == _rows(runtime, query)[None] == 173  # 185 - 5 - 7
-    assert _lookup_joins(_sql(runtime.config, {**query, "group_by": [dimension]})) == [
-        ("LEFT", table) for table in HOPS[dimension]
-    ]
 
 
 # The orders that hold an item of each type, by country; the gold de-duplicates by order.
@@ -433,26 +393,20 @@ ORDERS_BY_TYPE_AND_COUNTRY = {
     ("food", None): 3,
 }
 BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
-ORDER_COUNT = "measure.geo.order_count"
-POPULATION = "measure.geo.order_population"
 
 
-def _scoped_population(*predicates: dict[str, Any]) -> dict[str, Any]:
+def _orders_with(**minimums: int) -> dict[str, Any]:
+    """The population of the orders whose each measure is at least its minimum."""
+    predicate = {"entity": "entity.geo_order", "op": "gte", "over": "all_time"}
+    predicates = [
+        {**predicate, "measure": f"measure.geo.{name}", "value": minimum}
+        for name, minimum in minimums.items()
+    ]
     return {
         "kind": "scoped_aggregate",
-        "measure": POPULATION,
+        "measure": "measure.geo.order_population",
         "aggregation": "count_distinct",
-        "predicates": list(predicates),
-    }
-
-
-def _order_predicate(measure: str, value: int) -> dict[str, Any]:
-    return {
-        "measure": measure,
-        "entity": "entity.geo_order",
-        "op": "gte",
-        "value": value,
-        "over": "all_time",
+        "predicates": predicates,
     }
 
 
@@ -460,10 +414,8 @@ def _order_predicate(measure: str, value: int) -> dict[str, Any]:
 # which lowers to a snapshot of the orders joined to the sets they belong to.
 SHARE_OF_BIG_ORDERS = {
     "kind": "ratio",
-    "numerator": _scoped_population(
-        _order_predicate("measure.geo.order_count", 1), _order_predicate("measure.geo.amount", 15)
-    ),
-    "denominator": _scoped_population(_order_predicate("measure.geo.order_count", 1)),
+    "numerator": _orders_with(order_count=1, amount=15),
+    "denominator": _orders_with(order_count=1),
 }
 
 
@@ -541,11 +493,21 @@ def _leaf_violations(runtime: Runtime, gold: Any, leaf: Leaf) -> list[str]:
 
 @pytest.mark.parametrize("name", list(LEAVES))
 def test_every_leaf_keeps_the_rows(runtime, rollup_safe_runtime, gold, name):
+    """ClickHouse reads '' or 0, not NULL, from an unmatched outer-join column, so its lookups
+    stay inner in every leaf."""
     leaf = LEAVES[name]
+    leaf_runtime = rollup_safe_runtime if leaf.rollup_safe else runtime
+    package = dataclasses.replace(leaf_runtime.config.package, warehouse="clickhouse")
+    clickhouse = dataclasses.replace(leaf_runtime.config, package=package)
 
-    violations = _leaf_violations(rollup_safe_runtime if leaf.rollup_safe else runtime, gold, leaf)
+    violations = _leaf_violations(leaf_runtime, gold, leaf)
 
     assert violations == []
+    joins = _lookup_joins(_sql(clickhouse, leaf.query))
+    assert joins and all(kind == "INNER" for kind, _ in joins)
+
+
+_joins_for_paths = sql_lowering._joins_for_paths
 
 
 def _inner_lookups(*args: Any, **kwargs: Any) -> list[SqlJoin]:
@@ -553,13 +515,8 @@ def _inner_lookups(*args: Any, **kwargs: Any) -> list[SqlJoin]:
     return [dataclasses.replace(join, join_type="INNER") for join in joins]
 
 
-_joins_for_paths = sql_lowering._joins_for_paths
-
-
 @pytest.mark.parametrize("name", list(LEAVES))
-def test_a_leaf_that_joins_its_lookups_inner_fails_the_check(
-    package, tmp_path, gold, monkeypatch, name
-):
+def test_a_leaf_that_joins_its_lookups_inner_fails_the_check(tmp_path, gold, monkeypatch, name):
     """The check above catches a leaf that bypasses the rule: here every leaf joins INNER."""
     leaf = LEAVES[name]
     for module in (leaves, lowering_common, plan_checks, predicate_sets):
@@ -582,21 +539,15 @@ OPERATORS = {
     "not_in": ("not", ["North", "East"], "({region} IS NULL OR {region} NOT IN ('North', 'East'))"),
     "missing": ("missing", True, "{region} IS NULL"),
 }
+SQL_ORDERS_BY_TYPE_WHERE = (
+    "SELECT i.item_type, COUNT(DISTINCT o.order_id) FROM orders AS o JOIN items AS i"
+    " ON i.order_id = o.order_id WHERE {condition} GROUP BY 1"
+)
 # Per leaf: the query without the region filter, and the gold with a {condition} to fill in.
 FILTERED_LEAVES = {
     "root": (_query(ORDER_COUNT), "SELECT COUNT(*) FROM orders AS o WHERE {condition}", False),
-    "de_duplicated": (
-        _query(ORDER_COUNT, group_by=[TYPE]),
-        "SELECT i.item_type, COUNT(DISTINCT o.order_id) FROM orders AS o JOIN items AS i"
-        " ON i.order_id = o.order_id WHERE {condition} GROUP BY 1",
-        False,
-    ),
-    "entity_in_terms_of": (
-        _query(ORDER_COUNT, group_by=[TYPE]),
-        "SELECT i.item_type, COUNT(DISTINCT o.order_id) FROM orders AS o JOIN items AS i"
-        " ON i.order_id = o.order_id WHERE {condition} GROUP BY 1",
-        True,
-    ),
+    "de_duplicated": (_query(ORDER_COUNT, group_by=[TYPE]), SQL_ORDERS_BY_TYPE_WHERE, False),
+    "entity_in_terms_of": (_query(ORDER_COUNT, group_by=[TYPE]), SQL_ORDERS_BY_TYPE_WHERE, True),
     "exists": (
         _query(ORDER_COUNT, where=[BEVERAGE]),
         "SELECT COUNT(*) FROM orders AS o WHERE {condition} AND EXISTS (SELECT 1 FROM items"
@@ -609,8 +560,10 @@ FILTERED_LEAVES = {
 @pytest.mark.parametrize(
     ("name", "operator"),
     [
-        *[(name, op) for name in FILTERED_LEAVES for op in ("is", "not", "missing")],
+        # The root leaf's `is` and `missing` are where filters of the answer test above.
+        ("root", "not"),
         ("root", "in"),
+        *[(name, op) for name in list(FILTERED_LEAVES)[1:] for op in ("is", "not", "missing")],
         ("exists", "not_in"),
     ],
 )
@@ -680,13 +633,8 @@ def test_a_distribution_reads_only_the_entities_its_lookups_find(runtime, gold, 
     assert alone == pytest.approx(gold(f"SELECT {aggregate} FROM ({_region_amounts()})")[None])
     if function == "median":
         assert alone == 11
-    query = {
-        "select": [
-            {"as": "value", "expression": _distribution(function)},
-            "measure.geo.amount",
-        ],
-        "group_by": [SEGMENT],
-    }
+    query = _query(_distribution(function), group_by=[SEGMENT])
+    query["select"].append("measure.geo.amount")
     rows = runtime.query(query)["rows"]
     by_segment = gold(
         f"SELECT segment, {aggregate} FROM ({_region_amounts('c.segment, ')}) GROUP BY 1"
@@ -700,7 +648,8 @@ def test_a_distribution_reads_only_the_entities_its_lookups_find(runtime, gold, 
 
 def test_the_entity_in_terms_of_time_role_keeps_the_inner_join(rollup_safe_runtime):
     """The time role is the order's, read from the items through the order hop: that hop stays
-    inner, as a time role read through a lookup does in every leaf, and the rest keep rows."""
+    inner, as a time role read through a lookup does in every leaf, and the rest keep rows.
+    Counted from the items, item 111 (order 999, no record) is none of the orders."""
     query = _query(ORDER_COUNT, group_by=[TYPE, COUNTRY], time=MONTHLY)
 
     sql = _sql(rollup_safe_runtime.config, query)
@@ -708,16 +657,12 @@ def test_the_entity_in_terms_of_time_role_keeps_the_inner_join(rollup_safe_runti
     assert "FROM items" in sql
     assert re.findall(r"\b(\w+) JOIN (orders|customers|regions|countries)\b", sql) == [
         ("INNER", "orders"),
-        ("LEFT", "customers"),
-        ("LEFT", "regions"),
-        ("LEFT", "countries"),
+        *[("LEFT", table) for table in HOPS[COUNTRY]],
     ]
-    # Every order is in January, and every item has its order: no row is lost.
+    # Every order is in January: no order is lost.
     assert _rows(rollup_safe_runtime, query) == ORDERS_BY_TYPE_AND_COUNTRY
 
 
-# Item 111 names order 999, which has no record.
-ORPHAN_ITEM_SEED = "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage');\n"
 # The orders that hold an item, by a {group} of the item.
 SQL_ORDERS_BY_ITEM = (
     "SELECT {group}, COUNT(DISTINCT o.order_id) FROM orders AS o"
@@ -737,20 +682,6 @@ def _answer(package: Path, query: dict[str, Any], reference: str) -> tuple[str, 
         connection.execute((package / "data" / "seed.sql").read_text())
         gold_rows = connection.execute(reference).fetchall()
     return sql, rows, {row[:-1] if len(row) > 2 else row[0]: row[-1] for row in gold_rows}
-
-
-def test_the_entity_in_terms_of_leaf_counts_no_order_for_an_item_with_no_order(tmp_path):
-    """Counted from the items, item 111 is none of the orders: the hop back to the order joins
-    INNER, and the lookups past it keep rows (orders 3 and 10 still count under NULL)."""
-    sql, rows, reference = _answer(
-        _write_package(tmp_path, rollup_safe=True, extra_seed=ORPHAN_ITEM_SEED),
-        _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]),
-        SQL_ORDERS_BY_TYPE_AND_COUNTRY,
-    )
-
-    assert "FROM items" in sql
-    # The reference counts existing orders only: item 111 (order 999, no record) adds none.
-    assert rows == reference == ORDERS_BY_TYPE_AND_COUNTRY
 
 
 # Every pair of (product lookup of the orphan item, time axis, leaf) appears once.
@@ -781,64 +712,55 @@ def test_a_child_lookup_grouping_counts_only_existing_parents(
     assert ("FROM items" if rollup_safe else "_entity_rows") in sql
 
 
-def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_parent: bool = False) -> Path:
-    package = _write_package(
-        root,
-        rollup_safe=True,
-        extra_seed=(
-            "ALTER TABLE items ADD COLUMN other_order_id INTEGER;\n"
-            "UPDATE items SET other_order_id = order_id;\n" + extra_seed
-        ),
-    )
-    graph = yaml.safe_load((package / "graph.yml").read_text())["graph"]
-    graph["relationships"]["items_other_order"] = {
-        "id": "relationship.items_other_order",
-        "entities": ["item", "order"],
-        "via": "other_order_id",
-        "cardinality": "many_to_one",
-    }
-    graph["path_preferences"] = [
-        {
-            "source_entity": "order",
-            "target_entity": "product",
-            "relationship_path": ["relationship.items_order", "relationship.items_product"],
-        }
-    ]
-    if pin_parent:
-        # A row holds wherever a route walks its pair, so a row for item -> order must name the
-        # relationship the order -> product row walks; naming the other one fails to load.
-        graph["path_preferences"].append(
-            {
-                "source_entity": "item",
-                "target_entity": "order",
-                "relationship_path": ["relationship.items_order"],
-            }
-        )
-    (package / "graph.yml").write_text(yaml.safe_dump({"graph": graph}))
-    return package
+# A second relationship from an item to its order, and the route the order count walks to a
+# product.
+OTHER_ORDER = """
+    items_other_order:
+      id: relationship.items_other_order
+      entities: [item, order]
+      via: other_order_id
+      cardinality: many_to_one
+  path_preferences:
+    - source_entity: order
+      target_entity: product
+      relationship_path: [relationship.items_order, relationship.items_product]
+"""
+OTHER_ORDER_SEED = (
+    "ALTER TABLE items ADD COLUMN other_order_id INTEGER;\n"
+    "UPDATE items SET other_order_id = order_id;\n"
+)
+# A row holds wherever a route walks its pair, so a row for item -> order must name the
+# relationship the order -> product row walks; naming the other one fails to load.
+PIN_PARENT = """
+    - source_entity: item
+      target_entity: order
+      relationship_path: [relationship.items_order]
+"""
 
 
 @pytest.mark.parametrize(
     ("extra_seed", "expected", "pin_parent"),
     [
-        pytest.param(
+        (
             "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage', 1);\n",
             {"hot": 4, "cold": 2, None: 3},
             False,
-            id="orphan_with_another_existing_parent",
         ),
-        pytest.param(
+        (
             "UPDATE items SET other_order_id = NULL WHERE order_id = 1;\n",
             {"hot": 4, "cold": 2, None: 3},
             True,
-            id="valid_parent_with_null_other_parent",
         ),
-        pytest.param(
+        (
             "DELETE FROM items;\nINSERT INTO items VALUES (111, 1, 'coffee', 'beverage', 999);\n",
             {"hot": 1},
             True,
-            id="valid_parent_with_missing_other_parent",
         ),
+    ],
+    ids=[
+        "orphan_with_another_existing_parent",
+        "valid_parent_with_null_other_parent",
+        "valid_parent_with_missing_other_parent",
     ],
 )
 def test_a_parent_count_with_two_relationships_uses_the_counted_path(
@@ -847,7 +769,12 @@ def test_a_parent_count_with_two_relationships_uses_the_counted_path(
     """An alternative parent relationship never changes the pinned order count, with or without
     a row for the counted one."""
     sql, rows, reference = _answer(
-        _write_parent_roles_package(tmp_path, extra_seed=extra_seed, pin_parent=pin_parent),
+        _write_package(
+            tmp_path,
+            rollup_safe=True,
+            extra_seed=OTHER_ORDER_SEED + extra_seed,
+            graph=OTHER_ORDER + (PIN_PARENT if pin_parent else ""),
+        ),
         _query(ORDER_COUNT, group_by=[CATEGORY]),
         SQL_ORDERS_BY_ITEM.format(group=SQL_ITEM_CATEGORY),
     )
@@ -861,27 +788,34 @@ def test_a_parent_count_with_two_relationships_uses_the_counted_path(
 @pytest.mark.parametrize("dimension", [TYPE, CATEGORY], ids=["child", "child_lookup"])
 def test_a_reverse_only_parent_relationship_declines_the_child_anchor(tmp_path, dimension):
     """A supported parent-to-child grouping needs no prohibited child-to-parent lookup."""
-    package = _write_package(tmp_path, rollup_safe=True, extra_seed=ORPHAN_ITEM_SEED)
-    graph = yaml.safe_load((package / "graph.yml").read_text())
-    graph["graph"]["relationships"]["items_order"]["allowed_directions"] = ["reverse"]
-    (package / "graph.yml").write_text(yaml.safe_dump(graph))
+    reverse_only = "      allowed_directions: [reverse]\n"  # of the items' relationship
     group = "i.item_type" if dimension == TYPE else SQL_ITEM_CATEGORY
     sql, rows, reference = _answer(
-        package, _query(ORDER_COUNT, group_by=[dimension]), SQL_ORDERS_BY_ITEM.format(group=group)
+        _write_package(tmp_path, rollup_safe=True, extra_seed=ORPHAN_ITEM_SEED, graph=reverse_only),
+        _query(ORDER_COUNT, group_by=[dimension]),
+        SQL_ORDERS_BY_ITEM.format(group=group),
     )
 
     assert rows == reference
-
     assert "FROM orders" in sql
     assert "FROM items" not in sql
 
 
-@pytest.mark.parametrize("bypass", ["missing", "left"])
-def test_a_child_anchored_count_refuses_a_bypassed_parent_check(tmp_path, monkeypatch, bypass):
-    """The shared join builder refuses the leaf if its parent check is absent or nullable."""
-    from semantic_rails.compiler_parts import paths
+def _refuses_the_child_anchor(call: Any) -> None:
+    """``call`` refuses to answer the order count from the items' rows."""
+    with pytest.raises(SemanticLayerError) as raised:
+        call()
+    error = raised.value
+    assert error.code == "REWRITE_NOT_SUPPORTED"
+    assert error.details["measure_entity"] == "entity.geo_order"
+    assert error.details["source_entity"] == "entity.geo_item"
 
-    config = load_package_config(str(_write_package(tmp_path, rollup_safe=True)))
+
+@pytest.mark.parametrize("bypass", ["missing", "left"])
+def test_a_child_anchored_count_refuses_a_bypassed_parent_check(
+    rollup_safe_runtime, monkeypatch, bypass
+):
+    """The shared join builder refuses the leaf if its parent check is absent or nullable."""
     if bypass == "missing":
         anchor_plan = sql_lowering._entity_in_terms_of_anchor_plan
 
@@ -902,20 +836,17 @@ def test_a_child_anchored_count_refuses_a_bypassed_parent_check(tmp_path, monkey
             paths._INNER_LOOKUP_PURPOSES - {"entity_in_terms_of_root"},
         )
 
-    with pytest.raises(SemanticLayerError) as raised:
-        _sql(config, _query(ORDER_COUNT, group_by=[CATEGORY]))
-
-    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
-    assert raised.value.details["measure_entity"] == "entity.geo_order"
-    assert raised.value.details["source_entity"] == "entity.geo_item"
+    _refuses_the_child_anchor(
+        lambda: _sql(rollup_safe_runtime.config, _query(ORDER_COUNT, group_by=[CATEGORY]))
+    )
 
 
 @pytest.mark.parametrize("relationship", ["items_order", "items_other_order"])
 def test_a_child_anchor_guard_refuses_two_parent_relationships(tmp_path, relationship):
     """Bypassing the anchor's decline cannot pass the guard just by joining orders INNER."""
-    from semantic_rails.compiler_parts import paths
-
-    config = load_package_config(str(_write_parent_roles_package(tmp_path, extra_seed="")))
+    package = _write_package(
+        tmp_path, rollup_safe=True, extra_seed=OTHER_ORDER_SEED, graph=OTHER_ORDER
+    )
     root = PathSelection(
         target_entity="entity.geo_order",
         purpose="entity_in_terms_of_root",
@@ -923,44 +854,13 @@ def test_a_child_anchor_guard_refuses_two_parent_relationships(tmp_path, relatio
         candidate_paths=[],
         analysis={},
     )
+    config = load_package_config(str(package))
 
-    with pytest.raises(SemanticLayerError) as raised:
-        paths._joins_for_paths("entity.geo_item", [root], config, measure_entity="entity.geo_order")
-
-    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
-    assert raised.value.details["measure_entity"] == "entity.geo_order"
-    assert raised.value.details["source_entity"] == "entity.geo_item"
-
-
-def test_the_entity_in_terms_of_leaf_leaves_a_rollup_dimension_to_the_order_s_leaf(tmp_path, gold):
-    """A rollup of the orders holds the country, so the base answers as that rollup does: every
-    hop to the country is INNER. Orders 4, 5 and 11 reach no country record and drop out; order
-    3's country has no name. Counted from the items, the leaf would not see the orders' rollup,
-    so the orders' own leaf answers."""
-    base = load_package_config(str(_write_package(tmp_path, rollup_safe=True)))
-    rollup = AggregateRelationConfig(
-        id="aggregate_relation.geo_orders_by_country",
-        relation="orders_by_country",
-        source_entity="entity.geo_order",
-        dimensions=[COUNTRY],
+    _refuses_the_child_anchor(
+        lambda: paths._joins_for_paths(
+            "entity.geo_item", [root], config, measure_entity="entity.geo_order"
+        )
     )
-    config = dataclasses.replace(base, aggregate_relations=[rollup])
-
-    sql = _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
-
-    assert "FROM orders" in sql
-    assert _lookup_joins(sql) == [
-        ("INNER", table) for table in ("customers", "regions", "countries")
-    ]
-    expected = gold(
-        "SELECT i.item_type, k.country_name, COUNT(DISTINCT o.order_id) FROM orders AS o"
-        " JOIN items AS i ON i.order_id = o.order_id"
-        " JOIN customers AS c ON c.customer_id = o.customer_id"
-        " JOIN regions AS r ON r.region_id = c.region_id"
-        " JOIN countries AS k ON k.country_id = r.country_id GROUP BY 1, 2"
-    )
-    assert gold(sql) == expected
-    assert expected == {("beverage", "Atlantis"): 3, ("beverage", None): 1, ("food", "Atlantis"): 1}
 
 
 def _with_rollup(config: Any, source_entity: str) -> Any:
@@ -973,39 +873,60 @@ def _with_rollup(config: Any, source_entity: str) -> Any:
     return dataclasses.replace(config, aggregate_relations=[rollup])
 
 
+def test_the_entity_in_terms_of_leaf_leaves_a_rollup_dimension_to_the_order_s_leaf(
+    rollup_safe_runtime, gold
+):
+    """A rollup of the orders holds the country, so the base answers as that rollup does: every
+    hop to the country is INNER. Orders 4, 5 and 11 reach no country record and drop out; order
+    3's country has no name. Counted from the items, the leaf would not see the orders' rollup,
+    so the orders' own leaf answers."""
+    config = _with_rollup(rollup_safe_runtime.config, "entity.geo_order")
+
+    sql = _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
+
+    assert "FROM orders" in sql
+    assert _lookup_joins(sql) == [("INNER", table) for table in HOPS[COUNTRY]]
+    expected = gold(
+        "SELECT i.item_type, k.country_name, COUNT(DISTINCT o.order_id) FROM orders AS o"
+        " JOIN items AS i ON i.order_id = o.order_id"
+        " JOIN customers AS c ON c.customer_id = o.customer_id"
+        " JOIN regions AS r ON r.region_id = c.region_id"
+        " JOIN countries AS k ON k.country_id = r.country_id GROUP BY 1, 2"
+    )
+    assert gold(sql) == expected
+    assert expected == {("beverage", "Atlantis"): 3, ("beverage", None): 1, ("food", "Atlantis"): 1}
+
+
 @pytest.mark.parametrize(
     ("rollup_safe", "marker"),
     [(False, "_entity_rows"), (True, "FROM items")],
     ids=["de_duplicated", "entity_in_terms_of"],
 )
-def test_a_rollup_of_another_model_changes_no_leaf(tmp_path, gold, rollup_safe, marker):
+def test_a_rollup_of_another_model_changes_no_leaf(
+    runtime, rollup_safe_runtime, gold, rollup_safe, marker
+):
     """A rollup of the items that holds the country belongs to item measures: the order count
     joins its lookups as the base tables do from either leaf, with both NULL groups."""
     config = _with_rollup(
-        load_package_config(str(_write_package(tmp_path, rollup_safe=rollup_safe))),
-        "entity.geo_item",
+        (rollup_safe_runtime if rollup_safe else runtime).config, "entity.geo_item"
     )
 
     sql = _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
 
     assert marker in sql
-    assert _lookup_joins(sql) == [
-        ("LEFT", table) for table in ("customers", "regions", "countries")
-    ]
+    assert _lookup_joins(sql) == [("LEFT", table) for table in HOPS[COUNTRY]]
     assert gold(sql) == gold(SQL_ORDERS_BY_TYPE_AND_COUNTRY) == ORDERS_BY_TYPE_AND_COUNTRY
 
 
-def test_a_dimension_only_query_reads_no_rollup(package, gold):
+def test_a_dimension_only_query_reads_no_rollup(runtime, gold):
     """No measure is read, so no rollup applies: the items rollup holding the country leaves
     the listing's NULL country for food (items 105, 106 and 109) in."""
-    config = _with_rollup(load_package_config(str(package)), "entity.geo_item")
+    config = _with_rollup(runtime.config, "entity.geo_item")
 
     sql = _sql(config, {"version": 1, "group_by": [TYPE, COUNTRY]})
 
     assert "FROM items" in sql
-    assert _lookup_joins(sql) == [
-        ("LEFT", table) for table in ("customers", "regions", "countries")
-    ]
+    assert _lookup_joins(sql) == [("LEFT", table) for table in HOPS[COUNTRY]]
     item_country = (
         "(SELECT k.country_name FROM orders AS o, customers AS c, regions AS r, countries AS k"
         " WHERE o.order_id = i.order_id AND c.customer_id = o.customer_id"
@@ -1016,20 +937,15 @@ def test_a_dimension_only_query_reads_no_rollup(package, gold):
     assert ("food", None) in expected
 
 
-def test_a_leaf_reading_another_model_s_rows_refuses_the_measure_s_rollup(tmp_path, monkeypatch):
+def test_a_leaf_reading_another_model_s_rows_refuses_the_measure_s_rollup(
+    rollup_safe_runtime, monkeypatch
+):
     """The guard behind the entity_in_terms_of leaf's decline: with the decline bypassed, the
     joins refuse to answer a dimension the orders' rollup holds from the items' rows."""
-    config = _with_rollup(
-        load_package_config(str(_write_package(tmp_path, rollup_safe=True))), "entity.geo_order"
-    )
+    config = _with_rollup(rollup_safe_runtime.config, "entity.geo_order")
     monkeypatch.setattr(lowering_common, "rollup_held_lookups", lambda *args: set())
 
-    with pytest.raises(SemanticLayerError) as raised:
-        _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
-
-    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
-    assert raised.value.details["measure_entity"] == "entity.geo_order"
-    assert raised.value.details["source_entity"] == "entity.geo_item"
+    _refuses_the_child_anchor(lambda: _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY])))
 
 
 def test_a_lookup_after_a_one_to_many_hop_joins_left_inside_exists(runtime, gold):
@@ -1043,28 +959,11 @@ def test_a_lookup_after_a_one_to_many_hop_joins_left_inside_exists(runtime, gold
         "EXISTS ( SELECT 1 AS match FROM items LEFT JOIN products ON items.sku = products.sku"
         " WHERE orders.order_id = items.order_id AND products.category = 'hot' )"
     ) in sql
-    assert (
-        _rows(runtime, query)[None]
-        == gold(
-            "SELECT COUNT(*) FROM orders AS o WHERE EXISTS (SELECT 1 FROM items AS i WHERE"
-            " i.order_id = o.order_id AND (SELECT p.category FROM products AS p"
-            " WHERE p.sku = i.sku) = 'hot')"
-        )[None]
+    assert _rows(runtime, query) == gold(
+        "SELECT COUNT(*) FROM orders AS o WHERE EXISTS (SELECT 1 FROM items AS i WHERE"
+        " i.order_id = o.order_id AND (SELECT p.category FROM products AS p"
+        " WHERE p.sku = i.sku) = 'hot')"
     )
-
-
-@pytest.mark.parametrize("name", list(LEAVES))
-def test_clickhouse_keeps_every_lookup_inner(package, name):
-    """ClickHouse reads '' or 0, not NULL, from an unmatched outer-join column, so its lookups
-    stay inner in every leaf."""
-    leaf = LEAVES[name]
-    base = load_package_config(str(package))
-    config = dataclasses.replace(
-        base, package=dataclasses.replace(base.package, warehouse="clickhouse")
-    )
-    joins = _lookup_joins(_sql(config, leaf.query))
-
-    assert joins and all(kind == "INNER" for kind, _ in joins)
 
 
 def _callers(function: str) -> set[str]:
