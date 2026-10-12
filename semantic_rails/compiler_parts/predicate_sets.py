@@ -22,7 +22,6 @@ from ..expressions import (
     CaseExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     MeasureRefExpr,
@@ -30,7 +29,6 @@ from ..expressions import (
     MetricRecipeRefExpr,
     OffsetWindowExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
@@ -274,8 +272,6 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
             OffsetWindowExpr,
             ShareExpr,
             EntityValueExpr,

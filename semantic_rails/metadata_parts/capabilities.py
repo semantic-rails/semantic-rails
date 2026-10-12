@@ -12,13 +12,11 @@ from ..expressions import (
     CaseExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     LiteralExpr,
     MetricPredicateExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
 )
@@ -45,8 +43,6 @@ def _expr_kinds(expr: SemanticExpr) -> set[str]:
         if expr.else_expr is not None:
             kinds |= _expr_kinds(expr.else_expr)
         return kinds
-    if isinstance(expr, (CumulativeExpr, RollingExpr)):
-        return kinds | _expr_kinds(expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return kinds | _expr_kinds(expr.input)
     if isinstance(expr, ScopedAggregateExpr):
@@ -74,8 +70,7 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         "historical_joins": any(row.temporal_validity for row in config.relationships),
         "point_in_time_metrics": any(row.kind == "semi_additive" for row in config.metric_recipes)
         or any(row.measure_class in {"semi_additive", "snapshot"} for row in config.measures),
-        "rolling_windows": "RollingExpr" in expr_kinds
-        or any("rolling_" in row for row in recipe_ids),
+        "rolling_windows": any("rolling_" in row for row in recipe_ids),
         "prior_period_offsets": any(
             "prior_period" in row or "month_over_month" in row for row in recipe_ids
         ),

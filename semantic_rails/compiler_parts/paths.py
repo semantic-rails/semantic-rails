@@ -15,7 +15,6 @@ from ..expressions import (
     CallExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     LiteralExpr,
@@ -24,7 +23,6 @@ from ..expressions import (
     MetricRecipeRefExpr,
     OffsetWindowExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
@@ -351,8 +349,6 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,

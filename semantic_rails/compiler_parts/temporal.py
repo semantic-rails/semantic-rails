@@ -21,7 +21,6 @@ from ..expressions import (
     CaseExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     MeasureRefExpr,
@@ -29,7 +28,6 @@ from ..expressions import (
     MetricRecipeRefExpr,
     OffsetWindowExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
@@ -78,7 +76,7 @@ def _requires_query_time(expr: SemanticExpr, config: PackageConfig) -> bool:
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _requires_query_time(recipe.expression, config)
-    if isinstance(expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr)):
+    if isinstance(expr, OffsetWindowExpr):
         return True
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _requires_query_time(expr.left, config) or _requires_query_time(expr.right, config)
@@ -194,9 +192,7 @@ def _expr_compatible_temporal_roles(
         if expr.else_expr is not None:
             role_sets.append(_expr_compatible_temporal_roles(expr.else_expr, config, query))
         return _combine_temporal_roles(role_sets)
-    if isinstance(
-        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
-    ):
+    if isinstance(expr, (OffsetWindowExpr, ShareExpr, EntityValueExpr)):
         return _expr_compatible_temporal_roles(expr.input, config, query)
     if isinstance(expr, ConversionExpr):
         return _expr_compatible_temporal_roles(expr.base, config, query)
@@ -207,9 +203,9 @@ def _window_measure_exprs(
     expr: Any, config: PackageConfig, *, window_inputs: bool = False
 ) -> Iterator[MeasureRefExpr | AggregateExpr | ScopedAggregateExpr]:
     """Leaves filtered by an expression's period; conversions filter only base events."""
-    if window_inputs and (
-        isinstance(expr, (CumulativeExpr, RollingExpr))
-        or isinstance(expr, OffsetWindowExpr)
+    if (
+        window_inputs
+        and isinstance(expr, OffsetWindowExpr)
         and (expr.kind != "cumulative" or expr.window_scope != "query_period")
     ):
         yield from _window_measure_exprs(expr.input, config)
@@ -314,9 +310,7 @@ def _expr_leaf_temporal_role_sets(
         if expr.else_expr is not None:
             case_out.extend(visit(expr.else_expr))
         return case_out
-    if isinstance(
-        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
-    ):
+    if isinstance(expr, (OffsetWindowExpr, ShareExpr, EntityValueExpr)):
         return visit(expr.input)
     if isinstance(expr, ConversionExpr):
         return [*visit(expr.base), *visit(expr.converted)]
@@ -497,8 +491,6 @@ def _collect_conversion_bindings(
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,
@@ -705,8 +697,6 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
 
 def _cumulative_window(expr: SemanticExpr) -> bool | None:
     """A cumulative window truncates under a bounded start unless it sums the query period."""
-    if isinstance(expr, CumulativeExpr):
-        return True
     if isinstance(expr, OffsetWindowExpr) and expr.kind == "cumulative":
         return expr.window_scope != "query_period"
     return None
@@ -714,8 +704,6 @@ def _cumulative_window(expr: SemanticExpr) -> bool | None:
 
 def _lookback_window(expr: SemanticExpr) -> bool | None:
     """A rolling, prior-period or period-to-date window reads rows before its period."""
-    if isinstance(expr, RollingExpr):
-        return True
     if isinstance(expr, OffsetWindowExpr) and expr.kind in {
         "rolling",
         "prior_period",
@@ -749,7 +737,7 @@ def _expr_contains_unsafe_bounded(
         )
     if isinstance(
         expr,
-        (CumulativeExpr, RollingExpr, OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
+        (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
     ):
         return walk(expr.input)
     if isinstance(expr, RatioExpr):
@@ -774,12 +762,6 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
         if recipe is None:
             return None
         return _unsafe_windowed_lookback(recipe.expression, config)
-    if isinstance(expr, RollingExpr):
-        return {
-            "kind": "RollingExpr",
-            "unit": str(expr.unit or ""),
-            "value": int(expr.value or 0),
-        }
     if isinstance(expr, OffsetWindowExpr) and expr.kind in {
         "rolling",
         "prior_period",

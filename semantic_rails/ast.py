@@ -24,7 +24,6 @@ from .expressions import (
     ComparisonExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     LiteralExpr,
@@ -33,7 +32,6 @@ from .expressions import (
     MetricRecipeRefExpr,
     OffsetWindowExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
@@ -358,8 +356,6 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
             OffsetWindowExpr,
             ShareExpr,
             EntityValueExpr,

@@ -49,14 +49,12 @@ from .expressions import (
     CaseExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
     collect_object_references,
@@ -195,8 +193,6 @@ def _compatible_temporal_roles_for_expr(config: PackageConfig, expr: SemanticExp
         for row in role_sets[1:]:
             current &= row
         return sorted(current)
-    if isinstance(expr, (CumulativeExpr, RollingExpr)):
-        return _compatible_temporal_roles_for_expr(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return []
     if isinstance(expr, ConversionExpr):
@@ -239,8 +235,6 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
             if entity:
                 return entity
         return _first_root_entity(config, expr.else_expr) if expr.else_expr is not None else ""
-    if isinstance(expr, (CumulativeExpr, RollingExpr)):
-        return _first_root_entity(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return expr.entity
     if isinstance(expr, ConversionExpr):
@@ -296,16 +290,6 @@ def _expr_summary(config: PackageConfig, expr: SemanticExpr) -> str:
             "divide": "divided by",
         }.get(expr.op, expr.op)
         return f"{_expr_summary(config, expr.left)} {op} {_expr_summary(config, expr.right)}"
-    if isinstance(expr, CumulativeExpr):
-        return f"cumulative {_expr_summary(config, expr.input)}"
-    if isinstance(expr, RollingExpr):
-        # ``RollingExpr`` carries ``unit``/``value`` directly on the
-        # dataclass — there is no ``.window`` attribute. The earlier
-        # ``expr.window.get(...)`` form crashed with AttributeError as
-        # soon as ``_expr_summary`` ran over any rolling expression.
-        # (The ruff/mypy pass on mainline landed a parallel fix using
-        # bare attribute access; this defensive form supersedes it.)
-        return f"rolling {expr.value or ''}-{expr.unit or ''} {_expr_summary(config, expr.input)}"
     if isinstance(expr, MetricPredicateExpr):
         scope = {"contextual": "contextual", "entity_period": "per period"}.get(
             expr.scope_mode, "entity-only"
@@ -700,8 +684,6 @@ def _predicate_exprs_from_expr(
                 _predicate_exprs_from_expr(config, expr.else_expr, seen_metric_ids=seen_metric_ids)
             )
         return predicates
-    if isinstance(expr, (CumulativeExpr, RollingExpr)):
-        return _predicate_exprs_from_expr(config, expr.input, seen_metric_ids=seen_metric_ids)
     if isinstance(expr, ConversionExpr):
         return [
             *_predicate_exprs_from_expr(config, expr.base, seen_metric_ids=seen_metric_ids),
