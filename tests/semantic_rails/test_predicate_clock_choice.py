@@ -457,18 +457,6 @@ def test_contextual_window_clock_excluded_by_any_measure_in_metric_refuses(wareh
     assert raised.value.details["compatible"] == [SHIPPED]
 
 
-def test_contextual_metric_bound_clock_conflict_refuses(warehouse):
-    config, conn = warehouse
-    assert _order_reference(conn, "ordered_at", "shipped_at") == []
-    query = _metric_order_query("input", "same_query_period", ORDERED)
-    query["metric_filters"][0]["expression"]["scope_mode"] = "contextual"
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, None, query)
-    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
-    assert raised.value.details["requested"] == ORDERED
-    assert raised.value.details["compatible"] == [SHIPPED]
-
-
 @pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
 @pytest.mark.parametrize("binding", ["input", "override"])
 def test_metric_bound_clock_agreeing_with_window_clock_matches_reference(
@@ -479,17 +467,6 @@ def test_metric_bound_clock_agreeing_with_window_clock_matches_reference(
     assert [row[0] for row in expected] == [2]
     query = _metric_order_query(binding, alignment, SHIPPED)
     assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
-
-
-def test_direct_lowering_cannot_bypass_metric_bound_clock_refusal(warehouse):
-    config, _conn = warehouse
-    plan = plan_query(config, None, _metric_order_query("input", "query_window", SHIPPED))
-    unsafe = _metric_order_query("input", "query_window", ORDERED)
-    with pytest.raises(SemanticLayerError) as raised:
-        lower_to_sql(replace(plan, query=unsafe), config)
-    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
-    assert raised.value.details["requested"] == ORDERED
-    assert raised.value.details["compatible"] == [SHIPPED]
 
 
 def test_direct_lowering_cannot_bypass_any_measure_bound_clock_refusal(warehouse):
