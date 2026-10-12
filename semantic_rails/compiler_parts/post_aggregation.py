@@ -14,7 +14,6 @@ from ..expressions import (
     ColumnRefExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DateAddExpr,
     DistributionExpr,
     EntityValueExpr,
@@ -25,7 +24,6 @@ from ..expressions import (
     MetricRecipeRefExpr,
     OffsetWindowExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
@@ -83,27 +81,7 @@ def _window_partition_exprs(table_alias: str, group_aliases: list[str]) -> list[
 
 
 def _as_offset_window_expr(expr: SemanticExpr) -> OffsetWindowExpr | None:
-    if isinstance(expr, OffsetWindowExpr):
-        return expr
-    if isinstance(expr, CumulativeExpr):
-        return OffsetWindowExpr(
-            input=expr.input,
-            kind="cumulative",
-            aggregate="sum",
-            frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
-            partition_by=list(expr.partition_by),
-        )
-    if isinstance(expr, RollingExpr):
-        return OffsetWindowExpr(
-            input=expr.input,
-            kind="rolling",
-            aggregate="sum",
-            frame="rows",
-            unit=expr.unit,
-            value=expr.value,
-            partition_by=list(expr.partition_by),
-        )
-    return None
+    return expr if isinstance(expr, OffsetWindowExpr) else None
 
 
 def _summing_window_parts(
@@ -498,8 +476,6 @@ def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bo
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _expr_requires_dense_series(recipe.expression, config)
-    if isinstance(expr, RollingExpr):
-        return True
     if isinstance(expr, OffsetWindowExpr):
         if expr.kind in {"rolling", "prior_period"}:
             return True
@@ -524,8 +500,6 @@ def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bo
             or _expr_requires_dense_series(item.then, config)
             for item in expr.whens
         ) or (expr.else_expr is not None and _expr_requires_dense_series(expr.else_expr, config))
-    if isinstance(expr, CumulativeExpr):
-        return _expr_requires_dense_series(expr.input, config)
     if isinstance(expr, ConversionExpr):
         return _expr_requires_dense_series(expr.base, config) or _expr_requires_dense_series(
             expr.converted, config

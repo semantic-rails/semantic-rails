@@ -26,14 +26,12 @@ from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     ShareExpr,
     expr_kind,
@@ -166,8 +164,6 @@ def _can_project_entity_key_from_source(
 # A window adds periods and a per-entity rollup adds an entity's rows before comparing
 # or ranking them, so neither may take a measure that must never be summed.
 _SUMMING_WRAPPERS = (
-    CumulativeExpr,
-    RollingExpr,
     OffsetWindowExpr,
     EntityValueExpr,
     DistributionExpr,
@@ -566,12 +562,7 @@ def _raise_non_additive_sum(
 
 
 # A lookup carries its source's all-time total, so no time axis may bucket, shift or add it.
-_LOOKUP_TIME_EXPRS = (
-    CumulativeExpr,
-    RollingExpr,
-    OffsetWindowExpr,
-    ConversionExpr,
-)
+_LOOKUP_TIME_EXPRS = (OffsetWindowExpr, ConversionExpr)
 
 
 def _refuse_time_on_lookup(

@@ -22,7 +22,6 @@ from ..expressions import (
     ComparisonExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
-    CumulativeExpr,
     DateAddExpr,
     DistributionExpr,
     EntityValueExpr,
@@ -33,7 +32,6 @@ from ..expressions import (
     MetricRecipeRefExpr,
     OffsetWindowExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
@@ -869,9 +867,7 @@ def _collect_measure_refs(
         if expr.else_expr is not None:
             _collect_measure_refs(expr.else_expr, config, query, out)
         return
-    if isinstance(
-        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
-    ):
+    if isinstance(expr, (OffsetWindowExpr, ShareExpr, EntityValueExpr)):
         _collect_measure_refs(expr.input, config, query, out)
         return
     if isinstance(expr, (MetricPredicateExpr, ConversionExpr, LiteralExpr, ColumnRefExpr)):
@@ -917,8 +913,6 @@ def _collect_conversion_exprs(
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
             MetricPredicateExpr,
             OffsetWindowExpr,
             ShareExpr,
@@ -1380,14 +1374,12 @@ def _rewrite_conditional_aggregates(
                 else None
             ),
         )
-    # Nodes that wrap an aggregation (CumulativeExpr etc.) recurse into
+    # Nodes that wrap an aggregation (OffsetWindowExpr etc.) recurse into
     # their ``input``. Other node types are leaves or carry semantics
     # incompatible with aggregate_if and pass through unchanged.
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
         ),

@@ -24,7 +24,7 @@ from semantic_rails.compiler import _compile_query_sql_ast, bind_query, compile_
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.expressions import CumulativeExpr, MeasureRefExpr
+from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import (
@@ -43,6 +43,13 @@ COUNT = "measure.catalogue.item_count"
 AMOUNT = "measure.catalogue.total_amount"
 CATEGORY = "dimension.catalogue_item_category"
 BASE = {"select": [{"expression": COUNT, "as": "value"}]}
+
+
+def _cumulative_count():
+    """A running total of the item count, as the expression parser builds it."""
+    return parse_semantic_expression(
+        {"kind": "cumulative", "input": {"kind": "measure", "measure": COUNT}}, context="metric"
+    )
 
 
 def _selecting(expression) -> dict:
@@ -265,7 +272,7 @@ def test_nested_authored_time_expression_cannot_bypass_guard(runtime) -> None:
     recipe = replace(
         runtime._config.metric_recipes[0],
         id="metric.catalogue.hidden_time",
-        expression=CumulativeExpr(MeasureRefExpr(COUNT)),
+        expression=_cumulative_count(),
     )
     config = replace(runtime._config, metric_recipes=[*runtime._config.metric_recipes, recipe])
     query = _selecting({"kind": "ratio", "numerator": recipe.id, "denominator": COUNT})
@@ -777,13 +784,13 @@ def test_normalized_time_expressions_refuse(runtime, variant: str, operation: st
         if variant == "metric":
             obj = replace(
                 runtime._config.metric_recipes[0],
-                expression=CumulativeExpr(MeasureRefExpr(COUNT)),
+                expression=_cumulative_count(),
             )
             runtime._config = replace(runtime._config, metric_recipes=[obj])
         else:
             obj = replace(
                 next(row for row in runtime._config.measures if row.id == AMOUNT),
-                expr=CumulativeExpr(MeasureRefExpr(COUNT)),
+                expr=_cumulative_count(),
             )
             runtime._config = replace(
                 runtime._config,

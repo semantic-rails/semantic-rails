@@ -31,13 +31,11 @@ from ..expressions import (
     CaseExpr,
     ColumnRefExpr,
     ComparisonExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    RollingExpr,
     SemanticExpr,
     expr_to_dict,
 )
@@ -834,7 +832,7 @@ def _expr_contains_distribution(expr: SemanticExpr, config: PackageConfig) -> bo
             or _expr_contains_distribution(item.then, config)
             for item in expr.whens
         ) or (expr.else_expr is not None and _expr_contains_distribution(expr.else_expr, config))
-    if isinstance(expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr)):
+    if isinstance(expr, OffsetWindowExpr):
         return _expr_contains_distribution(expr.input, config)
     return False
 

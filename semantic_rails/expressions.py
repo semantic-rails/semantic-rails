@@ -226,20 +226,6 @@ class CaseExpr:
 
 
 @dataclass(frozen=True)
-class CumulativeExpr:
-    input: SemanticExpr
-    partition_by: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class RollingExpr:
-    input: SemanticExpr
-    unit: str
-    value: int
-    partition_by: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
 class OffsetWindowExpr:
     input: SemanticExpr
     kind: str
@@ -372,8 +358,6 @@ SemanticExpr = (
     | DateAddExpr
     | InExpr
     | CaseExpr
-    | CumulativeExpr
-    | RollingExpr
     | OffsetWindowExpr
     | MetricPredicateExpr
     | ConditionalAggregateExpr
@@ -683,19 +667,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
                 for item in expr.whens
             ],
             "else": expr_to_dict(expr.else_expr) if expr.else_expr is not None else None,
-        }
-    if isinstance(expr, CumulativeExpr):
-        return {
-            "kind": "cumulative",
-            "input": expr_to_dict(expr.input),
-            "partition_by": list(expr.partition_by),
-        }
-    if isinstance(expr, RollingExpr):
-        return {
-            "kind": "rolling",
-            "input": expr_to_dict(expr.input),
-            "window": {"unit": expr.unit, "value": expr.value},
-            "partition_by": list(expr.partition_by),
         }
     if isinstance(expr, OffsetWindowExpr):
         if expr.kind == "cumulative":
@@ -2239,7 +2210,7 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
             return
         if isinstance(
             node,
-            (CumulativeExpr, RollingExpr, OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
+            (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
         ):
             _walk(node.input)
             return

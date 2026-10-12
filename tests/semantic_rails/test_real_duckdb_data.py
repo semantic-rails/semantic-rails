@@ -7,8 +7,7 @@ import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.expressions import AggregateExpr, RollingExpr
-from semantic_rails.metadata import _expr_summary, catalog_payload, valid_values_payload
+from semantic_rails.metadata import catalog_payload, valid_values_payload
 from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
@@ -652,34 +651,6 @@ def test_grouped_rolling_respects_partitions_with_fill(runtime_factory):
             stores_seen.add(row["dimension.jaffle_store_name"])
             assert row["orders_2d"] is None or row["orders_2d"] >= 0
         assert len(stores_seen) >= 1
-    finally:
-        runtime.close()
-
-
-def test_expr_summary_on_rolling_expression_does_not_crash():
-    """Regression: ``_expr_summary`` must not crash on rolling expressions.
-
-    Before this fix, ``semantic_rails/metadata.py:_expr_summary`` read
-    ``expr.window.get('value')`` on a ``RollingExpr`` — but the dataclass
-    has no ``.window`` attribute, it carries ``.unit`` and ``.value``
-    directly. The first call to the summary against any rolling
-    expression raised ``AttributeError``.
-    """
-    runtime = Runtime("jaffle_shop")
-    try:
-        rolling = RollingExpr(
-            input=AggregateExpr(
-                measure="measure.jaffle.revenue_usd",
-                aggregation="sum",
-            ),
-            unit="day",
-            value=7,
-        )
-        summary = _expr_summary(runtime.config, rolling)
-        assert summary, "rolling summary must be non-empty"
-        assert "rolling" in summary
-        assert "7" in summary
-        assert "day" in summary
     finally:
         runtime.close()
 
