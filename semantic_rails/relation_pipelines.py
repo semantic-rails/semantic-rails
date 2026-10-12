@@ -10,7 +10,8 @@ should compose Query IR directly rather than authoring pipelines.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -30,6 +31,7 @@ from .expressions import (
     SemanticExpr,
     parse_config_expression,
     parse_semantic_expression,
+    reads_temporal_value,
     validate_boolean_argument_count,
 )
 from .naming import slug as _slug
@@ -61,6 +63,12 @@ from .sql_ast import (
     build_filter_condition,
     build_negation,
     is_null_literal,
+)
+
+# The date and timestamp columns of the relation a filter reads: text compared with one is a
+# temporal literal (``SqlLiteral.temporal``).
+_TEMPORAL_COLUMNS: ContextVar[frozenset[str]] = ContextVar(
+    "relation_temporal_columns", default=frozenset()
 )
 
 
@@ -128,16 +136,16 @@ def _semantic_expr_to_sql(
         )
     if isinstance(expr, ComparisonExpr):
         return build_comparison_condition(
-            _semantic_expr_to_sql(expr.left, default_alias=default_alias, warehouse=warehouse),
+            _operand_sql(expr.left, _temporal(expr.right), default_alias, warehouse),
             expr.op,
-            _semantic_expr_to_sql(expr.right, default_alias=default_alias, warehouse=warehouse),
+            _operand_sql(expr.right, _temporal(expr.left), default_alias, warehouse),
         )
     if isinstance(expr, InExpr):
+        temporal = any(_temporal(item) for item in (expr.expr, *expr.values))
         return SqlIn(
-            expr=_semantic_expr_to_sql(expr.expr, default_alias=default_alias, warehouse=warehouse),
+            expr=_operand_sql(expr.expr, temporal, default_alias, warehouse),
             values=[
-                _semantic_expr_to_sql(value, default_alias=default_alias, warehouse=warehouse)
-                for value in expr.values
+                _operand_sql(value, temporal, default_alias, warehouse) for value in expr.values
             ],
             negated=expr.negated,
         )
@@ -200,6 +208,20 @@ def _semantic_expr_to_sql(
     )
 
 
+def _temporal(expr: SemanticExpr) -> bool:
+    """Whether ``expr`` reads a date or timestamp of the relation a filter reads."""
+    columns = _TEMPORAL_COLUMNS.get()
+    return bool(columns) and reads_temporal_value(expr, lambda ref: ref.column in columns)
+
+
+def _operand_sql(expr: SemanticExpr, temporal: bool, default_alias: str, warehouse: str) -> SqlExpr:
+    """One side of a comparison or an operand of ``in``: text compared with a date or timestamp
+    (``temporal``) is a temporal literal; text compared with anything else stays text."""
+    if temporal and isinstance(expr, LiteralExpr) and isinstance(expr.value, str):
+        return SqlLiteral(expr.value, temporal=True)
+    return _semantic_expr_to_sql(expr, default_alias=default_alias, warehouse=warehouse)
+
+
 def _expr(raw: Any, *, default_alias: str = "src", warehouse: str = "duckdb") -> SqlExpr:
     return _semantic_expr_to_sql(_parse_expr(raw), default_alias=default_alias, warehouse=warehouse)
 
@@ -208,14 +230,58 @@ def _column_fields(columns: Iterable[str], *, alias: str = "src") -> list[SqlFie
     return [SqlField(SqlIdentifier(parts=[alias, str(column)]), str(column)) for column in columns]
 
 
-def _predicate(raw: Any, *, default_alias: str = "src", warehouse: str = "duckdb") -> SqlExpr:
+def _predicate(
+    raw: Any,
+    *,
+    default_alias: str = "src",
+    warehouse: str = "duckdb",
+    temporal: frozenset[str] = frozenset(),
+) -> SqlExpr:
+    """A filter step's condition; ``temporal`` names the date and timestamp columns it reads."""
     if isinstance(raw, dict) and "field" in raw:
-        left = SqlIdentifier(parts=[default_alias, str(raw["field"])])
+        field_name = str(raw["field"])
+        left = SqlIdentifier(parts=[default_alias, field_name])
         # The query's filter words: `not` (and its NOT IN / != spellings) keeps unknown rows.
         return build_filter_condition(
-            left, raw.get("op", "is"), raw.get("value"), path="relation.filter"
+            left,
+            raw.get("op", "is"),
+            raw.get("value"),
+            path="relation.filter",
+            temporal=field_name in temporal,
         )
-    return _expr(raw, default_alias=default_alias, warehouse=warehouse)
+    token = _TEMPORAL_COLUMNS.set(temporal)
+    try:
+        return _expr(raw, default_alias=default_alias, warehouse=warehouse)
+    finally:
+        _TEMPORAL_COLUMNS.reset(token)
+
+
+def _temporal_tables(config: PackageConfig) -> dict[str, frozenset[str]]:
+    """Each table or relation an entity reads, with the columns its date and timestamp
+    dimensions declare."""
+    entities = {entity.id: entity for entity in config.entities}
+    tables: dict[str, set[str]] = {}
+    for dim in config.dimensions:
+        entity = entities.get(dim.entity)
+        if entity is None or dim.data_type not in {"date", "timestamp"}:
+            continue
+        for name in filter(None, (entity.table, entity.relation_id)):
+            tables.setdefault(name, set()).add(dim.column)
+    return {name: frozenset(columns) for name, columns in tables.items()}
+
+
+def _relation_temporal_columns(
+    relation: RelationConfig, tables: Mapping[str, frozenset[str]]
+) -> frozenset[str]:
+    """The date and timestamp columns of ``relation``: declared on what reads it, or on its
+    source table."""
+    names = {relation.output_name, relation.id}
+    names |= {
+        _source_from_config(dict(step.config or {}))
+        for step in relation.steps
+        if step.kind == "source"
+    }
+    return frozenset().union(*(tables.get(name, frozenset()) for name in names))
 
 
 def _source_from_config(config: dict[str, Any]) -> str:
@@ -283,7 +349,12 @@ def _lower_select(
 
 
 def _lower_where(
-    config: dict[str, Any], state: _RelationState, *, output_name: str, warehouse: str
+    config: dict[str, Any],
+    state: _RelationState,
+    *,
+    output_name: str,
+    warehouse: str,
+    temporal: frozenset[str] = frozenset(),
 ) -> _RelationState:
     if not state.columns:
         raise SemanticLayerError(
@@ -291,7 +362,10 @@ def _lower_where(
             "where relation step requires known columns from a prior select/source columns declaration",
         )
     raw_predicates = config.get("predicates", config.get("where", config.get("value", [])))
-    predicates = [_predicate(item, warehouse=warehouse) for item in _ensure_list(raw_predicates)]
+    predicates = [
+        _predicate(item, warehouse=warehouse, temporal=temporal)
+        for item in _ensure_list(raw_predicates)
+    ]
     query = SqlSelect(
         select=_column_fields(state.columns),
         from_table=SqlTableRef(state.source_name, alias="src"),
@@ -584,6 +658,7 @@ def _lower_semi_join(
     output_name: str,
     warehouse: str,
     negated: bool,
+    temporal: frozenset[str] = frozenset(),
 ) -> _RelationState:
     relation = str(config.get("relation", config.get("table", "")) or "").strip()
     if not relation:
@@ -603,7 +678,7 @@ def _lower_semi_join(
             _join_condition(item, warehouse=warehouse, left_alias="src", right_alias="right"),
         )
     right_predicates = [
-        _predicate(item, default_alias="right", warehouse=warehouse)
+        _predicate(item, default_alias="right", warehouse=warehouse, temporal=temporal)
         for item in _ensure_list(config.get("where", []))
     ]
     subquery_where = [condition, *right_predicates]
@@ -875,7 +950,9 @@ def _lower_step(
     index: int,
     *,
     warehouse: str,
+    tables: Mapping[str, frozenset[str]] | None = None,
 ) -> _RelationState:
+    tables = tables or {}
     final = index == len(relation.steps) - 1
     output_name = _step_name(relation, index, step.kind, final=final)
     config = dict(step.config or {})
@@ -907,7 +984,13 @@ def _lower_step(
     if step.kind == "select":
         return _lower_select(config, state, output_name=output_name, warehouse=warehouse)
     if step.kind == "where":
-        return _lower_where(config, state, output_name=output_name, warehouse=warehouse)
+        return _lower_where(
+            config,
+            state,
+            output_name=output_name,
+            warehouse=warehouse,
+            temporal=_relation_temporal_columns(relation, tables),
+        )
     if step.kind == "json_extract":
         return _lower_json_extract(config, state, output_name=output_name, warehouse=warehouse)
     if step.kind == "explode":
@@ -923,6 +1006,9 @@ def _lower_step(
             output_name=output_name,
             warehouse=warehouse,
             negated=step.kind in {"anti_join", "exclude"},
+            temporal=tables.get(
+                str(config.get("relation", config.get("table", "")) or "").strip(), frozenset()
+            ),
         )
     if step.kind == "window":
         return _lower_window(config, state, output_name=output_name, warehouse=warehouse)
@@ -931,10 +1017,16 @@ def _lower_step(
     raise SemanticLayerError("INVALID_CONFIG", f"Unsupported relation step kind '{step.kind}'")
 
 
-def lower_relation(relation: RelationConfig, *, warehouse: str) -> tuple[list[SqlCte], list[str]]:
+def lower_relation(
+    relation: RelationConfig,
+    *,
+    warehouse: str,
+    tables: Mapping[str, frozenset[str]] | None = None,
+) -> tuple[list[SqlCte], list[str]]:
+    """``tables`` names each table's date and timestamp columns (:func:`_temporal_tables`)."""
     state = _RelationState()
     for index, step in enumerate(relation.steps):
-        state = _lower_step(step, state, relation, index, warehouse=warehouse)
+        state = _lower_step(step, state, relation, index, warehouse=warehouse, tables=tables)
     if state.source_name != relation.output_name:
         if not state.columns:
             raise SemanticLayerError(
@@ -1024,8 +1116,9 @@ def _lower_relations_for_config(config: PackageConfig) -> dict[str, _LoweredRela
     output_to_relation: dict[str, str] = {}
     cte_to_relation: dict[str, str] = {}
 
+    tables = _temporal_tables(config)
     for relation in config.relations:
-        ctes, _ = lower_relation(relation, warehouse=config.package.warehouse)
+        ctes, _ = lower_relation(relation, warehouse=config.package.warehouse, tables=tables)
         cte_names = {cte.name for cte in ctes}
         lowered[relation.id] = _LoweredRelation(relation=relation, ctes=ctes, cte_names=cte_names)
         output_to_relation[relation.output_name] = relation.id

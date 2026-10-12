@@ -1,0 +1,5 @@
+examples:
+  events_after_the_new_year:
+    question: How many events does the filtered relation keep?
+    query:
+      select: [measure.pipelines.events]

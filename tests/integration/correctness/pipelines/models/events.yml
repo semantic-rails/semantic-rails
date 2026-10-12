@@ -1,0 +1,11 @@
+model:
+  id: events
+  relation: recent
+  entities: {event: {}}
+  times:
+    ts: {column: ts, kind: timestamp, class: event_time, default: true}
+    day: {column: day, kind: date, class: event_time}
+  dimensions:
+    label: {column: label, kind: categorical}
+  measures:
+    events: {kind: entity_count, entity_key: id, value_type: count, accumulation: {kind: event}}

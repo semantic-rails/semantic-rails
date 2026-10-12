@@ -599,6 +599,52 @@ def test_athena_expressions_type_text_compared_only_with_temporal_values(athena_
         assert ("TIMESTAMP '2016-09-01'" in sql) is ("TIMESTAMP" in rendered), rendered
 
 
+def test_athena_relation_filters_type_text_compared_only_with_temporal_columns():
+    """A relation's filter step reads its columns as the dimensions of what reads it declare
+    them: text compared with a date or timestamp column is a TIMESTAMP literal, text compared
+    with a text column stays text. A semi-join's filter reads the joined table's columns."""
+    from pathlib import Path
+
+    from semantic_rails.config import load_package_config
+    from semantic_rails.relation_pipelines import lower_relation
+    from semantic_rails.renderer import render_select
+    from semantic_rails.schema import RelationConfig, RelationPipelineStep
+
+    package = Path(__file__).parents[1] / "integration" / "correctness" / "pipelines"
+    config = load_package_config(str(package))
+    runtime = Runtime.from_config(
+        _athena_config(config), source_path=str(package), package_id="pipelines"
+    )
+    try:
+        sql = runtime.compile({"select": ["measure.pipelines.events"]})["rendered_sql"]
+    finally:
+        runtime.close()
+    assert "src.day >= TIMESTAMP '2026-01-01'" in sql  # the {field, op, value} form
+    assert "src.ts < TIMESTAMP '2026-02-01 00:00:00'" in sql  # the expression form
+    assert "((src.label <> '2025-01-01') OR (src.label IS NULL))" in sql
+
+    where = [
+        {"field": "ordered_at", "op": "gte", "value": "2026-01-01"},
+        {"field": "note", "op": "is", "value": "2026-01-01"},
+    ]
+    semi_join = {"relation": "orders", "on": [{"left": "id", "right": "id"}], "where": where}
+    relation = RelationConfig(
+        id="relation.t.kept",
+        output_name="kept",
+        steps=[
+            RelationPipelineStep("source", {"relation": "events", "columns": ["id"]}),
+            RelationPipelineStep("semi_join", semi_join),
+        ],
+    )
+    ctes, _ = lower_relation(
+        relation, warehouse="athena", tables={"orders": frozenset({"ordered_at"})}
+    )
+    with use_dialect(DIALECT):
+        rendered = "\n".join(render_select(cte.query) for cte in ctes)
+    assert "\"right\".ordered_at >= TIMESTAMP '2026-01-01'" in rendered
+    assert "\"right\".note = '2026-01-01'" in rendered
+
+
 # ---------------------------------------------------------------------------
 # (b2) Loader — fake adapter + fake boto3; verify upload + Hive DDL.
 # ---------------------------------------------------------------------------
