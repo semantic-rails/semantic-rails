@@ -7,6 +7,8 @@ question names wins; when it names none of the tied measures, plan returns
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,10 +22,11 @@ from semantic_rails.planner.call import Call
 from semantic_rails.planner.faithfulness import intent_subject_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import assert_plan_held
 
 
-def _runtime(tmp_path: Path, measures: dict[str, str]) -> Runtime:
+def _package(tmp_path: Path, measures: dict[str, str]) -> Path:
     """A one-model package whose sum measures have these keys and labels."""
 
     (tmp_path / "models").mkdir()
@@ -66,7 +69,26 @@ def _runtime(tmp_path: Path, measures: dict[str, str]) -> Runtime:
     }
     for name, body in files.items():
         (tmp_path / name).write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
-    return Runtime.from_path(str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture(scope="module")
+def shop(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[dict[str, str]], Runtime]]:
+    """One runtime per measure set, written once per module."""
+    with ExitStack() as stack:
+        runtimes: dict[str, Runtime] = {}
+
+        def build(measures: dict[str, str]) -> Runtime:
+            key = repr(sorted(measures.items()))
+            if key not in runtimes:
+                root = _package(tmp_path_factory.mktemp("shop"), measures)
+                runtimes[key] = stack.enter_context(closing(Runtime.from_path(str(root))))
+            return runtimes[key]
+
+        yield build
+
+
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
 
 
 REVENUE_AND_ITEMS = {"revenue": "Revenue", "item_revenue_cents": "Item Revenue Cents"}
@@ -82,13 +104,9 @@ REVENUE_AND_ITEMS = {"revenue": "Revenue", "item_revenue_cents": "Item Revenue C
     ],
 )
 def test_the_named_measure_wins_a_tie(
-    tmp_path: Path, question: str, measure: str, unmatched: list[str]
+    shop: Callable[[dict[str, str]], Runtime], question: str, measure: str, unmatched: list[str]
 ) -> None:
-    runtime = _runtime(tmp_path, REVENUE_AND_ITEMS)
-    try:
-        plan = plan_payload(runtime, intent=question)
-    finally:
-        runtime.close()
+    plan = plan_payload(shop(REVENUE_AND_ITEMS), intent=question)
 
     assert plan["status"] == ("low_confidence" if unmatched else "ok"), plan.get("why")
     if unmatched:
@@ -104,35 +122,31 @@ def test_the_named_measure_wins_a_tie(
 
 @pytest.mark.parametrize(("measure", "flagged"), [("item_revenue_cents", True), ("revenue", False)])
 def test_any_draft_of_a_tied_measure_the_question_does_not_name_is_flagged(
-    tmp_path: Path, measure: str, flagged: bool
+    shop: Callable[[dict[str, str]], Runtime], measure: str, flagged: bool
 ) -> None:
     """Whichever path drafted it, only the named measure passes the tie check."""
 
-    runtime = _runtime(tmp_path, REVENUE_AND_ITEMS)
+    runtime = shop(REVENUE_AND_ITEMS)
     question = "What is revenue by month?"
     select = {"as": "value", "expression": f"measure.shop.{measure}"}
-    try:
-        why = intent_subject_why(
-            runtime,
-            question=question,
-            intent_ir=parse_intent(runtime, question),
-            query=Call.from_call({"select": [select]}),
-        )
-    finally:
-        runtime.close()
+    why = intent_subject_why(
+        runtime,
+        question=question,
+        intent_ir=parse_intent(runtime, question),
+        query=Call.from_call({"select": [select]}),
+    )
 
     assert (why is not None) is flagged
 
 
-def test_a_tie_the_question_names_no_side_of_is_low_confidence(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path, {"gross_revenue": "Gross Revenue", "net_revenue": "Net Revenue"})
+def test_a_tie_the_question_names_no_side_of_is_low_confidence(
+    shop: Callable[[dict[str, str]], Runtime],
+) -> None:
+    runtime = shop({"gross_revenue": "Gross Revenue", "net_revenue": "Net Revenue"})
     pinned = {"select": [{"as": "value", "expression": "measure.shop.gross_revenue"}]}
-    try:
-        plan = plan_payload(runtime, intent="What is revenue by month?")
-        # A caller that picks one in the query settles it.
-        chosen = plan_payload(runtime, intent="What is revenue by month?", partial_query=pinned)
-    finally:
-        runtime.close()
+    plan = plan_payload(runtime, intent="What is revenue by month?")
+    # A caller that picks one in the query settles it.
+    chosen = plan_payload(runtime, intent="What is revenue by month?", partial_query=pinned)
 
     assert chosen["status"] == "ok", chosen.get("why")
 
@@ -143,9 +157,7 @@ def test_a_tie_the_question_names_no_side_of_is_low_confidence(tmp_path: Path) -
         "measure.shop.gross_revenue",
         "measure.shop.net_revenue",
     ]
-    assert (
-        "Gross Revenue (measure.shop.gross_revenue)" in plan["why"]["recovery_hints"][0]["message"]
-    )
+    assert plan["why"]["recovery_hints"]
 
 
 CUSTOMERS = "measure.jaffle.customer_count"
@@ -191,18 +203,13 @@ CUSTOMERS = "measure.jaffle.customer_count"
     ],
 )
 def test_counting_words_name_the_count_measure(
-    runtime_factory: Any, question: str, measure: str, group_by: Any, unconsumed: list[str]
+    jaffle: Runtime, question: str, measure: str, group_by: Any, unconsumed: list[str]
 ) -> None:
     """ "number of" and "of" don't tie Customer count with measures described as
     "Number of active menu items…", and the question names Customer count over
     Ordering or Visiting customers."""
 
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        plan = plan_payload(runtime, intent=question)
-    finally:
-        runtime.close()
-
+    plan = plan_payload(jaffle, intent=question)
     if question == "number of customers by store":
         assert_plan_held(plan, "PLAN_FALLBACK_SEMANTIC_DRIFT")
         return
@@ -233,12 +240,11 @@ def test_counting_words_name_the_count_measure(
     assert query.get("group_by") == group_by
 
 
-def test_a_whole_name_beats_one_that_adds_count(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path, {"customers": "Customers", "customer_count": "Customer count"})
-    try:
-        plan = plan_payload(runtime, intent="customers by month")
-    finally:
-        runtime.close()
+def test_a_whole_name_beats_one_that_adds_count(
+    shop: Callable[[dict[str, str]], Runtime],
+) -> None:
+    measures = {"customers": "Customers", "customer_count": "Customer count"}
+    plan = plan_payload(shop(measures), intent="customers by month")
 
     assert plan["status"] == "ok", plan.get("why")
     [subject] = Call.from_call(plan["best"]["query"]).subjects

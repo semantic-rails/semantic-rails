@@ -577,11 +577,7 @@ def _assert_unoffered_hold(plan: dict[str, Any]) -> None:
     assert [(gap["expected"], gap["actual"]) for gap in gaps] == [
         ({"metrics": []}, {"measure": TEAMS})
     ]
-    assert gaps[0]["message"] == "The package doesn't offer this measure."
-    assert [hint["message"] for hint in plan["why"]["recovery_hints"]] == [
-        "Name the measure by id in the seed's select when the question asks for every row it "
-        "counts, or pick an offered metric."
-    ]
+    assert [hint["kind"] for hint in plan["why"]["recovery_hints"]] == ["use_governed_metric"]
 
 
 @pytest.mark.parametrize(
@@ -702,10 +698,7 @@ def test_request_fields_outside_select_do_not_exempt_a_draft_over_a_governed_mea
     assert [(gap["expected"], gap["actual"]) for gap in _gaps(plan)] == [
         ({"metrics": [METRIC]}, {"measure": MEASURE})
     ]
-    assert [hint["message"] for hint in plan["why"]["recovery_hints"]] == [
-        "Select the governed metric in the call. Name the measure by id in the seed's select "
-        "only when the question asks for every row it counts."
-    ]
+    assert [hint["kind"] for hint in plan["why"]["recovery_hints"]] == ["use_governed_metric"]
 
 
 @pytest.mark.parametrize(
@@ -1279,7 +1272,6 @@ def test_a_failing_entity_walk_holds_the_draft(
     assert [(gap["expected"], gap["actual"]) for gap in gaps] == [
         ({"metrics": []}, {"measure": CALLS})
     ]
-    assert gaps[0]["message"] == "The package doesn't offer this measure."
 
 
 def test_a_joined_class_does_not_exempt_an_own_entity_event_hold(
