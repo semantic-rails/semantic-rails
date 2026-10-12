@@ -19,7 +19,7 @@ import subprocess
 import tarfile
 import tempfile
 import unicodedata
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import fields
 from decimal import Context, Decimal
 from pathlib import Path, PurePosixPath
@@ -308,58 +308,9 @@ def run_examples_report(
     now: Any = None,
 ) -> dict[str, Any]:
     """Run the package's examples. An entry's ``now`` (or its file's) wins over ``now``."""
-    report = parse_report
-    if report is None or config is None:
-        report, config = parse_config_report(ref)
-    if not report["ok"] or config is None:
-        return {
-            "ok": False,
-            "package": dict(report["package"]),
-            "summary": {"examples_total": 0, "passed": 0, "failed": 0},
-            "examples": [],
-            "errors": list(report["errors"]),
-        }
-
-    should_close_runtime = runtime is None
-    if runtime is None:
-        runtime = Runtime(ref.package_id) if ref.package_id else Runtime.from_path(ref.source_path)
-    try:
-        examples = load_named_entries(
-            Path(package_root_for_source(ref.source_path)) / "examples",
-            plural_key="examples",
-            singular_key="example",
-            defaults=("now",),
-        )
-        results: list[dict[str, Any]] = []
-        failures: list[dict[str, Any]] = []
-        for example_id, spec in examples:
-            result = _run_example(runtime, example_id, spec, now)
-            results.append(result)
-            if not result["ok"]:
-                failures.append(
-                    {
-                        "code": result["error"]["code"],
-                        "message": result["error"]["message"],
-                        "details": {
-                            "example_id": example_id,
-                            **dict(result["error"].get("details", {}) or {}),
-                        },
-                    }
-                )
-        return {
-            "ok": not failures,
-            "package": {"id": config.package.package_id, "source_path": ref.source_path},
-            "summary": {
-                "examples_total": len(results),
-                "passed": sum(1 for row in results if row["ok"]),
-                "failed": len(failures),
-            },
-            "examples": results,
-            "errors": failures,
-        }
-    finally:
-        if should_close_runtime:
-            runtime.close()
+    return _run_entries_report(
+        ref, "example", _run_example, parse_report, config=config, runtime=runtime, now=now
+    )
 
 
 def run_package_tests_report(
@@ -371,15 +322,31 @@ def run_package_tests_report(
     now: Any = None,
 ) -> dict[str, Any]:
     """Run the package's tests. An entry's ``now`` (or its file's) wins over ``now``."""
-    report = parse_report
+    return _run_entries_report(
+        ref, "test", _run_test, parse_report, config=config, runtime=runtime, now=now
+    )
+
+
+def _run_entries_report(
+    ref: PackageReference,
+    kind: str,
+    run: Callable[[Runtime, str, Any, Any], dict[str, Any]],
+    report: dict[str, Any] | None,
+    *,
+    config: Any | None,
+    runtime: Runtime | None,
+    now: Any,
+) -> dict[str, Any]:
+    """Run each ``kind`` entry (example or test) of the package and summarize the results."""
+    plural = f"{kind}s"
     if report is None or config is None:
         report, config = parse_config_report(ref)
     if not report["ok"] or config is None:
         return {
             "ok": False,
             "package": dict(report["package"]),
-            "summary": {"tests_total": 0, "passed": 0, "failed": 0},
-            "tests": [],
+            "summary": {f"{plural}_total": 0, "passed": 0, "failed": 0},
+            plural: [],
             "errors": list(report["errors"]),
         }
 
@@ -387,16 +354,16 @@ def run_package_tests_report(
     if runtime is None:
         runtime = Runtime(ref.package_id) if ref.package_id else Runtime.from_path(ref.source_path)
     try:
-        tests = load_named_entries(
-            Path(package_root_for_source(ref.source_path)) / "tests",
-            plural_key="tests",
-            singular_key="test",
+        entries = load_named_entries(
+            Path(package_root_for_source(ref.source_path)) / plural,
+            plural_key=plural,
+            singular_key=kind,
             defaults=("now",),
         )
         results: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        for test_id, spec in tests:
-            result = _run_test(runtime, test_id, spec, now)
+        for entry_id, spec in entries:
+            result = run(runtime, entry_id, spec, now)
             results.append(result)
             if not result["ok"]:
                 failures.append(
@@ -404,7 +371,7 @@ def run_package_tests_report(
                         "code": result["error"]["code"],
                         "message": result["error"]["message"],
                         "details": {
-                            "test_id": test_id,
+                            f"{kind}_id": entry_id,
                             **dict(result["error"].get("details", {}) or {}),
                         },
                     }
@@ -413,11 +380,11 @@ def run_package_tests_report(
             "ok": not failures,
             "package": {"id": config.package.package_id, "source_path": ref.source_path},
             "summary": {
-                "tests_total": len(results),
+                f"{plural}_total": len(results),
                 "passed": sum(1 for row in results if row["ok"]),
                 "failed": len(failures),
             },
-            "tests": results,
+            plural: results,
             "errors": failures,
         }
     finally:
