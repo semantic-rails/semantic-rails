@@ -96,9 +96,7 @@ def _extend_config_with_synthetic_measures(
     """
     if not synthetic:
         return config
-    from dataclasses import replace as _replace
-
-    extended = _replace(config, measures=[*config.measures, *synthetic.values()])
+    extended = replace(config, measures=[*config.measures, *synthetic.values()])
     # A caller's view stays one: its routes still come from the whole package.
     get_package_analysis(extended).view = get_package_analysis(config).view
     return extended

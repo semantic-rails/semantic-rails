@@ -744,20 +744,17 @@ def _joins_for_paths(
     return joins
 
 
-def _join_condition(
-    keys: list[str], left_alias: str, right_alias: str, *, dialect: Any | None = None
-) -> Any:
+def _join_condition(keys: list[str], left_alias: str, right_alias: str, *, dialect: Any) -> Any:
     if not keys:
         return SqlLiteral(True)
-    active_dialect = dialect or dialect_for_warehouse("")
-    current: Any = active_dialect.null_safe_eq(
+    current: Any = dialect.null_safe_eq(
         SqlIdentifier(parts=[left_alias, keys[0]]), SqlIdentifier(parts=[right_alias, keys[0]])
     )
     for key in keys[1:]:
         current = SqlBinary(
             current,
             "AND",
-            active_dialect.null_safe_eq(
+            dialect.null_safe_eq(
                 SqlIdentifier(parts=[left_alias, key]), SqlIdentifier(parts=[right_alias, key])
             ),
         )
