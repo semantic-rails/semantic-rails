@@ -435,7 +435,7 @@ def test_two_groups_on_different_children_are_refused(package: Path) -> None:
         web = {"entity": SESSION, match: [WEB]}
         error = _refusal(package, _query([_any(BEVERAGE), web]))
         assert error["code"] == "MIXED_GRAIN_INVALID"
-        assert "clarification" not in error["details"]
+        assert "clarification" not in error.get("details", {})
         assert "one child scope per query" in error["why_invalid"]
 
 
@@ -661,7 +661,7 @@ def test_every_other_shape_keeps_its_refusal(payments_package: Path, where: list
     nothing else may cross a one-to-many hop, and entity filters stay on one child."""
     error = _refusal(payments_package, _query(where))
     assert error["code"] == "MIXED_GRAIN_INVALID"
-    assert "clarification" not in error["details"]
+    assert "clarification" not in error.get("details", {})
 
 
 @pytest.mark.parametrize("op", ["IS NOT", "LIKE"])
@@ -673,7 +673,7 @@ def test_an_unknown_operator_is_refused_before_child_scope_analysis(
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"] == "where[0].op"
     assert error["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
-    assert "clarification" not in error["details"]
+    assert "clarification" not in error.get("details", {})
 
 
 def test_a_payment_beside_items_may_mean_one_order_or_any(payments_package: Path) -> None:
@@ -700,7 +700,7 @@ def test_a_payment_beside_items_may_mean_one_order_or_any(payments_package: Path
     assert _ids(payments_package, one_order) == [1]
     error = _refusal(payments_package, _query([BEVERAGE, OVER_5, CARD]))
     assert error["code"] == "MIXED_GRAIN_INVALID"
-    assert "clarification" not in error["details"]
+    assert "clarification" not in error.get("details", {})
 
 
 def test_each_reading_answers_for_every_measure_entity(package: Path) -> None:
@@ -737,7 +737,7 @@ def test_a_child_grain_measure_beside_ambiguous_filters_keeps_its_refusal(
     offered, and the query keeps the refusal it had before groups existed."""
     error = _refusal(package, _query(where, "customer_count", "item_revenue"))
     assert error["code"] == "MIXED_GRAIN_INVALID"
-    assert "clarification" not in error["details"]
+    assert "clarification" not in error.get("details", {})
     assert "child group" in error["why_invalid"]
     assert f"'{option}' reading" in error["message"] and "(INVALID_QUERY)" in error["message"]
 
@@ -1069,7 +1069,7 @@ def test_no_reading_is_offered_that_the_callers_policies_deny(
     finally:
         engine.close()
     assert [error["code"] for error in errors] == ["MIXED_GRAIN_INVALID"] * 3
-    assert all("clarification" not in error["details"] for error in errors)
+    assert all("clarification" not in error.get("details", {}) for error in errors)
     assert "'same_row' reading" in errors[0]["message"]
     assert "(POLICY_DENIED)" in errors[0]["message"]
     assert asked["errors"][0]["code"] == "AMBIGUOUS_CHILD_SCOPE"

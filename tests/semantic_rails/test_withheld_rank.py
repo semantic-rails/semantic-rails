@@ -234,7 +234,7 @@ INEXPRESSIBLE = {
 def _codes(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, Any]]:
     """The code and details of validate, compile, execute and MCP execute, asked by sales."""
     report = engine.validate(query, context=SALES)
-    outcomes = [(report["errors"][0]["code"], report["errors"][0]["details"])]
+    outcomes = [(report["errors"][0]["code"], report["errors"][0].get("details", {}))]
     for call in (engine.compile, engine.query):
         with pytest.raises(SemanticLayerError) as exc:
             call(query, context=SALES)

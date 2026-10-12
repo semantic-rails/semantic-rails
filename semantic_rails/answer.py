@@ -32,7 +32,7 @@ from .clock import (
 )
 from .compiler import observed_only_groups, observed_periods_reason, read_routes
 from .compiler_parts.empty_groups import observation_scope
-from .diagnostics import semantic_issue
+from .diagnostics import lean_issue, semantic_issue
 from .errors import SemanticLayerError
 from .fanout import (
     build_hop_profile,
@@ -259,11 +259,8 @@ def finish(
     from the response (except ``rows``) and from each warning."""
     warnings = list(out.get("warnings") or [])
     stated = [row for row in warnings if CODES.get(str(row.get("code"))) == ASSUMPTION]
-    out["warnings"] = [
-        {key: value for key, value in row.items() if value not in _EMPTY}
-        for row in warnings
-        if row not in stated
-    ]
+    out["warnings"] = [lean_issue(row) for row in warnings if row not in stated]
+    out["errors"] = [lean_issue(row) for row in out.get("errors") or []]
     out["assumptions"] = [
         *(out.get("assumptions") or []),
         *(

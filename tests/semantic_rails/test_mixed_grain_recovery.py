@@ -119,7 +119,7 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         assert details["closest_compatible_measure"] == meaningful.id
         assert details["compatible_measures"] == [meaningful.id, similar.id]
         assert details["compatible_dimensions"][:2] == [meaningful_dim.id, similar_dim.id]
-        assert not error["closest_valid_query"]
+        assert not error.get("closest_valid_query")
     finally:
         runtime.close()
 
@@ -180,7 +180,7 @@ def test_revenue_by_product_name_suggests_item_revenue(runtime_factory) -> None:
             replace_measure[0].get("compatible_measures") or []
         )
         # No hint hands back a query that swaps the measure or the dimension.
-        assert not err["closest_valid_query"]
+        assert not err.get("closest_valid_query")
         assert not any(hint.get("closest_valid_query") for hint in hints)
         assert "closest_compatible_measure_query" not in details
 

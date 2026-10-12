@@ -28,6 +28,7 @@ from .diagnostics import (
     enrich_object_not_found,
     enrich_path_not_found,
     exception_issue,
+    lean_issue,
 )
 from .dialects import dialect_for_warehouse
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError, query_execution_error
@@ -332,10 +333,13 @@ class SemanticHTTPService:
                 if isinstance(error, dict):
                     recovery_hints.extend(list(error.get("recovery_hints", []) or []))
             out["recovery_hints"] = recovery_hints
-        # Errors, warnings and hints only when there are some; no empty fields.
+        # Errors, warnings and hints only when there are some, each without empty fields.
         for key in ("errors", "warnings", "recovery_hints"):
-            if not out.get(key):
-                out.pop(key, None)
+            issues = [lean_issue(item) for item in out.pop(key, None) or []]
+            if issues:
+                out[key] = issues
+        if isinstance(out.get("error"), dict):
+            out["error"] = lean_issue(out["error"])
         if started is not None:
             out.setdefault("timing_ms", round((time.perf_counter() - started) * 1000, 3))
         if request_context is not None:

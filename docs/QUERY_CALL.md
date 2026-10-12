@@ -833,7 +833,8 @@ per-entity aggregation.
 - Verbosity trims only after the answer is built: `window`, `clock`, `observation_scope`,
   `routes` (each `{from, to, via}`, with a call's `other_routes`), every assumption and every
   warning survive every verbosity, because they change what the numbers mean.
-- Each warning has a stable `code` and a `message`, with `details` when it has any. Codes,
+- Each warning and each error has a stable `code` and a `message`, and like the answer leaves
+  out its empty fields (an empty `path`, no `details`, no hints), on every transport. Codes,
   `status` and `routes` are server-authored, so a host can record them per call without the
   query text, SQL or rows.
 - The echoed `query` and `normalized_query` (compact and full) are the call, never the

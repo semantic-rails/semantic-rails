@@ -88,6 +88,29 @@ def relationship_contract_payload(rel: RelationshipConfig) -> dict[str, Any]:
     }
 
 
+_EMPTY: tuple[Any, ...] = (None, "", [], {})
+
+
+def lean_issue(issue: Any) -> Any:
+    """An error or warning object as a caller reads it: no empty fields, its own or its
+    recovery hints' (``code`` and ``message`` always stay). ``details`` keep their values: an
+    empty value there is what the caller sent."""
+    if not isinstance(issue, dict):
+        return issue
+    lean = {
+        key: value
+        for key, value in issue.items()
+        if key in ("code", "message") or not _is_empty(value)
+    }
+    if isinstance(lean.get("recovery_hints"), list):
+        lean["recovery_hints"] = [lean_issue(hint) for hint in lean["recovery_hints"]]
+    return lean
+
+
+def _is_empty(value: Any) -> bool:
+    return isinstance(value, (str, list, dict, type(None))) and value in _EMPTY
+
+
 def semantic_issue(
     *,
     code: str,
