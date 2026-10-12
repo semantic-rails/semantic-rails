@@ -1216,7 +1216,8 @@ def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
     routes, broken = report["next_actions"]
     assert re.match(r"Decide the join route of \d+ entity pairs \(entity\.jaffle_", routes)
     assert broken == (
-        "Example examples/broken.yml:examples.broken.query does not compile: OBJECT_NOT_FOUND."
+        "Example examples/broken.yml:examples.broken.query does not compile (OBJECT_NOT_FOUND): "
+        "Unknown metric recipe 'metric.jaffle.missing'"
     )
 
 
