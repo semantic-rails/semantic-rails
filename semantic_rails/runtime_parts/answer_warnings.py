@@ -628,10 +628,22 @@ def _no_data_yet_warnings(compiled, rows, payload, coverage, *, zone="UTC", excl
         else f"later {time.get('grain') or 'period'}s read NULL"
     )
     declared_later = "this window's total reads NULL" if total else later
+    # A balance ignores zero_through: its edge is its last snapshot, never carried forward.
+    balances = {
+        measure
+        for item in compiled.get("balance_edges", [])
+        if item["output"] in affected
+        for measure in item["measures"]
+    }
     messages = []
     for item in measures:
         named, day = item["id"], item["edge"]
-        if item["edge_source"] == "last_row":
+        if item["edge_source"] == "last_row" and named in balances:
+            messages.append(
+                f"No data yet for {named}: its last snapshot is dated {day}, so {later}, never "
+                "a carried-forward balance."
+            )
+        elif item["edge_source"] == "last_row":
             messages.append(
                 f"No data yet for {named}: its last row is dated {day}. Nothing says this data "
                 f"is loaded past it, so {later}, not 0. {DECLARE_EDGE}"
@@ -682,7 +694,7 @@ def _zero_after_last_row_notes(compiled, coverage, *, now, zone="UTC", excluded_
         if item["output"] not in excluded_outputs
     }
     today = local_now(now, zone).date()
-    reach = min(_last_day(engine_window(time, now=now, timezone=zone).end) or today, today)
+    reach = min(_last_day(engine_window(time, now=now, timezone=zone).end, zone) or today, today)
     last_rows: dict[str, str] = {}
     for _, measure, names, declared in _settled_by(compiled, outputs):
         last = [coverage.get(f"{p}__last_row", coverage.get(f"{p}__data_through")) for p in names]
@@ -726,7 +738,7 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
     edge = date.fromisoformat(through)
     today = local_now(now, zone).date()
     window = engine_window(time, now=now, timezone=zone)
-    first, last = _first_day(window.start), _last_day(window.end)
+    first, last = _first_day(window.start, zone), _last_day(window.end, zone)
     spans: list[tuple[date | None, date, date]] = []
     if time.get("window_total"):
         if first is not None and last is not None:
@@ -768,16 +780,23 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
 _DAY_GRAINS = ("day", "week", "month", "quarter", "year")
 
 
-def _first_day(value: str | None) -> date | None:
-    return None if value is None else datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+def _first_day(value: str | None, zone: str) -> date | None:
+    return None if value is None else _wall(value, zone).date()
 
 
-def _last_day(value: str | None) -> date | None:
+def _last_day(value: str | None, zone: str) -> date | None:
     """The last day an exclusive end reaches: the day before a midnight, else its own day."""
     if value is None:
         return None
-    end = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    end = _wall(value, zone)
     return end.date() - timedelta(days=1) if end.time() == datetime.min.time() else end.date()
+
+
+def _wall(value: str, zone: str) -> datetime:
+    """A window bound as wall time in the clock's zone: an instant with an offset is
+    converted, local text is read as written."""
+    bound = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return local_now(bound, zone) if bound.tzinfo is not None else bound
 
 
 def _period_day(value: Any, zone: str) -> date | None:

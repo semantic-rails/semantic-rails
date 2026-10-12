@@ -7,6 +7,7 @@ small package of its own checks row filters, a load log a caller can't see, and 
 read in New York across the end of daylight saving time.
 """
 
+import json
 from dataclasses import replace
 from uuid import uuid4
 
@@ -168,18 +169,32 @@ def test_a_caller_who_cant_see_the_load_log_reads_loaded(packages):
     )
     config = replace(config, semantic_policies=[*config.semantic_policies, hidden])
     runtime = Runtime.from_config(config, source_path=source_path)
+    spec = ENTRIES["shop/weeks-read-zero-through-the-load-log-then-null"]
+    call = {"now": spec["now"], "context": RequestContext(roles=("support",))}
     try:
-        spec = ENTRIES["shop/weeks-read-zero-through-the-load-log-then-null"]
-        support = runtime.query(
-            spec["query"], now=spec["now"], context=RequestContext(roles=("support",))
-        )
+        support = runtime.query(spec["query"], **call)
         other = runtime.query(spec["query"], now=spec["now"])
+        # With SQL off, no plan descriptor names the hidden log, at any verbosity.
+        quiet = [
+            run(spec["query"], **call, sql_profile="off", verbosity="full")
+            for run in (runtime.validate, runtime.compile, runtime.query)
+        ]
+        with_sql = runtime.compile(spec["query"], **call, verbosity="full")
     finally:
         runtime.close()
     assert support["rows"] == other["rows"]
     assert support["window"]["data_through_source"] == "loaded"
     assert other["window"]["data_through_source"] == "ticket_loads.through_day"
     assert "ticket_loads" not in str(support["window"]) + str(support.get("warnings"))
+    for answer in quiet:
+        assert "ticket_loads" not in json.dumps(answer, default=str)
+        assert "relation" in json.dumps(answer["performance_plan"])  # the facts are described
+    # With SQL on, the SQL (and its plan) reads the log; nothing else names it.
+    assert "FROM ticket_loads" in with_sql["rendered_sql"]
+    assert "ticket_loads" not in json.dumps(
+        {k: v for k, v in with_sql.items() if k not in {"rendered_sql", "sql_plan", "explain"}},
+        default=str,
+    )
 
 
 # A package of its own: events read under a caller row filter, and a load log.
@@ -346,4 +361,48 @@ def test_a_load_log_under_a_row_filter_is_refused_never_read_unfiltered(logged):
     with pytest.raises(SemanticLayerError) as raised:
         logged.query(DAYS, now=NOW, context=auditor)
     assert raised.value.code == "POLICY_DENIED"
-    assert raised.value.details["reason"] == "row_filter_on_load_log"
+    # The log may be hidden from the caller: the refusal names no policy.
+    assert raised.value.details == {"reason": "row_filter_on_load_log"}
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize("logged", ["through_day"], indirect=True)
+@pytest.mark.parametrize(
+    "end,partial",
+    [
+        # Two whole local days, both loaded: no gap.
+        ("2024-11-03T04:00:00Z", None),
+        # Across the end of daylight time: three local days (Nov 1 to 3), Nov 3 not loaded.
+        ("2024-11-04T05:00:00Z", {"through": "2024-11-02", "days_covered": 2, "days": 3}),
+    ],
+)
+def test_partial_data_counts_the_window_in_the_clocks_days(logged, end, partial):
+    """Bounds written as instants are read in the clock's zone (New York) before days are
+    counted."""
+    call = {
+        "select": ["measure.logged.event_count"],
+        "time": {"start": "2024-11-01T04:00:00Z", "end": end},
+    }
+    result = logged.query(call, now=NOW)
+    found = _warnings(result, "PARTIAL_DATA")
+    assert [row["details"] for row in found] == ([partial] if partial else [])
+    assert result["rows"] == [{"event_count": 0 if partial is None else None}]
+
+
+@pytest.mark.parametrize("over", ["period", "window", "all_time"])
+def test_a_zero_passing_entity_filter_over_unloaded_periods_is_refused(duckdb_backend, over):
+    """Per period or over the window, a ticket's 0 after the load log is not known, so the
+    filter is refused; over all of its rows, untimed like an answer without a window, it
+    reads as it does without a declared edge."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    spec = ENTRIES["shop/an-entity-filter-0-passes-over-weeks-past-the-load-log-is-refused"]
+    where = [{**spec["query"]["where"][0], "over": over}]
+    call = {**spec["query"], "where": where}
+    if over == "all_time":
+        assert runtime.query(call, now=spec["now"])["rows"]
+        return
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(call, now=spec["now"])
+    assert raised.value.code == "INVALID_METRIC_PREDICATE"
+    assert raised.value.details["measures"] == ["measure.shop.tickets_opened"]
+    assert raised.value.details["recovery_hints"][0]["code"] == "FIX_QUERY_CALL"

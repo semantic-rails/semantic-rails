@@ -46,6 +46,7 @@ from ..sql_ast import (
     SqlCall,
     SqlCase,
     SqlCaseWhen,
+    SqlCast,
     SqlCte,
     SqlExists,
     SqlField,
@@ -544,7 +545,13 @@ def declared_edge(
     bound = SqlSelect(
         select=[
             SqlField(before, "loaded_before"),
-            SqlField(through, "loaded_through"),
+            # Typed: a bare literal (``now`` on BigQuery, which casts nothing) is text.
+            SqlField(
+                SqlCast(through, dialect.timestamp_type_name())
+                if isinstance(through, SqlLiteral)
+                else through,
+                "loaded_through",
+            ),
             SqlField(SqlLiteral(edge.kind), "edge_source"),
         ],
         from_table=None,

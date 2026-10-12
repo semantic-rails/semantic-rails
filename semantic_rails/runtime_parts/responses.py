@@ -104,8 +104,8 @@ def apply_response_verbosity(
     the other two preserve only ``{ok, errors, warnings}``.
 
     ``sql_profile="off"`` drops ``rendered_sql`` and ``sql_plan`` regardless
-    of verbosity — this lets a caller suppress SQL even when they still
-    want the heavy plan introspection that ``verbosity="full"`` provides.
+    of verbosity, the full ``explain``'s copies included — this lets a caller suppress SQL
+    even when they still want the heavy plan introspection that ``verbosity="full"`` provides.
     """
     out = dict(response or {})
     if verbosity == "minimal":
@@ -133,6 +133,12 @@ def apply_response_verbosity(
     if sql_profile == "off":
         out.pop("rendered_sql", None)
         out.pop("sql_plan", None)
+        if isinstance(out.get("explain"), dict):  # the full explain repeats both
+            out["explain"] = {
+                key: value
+                for key, value in out["explain"].items()
+                if key not in {"rendered_sql", "sql_plan"}
+            }
     return out
 
 

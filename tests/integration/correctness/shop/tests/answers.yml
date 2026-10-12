@@ -7815,6 +7815,51 @@ tests:
       LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '1' DAY
         AND t.opened_at <= TIMESTAMP '2024-11-15 06:00:00'
       GROUP BY g.b
+  shop/an-entity-filter-0-passes-over-weeks-past-the-load-log-is-refused:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: INVALID_METRIC_PREDICATE
+    why: 'Tickets with no ticket opened that week, by week to October 21, 2024: the load log covers only through September 29, so a ticket''s 0 in a later week is not known; the filter can''t yet read those weeks as NULL for each ticket, so the call is refused rather than counting an unloaded week as 0.'
+    cites: [tests/integration/correctness/shop/models/tickets.yml#model.measures.tickets_opened, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#entity-filters]
+    tags: [refusal, time-window]
+    query:
+      select: [measure.shop.tickets_opened]
+      where:
+        - entity: entity.shop_ticket
+          having: [{field: measure.shop.tickets_opened, op: lte, value: 0}]
+          over: period
+      time: {start: '2024-09-23', end: '2024-10-21', grain: week}
+    now: '2024-10-21T06:00:00Z'
+  shop/an-entity-filter-0-fails-keeps-the-stray-week-past-the-load-log:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Tickets opened at least once that week, by week to October 21, 2024: a threshold 0 fails reads only real counts, so the stray ticket 4 keeps its week after the load log''s September 29, the loaded week of September 23 reads 0, and the unloaded empty weeks read NULL.'
+    cites: [tests/integration/correctness/shop/models/tickets.yml#model.measures.tickets_opened, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#entity-filters, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.tickets_opened]
+      where:
+        - entity: entity.shop_ticket
+          having: [{field: measure.shop.tickets_opened, op: gte, value: 1}]
+          over: period
+      time: {start: '2024-09-23', end: '2024-10-21', grain: week}
+    now: '2024-10-21T06:00:00Z'
+    expected_rows:
+      - {period: '2024-09-23', tickets_opened: 0}
+      - {period: '2024-09-30', tickets_opened: null}
+      - {period: '2024-10-07', tickets_opened: 1}
+      - {period: '2024-10-14', tickets_opened: null}
+    reference_sql: |
+      SELECT g.b,
+        CASE WHEN COUNT(t.ticket_id) > 0 OR g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+          THEN COUNT(DISTINCT t.ticket_id) END
+      FROM generate_series(TIMESTAMP '2024-09-23', TIMESTAMP '2024-10-14', INTERVAL '7 days') AS g(b)
+      LEFT JOIN (
+        SELECT x.ticket_id, x.opened_at FROM tickets AS x
+        WHERE (SELECT COUNT(*) FROM tickets AS y WHERE y.ticket_id = x.ticket_id
+          AND date_trunc('week', y.opened_at) = date_trunc('week', x.opened_at)) >= 1
+      ) AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+      GROUP BY g.b
   shop/a-ratio-with-no-denominator-in-the-window-reads-null:
     kind: query_matches_snapshot
     expect: answer

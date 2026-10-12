@@ -5,6 +5,7 @@ checked in ``tests/integration/correctness/test_zero_through.py``.
 """
 
 from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -312,3 +313,35 @@ def test_a_written_package_keeps_its_models_edges(tmp_path):
     assert {row.id: row.zero_through for row in loaded.measures} == {
         row.id: row.zero_through for row in declared.measures
     }
+
+
+def test_the_edge_is_projected_as_a_timestamp_on_every_warehouse(shop):
+    """A ``now`` edge is a literal; BigQuery would return a bare literal as text, so the
+    projected bound is cast to the warehouse's timestamp type."""
+    config = load_package_config(str(shop))
+    config = replace(config, package=replace(config.package, warehouse="bigquery"))
+    runtime = Runtime.from_config(config, source_path=str(shop))
+    try:
+        call = {**WEEKS, "select": ["measure.shop.tickets_always_loaded"]}
+        sql = runtime.compile(call, now=NOW)["rendered_sql"]
+    finally:
+        runtime.close()
+    assert "CAST('2024-10-07 06:00:00' AS DATETIME) AS loaded_through" in sql
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (datetime(2024, 11, 5, 12), datetime(2024, 11, 5, 12)),
+        (date(2024, 11, 5), datetime(2024, 11, 5)),
+        ("2024-11-05 12:00:00", datetime(2024, 11, 5, 12)),
+        ("2024-11-05T12:00:00.5", datetime(2024, 11, 5, 12, 0, 0, 500000)),
+        ("not a time", None),
+        (None, None),
+        (5, None),
+    ],
+)
+def test_the_runtime_reads_an_edge_however_a_warehouse_returns_it(value, expected):
+    from semantic_rails.runtime import _wall_time
+
+    assert _wall_time(value) == expected

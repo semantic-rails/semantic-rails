@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import asdict, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
@@ -588,13 +588,13 @@ def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
     zone = ZoneInfo(_time_zone(runtime._config, compiled) or "UTC")
     ctes = {cte.name: cte.query for cte in compiled["sql_ast"].ctes}
     for edge in set().union(*edges.values()):
-        through = coverage.get(f"{edge}__loaded_through")
+        through = _wall_time(coverage.get(f"{edge}__loaded_through"))
         coverage[f"{edge}__data_through"] = (
             (through - timedelta(microseconds=1))
             .replace(tzinfo=zone)
             .astimezone(UTC)
             .replace(tzinfo=None)
-            if isinstance(through, datetime)
+            if through is not None
             else None
         )
         coverage[f"{edge}__declared"] = (
@@ -606,6 +606,21 @@ def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
         if all(edges.get(alias) for alias, names in by_alias.items() if probe in names):
             coverage[f"{probe}__last_row"] = coverage.pop(f"{probe}__data_through", None)
     return coverage
+
+
+def _wall_time(value: Any) -> datetime | None:
+    """A declared edge's wall time as a warehouse returns it: a timestamp, a date (its
+    midnight) or ISO text; None for anything else (no edge is claimed)."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.strip()).replace(tzinfo=None)
+        except ValueError:
+            return None
+    return None
 
 
 def _no_data_in_scope_warnings(

@@ -127,6 +127,11 @@ def test_a_balance_after_its_last_snapshot_says_no_data_yet(shop: Runtime) -> No
     assert warning["details"]["measures"] == [
         {"id": SEATS, "edge": "2024-01-15", "edge_source": "last_row"}
     ]
+    # A balance ignores zero_through, so its warning never advises declaring one.
+    assert warning["message"] == (
+        f"No data yet for {SEATS}: its last snapshot is dated 2024-01-15, so later months read "
+        "NULL, never a carried-forward balance."
+    )
     # A window total after the data reads NULL; one that reaches the edge reads its closing day.
     after = {"select": [SEATS], "time": {"last": {"unit": "week", "value": 1}}}
     result = shop.query(after, now="2024-03-10T12:00:00Z")
