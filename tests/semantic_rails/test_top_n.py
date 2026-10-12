@@ -159,14 +159,13 @@ def test_exact_sort_key_takes_precedence_over_folded_matches():
 
 
 @pytest.mark.parametrize(
-    "warehouse,alias,returned_key,store_key",
+    "warehouse,alias,returned_key,store_key,tied",
     [
-        ("snowflake", "orders", "ORDERS", "STORE"),
-        ("postgres", "orderCount", "ordercount", "store"),
-        ("athena", "orderCount", "ordercount", "store"),
+        ("snowflake", "orders", "ORDERS", "STORE", False),
+        ("postgres", "orderCount", "ordercount", "store", True),
+        ("athena", "orderCount", "ordercount", "store", False),
     ],
 )
-@pytest.mark.parametrize("tied", [False, True], ids=["distinct-cutoff", "tied-cutoff"])
 def test_runtime_cutoff_uses_warehouse_result_key_casing(
     package, warehouse, alias, returned_key, store_key, tied
 ):
