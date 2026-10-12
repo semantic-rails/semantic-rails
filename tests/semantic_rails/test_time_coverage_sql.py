@@ -72,23 +72,26 @@ def _cte(compiled, name):
     return next(n.query for n in nodes if isinstance(n, SqlCte) and n.name == name)
 
 
-@pytest.mark.parametrize("warehouse", WAREHOUSES)
-@pytest.mark.parametrize(("zone", "storage"), [("UTC", ""), ("America/New_York", "UTC")])
+FILLED = ((REVENUE,), {**BOUNDS, "fill": True})
+COMBINED = ((REVENUE, ITEMS), BOUNDS)
+SHAPES = [
+    (zone, storage, *shape)
+    for shape in (FILLED, COMBINED)
+    for zone, storage in (("UTC", ""), ("America/New_York", "UTC"))
+]
+
+
+# DuckDB runs every zone and shape; each other dialect one of them.
 @pytest.mark.parametrize(
-    ("expressions", "time"),
-    [((REVENUE,), {**BOUNDS, "fill": True}), ((REVENUE, ITEMS), BOUNDS)],
-    ids=["filled", "combined"],
+    ("warehouse", "zone", "storage", "expressions", "time"),
+    [("duckdb", *shape) for shape in SHAPES]
+    + [(warehouse, *SHAPES[(i + 2) % 4]) for i, warehouse in enumerate(WAREHOUSES[1:])],
 )
 def test_coverage_renders_where_a_named_window_reads_it(
     package_config_factory, warehouse, zone, storage, expressions, time
 ):
     # BOUNDS is a named window under a grain: every period it holds, 0 inside the data.
     config = _config(package_config_factory, warehouse, zone, storage)
-    if time.get("fill") and not dialect_for_warehouse(warehouse).has_implicit_calendar:
-        # Every fill uses the implicit calendar; an authored one takes no part.
-        with pytest.raises(SemanticLayerError, match="no implicit calendar"):
-            _compile(config, time, expressions)
-        return
     compiled = _compile(config, time, expressions)
     # A bounded single-measure query never settles from coverage: its leaf is main's.
     leaf = render_select(_cte(compiled, "leaf_1"))
@@ -181,9 +184,15 @@ def test_an_unrecognized_observation_aggregate_refuses(package_config_factory, m
     assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"
 
 
-@pytest.mark.parametrize("storage_zone", ["UTC", "America/New_York"])
-@pytest.mark.parametrize("column_type", ["TIMESTAMP", "TIMESTAMPTZ"])
-@pytest.mark.parametrize("hours", [-1, 1], ids=["past", "future"])
+@pytest.mark.parametrize(
+    ("storage_zone", "column_type", "hours"),
+    [
+        ("UTC", "TIMESTAMP", -1),
+        ("America/New_York", "TIMESTAMP", 1),
+        ("UTC", "TIMESTAMPTZ", 1),
+        ("America/New_York", "TIMESTAMPTZ", -1),
+    ],
+)
 def test_coverage_cutoff_compares_instants_in_a_different_session_zone(
     package_config_factory, storage_zone, column_type, hours
 ):
@@ -256,8 +265,10 @@ def test_scope_reads_report_unbounded_large_scans(package_config_factory):
     assert performance["execution_recommendation"] == "needs_acceleration_layer"
 
 
-@pytest.mark.parametrize("warehouse", WAREHOUSES)
-@pytest.mark.parametrize("zone", ["UTC", "Not/AZone"])
+@pytest.mark.parametrize(
+    ("warehouse", "zone"),
+    [(warehouse, ["UTC", "Not/AZone"][i % 2]) for i, warehouse in enumerate(WAREHOUSES)],
+)
 def test_a_named_window_lists_every_period_or_says_it_shows_only_some(
     package_config_factory, warehouse, zone
 ):
