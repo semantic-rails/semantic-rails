@@ -1716,7 +1716,7 @@ class Runtime:
             report = ValidationReport(
                 version=2,
                 ok=False,
-                errors=[issue],  # type: ignore[list-item]  # exception_issue returns dict; asdict serializes either shape
+                errors=[issue],
                 disabled_options=list(exc.details.get("disabled_options", [])),
             )
             out = asdict(report)
@@ -2214,8 +2214,7 @@ class Runtime:
             report = ValidationReport(
                 version=2,
                 ok=False,
-                # raw dict instead of ValidationIssue; asdict serializes either shape
-                errors=[issue],  # type: ignore[list-item]
+                errors=[issue],
             )
             out = asdict(report)
             out["segment"] = {"id": segment_id}
