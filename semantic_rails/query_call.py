@@ -827,16 +827,15 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
     return node
 
 
-# The keys of a reference object (``{"metric": id}``, ``{"kind": "measure_ref", ...}``).
-_REFERENCE_KEYS = frozenset(
-    {"kind", "metric", "measure", "aggregation", "temporal_role", "parameters"}
-)
+# The keys of a reference object: ``{"metric": id}``, or ``{"measure": id}`` with overrides.
+_METRIC_REFERENCE = frozenset({"kind", "metric"})
+_MEASURE_REFERENCE = frozenset({"kind", "measure", "aggregation", "temporal_role", "parameters"})
 
 
 def _written(raw: Mapping[str, Any]) -> Any:
     """A reference object as the call writes it: its id, or a ``measure`` kind with its
     overrides; None for any other shape."""
-    if not set(raw) <= _REFERENCE_KEYS:
+    if not set(raw) <= (_METRIC_REFERENCE if "metric" in raw else _MEASURE_REFERENCE):
         return None
     form = _call_expression(raw)
     if isinstance(form, str) or (isinstance(form, Mapping) and form.get("kind") == "measure"):
