@@ -1,174 +1,108 @@
-"""Phase 2 (round-three) — per-row event-anchored windows on
-``scoped_aggregate``. The IR contract lands in this round; the SQL
-lowering is staged for the next round (see the
-``feature_pending_sql_lowering`` recovery hint).
-"""
+"""Per-row event-anchored windows on ``scoped_aggregate``: the call shape validates, and the
+compiler refuses to run it until the SQL lowering exists (the ``feature_pending_sql_lowering``
+recovery hint says so)."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any
+
 import pytest
 
+from semantic_rails.config import load_package_config
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 
-def test_validate_accepts_canonical_anchor_window_shape(runtime_factory):
-    """Parser accepts the canonical shape — anchor + window — and
-    surfaces the structured ``INVALID_ANCHOR_ROLE`` envelope (with
-    ``feature_status: ir_contract_only``) at compile time."""
-    runtime = runtime_factory("jaffle_shop")
+FIRST_ORDER = {"temporal_role": "temporal_role.jaffle_customer_first_order_at"}
+NINETY_DAYS = {"unit": "day", "value": 90, "direction": "forward"}
+TOP_DECILE = {
+    "kind": "metric_predicate",
+    "entity": "entity.jaffle_customer",
+    "input": {
+        "kind": "measure",
+        "measure": "measure.jaffle.lifetime_spend_usd",
+        "aggregation": "sum",
+    },
+    "op": "gte",
+    "value": {"kind": "percentile", "p": 0.9},
+    "over": "all_time",
+}
+
+
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    """One runtime for the module: every call here only validates."""
+    package_dir = copy_package_config(tmp_path_factory.mktemp("anchored"), "jaffle_shop")
+    package = load_package_config(str(package_dir))
+    rt = Runtime.from_config(package, source_path=str(package_dir), package_id="jaffle_shop")
     try:
-        result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                            "anchor": {
-                                "temporal_role": "temporal_role.jaffle_customer_first_order_at",
-                            },
-                            "window": {
-                                "unit": "day",
-                                "value": 90,
-                                "direction": "forward",
-                            },
-                        },
-                        "as": "rev_90d_post_acquisition",
-                    }
-                ],
-            }
-        )
-        # IR validates against the parser (no INVALID_EXPRESSION_AST)
-        # but the compile-stub blocks with INVALID_ANCHOR_ROLE so the
-        # caller gets a clear signal that execution isn't supported
-        # yet. The feature_status marker proves we hit the stub path.
-        errors = result.get("errors") or []
-        assert errors, f"expected INVALID_ANCHOR_ROLE stub envelope, got {result!r}"
-        first = errors[0]
-        assert first["code"] == "INVALID_ANCHOR_ROLE"
-        assert first["details"].get("feature_status") == "ir_contract_only"
-        hints = first.get("recovery_hints") or []
-        pending = [h for h in hints if h.get("kind") == "feature_pending_sql_lowering"]
-        assert pending, f"expected feature_pending_sql_lowering hint, got {hints!r}"
-        assert "anchor-offset column" in pending[0]["message"]
-        assert "docs/" not in pending[0]["message"]
+        yield rt
     finally:
-        runtime.close()
+        rt.close()
 
 
 @pytest.mark.parametrize(
-    ("anchor", "window", "message_part", "lowercase_message"),
+    ("keys", "code", "details", "hint"),
     [
-        pytest.param(None, {"unit": "day", "value": 90}, "anchor", True, id="missing_anchor"),
+        # The canonical shape parses; the compile stub blocks it with a clear signal.
         pytest.param(
-            {"temporal_role": "temporal_role.jaffle_customer_first_order_at"},
-            {"unit": "fortnight", "value": 6},
-            "window.unit",
-            False,
+            {"anchor": FIRST_ORDER, "window": NINETY_DAYS},
+            "INVALID_ANCHOR_ROLE",
+            {"feature_status": "ir_contract_only"},
+            "feature_pending_sql_lowering",
+            id="canonical",
+        ),
+        pytest.param(
+            {"window": {"unit": "day", "value": 90}},
+            "INVALID_EXPRESSION_AST",
+            {"missing_key": "anchor"},
+            "fix_expression_shape",
+            id="missing_anchor",
+        ),
+        pytest.param(
+            {"anchor": FIRST_ORDER, "window": {"unit": "fortnight", "value": 6}},
+            "INVALID_EXPRESSION_AST",
+            {"received_unit": "fortnight"},
+            "fix_expression_shape",
             id="invalid_unit",
         ),
         pytest.param(
-            {"temporal_role": "temporal_role.jaffle_customer_first_order_at"},
-            {"unit": "day", "value": 90, "direction": "sideways"},
-            "direction",
-            False,
+            {"anchor": FIRST_ORDER, "window": {**NINETY_DAYS, "direction": "sideways"}},
+            "INVALID_EXPRESSION_AST",
+            {"received_direction": "sideways"},
+            "fix_expression_shape",
             id="invalid_direction",
         ),
+        # The available roles surface, in the details and the hint, so no inspect is needed.
+        pytest.param(
+            {"anchor": {"temporal_role": "temporal_role.missing"}, "window": NINETY_DAYS},
+            "INVALID_ANCHOR_ROLE",
+            {"anchor_role": "temporal_role.missing"},
+            "use_valid_anchor_role",
+            id="unknown_anchor_role",
+        ),
+        # A scoped aggregate without anchor and window keeps its percentile-threshold path.
+        pytest.param({"predicates": [TOP_DECILE]}, None, {}, None, id="no_anchor_window"),
     ],
 )
-def test_validate_rejects_invalid_anchor_window(
-    runtime_factory, anchor, window, message_part, lowercase_message
-):
+def test_anchored_window_calls(
+    runtime: Runtime, keys: dict[str, Any], code: str | None, details: dict[str, Any], hint: str
+) -> None:
     expression = {
         "kind": "scoped_aggregate",
         "measure": "measure.jaffle.revenue_usd",
         "aggregation": "sum",
-        "window": window,
+        **keys,
     }
-    if anchor is not None:
-        expression["anchor"] = anchor
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.validate(
-            {
-                "select": [{"expression": expression, "as": "rev"}],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors and errors[0]["code"] == "INVALID_EXPRESSION_AST"
-        message = str(errors[0]["message"]).lower() if lowercase_message else errors[0]["message"]
-        assert message_part in message
-    finally:
-        runtime.close()
-
-
-def test_validate_rejects_unknown_anchor_role(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                            "anchor": {
-                                "temporal_role": "temporal_role.this_does_not_exist",
-                            },
-                            "window": {"unit": "day", "value": 90, "direction": "forward"},
-                        },
-                        "as": "rev",
-                    }
-                ],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors and errors[0]["code"] == "INVALID_ANCHOR_ROLE"
-        details = errors[0].get("details") or {}
-        # Available roles surface so the agent doesn't have to call inspect.
-        assert details.get("available_temporal_roles")
-        # The recovery hint lists them via ``use_valid_anchor_role``.
-        hints = errors[0].get("recovery_hints") or []
-        valid_role_hints = [h for h in hints if h.get("kind") == "use_valid_anchor_role"]
-        assert valid_role_hints
-    finally:
-        runtime.close()
-
-
-def test_scoped_aggregate_without_anchor_window_still_works(runtime_factory):
-    """Regression: existing scoped_aggregate (no anchor/window) must
-    behave exactly as before — Phase 2 must not break the round-two
-    percentile-threshold path."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                            "predicates": [
-                                {
-                                    "kind": "metric_predicate",
-                                    "entity": "entity.jaffle_customer",
-                                    "input": {
-                                        "kind": "measure",
-                                        "measure": "measure.jaffle.lifetime_spend_usd",
-                                        "aggregation": "sum",
-                                    },
-                                    "op": "gte",
-                                    "value": {"kind": "percentile", "p": 0.9},
-                                    "over": "all_time",
-                                }
-                            ],
-                        },
-                        "as": "rev_top_decile",
-                    }
-                ],
-            }
-        )
+    result = runtime.validate({"select": [{"expression": expression, "as": "rev"}]})
+    if code is None:
         assert result["ok"], result.get("errors")
-    finally:
-        runtime.close()
+        return
+    error = result["errors"][0]
+    assert error["code"] == code
+    assert details.items() <= error["details"].items()
+    (matched,) = [item for item in error["recovery_hints"] if item.get("kind") == hint]
+    assert "docs/" not in matched["message"]
+    if hint == "use_valid_anchor_role":
+        assert FIRST_ORDER["temporal_role"] in error["details"]["available_temporal_roles"]
+        assert FIRST_ORDER["temporal_role"] in matched["available_temporal_roles"]
