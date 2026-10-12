@@ -102,16 +102,6 @@ def _named_measure(config: Any, text: str, ordinary: Any | None = None) -> Any |
     return row
 
 
-def _implied_window_grain(lowered: str) -> str:
-    """Grain implied by a resolved relative window, or ``""``.
-
-    "last 7 days" implies a daily series; "yesterday"/"today" imply a
-    single day bucket.
-    """
-
-    return _time_window(lowered).relative_unit
-
-
 def _unresolved_time_phrases(text: str) -> list[str]:
     """Time phrases the planner detected but did not resolve into a window.
 
@@ -205,24 +195,17 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # canonical concept words (revenue / order / arr / etc.) we just
     # use the raw term set against the catalog.
     target = named[0] if named is not None else None
+    first, second = (
+        (_preferred_metric, _preferred_measure)
+        if metric_first
+        else (_preferred_measure, _preferred_metric)
+    )
     if target is None and target_terms:
-        if metric_first:
-            target = _preferred_metric(config, target_terms, target_focus_terms)
-            if target is None:
-                target = _preferred_measure(config, target_terms, target_focus_terms)
-        else:
-            target = _preferred_measure(config, target_terms, target_focus_terms)
-            if target is None:
-                target = _preferred_metric(config, target_terms, target_focus_terms)
+        target = first(config, target_terms, target_focus_terms) or second(
+            config, target_terms, target_focus_terms
+        )
     if target is None:
-        if metric_first:
-            target = _preferred_metric(config, terms)
-            if target is None:
-                target = _preferred_measure(config, terms)
-        else:
-            target = _preferred_measure(config, terms)
-            if target is None:
-                target = _preferred_metric(config, terms)
+        target = first(config, terms) or second(config, terms)
     if target is None:
         return None
     if named is None and not metric_first:
@@ -249,7 +232,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         time_spec = _time_spec(temporal_role, text, clock)
         if (
             not _explicit_grain(text, clock)
-            and not _implied_window_grain(lowered)
+            and not _time_window(lowered).relative_unit  # e.g. "last 7 days", "today"
             and not _time_bounds_from_text(text)
             and not any(phrase in lowered for phrase in _TIME_SERIES_PHRASES)
             and not _unresolved_time_phrases(text)
