@@ -17,6 +17,7 @@ import pytest
 
 from semantic_rails.clock import period_end
 from semantic_rails.compiler import compile_query
+from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
@@ -115,6 +116,27 @@ _JULY_BY_WEEK = {
         "fill": True,
     },
 }
+
+
+def _adjusted(config, *, zone=None, timestamp_day=False):
+    """The package with the order clock in ``zone``, or its calendar day typed a timestamp."""
+    if timestamp_day:
+        dimensions = [
+            dataclasses.replace(row, data_type="timestamp")
+            if row.entity == "entity.jaffle_time" and row.column == "date_day"
+            else row
+            for row in config.dimensions
+        ]
+        config = dataclasses.replace(config, dimensions=dimensions)
+    if zone:
+        roles = [
+            dataclasses.replace(row, timezone=zone)
+            if row.id == "temporal_role.jaffle_order_time"
+            else row
+            for row in config.temporal_roles
+        ]
+        config = dataclasses.replace(config, temporal_roles=roles)
+    return config
 
 
 def _with_calendar(config, *, key=None, keep_date_day=True):
@@ -217,15 +239,7 @@ def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
         )
     runtime = Runtime.from_path(str(package_dir))
     try:
-        config = dataclasses.replace(
-            runtime.config,
-            dimensions=[
-                dataclasses.replace(row, data_type="timestamp")
-                if row.entity == "entity.jaffle_time" and row.column == "date_day"
-                else row
-                for row in runtime.config.dimensions
-            ],
-        )
+        config = _adjusted(runtime.config, timestamp_day=True)
         query = {
             **_JULY_BY_WEEK,
             "time": {**_JULY_BY_WEEK["time"], "start": "2017-07-03T12:00:00", "end": "2017-07-04"},
@@ -250,18 +264,8 @@ def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
         connection.execute(
             "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP"
         )
-        from semantic_rails.config import load_package_config
-
         config = load_package_config(str(package_dir))
-        config = dataclasses.replace(
-            config,
-            dimensions=[
-                dataclasses.replace(row, data_type="timestamp")
-                if row.entity == "entity.jaffle_time" and row.column == "date_day"
-                else row
-                for row in config.dimensions
-            ],
-        )
+        config = _adjusted(config, timestamp_day=True)
         sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
         rows = connection.execute(
             f"SELECT CAST(period AS DATE), orders FROM ({sql}) AS timestamp_result"
@@ -282,24 +286,8 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
         )
         connection.execute("UPDATE jaffle_calendar SET date_day = date_day - INTERVAL '9 hours'")
         connection.execute("DELETE FROM jaffle_order")
-        from semantic_rails.config import load_package_config
-
         config = load_package_config(str(package_dir))
-        config = dataclasses.replace(
-            config,
-            dimensions=[
-                dataclasses.replace(row, data_type="timestamp")
-                if row.entity == "entity.jaffle_time" and row.column == "date_day"
-                else row
-                for row in config.dimensions
-            ],
-            temporal_roles=[
-                dataclasses.replace(row, timezone="Asia/Tokyo")
-                if row.id == "temporal_role.jaffle_order_time"
-                else row
-                for row in config.temporal_roles
-            ],
-        )
+        config = _adjusted(config, zone="Asia/Tokyo", timestamp_day=True)
         query = {
             **_JULY_BY_WEEK,
             "time": {
@@ -360,24 +348,8 @@ def test_fill_preserves_offset_window_days_with_timestamptz_data(
             f"('second', TIMESTAMPTZ '{second}')"
         )
 
-        from semantic_rails.config import load_package_config
-
         config = load_package_config(str(package_dir))
-        config = dataclasses.replace(
-            config,
-            dimensions=[
-                dataclasses.replace(row, data_type="timestamp")
-                if row.entity == "entity.jaffle_time" and row.column == "date_day"
-                else row
-                for row in config.dimensions
-            ],
-            temporal_roles=[
-                dataclasses.replace(row, timezone=zone)
-                if row.id == "temporal_role.jaffle_order_time"
-                else row
-                for row in config.temporal_roles
-            ],
-        )
+        config = _adjusted(config, zone=zone, timestamp_day=True)
         query = {
             **_JULY_BY_WEEK,
             "time": {
@@ -428,18 +400,8 @@ def test_fill_respects_instant_order_during_dst_fold(tmp_path, start, end, expec
             "INSERT INTO jaffle_order (order_id, ordered_at) "
             "VALUES ('fold', TIMESTAMPTZ '2017-11-05 01:45:00-04:00')"
         )
-        from semantic_rails.config import load_package_config
-
         config = load_package_config(str(package_dir))
-        config = dataclasses.replace(
-            config,
-            temporal_roles=[
-                dataclasses.replace(row, timezone="America/New_York")
-                if row.id == "temporal_role.jaffle_order_time"
-                else row
-                for row in config.temporal_roles
-            ],
-        )
+        config = _adjusted(config, zone="America/New_York")
         time = {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end}
         results = {}
         for fill in (False, True):
@@ -462,8 +424,6 @@ def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path
             "INSERT INTO jaffle_order (order_id, ordered_at) "
             "VALUES ('wall', TIMESTAMP '2017-07-03 23:30:00')"
         )
-        from semantic_rails.config import load_package_config
-
         config = load_package_config(str(package_dir))
         time = {
             **_JULY_BY_WEEK["time"],
@@ -526,8 +486,6 @@ def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected,
             "INSERT INTO jaffle_order (order_id, ordered_at) "
             "VALUES ('one-nanosecond', TIMESTAMP_NS '2017-07-04 00:00:00.000000001')"
         )
-        from semantic_rails.config import load_package_config
-
         config = load_package_config(str(package_dir))
         time = {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end}
         results = {}
@@ -587,188 +545,38 @@ def test_fill_boundary_dates_do_not_overflow(runtime_factory, start, end, days):
 @pytest.mark.parametrize(
     ("zone", "start", "end", "expected"),
     [
-        (
-            "UTC",
-            "9999-12-30T00:00:00",
-            "9999-12-31T00:00:00",
-            [date(9999, 12, 30)],
-        ),
-        (
-            "UTC",
-            "9999-12-30T00:00:00",
-            "9999-12-31T00:00:00.000000001",
-            [date(9999, 12, 30), date(9999, 12, 31)],
-        ),
-        (
-            "America/New_York",
-            "9999-12-30T00:00:00+00:00",
-            "9999-12-31T23:59:59+00:00",
-            [date(9999, 12, 29), date(9999, 12, 30), date(9999, 12, 31)],
-        ),
-        (
-            "Asia/Tokyo",
-            "0001-01-01T00:00:00+00:00",
-            "0001-01-02T00:00:00+00:00",
-            [date(1, 1, 1), date(1, 1, 2)],
-        ),
-        (
-            "UTC",
-            "0001-01-01T00:00:00+01:00",
-            "0001-01-02T00:00:00+01:00",
-            [date(1, 1, 1)],
-        ),
-        (
-            "UTC",
-            "9999-12-30T00:00:00-01:00",
-            "9999-12-31T23:00:00-01:00",
-            [date(9999, 12, 30), date(9999, 12, 31)],
-        ),
-        (
-            "Asia/Tokyo",
-            "0001-01-01T00:30:00+01:00",
-            "0001-01-01T01:30:00+01:00",
-            [date(1, 1, 1)],
-        ),
-        (
-            "America/New_York",
-            "9999-12-31T22:30:00-01:00",
-            "9999-12-31T23:30:00-01:00",
-            [date(9999, 12, 31)],
-        ),
-        (
-            "UTC",
-            "0001-01-01T00:00:00+14:00",
-            "0001-01-01T01:00:00+14:00",
-            [],
-        ),
-        (
-            "UTC",
-            "9999-12-31T23:00:00-14:00",
-            "9999-12-31T23:30:00-14:00",
-            [],
-        ),
-        (
-            "America/New_York",
-            "0001-01-01T00:00:00+00:00",
-            "0001-01-01T01:00:00+00:00",
-            [],
-        ),
-        (
-            "Asia/Tokyo",
-            "9999-12-31T23:00:00+00:00",
-            "9999-12-31T23:30:00+00:00",
-            [],
-        ),
-        (
-            "UTC",
-            "0001-01-01T00:00:00+01:00",
-            "0001-01-01T00:00:00+01:00",
-            [],
-        ),
-        (
-            "UTC",
-            "9999-12-31T23:30:00-01:00",
-            "9999-12-31T23:00:00-01:00",
-            [],
-        ),
-        (
-            "UTC",
-            "0001-01-01T00:00:00+01:00",
-            "0001-01-01T00:00:00+00:00",
-            [],
-        ),
-        (
-            "UTC",
-            "0001-01-01T00:00:00+01:00",
-            "0001-01-01T00:00:00.000000001+00:00",
-            [date(1, 1, 1)],
-        ),
-        (
-            "UTC",
-            "9999-12-31T23:59:59.999999998+00:00",
-            "9999-12-31T23:59:59.999999999+00:00",
-            [date(9999, 12, 31)],
-        ),
-        (
-            "UTC",
-            "0001-01-01T01:00:00+01:00",
-            "0001-01-01T00:00:00+00:00",
-            [],
-        ),
-        (
-            "UTC",
-            "9999-12-31T23:00:00.000000002-01:00",
-            "9999-12-31T23:00:00.000000001-01:00",
-            [],
-        ),
-        (
-            "UTC",
-            "0001-01-01T01:00:00,123456+01:00",
-            "0001-01-01T00:00:00.123456+00:00",
-            [],
-        ),
-        (
-            "Asia/Tokyo",
-            "0001-01-01T00:41:30+10:00",
-            "0001-01-01T00:42:30+10:00",
-            [date(1, 1, 1)],
-        ),
-        (
-            "Asia/Tokyo",
-            "0001-01-01T00:40:00+10:00",
-            "0001-01-01T00:41:01+10:00",
-            [],
-        ),
-        (
-            "Asia/Tokyo",
-            "0001-01-01T00:40:00+10:00",
-            "0001-01-01T00:41:01.000000001+10:00",
-            [date(1, 1, 1)],
-        ),
+        pytest.param("UTC", "9999-12-30T00:00:00", "9999-12-31T00:00:00", [date(9999, 12, 30)], id="maximum-exact-midnight-excludes-last-day"),
+        pytest.param("UTC", "9999-12-30T00:00:00", "9999-12-31T00:00:00.000000001", [date(9999, 12, 30), date(9999, 12, 31)], id="maximum-submicrosecond-includes-last-day"),
+        pytest.param("America/New_York", "9999-12-30T00:00:00+00:00", "9999-12-31T23:59:59+00:00", [date(9999, 12, 29), date(9999, 12, 30), date(9999, 12, 31)], id="maximum-in-negative-offset-zone"),
+        pytest.param("Asia/Tokyo", "0001-01-01T00:00:00+00:00", "0001-01-02T00:00:00+00:00", [date(1, 1, 1), date(1, 1, 2)], id="minimum-in-positive-offset-zone"),
+        pytest.param("UTC", "0001-01-01T00:00:00+01:00", "0001-01-02T00:00:00+01:00", [date(1, 1, 1)], id="minimum-offset-crosses-utc-start"),
+        pytest.param("UTC", "9999-12-30T00:00:00-01:00", "9999-12-31T23:00:00-01:00", [date(9999, 12, 30), date(9999, 12, 31)], id="maximum-offset-crosses-utc-end"),
+        pytest.param("Asia/Tokyo", "0001-01-01T00:30:00+01:00", "0001-01-01T01:30:00+01:00", [date(1, 1, 1)], id="minimum-intermediate-overflow-but-role-day-is-valid"),
+        pytest.param("America/New_York", "9999-12-31T22:30:00-01:00", "9999-12-31T23:30:00-01:00", [date(9999, 12, 31)], id="maximum-intermediate-overflow-but-role-day-is-valid"),
+        pytest.param("UTC", "0001-01-01T00:00:00+14:00", "0001-01-01T01:00:00+14:00", [], id="minimum-extreme-offset-entirely-before-date-range"),
+        pytest.param("UTC", "9999-12-31T23:00:00-14:00", "9999-12-31T23:30:00-14:00", [], id="maximum-extreme-offset-entirely-after-date-range"),
+        pytest.param("America/New_York", "0001-01-01T00:00:00+00:00", "0001-01-01T01:00:00+00:00", [], id="minimum-role-conversion-before-date-range"),
+        pytest.param("Asia/Tokyo", "9999-12-31T23:00:00+00:00", "9999-12-31T23:30:00+00:00", [], id="maximum-role-conversion-after-date-range"),
+        pytest.param("UTC", "0001-01-01T00:00:00+01:00", "0001-01-01T00:00:00+01:00", [], id="minimum-offset-equal-interval"),
+        pytest.param("UTC", "9999-12-31T23:30:00-01:00", "9999-12-31T23:00:00-01:00", [], id="maximum-offset-reversed-interval"),
+        pytest.param("UTC", "0001-01-01T00:00:00+01:00", "0001-01-01T00:00:00+00:00", [], id="minimum-exact-midnight-end"),
+        pytest.param("UTC", "0001-01-01T00:00:00+01:00", "0001-01-01T00:00:00.000000001+00:00", [date(1, 1, 1)], id="minimum-submicrosecond-end"),
+        pytest.param("UTC", "9999-12-31T23:59:59.999999998+00:00", "9999-12-31T23:59:59.999999999+00:00", [date(9999, 12, 31)], id="maximum-last-nanosecond-window"),
+        pytest.param("UTC", "0001-01-01T01:00:00+01:00", "0001-01-01T00:00:00+00:00", [], id="minimum-equivalent-instants-different-offsets"),
+        pytest.param("UTC", "9999-12-31T23:00:00.000000002-01:00", "9999-12-31T23:00:00.000000001-01:00", [], id="maximum-reversed-submicrosecond-offset-window"),
+        pytest.param("UTC", "0001-01-01T01:00:00,123456+01:00", "0001-01-01T00:00:00.123456+00:00", [], id="minimum-equivalent-instants-comma-fraction"),
+        pytest.param("Asia/Tokyo", "0001-01-01T00:41:30+10:00", "0001-01-01T00:42:30+10:00", [date(1, 1, 1)], id="minimum-historic-second-offset-selects-day"),
+        pytest.param("Asia/Tokyo", "0001-01-01T00:40:00+10:00", "0001-01-01T00:41:01+10:00", [], id="minimum-historic-second-offset-midnight-end"),
+        pytest.param("Asia/Tokyo", "0001-01-01T00:40:00+10:00", "0001-01-01T00:41:01.000000001+10:00", [date(1, 1, 1)], id="minimum-historic-second-offset-nanosecond-end"),
     ],
-    ids=[
-        "maximum-exact-midnight-excludes-last-day",
-        "maximum-submicrosecond-includes-last-day",
-        "maximum-in-negative-offset-zone",
-        "minimum-in-positive-offset-zone",
-        "minimum-offset-crosses-utc-start",
-        "maximum-offset-crosses-utc-end",
-        "minimum-intermediate-overflow-but-role-day-is-valid",
-        "maximum-intermediate-overflow-but-role-day-is-valid",
-        "minimum-extreme-offset-entirely-before-date-range",
-        "maximum-extreme-offset-entirely-after-date-range",
-        "minimum-role-conversion-before-date-range",
-        "maximum-role-conversion-after-date-range",
-        "minimum-offset-equal-interval",
-        "maximum-offset-reversed-interval",
-        "minimum-exact-midnight-end",
-        "minimum-submicrosecond-end",
-        "maximum-last-nanosecond-window",
-        "minimum-equivalent-instants-different-offsets",
-        "maximum-reversed-submicrosecond-offset-window",
-        "minimum-equivalent-instants-comma-fraction",
-        "minimum-historic-second-offset-selects-day",
-        "minimum-historic-second-offset-midnight-end",
-        "minimum-historic-second-offset-nanosecond-end",
-    ],
-)
+)  # fmt: skip
 def test_fill_date_extremes_with_representable_zone_conversion(
     shared_package, zone, start, end, expected
 ):
     package_dir = shared_package
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb"), read_only=True) as connection:
-        from semantic_rails.config import load_package_config
-
         config = load_package_config(str(package_dir))
-        config = dataclasses.replace(
-            config,
-            temporal_roles=[
-                dataclasses.replace(row, timezone=zone)
-                if row.id == "temporal_role.jaffle_order_time"
-                else row
-                for row in config.temporal_roles
-            ],
-        )
+        config = _adjusted(config, zone=zone)
         query = {
             **_JULY_BY_WEEK,
             "time": {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end},
@@ -785,8 +593,6 @@ def test_fill_date_extremes_with_representable_zone_conversion(
 
 def test_offset_fill_refuses_on_clickhouse():
     # ClickHouse has no implicit calendar, and an authored one takes no part in a fill.
-    from semantic_rails.config import load_package_config, resolve_repo_path
-
     config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
     config = dataclasses.replace(
         config, package=dataclasses.replace(config.package, warehouse="clickhouse")
@@ -840,20 +646,11 @@ def test_fill_has_no_rows_for_an_empty_interval(runtime_factory, start, end):
 )
 def test_fill_never_binds_or_checks_the_calendar_day(bounds, day_type):
     from semantic_rails.compiler import bind_query
-    from semantic_rails.config import load_package_config, resolve_repo_path
     from semantic_rails.policies import enforce_query_policies
     from semantic_rails.schema import SemanticPolicyConfig
 
     config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
-    config = dataclasses.replace(
-        config,
-        dimensions=[
-            dataclasses.replace(row, data_type=day_type)
-            if row.entity == "entity.jaffle_time" and row.column == "date_day"
-            else row
-            for row in config.dimensions
-        ],
-    )
+    config = _adjusted(config, timestamp_day=day_type == "timestamp")
     day_id = next(
         row.id
         for row in config.dimensions
