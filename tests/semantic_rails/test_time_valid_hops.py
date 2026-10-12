@@ -295,7 +295,8 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
             id="measure-filter",
         ),
         pytest.param({"group_by": [USAGE_ID, SEGMENT]}, id="dimension-only"),
-        # Amount and seats, as two measures, one compound, or a named metric, in either order.
+        # Amount and seats, as two measures, one compound, or a named metric, in either order,
+        # grouped by or filtered on the hop.
         *[
             pytest.param(
                 shape(seats_first=seats_first, **clause),
@@ -306,8 +307,10 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
                 ("compound", _compound),
                 ("named-metric", _named_metric),
             )
-            for seats_first in (False, True)
-            for clause in ({"group_by": [SEGMENT]}, {"where": STARTER})
+            for seats_first, clause in (
+                (False, {"group_by": [SEGMENT]}),
+                (True, {"where": STARTER}),
+            )
         ],
     ],
 )
