@@ -329,34 +329,6 @@ class PartialQueryState:
     time: TimeSpec | None = None
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "version": self.version,
-            "select": [
-                {
-                    "expression": expr_to_dict(item.expression)
-                    if item.expression is not None
-                    else {},
-                    "as": item.as_,
-                }
-                for item in self.select
-            ],
-            "group_by": list(self.group_by),
-            "where": [asdict(item) for item in self.where],
-            "metric_filters": [
-                {
-                    "expression": expr_to_dict(item.expression)
-                    if item.expression is not None
-                    else {},
-                    "op": item.op,
-                    "value": item.value,
-                }
-                for item in self.metric_filters
-            ],
-            "time": asdict(self.time) if self.time else None,
-            "temporal_role_overrides": dict(self.temporal_role_overrides),
-        }
-
 
 def _validate_query_expr(expr: SemanticExpr) -> None:
     if isinstance(

@@ -139,15 +139,8 @@ def get_package_analysis(config: PackageConfig) -> PackageAnalysis:
     def _discard(_ref: Any, *, key: int = cache_key) -> None:
         _PACKAGE_ANALYSIS_CACHE.pop(key, None)
 
-    try:
-        config_ref: Any = weakref.ref(config, _discard)
-    except TypeError:
-
-        def config_ref() -> PackageConfig:
-            return config
-
     analysis = PackageAnalysis.from_config(config)
-    _PACKAGE_ANALYSIS_CACHE[cache_key] = (config_ref, analysis)
+    _PACKAGE_ANALYSIS_CACHE[cache_key] = (weakref.ref(config, _discard), analysis)
     return analysis
 
 
