@@ -280,10 +280,11 @@ def enforce_query_policies(
     return effects
 
 
-def denied(details: Mapping[str, Any]) -> SemanticLayerError:
+def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLayerError:
     """The refusal of a query a policy blocks. Its message and its one hint come from
     ``details`` alone (the blocked objects and the effects with their violations), so
-    ``visible_view.public_error`` restates both from a caller's view of the same details."""
+    ``visible_view.public_error`` restates both from a caller's view of the same details;
+    ``unstated`` says that view left out an unmet cut, which gets the generic words."""
     lines: list[str] = []
     actions: list[str] = []
     merge: dict[str, Any] = {}
@@ -295,8 +296,6 @@ def denied(details: Mapping[str, Any]) -> SemanticLayerError:
         if effect.get("kind") != "metric_constraint":
             lines.append(f"{names} is denied by policy")
             actions.append(f"Remove {names} from the call." if objects else "")
-        elif not violations:  # each one names an object hidden from this caller
-            lines.append(f"{names} can't be read this way under policy")
         for violation in violations:
             line, action, fragment = _constraint_cut(violation)
             lines.append(f"{names} {line}")
@@ -307,6 +306,9 @@ def denied(details: Mapping[str, Any]) -> SemanticLayerError:
                     if isinstance(value, dict)
                     else [*merge.get(key, []), *value]
                 )
+    if unstated:
+        lines.append(f"{_listed(objects) or 'This query'} can't be read this way under policy")
+        actions.append("Ask a package admin what this policy allows you to read.")
     hint: dict[str, Any] = {
         "code": "FIX_QUERY_CALL",
         "message": " ".join(dict.fromkeys(action for action in actions if action))
