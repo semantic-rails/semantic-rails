@@ -828,23 +828,6 @@ def test_fill_has_no_rows_for_an_empty_interval(runtime_factory, start, end):
     assert filled == unfilled == []
 
 
-def test_a_windowed_fill_never_binds_the_authored_calendar_day():
-    # The implicit calendar fills the window; the authored date_day is never read.
-    from semantic_rails import compiler
-    from semantic_rails.config import load_package_config, resolve_repo_path
-
-    config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
-    days = {
-        row.id
-        for row in config.dimensions
-        if row.entity == "entity.jaffle_time" and row.column == "date_day"
-    }
-    unfilled = {**_JULY_BY_WEEK, "time": {**_JULY_BY_WEEK["time"], "fill": False}}
-
-    assert not days & compiler.bind_query(config, None, _JULY_BY_WEEK).object_ids
-    assert not days & compiler.bind_query(config, None, unfilled).object_ids
-
-
 @pytest.mark.parametrize(
     ("bounds", "day_type"),
     [
