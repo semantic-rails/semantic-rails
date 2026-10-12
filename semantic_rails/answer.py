@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from . import visible_view
 from .ast import PERIOD_PARTIAL, TIME_AXIS, normalize_query
+from .caveats import _expr_children
 from .clock import (
     describe_window,
     engine_window,
@@ -593,33 +594,8 @@ def _freshness_as_of(freshness_rows: list[dict[str, Any]]) -> str:
 
 
 def _walk_expr_payload(expr: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = [expr]
-    for key in (
-        "left",
-        "right",
-        "input",
-        "numerator",
-        "denominator",
-        "over",
-        "base",
-        "converted",
-        "value",
-        "null_value",
-    ):
-        child = expr.get(key)
-        if isinstance(child, dict):
-            rows.extend(_walk_expr_payload(child))
-    for key in ("args",):
-        for child in list(expr.get(key, []) or []):
-            if isinstance(child, dict):
-                rows.extend(_walk_expr_payload(child))
-    for item in list(expr.get("whens", []) or []):
-        if isinstance(item, dict):
-            for key in ("when", "then"):
-                child = item.get(key)
-                if isinstance(child, dict):
-                    rows.extend(_walk_expr_payload(child))
-    return rows
+    """``expr`` and every node under it, parents first."""
+    return [expr, *(row for child in _expr_children(expr) for row in _walk_expr_payload(child))]
 
 
 def _methodology_hints(config, payload: dict[str, Any], compiled) -> list[dict[str, Any]]:
