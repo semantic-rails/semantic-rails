@@ -17,7 +17,9 @@ import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.request_context import RequestContext
+from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 SEGMENT = "segment.jaffle.high_value_customers"
 ARGUMENTS = {
@@ -54,8 +56,8 @@ EXPECTED = {
 
 
 @pytest.fixture()
-def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    mcp = SemanticLayerMCPAdapter(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
     try:
         yield mcp
     finally:

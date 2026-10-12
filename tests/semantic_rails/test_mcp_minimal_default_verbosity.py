@@ -29,6 +29,8 @@ import pytest
 from semantic_rails.mcp import (
     SemanticLayerMCPAdapter,
 )
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 # Two-row query: jaffle_shop has more than two stores; limit pins rows=2.
 _TWO_ROW_QUERY: dict[str, Any] = {
@@ -65,68 +67,45 @@ def _wire_bytes(envelope: dict[str, Any]) -> int:
     return len(json.dumps(envelope, default=str))
 
 
-def test_validate_defaults_to_minimal_envelope(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
+@pytest.fixture
+def runtime(jaffle_snapshot):
+    runtime = Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
     try:
-        validate = {"query": dict(_TWO_ROW_QUERY), "mode": "validate"}
-        default = adapter.call_tool("execute", validate)
-        explicit = adapter.call_tool("execute", {**validate, "verbosity": "minimal"})
-        assert default["ok"] is True
-        for key in (*_HEAVY_KEYS, "rendered_sql"):
-            assert key not in default, f"default validate envelope leaked {key}"
-        # Default and explicit-minimal must expose the same payload keys.
-        assert set(default) - {"request_id", "timing_ms"} == set(explicit) - {
-            "request_id",
-            "timing_ms",
-        }
-        # Explicit verbosity still wins over the minimal default.
-        compact = adapter.call_tool("execute", {**validate, "verbosity": "compact"})
-        assert "normalized_query" in compact, "explicit verbosity=compact must win"
+        yield runtime
     finally:
-        adapter.close()
-
-
-def test_compile_defaults_to_minimal_but_keeps_rendered_sql(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        default = adapter.call_tool("execute", {"query": dict(_TWO_ROW_QUERY), "mode": "sql"})
-        assert default["ok"] is True
-        assert default.get("rendered_sql"), (
-            "minimal compile must keep rendered_sql — it is the tool's product"
-        )
-        for key in _HEAVY_KEYS:
-            assert key not in default, f"default compile envelope leaked {key}"
-    finally:
-        adapter.close()
-
-
-def test_execute_default_args_returns_rows_under_six_kb(runtime_factory) -> None:
-    """The headline regression: an execute with DEFAULT args must return
-    rows + row_count and stay under ~6KB wire size for a 2-row query
-    (it measured 103KB before the minimal default)."""
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        envelope = adapter.call_tool("execute", {"query": dict(_TWO_ROW_QUERY)})
-        assert envelope["ok"] is True
-        assert isinstance(envelope.get("rows"), list)
-        assert len(envelope["rows"]) == 2
-        assert envelope.get("row_count") == 2
-        for key in (*_HEAVY_KEYS, "rendered_sql"):
-            assert key not in envelope, f"default execute envelope leaked {key}"
-        size = _wire_bytes(envelope)
-        assert size < 6_000, (
-            f"default-args execute envelope is {size:,}B for a 2-row query; "
-            "the MCP minimal default must keep it under 6KB."
-        )
-    finally:
-        adapter.close()
+        runtime.close()
 
 
 @pytest.mark.parametrize("mode", ["validate", "sql", "run"])
-def test_error_envelopes_are_minimal_by_default(runtime_factory, mode: str) -> None:
+def test_execute_defaults_to_minimal_and_keeps_its_product(runtime, mode: str) -> None:
+    adapter = SemanticLayerMCPAdapter(runtime)
+    arguments = {"query": dict(_TWO_ROW_QUERY)}
+    if mode != "run":
+        arguments["mode"] = mode
+    default = adapter.call_tool("execute", arguments)
+    assert default["ok"] is True
+    for key in _HEAVY_KEYS:
+        assert key not in default, key
+    if mode == "sql":
+        assert default.get("rendered_sql")
+    else:
+        assert "rendered_sql" not in default
+        if mode == "validate":
+            explicit = adapter.call_tool("execute", {**arguments, "verbosity": "minimal"})
+            assert set(default) - {"request_id", "timing_ms"} == set(explicit) - {
+                "request_id",
+                "timing_ms",
+            }
+            compact = adapter.call_tool("execute", {**arguments, "verbosity": "compact"})
+            assert "normalized_query" in compact
+        else:
+            assert isinstance(default.get("rows"), list)
+            assert len(default["rows"]) == default.get("row_count") == 2
+            assert _wire_bytes(default) < 6_000
+
+
+@pytest.mark.parametrize("mode", ["validate", "sql", "run"])
+def test_error_envelopes_are_minimal_by_default(runtime, mode: str) -> None:
     """Failed calls must not cost more than successful ones — the blind
     agent burned 62KB on a single failed default-verbosity call. A bad
     grain through any execute mode must come back small, while
@@ -143,37 +122,29 @@ def test_error_envelopes_are_minimal_by_default(runtime_factory, mode: str) -> N
             "grain": "fortnight",
         },
     }
-    runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        envelope = adapter.call_tool("execute", {"query": bad_query, "mode": mode})
-        assert envelope["ok"] is False
-        assert envelope.get("errors"), "structured errors must survive minimal gating"
-        assert envelope["errors"][0].get("recovery_hints"), (
-            "recovery_hints must survive minimal gating — that is the loop-repair signal"
-        )
-        for key in _HEAVY_KEYS:
-            assert key not in envelope, f"default {mode} error envelope leaked {key}"
-        size = _wire_bytes(envelope)
-        assert size < 8_000, (
-            f"default-verbosity {mode} ERROR envelope is {size:,}B; "
-            "failed calls must stay cheap for context-constrained agents."
-        )
-    finally:
-        adapter.close()
+    envelope = adapter.call_tool("execute", {"query": bad_query, "mode": mode})
+    assert envelope["ok"] is False
+    assert envelope.get("errors"), "structured errors must survive minimal gating"
+    assert envelope["errors"][0].get("recovery_hints"), (
+        "recovery_hints must survive minimal gating — that is the loop-repair signal"
+    )
+    for key in _HEAVY_KEYS:
+        assert key not in envelope, f"default {mode} error envelope leaked {key}"
+    size = _wire_bytes(envelope)
+    assert size < 8_000, (
+        f"default-verbosity {mode} ERROR envelope is {size:,}B; "
+        "failed calls must stay cheap for context-constrained agents."
+    )
 
 
-def test_plan_query_inherits_minimal_default(runtime_factory) -> None:
+def test_plan_query_inherits_minimal_default(runtime) -> None:
     """Forward the canonical Query IR with the MCP adapter's minimal default."""
-    runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        plan = adapter.call_tool("plan", {"intent": "orders by store", "detail": "best"})
-        assert "validate" not in plan["next"]
-        query = plan["best"]["query"]
-        assert "verbosity" not in query
-        forwarded = adapter.call_tool("execute", {"query": query, "mode": "validate"})
-        for key in (*_HEAVY_KEYS, "rendered_sql"):
-            assert key not in forwarded, f"forwarding best.query leaked {key}"
-    finally:
-        adapter.close()
+    plan = adapter.call_tool("plan", {"intent": "orders by store", "detail": "best"})
+    assert "validate" not in plan["next"]
+    query = plan["best"]["query"]
+    assert "verbosity" not in query
+    forwarded = adapter.call_tool("execute", {"query": query, "mode": "validate"})
+    for key in (*_HEAVY_KEYS, "rendered_sql"):
+        assert key not in forwarded, f"forwarding best.query leaked {key}"

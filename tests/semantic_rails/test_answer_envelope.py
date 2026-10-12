@@ -15,6 +15,8 @@ import pytest
 import semantic_rails.runtime_parts.answer_warnings as answer_warnings_module
 from semantic_rails.issues import ASSUMPTION, CODES
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
@@ -49,8 +51,8 @@ OWN_KEY_ROUTE = {
 
 
 @pytest.fixture
-def runtime(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
+def runtime(jaffle_snapshot):
+    runtime = Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
     yield runtime
     runtime.close()
 

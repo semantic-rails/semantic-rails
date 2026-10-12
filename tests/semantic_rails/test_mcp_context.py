@@ -129,8 +129,34 @@ def test_eval_set_is_frozen(dev_cases: list[dict[str, Any]]) -> None:
     assert _plan_baseline()["eval_set_sha256"] == mcp_context.DEV_SET_SHA256
 
 
-def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
-    metrics = mcp_context.measure_query_mcp(jaffle_package)
+@pytest.fixture(scope="module")
+def query_measurement(jaffle_package: Path):
+    from semantic_rails.runtime import Runtime
+
+    preview = Runtime.segment_preview
+    samples: dict[str, Any] = {}
+
+    def frozen_preview(self: Any, *args: Any, **kwargs: Any) -> Any:
+        # Unordered preview rows can vary in length between warehouse calls.
+        key = json.dumps([args, kwargs], sort_keys=True)
+        if key not in samples:
+            samples[key] = preview(self, *args, **kwargs)
+        return deepcopy(samples[key])
+
+    def sampled_preview(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = preview(self, *args, **kwargs)
+        key = json.dumps([args, kwargs], sort_keys=True)
+        samples.setdefault(key, deepcopy(result))
+        return result
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Runtime, "segment_preview", sampled_preview)
+        metrics = mcp_context.measure_query_mcp(jaffle_package)
+    return metrics, frozen_preview
+
+
+def test_query_mcp_stays_within_context_budgets(query_measurement) -> None:
+    metrics, _preview = query_measurement
     for metric, maximum in {
         "query.v2.instructions_tokens": 459,
         # execute embeds the query call's schema (query.v2.json) once, share kind and each
@@ -153,24 +179,13 @@ def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
 
 
 def test_session_hints_do_not_increase_first_call_costs(
-    jaffle_package: Path, monkeypatch: pytest.MonkeyPatch
+    jaffle_package: Path, query_measurement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from semantic_rails.mcp_session import MCPQuerySession
     from semantic_rails.runtime import Runtime
 
-    preview = Runtime.segment_preview
-    samples: dict[str, Any] = {}
-
-    def frozen_preview(self: Any, *args: Any, **kwargs: Any) -> Any:
-        # Unordered preview rows can vary in length between warehouse calls.
-        key = json.dumps([args, kwargs], sort_keys=True)
-        if key not in samples:
-            samples[key] = preview(self, *args, **kwargs)
-        return deepcopy(samples[key])
-
+    enabled, frozen_preview = query_measurement
     monkeypatch.setattr(Runtime, "segment_preview", frozen_preview)
-
-    enabled = mcp_context.measure_query_mcp(jaffle_package)
     monkeypatch.setattr(MCPQuerySession, "annotate", lambda *_args, **_kwargs: None)
     disabled = mcp_context.measure_query_mcp(jaffle_package)
     first_calls = {

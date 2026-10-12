@@ -20,6 +20,7 @@ from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.mcp_session import MCPQuerySession
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 QUERY = {
     "select": [
@@ -30,8 +31,10 @@ VERBOSITIES = ("minimal", "compact", "full")
 
 
 @pytest.fixture()
-def jaffle_adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def jaffle_adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    adapter = SemanticLayerMCPAdapter(
+        Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
+    )
     try:
         yield adapter
     finally:
@@ -108,8 +111,8 @@ def test_large_rendered_sql_is_optional_only_for_a_run(
 
 
 @pytest.fixture()
-def medium_adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    base = runtime_factory("jaffle_shop")
+def medium_adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    base = Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
     config = base.config
     measure = next(m for m in config.measures if m.id == "measure.jaffle.revenue_usd")
     metric = next(m for m in config.metric_recipes if m.id == "metric.sales.aov_usd")

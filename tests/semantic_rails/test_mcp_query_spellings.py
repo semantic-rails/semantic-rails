@@ -10,6 +10,8 @@ import pytest
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.request_context import RequestContext
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 MEASURE = "measure.jaffle.order_count"
 DIMENSION = "dimension.jaffle_order_customer_id"
@@ -17,8 +19,10 @@ QUERY = {"select": [{"expression": MEASURE, "as": "n"}]}
 
 
 @pytest.fixture
-def adapter(runtime_factory):
-    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def adapter(jaffle_snapshot):
+    adapter = SemanticLayerMCPAdapter(
+        Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
+    )
     yield adapter
     adapter.close()
 

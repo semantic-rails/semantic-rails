@@ -21,6 +21,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import _slim_discover_minimal, discover_payload
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 SLIM_KEYS = {"id", "kind", "label", "measure", "description", "default_temporal_role", "available"}
 VALUE_KEYS = {"id", "kind", "dimension_id", "value", "label", "available"}
@@ -28,8 +29,8 @@ SESSION_STARTS = {"select": [{"as": "s", "expression": "measure.jaffle.session_s
 
 
 @pytest.fixture()
-def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    mcp = SemanticLayerMCPAdapter(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
     try:
         yield mcp
     finally:

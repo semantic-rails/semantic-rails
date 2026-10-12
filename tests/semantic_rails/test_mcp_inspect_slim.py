@@ -21,6 +21,7 @@ from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import _slim_inspect_card
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 OBJECTS = [
     "measure.jaffle.revenue_usd",
@@ -34,8 +35,8 @@ EMPTY: tuple[Any, ...] = (None, "", [], {})
 
 
 @pytest.fixture()
-def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    mcp = SemanticLayerMCPAdapter(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
     try:
         yield mcp
     finally:
