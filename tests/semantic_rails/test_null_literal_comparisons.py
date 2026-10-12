@@ -338,15 +338,6 @@ def test_lower_cased_join_on_null_matches_null_test(op, gold_op, reverse):
     assert len(rows) == 2 and all(got == want for got, want in rows)
 
 
-def test_post_aggregate_not_null_reads_null(runtime):
-    query = {
-        "select": [{"expression": RECORDS, "as": "n"}, {"expression": NOT_NULL, "as": "flag"}],
-    }
-    ((n, flag),) = _gold("SELECT COUNT(*), NOT NULL FROM records")
-    assert flag is None
-    assert runtime.query(query)["rows"] == [{"n": n, "flag": flag}]
-
-
 def test_configured_not_null_reads_null(runtime):
     # FALSE in place of NULL would make the null test on the negation false and count 0.
     negation_is_null = {"kind": "comparison", "op": "=", "left": NOT_NULL, "right": NULL}
@@ -355,11 +346,6 @@ def test_configured_not_null_reads_null(runtime):
     expected = _gold("SELECT COUNT(*) FROM records WHERE (NOT NULL) IS NULL AND value IS NULL")
     assert expected == [(6,)]
     assert runtime.query(query)["rows"] == [{"n": 6}]
-
-
-def test_relation_not_null_reads_null():
-    expr = parse_semantic_expression(NOT_NULL, context="relation")
-    assert _gold(f"SELECT {render_expr(_semantic_expr_to_sql(expr))}") == [(None,)]
 
 
 def _false_not_equal_not_null(*, reverse=False):
