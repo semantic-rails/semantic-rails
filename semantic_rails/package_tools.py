@@ -777,26 +777,17 @@ def check_package_report(
             "tables_probed": reachability_report["summary"]["tables_probed"],
             "missing_columns": reachability_report["summary"]["missing_columns"],
         },
-        "examples": {
-            "ok": example_report["ok"],
-            "examples_total": example_report["summary"]["examples_total"],
-            "passed": example_report["summary"]["passed"],
-            "failed": example_report["summary"]["failed"],
-        },
-        "tests": {
-            "ok": test_report["ok"],
-            "tests_total": test_report["summary"]["tests_total"],
-            "passed": test_report["summary"]["passed"],
-            "failed": test_report["summary"]["failed"],
-        },
+        "examples": {"ok": example_report["ok"], **example_report["summary"]},
+        "tests": {"ok": test_report["ok"], **test_report["summary"]},
     }
-    ok = bool(
-        parse_report["ok"]
-        and validate_report["ok"]
-        and reachability_report["ok"]
-        and example_report["ok"]
-        and test_report["ok"]
-    )
+    reports = {
+        "parse": parse_report,
+        "validate": validate_report,
+        "column_reachability": reachability_report,
+        "examples": example_report,
+        "tests": test_report,
+    }
+    ok = all(report["ok"] for report in reports.values())
     if package_fingerprint(ref.source_path) != snapshot.source_fingerprint:
         raise SemanticLayerError(
             "INVALID_CONFIG",
@@ -808,29 +799,12 @@ def check_package_report(
         artifact = _write_package_artifact(
             ref, output_path=artifact_path, manifest=manifest, config=config
         )
-    blockers = _check_errors(
-        {
-            "checks": {
-                "parse": parse_report,
-                "validate": validate_report,
-                "column_reachability": reachability_report,
-                "examples": example_report,
-                "tests": test_report,
-            }
-        }
-    )
+    blockers = _check_errors({"checks": reports})
     return {
         "ok": ok,
         "package": {"id": config.package.package_id, "source_path": ref.source_path},
         "package_hash": manifest["package_hash"],
-        "checks": {
-            "parse": parse_report,
-            "validate": validate_report,
-            "column_reachability": reachability_report,
-            "examples": example_report,
-            "tests": test_report,
-            "impact": impact,
-        },
+        "checks": {**reports, "impact": impact},
         "summary": checks,
         "manifest": manifest,
         "artifact": artifact,
