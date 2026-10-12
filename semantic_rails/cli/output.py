@@ -10,6 +10,7 @@ from datetime import time as dt_time
 from decimal import Decimal
 from typing import Any
 
+from ..errors import refusal_text
 from .common import _BUNDLED_NOTE, _print, _quote
 
 _MAX_HUMAN_ROWS = 500
@@ -262,13 +263,15 @@ def _print_project_validation(report: dict[str, Any]) -> None:
         # Each probe reports a shared failure (a missing seed, say) again: print it once.
         counts: dict[tuple[str, str], int] = {}
         for error in errors:
-            message = error.get("message") or error if isinstance(error, dict) else error
-            check = error.get("check") if isinstance(error, dict) else None
-            line = f"  {check}: {message}" if check else f"  {message}"
-            hints = list(error.get("recovery_hints", []) or []) if isinstance(error, dict) else []
-            hint = (
-                str(hints[0].get("message") or "") if hints and isinstance(hints[0], dict) else ""
-            )
+            if not isinstance(error, dict):
+                counts[(f"  {error}", "")] = counts.get((f"  {error}", ""), 0) + 1
+                continue
+            # An example's or test's refusal sits in its details, beside the entry's id.
+            details = {**dict(error.get("details") or {}), **error}
+            message, hint = refusal_text(str(error.get("message") or error), details)
+            entry = details.get("example_id") or details.get("test_id")
+            prefix = ": ".join(str(part) for part in (error.get("check"), entry) if part)
+            line = f"  {prefix}: {message}" if prefix else f"  {message}"
             counts[(line, hint)] = counts.get((line, hint), 0) + 1
         for (line, hint), count in list(counts.items())[:10]:
             print(line + (f" ({count} times)" if count > 1 else ""))

@@ -866,7 +866,11 @@ never guesses which one the question meant.
 ## Retired keys
 
 A call written for the previous query shape is refused at the first retired key, with where it
-went:
+went. Where the rewrite is mechanical the hint carries the caller's own values in the new shape:
+each `metric_filters` item as its `having` row or entity filter, `time.range` as the `time` to
+send, `route_decisions` as `routes`, a reference object as its id, `LIKE '%text%'` as
+`contains`, `BETWEEN` as `gte` and `lte` (it includes both ends). An item with no mechanical
+rewrite (a predicate grouped by the query's dimensions, say) gets the general hint.
 
 | Retired | Now |
 |---|---|
@@ -883,7 +887,7 @@ went:
 | `time.calendar_id` | removed: the clock's own calendar applies |
 | grain `""`, `hour`, `minute` | omit `grain` for one total |
 | `time.fill` on a named window | removed: a named window returns every period |
-| `order_by.field: "time"`, `"ASC"`/`"DESC"` | `"period"`, `"asc"`/`"desc"` |
+| `order_by.field: "time"` or a clock id (`temporal_role.<id>__month`), `"ASC"`/`"DESC"` | `"period"`, `"asc"`/`"desc"` |
 | `where[].op` `IS NULL`, `IS NOT NULL`, `LIKE`, `IS DISTINCT FROM`, `BETWEEN` | `missing: true`, `missing: false`, `contains`, `not`, two conditions |
 | child group `{child, match, where}` | entity filter `{entity, any \| none}` |
 | `scope_mode`, `time_grain`, `time_alignment` on a predicate | `over` |

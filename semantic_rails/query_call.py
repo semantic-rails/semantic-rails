@@ -470,7 +470,9 @@ def _check_top_level(payload: Mapping[str, Any]) -> None:
         if key in FIELDS:
             continue
         if key in RETIRED:
-            raise refusal(key, "is not part of a query call", fix=f"{RETIRED[key]} {V2_POINTER}")
+            raise refusal(
+                key, "is not part of a query call", fix=f"{_retired_fix(key, payload)} {V2_POINTER}"
+            )
         if key in TOOL_ARGUMENTS:
             raise refusal(
                 key,
@@ -484,6 +486,111 @@ def _check_top_level(payload: Mapping[str, Any]) -> None:
             fix=f"Use '{matches[0]}'." if matches else f"Remove '{key}'.",
             supported_keys=list(FIELDS),
         )
+
+
+def _retired_fix(key: str, payload: Mapping[str, Any]) -> str:
+    """A retired key's hint: the caller's own value in the call's spelling, when the rewrite
+    is mechanical."""
+    value = payload[key]
+    if key == "metric_filters" and isinstance(value, list) and value:
+        return _result_filters_fix(value, payload)
+    if (
+        key == "route_decisions"
+        and isinstance(value, list)
+        and value
+        and all(
+            isinstance(row, Mapping)
+            and set(row) <= {"source_entity", "target_entity", "relationship_path", "label"}
+            and isinstance(row.get("relationship_path"), list)
+            for row in value
+        )
+    ):
+        return f'Write "routes": {json.dumps([route_entry(row) for row in value], default=str)}.'
+    if key == "limits" and isinstance(value, Mapping) and set(value) == {"max_rows"}:
+        return f"Pass `max_rows: {json.dumps(value['max_rows'], default=str)}` as a tool argument."
+    return RETIRED[key]
+
+
+def _result_filters_fix(items: list[Any], payload: Mapping[str, Any]) -> str:
+    """``metric_filters`` as the caller's own ``having`` rows and entity filters; an item with
+    no mechanical rewrite keeps the general hint."""
+    aliases = _select_aliases(payload.get("select"))
+    time = payload.get("time")
+    grain = time.get("grain") if isinstance(time, Mapping) else None
+    rows: dict[str, list[dict[str, Any]]] = {"having": [], "where": []}
+    rest: list[str] = []
+    for index, item in enumerate(items):
+        try:
+            part, row = _result_filter(item, aliases, grain)
+        except SemanticLayerError:
+            rest.append(f"metric_filters[{index}]")
+            continue
+        rows[part].append(row)
+    fixes = []
+    if rows["having"]:
+        fixes.append(f'Write "having": {json.dumps(rows["having"], default=str)}.')
+    if rows["where"]:
+        fixes.append(f'Add to "where": {json.dumps(rows["where"], default=str)}.')
+    if rest:
+        fixes.append(f"For {', '.join(rest)}: {RETIRED['metric_filters']}")
+    return " ".join(fixes)
+
+
+# A predicate's engine scope, back to its over word (the inverse of ``_PREDICATE_SCOPES``).
+_OVER_OF_SCOPE: dict[tuple[str, str], str] = {
+    (scope["scope_mode"], scope.get("time_alignment", "")): word
+    for word, scope in _PREDICATE_SCOPES.items()
+}
+_PREDICATE_FILTER_KEYS = frozenset(
+    {"kind", "entity", "input", "op", "value", "scope_mode", "time_alignment"}
+)
+
+
+def _result_filter(item: Any, aliases: Mapping[str, Any], grain: Any) -> tuple[str, dict[str, Any]]:
+    """One ``metric_filters`` item as ``("having" | "where", row)``, read back by this parser;
+    refuses an item with no mechanical rewrite."""
+    unknown = refusal("metric_filters", "has no mechanical rewrite")
+    if not isinstance(item, Mapping):
+        raise unknown
+    expression = item.get("expression")
+    if isinstance(expression, Mapping) and expression.get("kind") == "metric_predicate":
+        # An entity filter keeps the entities whose predicate is true, over an over word.
+        scope = (str(expression.get("scope_mode", "")), str(expression.get("time_alignment", "")))
+        outer = operators.normalize_condition(
+            item.get("op", "is"), item.get("value"), path="metric_filters", internal=True
+        )
+        if (
+            outer != ("is", True)
+            or scope not in _OVER_OF_SCOPE
+            or not set(expression) <= _PREDICATE_FILTER_KEYS
+        ):
+            raise unknown
+        row = _call_entity_having(expression)
+        _entity_filter(row, "where", grain)
+        return "where", row
+    having = call_having(item, aliases)
+    if having is None:
+        raise unknown
+    _having([having], aliases)
+    return "having", having
+
+
+def _select_aliases(raw: Any) -> dict[str, Any]:
+    """Each select item's output name and its expression in the call's spelling (the caller's
+    select may still be in an earlier spelling)."""
+    aliases: dict[str, Any] = {}
+    for item in raw if isinstance(raw, list) else []:
+        alias: Any = None
+        source = item
+        if isinstance(item, Mapping):
+            alias = item.get("as")
+            source = item.get("expression", {k: v for k, v in item.items() if k != "as"})
+        expression = _call_expression(source)
+        if alias is None and isinstance(expression, str):
+            alias = expression.split(".")[-1]
+        if isinstance(alias, str):
+            aliases.setdefault(alias, expression)
+    return aliases
 
 
 def _group_by(raw: Any) -> list[str]:
@@ -549,15 +656,16 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
         ]
         if named and "expression" not in item:
             ref = item[named[0]].strip()
-            raise refusal(
-                path,
-                "a reference is the id string itself",
-                fix=(
-                    f'Move "{ref}" to group_by.'
-                    if named[0] == "dimension"
-                    else f'Write "{ref}", or {{"expression": "{ref}", "as": ...}} to name it.'
-                ),
-            )
+            written = _written({key: value for key, value in item.items() if key != "as"})
+            alias = item.get("as")
+            if named[0] == "dimension":
+                fix = f'Move "{ref}" to group_by.'
+            elif written is None or written == ref and alias in (None, ref.split(".")[-1]):
+                fix = f'Write "{ref}", or {{"expression": "{ref}", "as": ...}} to name it.'
+            else:
+                shape = {"expression": written, "as": alias or ref.split(".")[-1]}
+                fix = f"Write {json.dumps(shape, default=str)}."
+            raise refusal(path, "a reference is the id string itself", fix=fix)
         _check_keys(item, SELECT_KEYS, path)
         if "expression" not in item:
             raise refusal(path, "needs 'expression'", fix='Write {"expression": "metric.<id>"}.')
@@ -634,17 +742,14 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             "a dimension splits the answer; it is not an expression",
             fix=f'Move "{raw["dimension"].strip()}" to group_by.',
         )
+    written = _written(raw) if not kind or kind in RETIRED_KINDS else None
+    fix = f"Write {json.dumps(written, default=str)}." if written is not None else ""
     if not kind:
-        ref = raw.get("metric") or raw.get("measure")
-        raise refusal(
-            path,
-            "an expression object names its 'kind'",
-            fix=f'Write "{ref}".' if isinstance(ref, str) else _KINDLESS_FIX,
-        )
+        raise refusal(path, "an expression object names its 'kind'", fix=fix or _KINDLESS_FIX)
     kind = str(kind).strip()
     if kind in RETIRED_KINDS:
         name = raw.get("metric") or raw.get("measure") or "<id>"
-        raise refusal(path, f"'{kind}' objects are retired", fix=f'Write "{name}".')
+        raise refusal(path, f"'{kind}' objects are retired", fix=fix or f'Write "{name}".')
     kinds = call_kinds()
     if kind not in kinds:
         matches = _closest(kind, kinds)
@@ -655,16 +760,8 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             supported_kinds=sorted(kinds),
         )
     if kind == "prior_period" and ("measure" in raw or not isinstance(raw.get("offset"), Mapping)):
-        measure = raw.get("measure", "<measure id>")
-        unit = raw.get("grain", "<unit>")
-        raise refusal(
-            path,
-            "prior_period has one spelling",
-            fix=(
-                f'Write {{"kind": "prior_period", "input": "{measure}", '
-                f'"offset": {{"unit": "{unit}", "value": 1}}}}.'
-            ),
-        )
+        shape = json.dumps(_prior_period(raw), default=str)
+        raise refusal(path, "prior_period has one spelling", fix=f"Write {shape}.")
     if not (kind == "prior_period" and "measure" in raw):
         _check_keys(raw, tuple(dict.fromkeys(("kind", *kinds[kind]))), path)
     if kind == "share":
@@ -728,6 +825,40 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             for key, value in dict(node["filter"]).items()
         }
     return node
+
+
+# The keys of a reference object: ``{"metric": id}``, or ``{"measure": id}`` with overrides.
+_METRIC_REFERENCE = frozenset({"kind", "metric"})
+_MEASURE_REFERENCE = frozenset({"kind", "measure", "aggregation", "temporal_role", "parameters"})
+
+
+def _written(raw: Mapping[str, Any]) -> Any:
+    """A reference object as the call writes it: its id, or a ``measure`` kind with its
+    overrides; None for any other shape."""
+    if not set(raw) <= (_METRIC_REFERENCE if "metric" in raw else _MEASURE_REFERENCE):
+        return None
+    form = _call_expression(raw)
+    if isinstance(form, str) or (isinstance(form, Mapping) and form.get("kind") == "measure"):
+        return form
+    return None
+
+
+def _prior_period(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """An earlier prior_period spelling, ``{measure, offset: <periods>, grain}``, as the call
+    writes it (the earlier spelling read the offset's size, whatever its sign)."""
+    measure = {key: raw[key] for key in ("measure", "aggregation") if key in raw}
+    source = (
+        _written({"kind": "measure", **measure}) if isinstance(raw.get("measure"), str) else None
+    )
+    offset = raw.get("offset")
+    if not isinstance(offset, Mapping):
+        size = offset if isinstance(offset, int) and not isinstance(offset, bool) else 0
+        offset = {"unit": raw.get("grain", "<unit>"), "value": abs(size) or "<periods back>"}
+    return {
+        "kind": "prior_period",
+        "input": source or _call_expression(raw.get("input", "<measure id>")),
+        "offset": offset,
+    }
 
 
 def _check_share(raw: Mapping[str, Any], path: str, context: CallContext) -> None:
@@ -812,13 +943,19 @@ def _scoped_predicate(item: Any, path: str, context: CallContext) -> Any:
 
 def _predicate(node: dict[str, Any], path: str) -> dict[str, Any]:
     """A predicate's ``over`` word and comparison, in the engine's scope terms."""
-    for key in _PREDICATE_RETIRED:
-        if key in node:
-            raise refusal(
-                f"{path}.{key}",
-                "is retired; say how the aggregate is taken with 'over'",
-                fix=f'Write "over": one of {list(OVER)}.',
-            )
+    retired = [key for key in _PREDICATE_RETIRED if key in node]
+    if retired:
+        scope = (str(node.get("scope_mode", "")), str(node.get("time_alignment", "")))
+        word = None if "time_grain" in node else _OVER_OF_SCOPE.get(scope)
+        raise refusal(
+            f"{path}.{retired[0]}",
+            "is retired; say how the aggregate is taken with 'over'",
+            fix=(
+                f'Replace {" and ".join(retired)} with "over": "{word}".'
+                if word
+                else f'Write "over": one of {list(OVER)}.'
+            ),
+        )
     over = node.pop("over", None)
     if over is None:
         raise _over_unstated(path, node)
@@ -1064,12 +1201,13 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
     for key in raw:
         if key == "range":
             bounds = raw["range"] if isinstance(raw["range"], Mapping) else {}
+            moved = {k: v for k, v in raw.items() if k not in {"range", "calendar_id"}}
             raise refusal(
                 "time.range",
                 "is retired",
                 fix=(
-                    'Write "start" and "end" directly under time.'
-                    if "start" in bounds or "end" in bounds
+                    f'Write "time": {json.dumps({**moved, **bounds}, default=str)}.'
+                    if bounds and set(bounds) <= {"last", "start", "end"}
                     else 'Write "last": {"unit": ..., "value": ...} directly under time.'
                 ),
             )
@@ -1253,7 +1391,8 @@ def _order_by(raw: Any) -> list[dict[str, Any]]:
             )
         _check_keys(item, ORDER_KEYS, path)
         field_id = item.get("field")
-        if field_id == "time":
+        # The axis's earlier names: "time", a clock id, or "<clock id>__<grain>".
+        if field_id == "time" or str(field_id).startswith("temporal_role."):
             raise refusal(f"{path}.field", "the time axis is named 'period'", fix='Write "period".')
         if not isinstance(field_id, str) or not field_id.strip():
             raise refusal(
@@ -1358,7 +1497,7 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
     for row in list(query.get("select") or []):
         expression = _call_expression(row.get("expression") or {})
         alias = str(row.get("as") or "")
-        aliases[alias] = row.get("expression")
+        aliases[alias] = expression
         if isinstance(expression, str) and alias == expression.split(".")[-1]:
             select.append(expression)
         else:
@@ -1370,22 +1509,16 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
     where = call_where(query.get("where") or [], query.get("metric_filters") or [])
     having: list[Any] = []
     for item in list(query.get("metric_filters") or []):
-        expression = item.get("expression") or {}
-        if expression.get("kind") == "metric_predicate":
+        if (item.get("expression") or {}).get("kind") == "metric_predicate":
             continue
-        matched = next((name for name, expr in aliases.items() if expr == expression), None)
-        refs = _call_expression(expression)
-        field_id = matched or (refs if isinstance(refs, str) else None)
-        if field_id is None:
+        row = call_having(item, aliases)
+        if row is None:
             raise refusal(
                 "having",
                 "a result filter names a select alias or a measure or metric",
                 fix="Select the expression with an alias and filter on the alias.",
             )
-        word, value = operators.normalize_condition(
-            item.get("op", "is"), item.get("value"), path="having", internal=True
-        )
-        having.append({"field": field_id, "op": word, "value": value})
+        having.append(row)
     if where:
         call["where"] = where
     if having:
@@ -1424,6 +1557,20 @@ def call_where(where: Any, metric_filters: Any = ()) -> list[dict[str, Any]]:
         if expression.get("kind") == "metric_predicate":
             out.append(_call_entity_having(expression))
     return out
+
+
+def call_having(item: Mapping[str, Any], aliases: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A result filter ``{expression, op, value}`` as a ``having`` row: the select alias whose
+    call expression it filters, else its measure or metric id; None when it names neither."""
+    expression = _call_expression(item.get("expression") or {})
+    matched = next((name for name, expr in aliases.items() if expr == expression), None)
+    field_id = matched or (expression if isinstance(expression, str) else None)
+    if field_id is None:
+        return None
+    word, value = operators.normalize_condition(
+        item.get("op", "is"), item.get("value"), path="having", internal=True
+    )
+    return {"field": field_id, "op": word, "value": value}
 
 
 def _legacy_axis(time: Mapping[str, Any]) -> str:

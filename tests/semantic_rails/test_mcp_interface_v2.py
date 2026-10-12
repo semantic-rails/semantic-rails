@@ -173,7 +173,8 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     execute = tools["execute"]["inputSchema"]["properties"]
     assert execute["max_rows"]["default"] == MCP_DEFAULT_MAX_ROWS
     assert execute["mode"]["enum"] == ["run", "validate", "sql"]
-    assert "exclusive" in execute["query"]["properties"]["time"]["properties"]["end"]["description"]
+    published_time = load_contract("query.v2.json")["properties"]["time"]["properties"]
+    assert "exclusive" in published_time["end"]["description"]
     assert execute["max_rows"]["maximum"] == 100_000
     for tool, levels in (
         ("discover", ["minimal", "compact", "full"]),

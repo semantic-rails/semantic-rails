@@ -9,6 +9,7 @@ data). ``ERROR_CODES`` are the refusals of the code table in
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from .issues import ERROR_CODES as ERROR_CODES
@@ -22,6 +23,15 @@ class SemanticLayerError(Exception):
         super().__init__(message)
         self.code = code
         self.details = dict(details or {})
+
+
+def refusal_text(message: str, details: Mapping[str, Any]) -> tuple[str, str]:
+    """A refusal for a person to read: its message, led by its path when the message does not
+    name it, and its first hint ("" when it has none)."""
+    path = str(details.get("path") or "")
+    text = message if not path or message.startswith(path) else f"{path}: {message}"
+    hints = [hint for hint in details.get("recovery_hints") or [] if isinstance(hint, Mapping)]
+    return text, str(hints[0].get("message") or "") if hints else ""
 
 
 def query_execution_error(details: dict[str, Any]) -> SemanticLayerError:

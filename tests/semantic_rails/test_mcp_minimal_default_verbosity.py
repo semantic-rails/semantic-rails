@@ -14,9 +14,8 @@ MCP adapter now defaults execute, in every mode, to verbosity='minimal':
 ...). Explicit `verbosity` arguments still win, and the HTTP v1 surface
 is untouched — these tests pin the MCP boundary only.
 
-Also pinned here: a 24KB tools/list budget (post IR cheat-sheet +
-QUERY_SCHEMA dedupe the measured size is ~16KB) and the <6KB wire size
-of a default-args execute on a 2-row query.
+Also pinned here: the <6KB wire size of a default-args execute on a 2-row
+query (the tools/list budgets are in test_mcp_response_budget.py).
 """
 
 from __future__ import annotations

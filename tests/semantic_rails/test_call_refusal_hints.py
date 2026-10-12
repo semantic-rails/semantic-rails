@@ -11,6 +11,7 @@ import pytest
 from semantic_rails.embedding import RequestContext
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.package_snapshot import load_package_snapshot
+from semantic_rails.query_call import V2_POINTER
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
 
@@ -171,3 +172,162 @@ def test_an_unsettled_empty_group_names_the_callers_output(runtime: Runtime) -> 
     assert error["details"]["outputs"] == ["orders"]
     assert "leaf__" not in json.dumps(error)
     assert runtime.validate({**call, "observation_scope": "query"}, now=NOW)["ok"] is True
+
+
+STORE = "dimension.jaffle_store_name"
+CLOCK = "temporal_role.jaffle_order_time"
+AOV = "metric.sales.aov_usd"
+
+
+def _fragment(hint: str, key: str) -> Any:
+    """The JSON the hint gives for ``key``: ``... "<key>": <json>. ...``."""
+    start = hint.index(f'"{key}": ') + len(key) + 4
+    return json.JSONDecoder().raw_decode(hint, start)[0]
+
+
+def _predicate(scope: str, threshold: int = 2) -> dict[str, Any]:
+    return {
+        "kind": "metric_predicate",
+        "entity": "entity.jaffle_customer",
+        "input": {"kind": "measure", "measure": ORDERS},
+        "op": ">",
+        "value": threshold,
+        "scope_mode": scope,
+    }
+
+
+@pytest.mark.parametrize(
+    ("select", "item", "part"),
+    [
+        ([{"expression": {"kind": "metric", "metric": AOV}, "as": "aov"}], {"expression": {"metric": AOV}, "op": ">", "value": 12.5}, "having"),
+        ([REVENUE], {"expression": {"kind": "measure", "measure": REVENUE}, "op": "<=", "value": 300000}, "having"),
+        ([ORDERS], {"expression": _predicate("entity_only"), "op": "=", "value": True}, "where"),
+    ],
+    ids=["metric-alias", "measure-id", "entity-predicate"],
+)  # fmt: skip
+def test_retired_result_filters_hint_the_callers_own_rows(
+    runtime: Runtime, select: list[Any], item: dict[str, Any], part: str
+) -> None:
+    error = _error(runtime, {"select": select, "group_by": [STORE], "metric_filters": [item]})
+    assert error["details"]["path"] == "metric_filters"
+    rows = _fragment(_hint(error), part)
+    fixed = {"select": [_v2_item(row) for row in select], "group_by": [STORE], part: rows}
+    # The rewrite answers what the engine reads the retired filter as.
+    retired = runtime.engine_payload({**fixed, part: []}, now=NOW)
+    retired["metric_filters"] = [item]
+    expected = runtime.query_internal(retired)["rows"]
+    unfiltered = runtime.query({**fixed, part: []}, now=NOW)["rows"]
+    assert runtime.query(fixed, now=NOW)["rows"] == expected
+    assert expected and expected != unfiltered
+
+
+def _v2_item(row: Any) -> Any:
+    if isinstance(row, dict) and isinstance(row["expression"], dict):
+        return {**row, "expression": row["expression"]["metric"]}
+    return row
+
+
+def test_a_result_filter_with_no_mechanical_rewrite_keeps_the_general_hint(
+    runtime: Runtime,
+) -> None:
+    items = [
+        {"expression": {"kind": "measure", "measure": ORDERS}, "op": ">", "value": 10},
+        {"expression": _predicate("contextual"), "op": "=", "value": True},
+    ]
+    error = _error(runtime, {"select": [ORDERS], "group_by": [STORE], "metric_filters": items})
+    hint = _hint(error)
+    assert _fragment(hint, "having") == [{"field": "order_count", "op": "gt", "value": 10}]
+    assert '"where"' not in hint
+    assert "For metric_filters[1]: Filter results with `having" in hint
+
+
+@pytest.mark.parametrize(
+    ("call", "path", "hint", "fixed"),
+    [
+        (
+            {"select": [ORDERS], "time": {"temporal_role": CLOCK, "grain": "month", "range": {"last": {"unit": "day", "value": 90}}, "calendar_id": "default"}},
+            "time.range",
+            'Write "time": {"temporal_role": "' + CLOCK + '", "grain": "month", "last": {"unit": "day", "value": 90}}.',
+            {"select": [ORDERS], "time": {"temporal_role": CLOCK, "grain": "month", "last": {"unit": "day", "value": 90}}},
+        ),
+        (
+            {"select": [ORDERS], "time": {"range": {"start": "2017-01-01", "end": "2017-03-01"}}},
+            "time.range",
+            'Write "time": {"start": "2017-01-01", "end": "2017-03-01"}.',
+            {"select": [ORDERS], "time": {"start": "2017-01-01", "end": "2017-03-01"}},
+        ),
+        (
+            {"select": [ORDERS], "time": {"grain": "month"}, "order_by": [{"field": CLOCK + "__month", "direction": "desc"}]},
+            "order_by[0].field",
+            'Write "period".',
+            {"select": [ORDERS], "time": {"grain": "month"}, "order_by": [{"field": "period", "direction": "desc"}]},
+        ),
+        (
+            {"select": [{"metric": AOV, "as": "aov"}]},
+            "select[0]",
+            f'Write {{"expression": "{AOV}", "as": "aov"}}.',
+            {"select": [{"expression": AOV, "as": "aov"}]},
+        ),
+        (
+            {"select": [{"expression": {"kind": "measure_ref", "measure": REVENUE, "aggregation": "max"}, "as": "top"}]},
+            "select[0].expression",
+            f'Write {{"kind": "measure", "measure": "{REVENUE}", "aggregation": "max"}}.',
+            {"select": [{"expression": {"kind": "measure", "measure": REVENUE, "aggregation": "max"}, "as": "top"}]},
+        ),
+        (
+            {"select": [{"expression": {"kind": "prior_period", "measure": ORDERS, "offset": -2, "grain": "month"}, "as": "before"}], "time": {"grain": "month"}},
+            "select[0].expression",
+            f'Write {{"kind": "prior_period", "input": "{ORDERS}", "offset": {{"unit": "month", "value": 2}}}}.',
+            {"select": [{"expression": {"kind": "prior_period", "input": ORDERS, "offset": {"unit": "month", "value": 2}}, "as": "before"}], "time": {"grain": "month"}},
+        ),
+        (
+            {"select": [{"expression": {"kind": "scoped_aggregate", "measure": ORDERS, "predicates": [{**_predicate("entity_only"), "time_alignment": "query_window"}]}, "as": "n"}], "time": {"last": {"unit": "year", "value": 1}}},
+            "select[0].expression.predicates[0].scope_mode",
+            'Replace scope_mode and time_alignment with "over": "window".',
+            None,
+        ),
+        (
+            {"select": [ORDERS], "where": [{"field": STORE, "op": "LIKE", "value": "%Phil%"}]},
+            "where[0].op",
+            'Write {"op": "contains", "value": "Phil"}, which ignores case.',
+            {"select": [ORDERS], "where": [{"field": STORE, "op": "contains", "value": "Phil"}]},
+        ),
+        (
+            {"select": [ORDERS], "where": [{"field": STORE, "op": "IS DISTINCT FROM", "value": "Philadelphia"}]},
+            "where[0].op",
+            'Write {"op": "not", "value": "Philadelphia"}.',
+            {"select": [ORDERS], "where": [{"field": STORE, "op": "not", "value": "Philadelphia"}]},
+        ),
+        (
+            {"select": [ORDERS], "where": [{"field": "dimension.jaffle_order_total_usd", "op": "BETWEEN", "value": [5, 10]}]},
+            "where[0].op",
+            'Write two conditions, {"op": "gte", "value": 5} and {"op": "lte", "value": 10}.',
+            None,
+        ),
+        (
+            {"select": [ORDERS], "route_decisions": [{"source_entity": "entity.jaffle_order", "target_entity": "entity.jaffle_store", "relationship_path": ["relationship.order_store"]}]},
+            "route_decisions",
+            'Write "routes": [{"from": "entity.jaffle_order", "to": "entity.jaffle_store", "via": ["relationship.order_store"]}].',
+            None,
+        ),
+        (
+            {"select": [ORDERS], "limits": {"max_rows": 50}},
+            "limits",
+            "Pass `max_rows: 50` as a tool argument.",
+            None,
+        ),
+    ],
+    ids=["range-last", "range-dates", "axis-alias", "metric-object", "measure-ref", "prior-period", "predicate-scope", "like", "distinct-from", "between", "route-decisions", "limits"],
+)  # fmt: skip
+def test_a_retired_spelling_is_hinted_with_the_callers_values(
+    runtime: Runtime,
+    call: dict[str, Any],
+    path: str,
+    hint: str,
+    fixed: dict[str, Any] | None,
+) -> None:
+    error = _error(runtime, call)
+    assert error["details"]["path"] == path
+    assert _hint(error).removesuffix(f" {V2_POINTER}") == hint
+    if fixed is not None:
+        assert runtime.validate(fixed, now=NOW)["ok"] is True

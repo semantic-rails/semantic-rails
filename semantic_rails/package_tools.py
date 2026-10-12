@@ -363,7 +363,16 @@ def _run_entries_report(
         results: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for entry_id, spec in entries:
-            result = run(runtime, entry_id, spec, now)
+            try:
+                result = run(runtime, entry_id, spec, now)
+            except SemanticLayerError as exc:
+                # A refused query fails its own entry; every other entry still runs.
+                result = {
+                    "id": entry_id,
+                    "ok": False,
+                    "error": {"code": exc.code, "message": str(exc), "details": exc.details},
+                    "query": spec.get("query"),
+                }
             results.append(result)
             if not result["ok"]:
                 failures.append(
@@ -1032,15 +1041,7 @@ def _run_example(
                 "details": {},
             },
         }
-    try:
-        result = runtime.query(query, verbosity="compact", **_call_arguments(spec, now))
-    except SemanticLayerError as exc:
-        return {
-            "id": example_id,
-            "ok": False,
-            "error": {"code": exc.code, "message": str(exc), "details": exc.details},
-            "query": query,
-        }
+    result = runtime.query(query, verbosity="compact", **_call_arguments(spec, now))
     shape = dict(spec.get("expected_shape", {}) or {})
     columns = list(shape.get("columns", []) or [])
     actual_columns = _shown_columns([c["field"] for c in result["output_columns"]], columns)

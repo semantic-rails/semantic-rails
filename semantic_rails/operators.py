@@ -10,6 +10,8 @@ lowering reads as NULL). ``not`` keeps unknown rows; every other comparison drop
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,19 +64,15 @@ ALIASES: dict[str, str] = {
     "<": "lt",
     "<=": "lte",
 }
-# Spellings with no alias: the refusal shows the word form instead.
+# Spellings with no alias: the refusal shows the word form instead (``_spelling_hint`` writes
+# the caller's own value into the forms that take one).
 _SPELLING_HINTS: dict[str, str] = {
     "is null": '{"op": "missing", "value": true}',
-    "is_null": '{"op": "missing", "value": true}',
     "is not null": '{"op": "missing", "value": false}',
-    "is_not_null": '{"op": "missing", "value": false}',
-    "not_null": '{"op": "missing", "value": false}',
-    "is distinct from": '{"op": "not", "value": <value>}',
-    "like": '{"op": "contains", "value": "<text>"}',
-    "ilike": '{"op": "contains", "value": "<text>"}',
+    "not null": '{"op": "missing", "value": false}',
     "not like": "a 'not' with the exact values, or an entity filter",
-    "between": 'two conditions, {"op": "gte", ...} and {"op": "lt", ...}',
 }
+_NO_VALUE: Any = object()
 # Engine-internal spellings: the lowering's own null tests and null-safe comparisons.
 _INTERNAL_ALIASES: dict[str, tuple[str, Any]] = {
     "is null": ("missing", True),
@@ -87,9 +85,40 @@ def _compact(raw: Any) -> str:
     return " ".join(str(raw if raw is not None else "").strip().lower().split())
 
 
-def invalid_op(raw: Any, path: str) -> SemanticLayerError:
+def _spelling_hint(spelling: str, value: Any) -> str:
+    """The word form of a spelling the table does not read, with the caller's value."""
+
+    def shown(item: Any, placeholder: str) -> str:
+        return placeholder if item is _NO_VALUE or item is None else json.dumps(item, default=str)
+
+    spelling = spelling.replace("_", " ")
+    if spelling in ALIASES:  # not_in
+        return f'{{"op": "{ALIASES[spelling]}", "value": {shown(value, "<value>")}}}'
+    if spelling == "is distinct from":
+        if value is None:
+            return _SPELLING_HINTS["is not null"]
+        return f'{{"op": "not", "value": {shown(value, "<value>")}}}'
+    if spelling in {"like", "ilike"}:
+        # Only a pattern that is plain text between two % reads as contains.
+        plain = isinstance(value, str) and re.fullmatch(r"%[^%_\\]+%", value)
+        text = shown(value[1:-1] if plain else _NO_VALUE, '"<text>"')
+        return f'{{"op": "contains", "value": {text}}}' + (
+            ", which ignores case" if spelling == "like" else ""
+        )
+    if spelling == "between":
+        low, high = (
+            value if isinstance(value, (list, tuple)) and len(value) == 2 else [_NO_VALUE] * 2
+        )
+        return (
+            f'two conditions, {{"op": "gte", "value": {shown(low, "<low>")}}} and '
+            f'{{"op": "lte", "value": {shown(high, "<high>")}}}'
+        )
+    return _SPELLING_HINTS.get(spelling, "")
+
+
+def invalid_op(raw: Any, path: str, value: Any = _NO_VALUE) -> SemanticLayerError:
     spelling = _compact(raw)
-    hint = _SPELLING_HINTS.get(spelling)
+    hint = _spelling_hint(spelling, value)
     message = f"{path} must be one of {list(WORDS)}" + (f"; write {hint}" if hint else "")
     return SemanticLayerError(
         "INVALID_QUERY",
@@ -110,14 +139,15 @@ def invalid_op(raw: Any, path: str) -> SemanticLayerError:
     )
 
 
-def operator_word(raw: Any, *, path: str = "where.op") -> str:
-    """The word for a filter op: a word or one of its SQL aliases, any case."""
+def operator_word(raw: Any, *, path: str = "where.op", value: Any = _NO_VALUE) -> str:
+    """The word for a filter op: a word or one of its SQL aliases, any case. ``value`` (the
+    condition's) fills the refusal's hint."""
     spelling = _compact(raw)
     if spelling in OPERATORS:
         return spelling
     if spelling in ALIASES:
         return ALIASES[spelling]
-    raise invalid_op(raw, path)
+    raise invalid_op(raw, path, value)
 
 
 def word_of(raw: Any) -> str:
@@ -214,7 +244,7 @@ def normalize_condition(
         return "missing", False
     if internal and spelling == "is" and isinstance(value, bool):
         return "is", value
-    word = operator_word(spelling if internal else op, path=f"{path}.op")
+    word = operator_word(spelling if internal else op, path=f"{path}.op", value=value)
     if internal and word in {"is", "not"} and isinstance(value, (list, tuple)) and not value:
         # Engine-built membership over no values: vacuously false (is) or true (not).
         return word, []
