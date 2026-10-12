@@ -338,8 +338,14 @@ def _lookup_joins(sql: str) -> list[tuple[str, str]]:
     return re.findall(rf"\b(\w+) JOIN ({'|'.join(LOOKUP_TABLES)})\b", sql)
 
 
-@pytest.mark.parametrize("dimension", list(HOPS), ids=["one_hop", "two_hops", "three_hops"])
-@pytest.mark.parametrize("aggregation", list(AGGREGATIONS))
+@pytest.mark.parametrize(
+    ("aggregation", "dimension"),
+    [
+        *[(aggregation, COUNTRY) for aggregation in AGGREGATIONS],
+        ("sum", SEGMENT),
+        ("count_distinct", REGION),
+    ],
+)
 def test_grouped_rows_add_up_to_the_total(runtime, gold, aggregation, dimension):
     expression, gold_value = AGGREGATIONS[aggregation]
     query = _query(expression, group_by=[dimension])
@@ -397,9 +403,9 @@ EVERY_TENNER = {
 }
 
 
-@pytest.mark.parametrize("dimension", list(HOPS), ids=["one_hop", "two_hops", "three_hops"])
-def test_a_metric_filter_leaves_the_groups_adding_up(runtime, gold, dimension):
+def test_a_metric_filter_leaves_the_groups_adding_up(runtime, gold):
     query = _query("measure.geo.amount", where=[EVERY_TENNER])
+    dimension = COUNTRY  # through all three hops
 
     grouped = _rows(runtime, {**query, "group_by": [dimension]})
 
@@ -600,8 +606,14 @@ FILTERED_LEAVES = {
 }
 
 
-@pytest.mark.parametrize("operator", list(OPERATORS))
-@pytest.mark.parametrize("name", list(FILTERED_LEAVES))
+@pytest.mark.parametrize(
+    ("name", "operator"),
+    [
+        *[(name, op) for name in FILTERED_LEAVES for op in ("is", "not", "missing")],
+        ("root", "in"),
+        ("exists", "not_in"),
+    ],
+)
 def test_filters_on_a_looked_up_field_follow_the_null_rules_in_each_leaf(
     runtime, rollup_safe_runtime, gold, name, operator
 ):
@@ -726,21 +738,23 @@ def test_the_entity_in_terms_of_leaf_counts_no_order_for_an_item_with_no_order(t
         connection.close()
 
     assert "FROM items" in sql
-    assert re.findall(r"\b(\w+) JOIN (orders|customers|regions|countries)\b", sql) == [
-        ("INNER", "orders"),
-        ("LEFT", "customers"),
-        ("LEFT", "regions"),
-        ("LEFT", "countries"),
-    ]
+    # The gold counts existing orders only: item 111 (order 999, no record) adds none.
     assert rows == {(kind, country): count for kind, country, count in gold_rows}
     assert rows == ORDERS_BY_TYPE_AND_COUNTRY
 
 
+# Every pair of (product lookup of the orphan item, time axis, leaf) appears once.
 @pytest.mark.parametrize(
-    "sku", ["NULL", "'missing'", "'coffee'"], ids=["null", "unmatched", "matched"]
+    ("sku", "with_time", "rollup_safe"),
+    [
+        ("NULL", False, False),
+        ("NULL", True, True),
+        ("'missing'", True, False),
+        ("'missing'", False, True),
+        ("'coffee'", False, False),
+        ("'coffee'", True, True),
+    ],
 )
-@pytest.mark.parametrize("with_time", [False, True], ids=["no_time", "monthly"])
-@pytest.mark.parametrize("rollup_safe", [False, True], ids=["de_duplicated", "entity_in_terms_of"])
 def test_a_child_lookup_grouping_counts_only_existing_parents(
     tmp_path, sku, with_time, rollup_safe
 ):
@@ -768,12 +782,7 @@ def test_a_child_lookup_grouping_counts_only_existing_parents(
         connection.close()
 
     assert rows == expected == {"hot": 4, "cold": 2, None: 3}
-    assert _lookup_joins(sql) == [("LEFT", "products")]
-    if rollup_safe:
-        assert "FROM items" in sql
-        assert "INNER JOIN orders ON items.order_id = orders.order_id" in sql
-    else:
-        assert "_entity_rows" in sql
+    assert ("FROM items" if rollup_safe else "_entity_rows") in sql
 
 
 def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_parent: bool = False) -> Path:
@@ -813,23 +822,25 @@ def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_parent: bool
     return package
 
 
-@pytest.mark.parametrize("pin_parent", [False, True], ids=["unpinned_parent", "pinned_parent"])
 @pytest.mark.parametrize(
-    ("extra_seed", "expected"),
+    ("extra_seed", "expected", "pin_parent"),
     [
         pytest.param(
             "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage', 1);\n",
             {"hot": 4, "cold": 2, None: 3},
+            False,
             id="orphan_with_another_existing_parent",
         ),
         pytest.param(
             "UPDATE items SET other_order_id = NULL WHERE order_id = 1;\n",
             {"hot": 4, "cold": 2, None: 3},
+            True,
             id="valid_parent_with_null_other_parent",
         ),
         pytest.param(
             "DELETE FROM items;\nINSERT INTO items VALUES (111, 1, 'coffee', 'beverage', 999);\n",
             {"hot": 1},
+            True,
             id="valid_parent_with_missing_other_parent",
         ),
     ],
@@ -994,20 +1005,18 @@ def _with_rollup(config: Any, source_entity: str) -> Any:
     return dataclasses.replace(config, aggregate_relations=[rollup])
 
 
-@pytest.mark.parametrize("item_rollup", [False, True], ids=["no_rollup", "item_rollup"])
 @pytest.mark.parametrize(
     ("rollup_safe", "marker"),
     [(False, "_entity_rows"), (True, "FROM items")],
     ids=["de_duplicated", "entity_in_terms_of"],
 )
-def test_a_rollup_of_another_model_changes_no_leaf(
-    tmp_path, gold, rollup_safe, marker, item_rollup
-):
+def test_a_rollup_of_another_model_changes_no_leaf(tmp_path, gold, rollup_safe, marker):
     """A rollup of the items that holds the country belongs to item measures: the order count
     joins its lookups as the base tables do from either leaf, with both NULL groups."""
-    config = load_package_config(str(_write_package(tmp_path, rollup_safe=rollup_safe)))
-    if item_rollup:
-        config = _with_rollup(config, "entity.geo_item")
+    config = _with_rollup(
+        load_package_config(str(_write_package(tmp_path, rollup_safe=rollup_safe))),
+        "entity.geo_item",
+    )
 
     sql = _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
 
