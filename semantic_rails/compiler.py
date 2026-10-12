@@ -66,7 +66,7 @@ from .renderer import render_select_for_profile
 from .row_filters import RowFilter
 from .schema import PackageConfig
 from .sql_ast import SqlSelect
-from .sql_preparation import finalize_parameters
+from .sql_preparation import PreparedQuery, finalize_parameters
 from .temporal_support import validate_temporal_support
 
 
@@ -165,24 +165,17 @@ def compile_query(
         for names in (override_row_counts(plan, config), share_group_counts(plan, config))
     )
     dialect = dialect_for_warehouse(config.package.warehouse)
-    rendered = render_select_for_profile(
-        sql_ast,
-        str(payload.get("sql_profile", "audit") or "audit"),
-        dialect=dialect,
-    )
-    prepared = replace(dialect.prepare_query(rendered), parameters=bound.parameters)
-    prepared = finalize_parameters(prepared, config.package.connection.kind)
+    sql_profile = str(payload.get("sql_profile", "audit") or "audit")
+
+    def prepare(select: SqlSelect) -> PreparedQuery:
+        rendered = render_select_for_profile(select, sql_profile, dialect=dialect)
+        prepared = replace(dialect.prepare_query(rendered), parameters=bound.parameters)
+        return finalize_parameters(prepared, config.package.connection.kind)
+
+    prepared = prepare(sql_ast)
     limit_probe = None
     if limit_order_keys and sql_ast.limit is not None and sql_ast.limit > 0:
-        probe_sql = render_select_for_profile(
-            replace(sql_ast, limit=sql_ast.limit + 1),
-            str(payload.get("sql_profile", "audit") or "audit"),
-            dialect=dialect,
-        )
-        limit_probe = finalize_parameters(
-            replace(dialect.prepare_query(probe_sql), parameters=bound.parameters),
-            config.package.connection.kind,
-        )
+        limit_probe = prepare(replace(sql_ast, limit=sql_ast.limit + 1))
     rendered = prepared.sql
     from .compiler_parts.physical_plan import build_performance_plan, build_physical_plan
 
@@ -193,7 +186,7 @@ def compile_query(
     compile_stats = {
         "compile_ms": round((time.perf_counter() - started) * 1000, 3),
         "cache_hit": False,
-        "dialect": dialect_for_warehouse(config.package.warehouse).name,
+        "dialect": dialect.name,
         "physical_plan_nodes": len(physical_plan.nodes),
     }
     relationships = {row.id: row for row in config.relationships}
