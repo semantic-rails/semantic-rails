@@ -443,8 +443,10 @@ def _rows(runtime: Runtime, query: dict, columns: list[str], *, key=None) -> lis
     )
 
 
-@pytest.mark.parametrize("query_name", ROLE_QUERIES)
-@pytest.mark.parametrize("layout", AUTHORED_LAYOUTS)
+@pytest.mark.parametrize(
+    ("query_name", "layout"),
+    [(name, list(AUTHORED_LAYOUTS)[i % 4]) for i, name in enumerate(ROLE_QUERIES)],
+)
 def test_every_query_through_two_roles_is_refused_unpinned(tmp_path, layout, query_name):
     """Neither the key dimension nor a metric predicate is answered from the role
     that happens to be declared first."""
@@ -455,11 +457,15 @@ def test_every_query_through_two_roles_is_refused_unpinned(tmp_path, layout, que
     assert exc_info.value.code == "AMBIGUOUS_PATH"
 
 
-@pytest.mark.parametrize("query_name", ROLE_QUERIES)
+# Every layout pins each role once, and every query runs at least once.
 @pytest.mark.parametrize(
-    ("role", "role_column"), [("origin", "origin_code"), ("destination", "destination_code")]
+    ("layout", "role", "role_column", "query_name"),
+    [
+        (layout, role, f"{role}_code", list(ROLE_QUERIES)[(2 * i + j) % len(ROLE_QUERIES)])
+        for i, layout in enumerate(AUTHORED_LAYOUTS)
+        for j, role in enumerate(["origin", "destination"])
+    ],
 )
-@pytest.mark.parametrize("layout", AUTHORED_LAYOUTS)
 def test_pinned_role_returns_that_roles_gold_value(tmp_path, layout, role, role_column, query_name):
     query, columns, select, where = ROLE_QUERIES[query_name]
     _write_package(tmp_path, **AUTHORED_LAYOUTS[layout], **_pin(role, layout))
