@@ -38,7 +38,7 @@ from semantic_rails.sql_ast import (
 )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def jaffle_config():
     return load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
 
@@ -106,38 +106,45 @@ SUM_IF_PAYLOAD = {
 }
 
 
-def test_count_if_compiles_on_duckdb_to_portable_case_when(jaffle_config):
-    result = compile_query(jaffle_config, None, COUNT_IF_PAYLOAD)
-    sql = result["sql"]
-    # Default dialect (duckdb): portable form.
-    assert re.search(r"COUNT\(CASE WHEN .* THEN 1 END\)", sql), sql
-    assert "new_customer_order_count" in sql
-
-
-def test_count_if_compiles_on_snowflake_to_native_count_if(jaffle_config):
-    config = _snowflake(jaffle_config)
-    result = compile_query(config, None, COUNT_IF_PAYLOAD)
-    sql = result["sql"]
-    assert "COUNT_IF(" in sql, sql
-    # Should NOT emit the portable form on Snowflake.
-    assert "COUNT(CASE WHEN" not in sql, sql
-
-
-def test_sum_if_compiles_on_duckdb_to_portable_case_when(jaffle_config):
-    result = compile_query(jaffle_config, None, SUM_IF_PAYLOAD)
-    sql = result["sql"]
-    assert re.search(r"SUM\(CASE WHEN .* THEN .*order_total_cents.* END\)", sql), sql
-
-
-def test_sum_if_compiles_on_snowflake_to_portable_case_when(jaffle_config):
-    # Snowflake has no SUM_IF — the old native lowering raised
-    # "Unknown function SUM_IF" live and was caught by the cross-warehouse
-    # conformance suite. The sum shape must use the portable CASE form.
-    config = _snowflake(jaffle_config)
-    result = compile_query(config, None, SUM_IF_PAYLOAD)
-    sql = result["sql"]
-    assert "SUM_IF(" not in sql, sql
-    assert re.search(r"SUM\(CASE WHEN .* THEN .*order_total_cents.* END\)", sql), sql
+@pytest.mark.parametrize(
+    ("warehouse", "payload", "pattern", "forbidden", "alias"),
+    [
+        (
+            "duckdb",
+            COUNT_IF_PAYLOAD,
+            r"COUNT\(CASE WHEN .* THEN 1 END\)",
+            None,
+            "new_customer_order_count",
+        ),
+        ("snowflake", COUNT_IF_PAYLOAD, r"COUNT_IF\(", "COUNT(CASE WHEN", None),
+        (
+            "duckdb",
+            SUM_IF_PAYLOAD,
+            r"SUM\(CASE WHEN .* THEN .*order_total_cents.* END\)",
+            None,
+            None,
+        ),
+        (
+            "snowflake",
+            SUM_IF_PAYLOAD,
+            r"SUM\(CASE WHEN .* THEN .*order_total_cents.* END\)",
+            "SUM_IF(",
+            None,
+        ),
+    ],
+    ids=["duckdb-count", "snowflake-count", "duckdb-sum", "snowflake-sum"],
+)
+def test_conditional_aggregates_compile_to_the_dialects_form(
+    jaffle_config, warehouse, payload, pattern, forbidden, alias
+):
+    # Snowflake has COUNT_IF, but SUM must use portable CASE WHEN.
+    config = _snowflake(jaffle_config) if warehouse == "snowflake" else jaffle_config
+    sql = compile_query(config, None, payload)["sql"]
+    assert re.search(pattern, sql), sql
+    if forbidden:
+        assert forbidden not in sql, sql
+    if alias:
+        assert alias in sql
 
 
 def test_synthetic_measure_attached_to_logical_plan(jaffle_config):
@@ -300,6 +307,9 @@ def test_dialect_hook_folds_else_null_for_count():
     # The Snowflake override falls back to portable form for this shape
     # (no native form exists for COUNT with a non-1 body).
     assert isinstance(result, SqlCall) and result.name == "COUNT"
+    folded = result.args[0]
+    assert isinstance(folded, SqlCase) and folded.else_expr is None
+    assert folded.whens[0].condition == cond and folded.whens[0].result == body
 
 
 def test_dialect_hook_folds_else_null_for_sum_to_portable_case():
@@ -347,28 +357,6 @@ def test_dialect_hook_does_not_fold_arbitrary_else_literal():
     result = _aggregation_expr(case_with_else, "sum", dialect=sf)
     assert isinstance(result, SqlCall) and result.name == "SUM"
     assert isinstance(result.args[0], SqlCase)
-
-
-def test_dialect_hook_does_not_fold_else_null_for_count_with_non_literal_body():
-    """``COUNT(CASE WHEN cond THEN col ELSE NULL END)`` is equivalent
-    to no-else, but COUNT_IF(cond) ≠ COUNT(... THEN col ...) — the
-    latter excludes rows where col is null. The detector routes to
-    ``dialect.conditional_aggregate("count", cond, col)``; the
-    Snowflake override falls back to the portable form since no native
-    COUNT_IF-with-value form exists. Result: no regression on the
-    handwritten ``COUNT(DISTINCT CASE WHEN cond THEN key END)`` idiom.
-    """
-    cond = SqlBinary(SqlLiteral("flag"), "=", SqlLiteral(True))
-    body = SqlLiteral("order_id")  # non-literal stand-in
-    case_with_null_else = SqlCase(
-        whens=[SqlCaseWhen(condition=cond, result=body)],
-        else_expr=SqlLiteral(None),
-    )
-    sf = SnowflakeDialect()
-    result = _aggregation_expr(case_with_null_else, "count", dialect=sf)
-    # Routed through dialect hook; Snowflake falls back to portable
-    # COUNT(CASE …) because COUNT_IF doesn't take a value argument.
-    assert isinstance(result, SqlCall) and result.name == "COUNT"
 
 
 def test_lift_conditional_aggregates_replaces_node_with_aggregate_expr(jaffle_config):

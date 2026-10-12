@@ -49,22 +49,20 @@ def _each_alone(runtime, select: list[dict], **kwargs) -> dict[str, list]:
     return {item["as"]: _query(runtime, [item], **kwargs)[item["as"]] for item in select}
 
 
-@pytest.mark.parametrize("reverse", [False, True], ids=["filtered-first", "unfiltered-first"])
-def test_aggregates_of_one_measure_that_differ_by_filter_keep_their_own_columns(
-    runtime_factory, reverse
-):
+def test_aggregates_of_one_measure_that_differ_by_filter_keep_their_own_columns(runtime_factory):
     select = [
         {"expression": _NEW_ORDERS, "as": "new_orders"},
         {"expression": _ORDERS, "as": "orders"},
     ]
     runtime = runtime_factory("jaffle_shop")
     try:
-        together = _query(runtime, select[::-1] if reverse else select)
+        together = [_query(runtime, ordered) for ordered in (select, select[::-1])]
         alone = _each_alone(runtime, select)
     finally:
         runtime.close()
 
-    assert together == alone
+    for result in together:
+        assert result == alone
     assert alone["new_orders"] != alone["orders"]
 
 
@@ -117,10 +115,7 @@ def _two_clock_config(runtime):
     )
 
 
-@pytest.mark.parametrize("reverse", [False, True], ids=["order-clock-first", "first-order-first"])
-def test_aggregates_of_one_measure_that_differ_by_clock_keep_their_own_columns(
-    runtime_factory, reverse
-):
+def test_aggregates_of_one_measure_that_differ_by_clock_keep_their_own_columns(runtime_factory):
     # The query's clock is the sessions', which order_count lacks, so each order
     # aggregate falls back to its own clock; session_starts keeps the query valid.
     select = [
@@ -134,8 +129,10 @@ def test_aggregates_of_one_measure_that_differ_by_clock_keep_their_own_columns(
     runtime = runtime_factory("jaffle_shop")
     try:
         config = _two_clock_config(runtime)
-        ordered = [select[1], select[0], select[2]] if reverse else select
-        together = _query(runtime, ordered, role=_SESSION_TIME, config=config)
+        together = [
+            _query(runtime, ordered, role=_SESSION_TIME, config=config)
+            for ordered in (select, [select[1], select[0], select[2]])
+        ]
         alone = {
             item["as"]: _query(runtime, [item, select[2]], role=_SESSION_TIME, config=config)[
                 item["as"]
@@ -145,7 +142,8 @@ def test_aggregates_of_one_measure_that_differ_by_clock_keep_their_own_columns(
     finally:
         runtime.close()
 
-    assert {key: together[key] for key in alone} == alone
+    for result in together:
+        assert {key: result[key] for key in alone} == alone
     assert alone["by_order"] != alone["by_first_order"]
 
 
@@ -178,20 +176,18 @@ def _order_conversion(converted_filter: list[dict]) -> dict:
     }
 
 
-@pytest.mark.parametrize("reverse", [False, True], ids=["filtered-first", "unfiltered-first"])
-def test_conversions_that_differ_by_an_operand_filter_keep_their_own_columns(
-    runtime_factory, reverse
-):
+def test_conversions_that_differ_by_an_operand_filter_keep_their_own_columns(runtime_factory):
     select = [
         {"expression": _order_conversion([_new_customer(False)]), "as": "to_repeat"},
         {"expression": _order_conversion([]), "as": "to_any"},
     ]
     runtime = runtime_factory("jaffle_shop")
     try:
-        together = _query(runtime, select[::-1] if reverse else select)
+        together = [_query(runtime, ordered) for ordered in (select, select[::-1])]
         alone = _each_alone(runtime, select)
     finally:
         runtime.close()
 
-    assert together == alone
+    for result in together:
+        assert result == alone
     assert alone["to_repeat"] != alone["to_any"]

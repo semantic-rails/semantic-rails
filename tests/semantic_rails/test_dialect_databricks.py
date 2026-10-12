@@ -54,16 +54,35 @@ def test_registry_returns_databricks_dialect():
     assert connector.adapter == "semantic_rails.db_parts.databricks:create_adapter"
 
 
-def test_date_trunc_keeps_portable_spark_form():
-    rendered = render_expr(DIALECT.date_trunc("month", _col("t", "created_at")))
-    assert rendered == "DATE_TRUNC('month', CAST(t.created_at AS TIMESTAMP))"
-
-
-def test_date_trunc_week_stays_week_token():
-    # Spark `date_trunc('week', …)` truncates to Monday — ISO parity
-    # with the DuckDB reference, so the grain passes through unchanged.
-    rendered = render_expr(DIALECT.date_trunc("week", _col("t", "created_at")))
-    assert rendered == "DATE_TRUNC('week', CAST(t.created_at AS TIMESTAMP))"
+@pytest.mark.parametrize(
+    ("method", "args", "expected"),
+    [
+        (
+            "date_trunc",
+            ("month", _col("t", "created_at")),
+            "DATE_TRUNC('month', CAST(t.created_at AS TIMESTAMP))",
+        ),
+        (
+            "date_trunc",
+            ("week", _col("t", "created_at")),
+            "DATE_TRUNC('week', CAST(t.created_at AS TIMESTAMP))",
+        ),
+        (
+            "percentile_cont",
+            (_col("t", "amount"), 0.95),
+            "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t.amount ASC)",
+        ),
+        ("median", (_col("t", "amount"),), "MEDIAN(t.amount)"),
+        ("null_safe_eq", (_col("a", "k"), _col("b", "k")), "(a.k <=> b.k)"),
+        (
+            "convert_timezone",
+            ("UTC", "America/New_York", _col("t", "ts")),
+            "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)",
+        ),
+    ],
+)
+def test_dialect_method_rendering(method, args, expected):
+    assert render_expr(getattr(DIALECT, method)(*args)) == expected
 
 
 @pytest.mark.parametrize("unit", ["second", "minute", "hour", "day", "month", "quarter", "year"])
@@ -96,26 +115,11 @@ def test_date_add_renders_timestampadd_with_unit_keyword(unit: str):
     assert rendered == f"TIMESTAMPADD({unit.upper()}, 3, t.ts)"
 
 
-def test_percentile_cont_renders_within_group():
-    rendered = render_expr(DIALECT.percentile_cont(_col("t", "amount"), 0.95))
-    assert rendered == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t.amount ASC)"
-
-
-def test_median_renders_native_median():
-    rendered = render_expr(DIALECT.median(_col("t", "amount")))
-    assert rendered == "MEDIAN(t.amount)"
-
-
 def test_first_and_last_value_render_min_by_max_by():
     first = render_expr(DIALECT.first_value(_col("t", "x"), _col("t", "ts")))
     last = render_expr(DIALECT.last_value(_col("t", "x"), _col("t", "ts")))
     assert first == "MIN_BY(t.x, t.ts)"
     assert last == "MAX_BY(t.x, t.ts)"
-
-
-def test_null_safe_eq_renders_spaceship_operator():
-    rendered = render_expr(DIALECT.null_safe_eq(_col("a", "k"), _col("b", "k")))
-    assert rendered == "(a.k <=> b.k)"
 
 
 def test_conditional_aggregate_count_renders_count_if():
@@ -135,13 +139,6 @@ def test_conditional_aggregate_sum_keeps_portable_case_form():
 def test_timestamp_type_is_plain_timestamp():
     assert DIALECT.timestamp_type_name() == "TIMESTAMP"
     assert render_expr(DIALECT.timestamp_cast(_col("t", "ts"))) == "CAST(t.ts AS TIMESTAMP)"
-
-
-def test_convert_timezone_keeps_portable_form():
-    # Databricks SQL has convert_timezone(sourceTz, targetTz, ts) with the
-    # same argument order as the portable default.
-    rendered = render_expr(DIALECT.convert_timezone("UTC", "America/New_York", _col("t", "ts")))
-    assert rendered == "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"
 
 
 # ---------------------------------------------------------------------------

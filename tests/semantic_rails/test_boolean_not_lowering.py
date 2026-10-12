@@ -15,6 +15,7 @@ import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.post_aggregation import _compile_post_expr
+from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
     BooleanExpr,
@@ -24,6 +25,14 @@ from semantic_rails.expressions import (
 )
 from semantic_rails.registry import Registry
 from semantic_rails.sql_ast import SqlBinary, SqlLiteral
+from tests.semantic_rails.conftest import copy_package_config
+
+
+@pytest.fixture(scope="module")
+def config(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop")
+    return load_package_config(str(path))
+
 
 ORDERS = {"kind": "measure", "measure": "measure.jaffle.order_count"}
 
@@ -132,8 +141,7 @@ def _not_expr(inner: ComparisonExpr | None = None) -> BooleanExpr:
     return BooleanExpr(op="not", args=[inner])
 
 
-def test_compile_post_expr_not_emits_negation(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
+def test_compile_post_expr_not_emits_negation(config):
     compiled = _compile_post_expr(_not_expr(), config)
     # Negation is composed as ``FALSE = (arg)`` (same three-valued truth
     # table as ``NOT arg``); the un-negated arg must not leak through.
@@ -151,10 +159,7 @@ def test_compile_post_expr_not_emits_negation(package_config_factory):
         pytest.param("xor", "allowed", ["and", "or", "not"], id="unsupported-op"),
     ],
 )
-def test_compile_post_expr_rejects_invalid_boolean(
-    package_config_factory, op, detail_key, detail_value
-):
-    config, _ = package_config_factory("jaffle_shop")
+def test_compile_post_expr_rejects_invalid_boolean(config, op, detail_key, detail_value):
     expression = BooleanExpr(
         op=op,
         args=[
@@ -169,15 +174,13 @@ def test_compile_post_expr_rejects_invalid_boolean(
     assert err.details[detail_key] == detail_value
 
 
-def test_compile_post_expr_rejects_empty_boolean_args(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
+def test_compile_post_expr_rejects_empty_boolean_args(config):
     with pytest.raises(SemanticLayerError) as exc_info:
         _compile_post_expr(BooleanExpr(op="and", args=[]), config)
     assert exc_info.value.code == "INVALID_EXPRESSION_AST"
 
 
-def test_compile_post_expr_and_fold_unchanged(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
+def test_compile_post_expr_and_fold_unchanged(config):
     fold = BooleanExpr(
         op="and",
         args=[
@@ -190,20 +193,12 @@ def test_compile_post_expr_and_fold_unchanged(package_config_factory):
     assert compiled.op == "AND"
 
 
-def test_metric_filter_not_renders_negated_sql(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    compiled = compile_query(config, Registry(config), _not_query(threshold=10))
-    rendered = compiled["sql"]
-    # The arg must be negated AND parenthesized — chained comparisons
-    # (``x > 10 = FALSE``) are non-associative in Snowflake/Postgres.
-    assert "FALSE = (base.m1 > 10)" in rendered
-
-
-def test_metric_filter_not_uppercase_op_renders_negated_sql(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
+@pytest.mark.parametrize("op", ["not", "NOT"])
+def test_metric_filter_not_renders_negated_sql(config, op):
     query = _not_query(threshold=10)
-    query["metric_filters"][0]["expression"]["op"] = "NOT"
+    query["metric_filters"][0]["expression"]["op"] = op
     compiled = compile_query(config, Registry(config), query)
+    # Negation must be parenthesized for chained comparisons on every dialect.
     assert "FALSE = (base.m1 > 10)" in compiled["sql"]
 
 
@@ -257,11 +252,10 @@ class TestConfigExprNotLowering:
     relation-pipeline expression lowering
     (``relation_pipelines._semantic_expr_to_sql``)."""
 
-    def test_bind_config_expr_not_is_negated(self, package_config_factory) -> None:
+    def test_bind_config_expr_not_is_negated(self, config) -> None:
         from semantic_rails.compiler_parts.bind import _config_expr_to_sql
         from semantic_rails.renderer import render_expr
 
-        config, _ = package_config_factory("jaffle_shop")
         measure = config.measures[0]
         comparison = ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(5))
         rendered = render_expr(
@@ -269,10 +263,9 @@ class TestConfigExprNotLowering:
         )
         assert rendered == "FALSE = (1 > 5)"
 
-    def test_bind_config_expr_not_requires_one_arg(self, package_config_factory) -> None:
+    def test_bind_config_expr_not_requires_one_arg(self, config) -> None:
         from semantic_rails.compiler_parts.bind import _config_expr_to_sql
 
-        config, _ = package_config_factory("jaffle_shop")
         measure = config.measures[0]
         comparison = ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(5))
         with pytest.raises(SemanticLayerError) as exc:

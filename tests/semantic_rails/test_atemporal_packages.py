@@ -34,6 +34,7 @@ from semantic_rails.metadata import (
     inspect_payload,
     valid_values_payload,
 )
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.package_tools import check_package_report
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
@@ -81,9 +82,7 @@ def _assert_no_time_plan(result) -> None:
     assert "execute" not in result.get("next", {}).get("ready_for", [])
 
 
-@pytest.fixture
-def package_path(tmp_path: Path) -> Path:
-    path = tmp_path / "catalogue"
+def _write_package(path: Path) -> Path:
     spec = ProjectSpec(
         package_id="catalogue",
         description="Items and their catalogue categories and amounts.",
@@ -107,8 +106,19 @@ def package_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def runtime(package_path: Path):
-    runtime = Runtime.from_path(str(package_path))
+def package_path(tmp_path: Path) -> Path:
+    return _write_package(tmp_path / "catalogue")
+
+
+@pytest.fixture(scope="module")
+def runtime_snapshot(tmp_path_factory):
+    path = _write_package(tmp_path_factory.mktemp("runtime") / "catalogue")
+    return load_package_snapshot(path)
+
+
+@pytest.fixture
+def runtime(runtime_snapshot):
+    runtime = Runtime.from_snapshot(runtime_snapshot)
     try:
         yield runtime
     finally:

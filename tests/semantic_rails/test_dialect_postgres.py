@@ -54,65 +54,49 @@ def test_registry_wires_postgres_dialect_and_adapter():
     assert isinstance(dialect_for_warehouse("postgres"), PostgresDialect)
 
 
-def test_percentile_cont_renders_within_group():
-    assert (
-        render_expr(DIALECT.percentile_cont(X, 0.95))
-        == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t.x ASC)"
-    )
-
-
-def test_median_renders_percentile_cont_half():
-    assert render_expr(DIALECT.median(X)) == "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.x ASC)"
-
-
-def test_first_value_renders_ordered_array_agg_subscript():
-    assert (
-        render_expr(DIALECT.first_value(X, ORDER))
-        == "(ARRAY_AGG(t.x ORDER BY t.snapshot_at ASC))[1]"
-    )
-
-
-def test_last_value_renders_descending_array_agg_subscript():
-    assert (
-        render_expr(DIALECT.last_value(X, ORDER))
-        == "(ARRAY_AGG(t.x ORDER BY t.snapshot_at DESC))[1]"
-    )
-
-
-def test_date_diff_day_renders_date_subtraction():
-    assert (
-        render_expr(DIALECT.date_diff("day", START, END))
-        == f"CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)"
-    )
-
-
-def test_date_diff_week_renders_truncating_day_division():
-    # DuckDB week diff is day-diff / 7 truncated toward zero — PG
-    # integer division matches exactly (verified live vs DuckDB).
-    assert (
-        render_expr(DIALECT.date_diff("week", START, END))
-        == f"(CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)) / 7"
-    )
-
-
-def test_date_diff_month_renders_calendar_field_arithmetic():
-    assert render_expr(DIALECT.date_diff("month", START, END)) == (
-        f"CAST((DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS})) * 12"
-        f" + (DATE_PART('month', {END_TS}) - DATE_PART('month', {START_TS})) AS BIGINT)"
-    )
-
-
-def test_date_diff_quarter_renders_calendar_field_arithmetic():
-    assert render_expr(DIALECT.date_diff("quarter", START, END)) == (
-        f"CAST((DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS})) * 4"
-        f" + (DATE_PART('quarter', {END_TS}) - DATE_PART('quarter', {START_TS})) AS BIGINT)"
-    )
-
-
-def test_date_diff_year_renders_year_part_delta():
-    assert render_expr(DIALECT.date_diff("year", START, END)) == (
-        f"CAST(DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS}) AS BIGINT)"
-    )
+@pytest.mark.parametrize(
+    ("method", "args", "expected"),
+    [
+        ("percentile_cont", (X, 0.95), "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t.x ASC)"),
+        ("median", (X,), "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.x ASC)"),
+        ("first_value", (X, ORDER), "(ARRAY_AGG(t.x ORDER BY t.snapshot_at ASC))[1]"),
+        ("last_value", (X, ORDER), "(ARRAY_AGG(t.x ORDER BY t.snapshot_at DESC))[1]"),
+        ("date_diff", ("day", START, END), f"CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)"),
+        (
+            "date_diff",
+            ("week", START, END),
+            f"(CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)) / 7",
+        ),
+        (
+            "date_diff",
+            ("month", START, END),
+            f"CAST((DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS})) * 12 + (DATE_PART('month', {END_TS}) - DATE_PART('month', {START_TS})) AS BIGINT)",
+        ),
+        (
+            "date_diff",
+            ("quarter", START, END),
+            f"CAST((DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS})) * 4 + (DATE_PART('quarter', {END_TS}) - DATE_PART('quarter', {START_TS})) AS BIGINT)",
+        ),
+        (
+            "date_diff",
+            ("year", START, END),
+            f"CAST(DATE_PART('year', {END_TS}) - DATE_PART('year', {START_TS}) AS BIGINT)",
+        ),
+        (
+            "date_diff",
+            ("second", START, END),
+            f"CAST(DATE_PART('epoch', DATE_TRUNC('second', {END_TS})) - DATE_PART('epoch', DATE_TRUNC('second', {START_TS})) AS BIGINT)",
+        ),
+        # FULL JOIN needs both a hash-joinable clause and exact NULL equality.
+        (
+            "null_safe_eq",
+            (X, ORDER),
+            "COALESCE(CAST(t.x AS TEXT), '__sr_null__') = COALESCE(CAST(t.snapshot_at AS TEXT), '__sr_null__') AND t.x IS NOT DISTINCT FROM t.snapshot_at",
+        ),
+    ],
+)
+def test_dialect_method_rendering(method, args, expected):
+    assert render_expr(getattr(DIALECT, method)(*args)) == expected
 
 
 @pytest.mark.parametrize(
@@ -123,13 +107,6 @@ def test_date_diff_subdaily_renders_truncated_epoch_delta(unit: str, divisor: in
     assert render_expr(DIALECT.date_diff(unit, START, END)) == (
         f"CAST((DATE_PART('epoch', DATE_TRUNC('{unit}', {END_TS}))"
         f" - DATE_PART('epoch', DATE_TRUNC('{unit}', {START_TS}))) / {divisor} AS BIGINT)"
-    )
-
-
-def test_date_diff_second_renders_epoch_delta():
-    assert render_expr(DIALECT.date_diff("second", START, END)) == (
-        f"CAST(DATE_PART('epoch', DATE_TRUNC('second', {END_TS}))"
-        f" - DATE_PART('epoch', DATE_TRUNC('second', {START_TS})) AS BIGINT)"
     )
 
 
@@ -174,18 +151,6 @@ def test_date_add_never_emits_interval_keyword():
         sql = render_expr(DIALECT.date_add(unit, SqlLiteral(2), X))
         assert "INTERVAL" not in sql, (unit, sql)
         assert "DATE_ADD(" not in sql and "DATEADD(" not in sql, (unit, sql)
-
-
-def test_null_safe_eq_pairs_hash_joinable_clause_with_exact_predicate():
-    # IS NOT DISTINCT FROM alone is rejected by PG's FULL JOIN planner
-    # ("only supported with merge-joinable or hash-joinable join
-    # conditions"); the leading text-normalized equality is the
-    # joinable clause, the trailing predicate keeps exact semantics.
-    assert render_expr(DIALECT.null_safe_eq(X, ORDER)) == (
-        "COALESCE(CAST(t.x AS TEXT), '__sr_null__')"
-        " = COALESCE(CAST(t.snapshot_at AS TEXT), '__sr_null__')"
-        " AND t.x IS NOT DISTINCT FROM t.snapshot_at"
-    )
 
 
 def test_conditional_aggregate_keeps_portable_case_form():

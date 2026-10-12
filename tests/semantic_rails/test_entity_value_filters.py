@@ -10,7 +10,10 @@ from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.planner import plan_payload
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 
 DIMENSION = "dimension.jaffle_order_customer_order_number"
 FIELD_FILTER = {"field": DIMENSION, "op": ">", "value": 1}
@@ -36,11 +39,19 @@ def _query(where):
     }
 
 
+@pytest.fixture(scope="module")
+def package_snapshot(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
+    return load_package_snapshot(path)
+
+
 @pytest.fixture()
-def engine(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    yield runtime
-    runtime.close()
+def engine(package_snapshot):
+    runtime = Runtime.from_snapshot(package_snapshot)
+    try:
+        yield runtime
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(
