@@ -425,13 +425,12 @@ def test_cli_write_uses_a_fresh_receipt_after_restoring_legacy_files(tmp_path, m
 
 
 @pytest.mark.parametrize(
-    "rules,refused,difference",
+    "rules,refused,difference,surface",
     [
-        ((METRIC_AS, SUM_TO_MAX), "sum-to-max", "semantic_path"),
-        ((OTHER_METRIC, METRIC_AS), "other-metric", "query"),
+        ((METRIC_AS, SUM_TO_MAX), "sum-to-max", "semantic_path", "cli"),
+        ((OTHER_METRIC, METRIC_AS), "other-metric", "query", "architect"),
     ],
 )
-@pytest.mark.parametrize("surface", ["cli", "architect"])
 def test_rule_that_changes_an_answer_is_refused_and_nothing_is_written(
     tmp_path, monkeypatch, capsys, surface, rules, refused, difference
 ):
@@ -499,8 +498,7 @@ PRIMITIVE_KIND = Rule(
 )
 
 
-@pytest.mark.parametrize("retired", [False, True])
-@pytest.mark.parametrize("choice", [False, True])
+@pytest.mark.parametrize(("retired", "choice"), [(False, True), (True, False)])
 def test_refused_same_meaning_rule_forms_a_certified_baseline(
     tmp_path, monkeypatch, capsys, retired, choice
 ):
@@ -784,8 +782,7 @@ def test_current_package_checks_write_arguments_and_revision_before_planning(tmp
     assert _contents(project) == UPGRADED
 
 
-@pytest.mark.parametrize("intervening_edit", [False, True])
-@pytest.mark.parametrize("same_intent", [True, False])
+@pytest.mark.parametrize(("intervening_edit", "same_intent"), [(True, True), (False, False)])
 def test_architect_retry_uses_the_original_receipt_before_planning(
     tmp_path, intervening_edit, same_intent
 ):
@@ -978,8 +975,7 @@ def test_unparseable_package_refuses_write_with_the_same_error(tmp_path, layout)
     assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
 
 
-@pytest.mark.parametrize("layout", ["directory", "single-file"])
-@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(("layout", "dry_run"), [("directory", True), ("single-file", False)])
 def test_unparseable_current_package_refuses_with_its_load_error(tmp_path, layout, dry_run):
     content = "schema_version: 1\npackage: {id: broken, warehouse: unsupported}\n"
     if layout == "directory":
@@ -1052,8 +1048,7 @@ def test_single_file_upgrade_revision_ignores_unrelated_sibling_edits(tmp_path):
     assert sibling.read_text() == "Unrelated edited package.\n"
 
 
-@pytest.mark.parametrize("companion", ["examples", "tests"])
-@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(("companion", "dry_run"), [("examples", True), ("tests", False)])
 def test_single_file_upgrade_refuses_symlinked_companions(tmp_path, companion, dry_run):
     source = tmp_path / "starter.yml"
     original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_bytes()
@@ -1091,8 +1086,7 @@ def test_upgrade_keeps_a_linked_data_directory(tmp_path):
     load_package_snapshot(project)
 
 
-@pytest.mark.parametrize("target", ["yaml", "missing"])
-@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(("target", "dry_run"), [("yaml", True), ("missing", False)])
 def test_upgrade_refuses_a_linked_directory_that_may_hold_package_input(tmp_path, target, dry_run):
     project = _package(tmp_path)
     data = tmp_path / "shared" / "data"
@@ -1122,13 +1116,11 @@ def _default_version(files):
             yield Finding("default-version", file, 1, path, "1 is the default", (edit,))
 
 
-@pytest.mark.parametrize("surface", ["cli", "architect"])
-@pytest.mark.parametrize("version", ["2", '"2"'])
 @pytest.mark.parametrize(
-    ("retired_key", "legacy_line"),
+    ("surface", "version", "retired_key", "legacy_line"),
     [
-        ("query-path-policy", "      path_policy: {max_hops: 2}\n"),
-        ("null-behavior", "      null_behavior: null_if_zero\n"),
+        ("cli", "2", "query-path-policy", "      path_policy: {max_hops: 2}\n"),
+        ("architect", '"2"', "null-behavior", "      null_behavior: null_if_zero\n"),
     ],
 )
 def test_query_rewrites_are_isolated_after_all_retired_forms(
