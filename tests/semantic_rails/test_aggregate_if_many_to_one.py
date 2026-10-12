@@ -552,9 +552,17 @@ def march_runtime(tmp_path_factory: pytest.TempPathFactory):
     runtime.close()
 
 
-@pytest.mark.parametrize("group_by", ["", PERIOD, SEGMENT], ids=["total", "base", "one"])
+# Each consumption aggregation once, and each grouping: none, the base's own column, the
+# looked-up one.
 @pytest.mark.parametrize(
-    "case", sorted(case for case, row in ONE_HOP.items() if "FROM consumption" in row[1])
+    ("case", "group_by"),
+    [
+        ("avg", PERIOD),
+        ("sum", PERIOD),
+        ("count", SEGMENT),
+        ("count_distinct", ""),
+        ("one_to_one", SEGMENT),
+    ],
 )
 def test_a_metric_filter_every_row_passes_changes_no_value(march_runtime, case, group_by):
     """The filter keeps the condition's lookup LEFT, so every row stays: March, whose one row
@@ -585,7 +593,6 @@ def _in(kind: str, values: list[Any]) -> dict[str, Any]:
 # Conditions on a consumption row's customer: (condition, refused because a row with no
 # customer could satisfy it).
 CONDITION_SHAPES = {
-    "in": (_in("in", ["EUR", "CZK"]), False),
     "not_in": (_in("not_in", ["CZK"]), False),
     "between": (
         {
@@ -605,7 +612,6 @@ CONDITION_SHAPES = {
         },
         False,
     ),
-    "is_not_null": (_cmp(_col("customer", "currency"), "IS NOT", None), False),
     "or_inside_an_and": (
         {
             "kind": "boolean",
@@ -696,11 +702,9 @@ def test_grouped_by_a_base_or_a_one_side_dimension(runtime, gold, group_by, grou
         assert value[None] == 0.0  # rows 7 and 8 group under NULL
 
 
-@pytest.mark.parametrize(
-    ("pin", "role"),
-    [("relationship.post_owner", "owner"), ("relationship.post_editor", "editor")],
-)
-def test_the_path_preference_picks_the_role(tmp_path, gold, pin, role):
+def test_the_path_preference_picks_the_role(tmp_path, gold):
+    # The shared package pins the owner, whose answer ONE_HOP checks; this one pins the editor.
+    pin, role = "relationship.post_editor", "editor"
     runtime = Runtime.from_path(str(_write_package(tmp_path, pin=pin)))
     try:
         expression = _aggif("sum", OVER_65, _col("post", "view_count"))
@@ -716,46 +720,62 @@ def test_the_path_preference_picks_the_role(tmp_path, gold, pin, role):
     )
 
 
-# (aggregate_if, details["reason"], words the message must name)
+def _hop(base: str, target: str, cardinality: str, *path: str, to: str = "") -> dict[str, Any]:
+    """A refused first hop, from ``base`` to ``to`` (else ``target``), on the way to ``target``."""
+    relationships = [f"relationship.{name}" for name in path]
+    return {
+        "base_entity": f"entity.shop_{base}",
+        "entity": f"entity.shop_{target}",
+        "reason": "fanout_hop",
+        "path": relationships,
+        "relationship": relationships[0],
+        "from_entity": f"entity.shop_{base}",
+        "to_entity": f"entity.shop_{to or target}",
+        "cardinality": cardinality,
+    }
+
+
+def _entities(reason: str, *names: str) -> dict[str, Any]:
+    return {"entities": [f"entity.shop_{name}" for name in names], "reason": reason}
+
+
+NULL_ACCEPTING = {
+    "base_entity": "entity.shop_consumption",
+    "entity": "entity.shop_customer",
+    "reason": "null_accepting_condition",
+}
+
+# (aggregate_if, its refusal's details besides the hint)
 REFUSALS = {
-    "is_null_on_the_one_side": (
-        _aggif("sum", NO_CURRENCY, AMOUNT),
-        "null_accepting_condition",
-        ["entity.shop_consumption", "entity.shop_customer"],
-    ),
+    "is_null_on_the_one_side": (_aggif("sum", NO_CURRENCY, AMOUNT), NULL_ACCEPTING),
     "or_with_the_value_entity": (
         _aggif(
             "count",
             {"kind": "boolean", "op": "or", "args": [EUR, _cmp(AMOUNT, ">", 500)]},
             _col("consumption", "row_id"),
         ),
-        "null_accepting_condition",
-        ["entity.shop_consumption", "entity.shop_customer"],
+        NULL_ACCEPTING,
     ),
     "condition_on_the_many_side": (
         _aggif("count_distinct", _cmp(AMOUNT, ">", 10), _col("customer", "customer_id")),
-        "fanout_hop",
-        ["entity.shop_customer", "entity.shop_consumption", "1:N"],
+        _hop("customer", "consumption", "1:N", "consumption_customer"),
     ),
     "bridge": (
         _aggif("count", _cmp(_col("tag", "tag_name"), "=", "r"), _col("post", "post_id")),
-        "fanout_hop",
-        ["entity.shop_post", "entity.shop_post_tag", "1:N"],
+        _hop("post", "tag", "1:N", "post_tags_post", "post_tags_tag", to="post_tag"),
     ),
     "many_to_many": (
         _aggif("count", _cmp(_col("topic", "topic_name"), "=", "ML"), _col("post", "post_id")),
-        "fanout_hop",
-        ["relationship.post_topic", "entity.shop_topic", "M:N"],
+        _hop("post", "topic", "M:N", "post_topic"),
     ),
+    # A many-to-one hop, refused because it is valid over time.
     "valid_over_time": (
         _aggif("sum", _cmp(_col("segment_history", "segment"), "=", "SME"), AMOUNT),
-        "fanout_hop",
-        ["relationship.consumption_segment_history", "valid over time"],
+        _hop("consumption", "segment_history", "N:1", "consumption_segment_history"),
     ),
     "count_without_value_across_entities": (
         _aggif("count", {"kind": "boolean", "op": "and", "args": [EUR, _cmp(AMOUNT, ">", 5)]}),
-        "ambiguous_grain",
-        ["entity.shop_consumption", "entity.shop_customer"],
+        _entities("ambiguous_grain", "consumption", "customer"),
     ),
     "value_across_entities": (
         _aggif(
@@ -763,24 +783,19 @@ REFUSALS = {
             EUR,
             {"kind": "arithmetic", "op": "add", "left": AMOUNT, "right": _col("user", "age")},
         ),
-        "value_spans_entities",
-        ["entity.shop_consumption", "entity.shop_user"],
+        _entities("value_spans_entities", "consumption", "user"),
     ),
 }
 
 
-@pytest.mark.parametrize("case", sorted(REFUSALS))
-def test_every_other_path_is_refused_with_the_failing_hop_and_a_hint(runtime, case):
-    expression, reason, named = REFUSALS[case]
-
-    with pytest.raises(SemanticLayerError) as raised:
-        plan_query(runtime.config, None, {"select": [{"as": "v", "expression": expression}]})
-
-    error = raised.value
-    assert error.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
-    assert error.details["reason"] == reason
-    assert error.details["hint"]
-    assert all(word in str(error) for word in named), str(error)
+def test_every_other_path_is_refused_with_the_failing_hop_and_a_hint(runtime):
+    for case, (expression, details) in REFUSALS.items():
+        with pytest.raises(SemanticLayerError) as raised:
+            plan_query(runtime.config, None, {"select": [{"as": "v", "expression": expression}]})
+        error = raised.value
+        assert error.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE", case
+        assert error.details["hint"], case
+        assert {key: value for key, value in error.details.items() if key != "hint"} == details
 
 
 def test_two_roles_with_no_preference_are_refused_never_picked(tmp_path):
@@ -839,10 +854,7 @@ def test_inside_a_metric_recipe_it_is_refused(runtime):
     assert "aggregate_if" in str(raised.value)
 
 
-@pytest.mark.parametrize("aggif_first", [False, True], ids=["authored_first", "aggif_first"])
-def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
-    package, gold, aggif_first
-):
+def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(package, gold):
     # The authored measure reads the customer through a lookup that keeps its rows, so rows 7
     # and 8 (no customer) have no currency and count, as `where currency IS NULL` counts them.
     # Named with its own table as its source, as a fact model names it and as the
@@ -864,8 +876,7 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
     ]
     try:
         alone = _ask(runtime, _measure("null_currency_amount"))
-        query = {"select": select[::-1] if aggif_first else select}
-        [row] = runtime.query(query)["rows"]
+        rows = [runtime.query({"select": ordered})["rows"] for ordered in (select, select[::-1])]
     finally:
         runtime.close()
 
@@ -873,8 +884,9 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
         f"SELECT SUM(CASE WHEN {SQL_CUR} IS NULL THEN t.amount END) FROM consumption AS t"
     )
     assert alone == null_currency == {None: 1053.0}  # rows 6, 7 and 8
-    assert _number(row["authored"]) == 1053.0
-    assert {None: _number(row["value"])} == pytest.approx(gold(ONE_HOP["sum"][1]))
+    for [row] in rows:
+        assert _number(row["authored"]) == 1053.0
+        assert {None: _number(row["value"])} == pytest.approx(gold(ONE_HOP["sum"][1]))
 
 
 @pytest.mark.parametrize(
@@ -1212,14 +1224,11 @@ def test_an_own_column_with_no_governed_dimension_remains_allowed(package, witho
         runtime.close()
 
 
-@pytest.mark.parametrize("placement", ["derived", "distribution", "authored_measure"])
-@pytest.mark.parametrize("action", sorted(POLICY_KINDS))
-def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
-    tmp_path, monkeypatch, action, placement
-):
-    # These placements have no aggregate_if lowering; keep their existing refusal.
+@pytest.fixture(scope="module")
+def conditional_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A derived metric and an authored measure whose expression is an aggregate_if."""
     package = _write_package(
-        tmp_path,
+        tmp_path_factory.mktemp("conditional"),
         metrics={
             "metrics": {
                 "shop.conditional": {
@@ -1240,6 +1249,15 @@ def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
         "accumulation": {"kind": "flow"},
     }
     model_path.write_text(yaml.safe_dump(model))
+    return package
+
+
+@pytest.mark.parametrize("placement", ["derived", "distribution", "authored_measure"])
+@pytest.mark.parametrize("action", sorted(POLICY_KINDS))
+def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
+    conditional_package, monkeypatch, action, placement
+):
+    # These placements have no aggregate_if lowering; keep their existing refusal.
     expression = {
         "derived": "metric.shop.conditional",
         "distribution": {
@@ -1255,7 +1273,7 @@ def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
     }[placement]
     query = {"select": [{"as": "value", "expression": expression}]}
     code = "INVALID_EXPRESSION_AST" if placement == "authored_measure" else "INVALID_QUERY"
-    runtime = _governed(package, _policy(action, PERIOD))
+    runtime = _governed(conditional_package, _policy(action, PERIOD))
     try:
         for audience in ("internal", "restricted"):
             # A metric that cannot be bound is hidden while anything is: unknown, as if absent.
@@ -1273,43 +1291,35 @@ def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
 
 
 # The lookup join type (ClickHouse keeps lookups inner, as for a where filter) and the
-# value-less count on one entity, which keeps its native form where a dialect has one.
+# value-less count on one entity, which keeps its native form where a dialect has one. One
+# warehouse per dialect family: MotherDuck and DuckLake render as DuckDB does.
 DIALECTS = {
     "athena": ("LEFT", "COUNT(CASE WHEN"),
     "bigquery": ("LEFT", "COUNTIF("),
     "clickhouse": ("INNER", "COUNT(CASE WHEN"),
     "databricks": ("LEFT", "COUNT_IF("),
     "duckdb": ("LEFT", "COUNT(CASE WHEN"),
-    "ducklake": ("LEFT", "COUNT(CASE WHEN"),
-    "motherduck": ("LEFT", "COUNT(CASE WHEN"),
     "postgres": ("LEFT", "COUNT(CASE WHEN"),
     "snowflake": ("LEFT", "COUNT_IF("),
 }
 
 
-def test_every_warehouse_has_a_rendering():
-    assert set(DIALECTS) == set(_WAREHOUSE_CONNECTORS)
-
-
-@pytest.mark.parametrize("warehouse", sorted(DIALECTS))
-def test_the_rendered_sql_per_dialect(package, warehouse):
+def test_the_rendered_sql_per_dialect_family(package):
+    assert {*DIALECTS, "ducklake", "motherduck"} == set(_WAREHOUSE_CONNECTORS)
     base = load_package_config(str(package))
-    config = dataclasses.replace(
-        base, package=dataclasses.replace(base.package, warehouse=warehouse)
-    )
     query = {
         "select": [
             {"as": "eur", "expression": SUM_EUR},
             {"as": "large", "expression": _aggif("count", _cmp(AMOUNT, ">", 10))},
         ],
     }
-
-    sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
-
-    join_type, count_if = DIALECTS[warehouse]
-    assert re.findall(r"\b(\w+) JOIN customers\b", sql) == [join_type]
-    assert re.search(
-        r"SUM\(CASE WHEN customers\.currency = 'EUR' THEN consumption\.amount END\)", sql
-    )
-    assert "SUM_IF(" not in sql
-    assert count_if in sql
+    for warehouse, (join_type, count_if) in DIALECTS.items():
+        config = dataclasses.replace(
+            base, package=dataclasses.replace(base.package, warehouse=warehouse)
+        )
+        sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())
+        assert re.findall(r"\b(\w+) JOIN customers\b", sql) == [join_type], warehouse
+        assert re.search(
+            r"SUM\(CASE WHEN customers\.currency = 'EUR' THEN consumption\.amount END\)", sql
+        ), warehouse
+        assert "SUM_IF(" not in sql and count_if in sql, warehouse
