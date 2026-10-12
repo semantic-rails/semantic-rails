@@ -38,6 +38,7 @@ from ..expressions import (
     collect_column_refs,
     expr_to_dict,
     parse_semantic_expression,
+    reads_temporal_value,
     resolve_filter_dimension,
     resolve_measure_temporal_role,
     validate_boolean_argument_count,
@@ -277,31 +278,19 @@ def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: Pack
 
 
 def _temporal_result(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> bool:
-    """Whether ``expr`` reads a date or timestamp: a column that a date or timestamp dimension
-    declares, a ``date_add`` or ``DATE_TRUNC``, or a COALESCE, NULLIF, GREATEST, LEAST or CASE
-    whose result is one."""
-    if isinstance(expr, ColumnRefExpr):
-        entity_id = _resolve_expr_entity(expr, measure, config)
+    """Whether ``expr`` reads a date or timestamp (:func:`reads_temporal_value`), its columns
+    typed by the date and timestamp dimensions that declare them."""
+
+    def temporal_column(ref: ColumnRefExpr) -> bool:
+        entity_id = _resolve_expr_entity(ref, measure, config)
         return any(
             dim.entity == entity_id
-            and dim.column == expr.column
+            and dim.column == ref.column
             and dim.data_type in {"date", "timestamp"}
             for dim in _dimension_index(config).values()
         )
-    if isinstance(expr, DateAddExpr):
-        return True
-    if isinstance(expr, CaseExpr):
-        results = [item.then for item in expr.whens]
-        results += [expr.else_expr] if expr.else_expr is not None else []
-        return any(_temporal_result(result, measure, config) for result in results)
-    if isinstance(expr, CallExpr):
-        name = expr.name.strip().upper()
-        if name == "DATE_TRUNC":
-            return True
-        args = expr.args[:1] if name == "NULLIF" else expr.args
-        if name in {"COALESCE", "NULLIF", "GREATEST", "LEAST"}:
-            return any(_temporal_result(arg, measure, config) for arg in args)
-    return False
+
+    return reads_temporal_value(expr, temporal_column)
 
 
 def _operand_sql(

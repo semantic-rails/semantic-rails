@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import ast as pyast
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any
@@ -368,6 +368,30 @@ SemanticExpr = (
     | DistributionExpr
     | ConversionExpr
 )
+
+
+def reads_temporal_value(
+    expr: SemanticExpr, temporal_column: Callable[[ColumnRefExpr], bool]
+) -> bool:
+    """Whether ``expr`` reads a date or timestamp: a column ``temporal_column`` says is one, a
+    ``date_add`` or ``DATE_TRUNC``, or a COALESCE, NULLIF, GREATEST, LEAST or CASE whose result
+    is one. Text compared with such a value is a temporal literal (``SqlLiteral.temporal``)."""
+    if isinstance(expr, ColumnRefExpr):
+        return temporal_column(expr)
+    if isinstance(expr, DateAddExpr):
+        return True
+    if isinstance(expr, CaseExpr):
+        results = [item.then for item in expr.whens]
+        results += [expr.else_expr] if expr.else_expr is not None else []
+        return any(reads_temporal_value(result, temporal_column) for result in results)
+    if isinstance(expr, CallExpr):
+        name = expr.name.strip().upper()
+        if name == "DATE_TRUNC":
+            return True
+        args = expr.args[:1] if name == "NULLIF" else expr.args
+        if name in {"COALESCE", "NULLIF", "GREATEST", "LEAST"}:
+            return any(reads_temporal_value(arg, temporal_column) for arg in args)
+    return False
 
 
 # Tags carried as data inside expression payloads (inline metric_predicate

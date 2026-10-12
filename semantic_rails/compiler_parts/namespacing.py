@@ -13,6 +13,7 @@ from typing import Any
 
 from ..errors import SemanticLayerError
 from ..sql_ast import (
+    SqlAggregateFilter,
     SqlBinary,
     SqlCall,
     SqlCallWithOrder,
@@ -106,6 +107,8 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
             return replace(
                 expr, call=_expr(expr.call), order_by=[_expr(item) for item in expr.order_by]
             )
+        if isinstance(expr, SqlAggregateFilter):
+            return SqlAggregateFilter(call=_expr(expr.call), where=_expr(expr.where))
         if isinstance(expr, SqlIndexAccess):
             return SqlIndexAccess(
                 expr=_expr(expr.expr), index=_expr(expr.index), wrapper=expr.wrapper

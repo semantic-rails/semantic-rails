@@ -68,8 +68,14 @@ def test_athena_registry_entry_renders_trino_forms():
         # The t-digest sketch (APPROX_PERCENTILE) is gone — exactness is the contract.
         (DIALECT.percentile_cont(_ident("x"), 0.95), _expected_exact_percentile(0.95)),
         (DIALECT.median(_ident("x")), _expected_exact_percentile(0.5)),
-        (DIALECT.first_value(_ident("x"), _ident("t")), "MIN_BY(x, t)"),
-        (DIALECT.last_value(_ident("x"), _ident("t")), "MAX_BY(x, t)"),
+        (
+            DIALECT.first_value(_ident("x"), _ident("t")),
+            "MIN_BY(x, t) FILTER (WHERE x IS NOT NULL AND t IS NOT NULL)",
+        ),
+        (
+            DIALECT.last_value(_ident("x"), _ident("t")),
+            "MAX_BY(x, t) FILTER (WHERE x IS NOT NULL AND t IS NOT NULL)",
+        ),
         # Trino: DATE_ADD('unit', value, ts) — NOT the INTERVAL form.
         (DIALECT.date_add("day", SqlLiteral(7), _ident("ts")), "DATE_ADD('day', 7, ts)"),
         (DIALECT.date_trunc("month", _ident("ts")), "DATE_TRUNC('month', CAST(ts AS TIMESTAMP))"),
@@ -597,6 +603,172 @@ def test_athena_expressions_type_text_compared_only_with_temporal_values(athena_
         )["rendered_sql"]
         assert rendered in sql
         assert ("TIMESTAMP '2016-09-01'" in sql) is ("TIMESTAMP" in rendered), rendered
+
+
+def test_athena_relation_filters_type_text_compared_only_with_temporal_columns():
+    """A relation's filter step reads its columns as the dimensions of what reads it declare
+    them: text compared with a date or timestamp column is a TIMESTAMP literal, text compared
+    with a text column stays text."""
+    from pathlib import Path
+
+    from semantic_rails.config import load_package_config
+
+    package = Path(__file__).parents[1] / "integration" / "correctness" / "pipelines"
+    config = load_package_config(str(package))
+    runtime = Runtime.from_config(
+        _athena_config(config), source_path=str(package), package_id="pipelines"
+    )
+    try:
+        sql = runtime.compile({"select": ["measure.pipelines.events"]})["rendered_sql"]
+    finally:
+        runtime.close()
+    assert "src.day >= TIMESTAMP '2026-01-01'" in sql  # the {field, op, value} form
+    assert "src.ts < TIMESTAMP '2026-02-01 00:00:00'" in sql  # the expression form
+    assert "((src.label <> '2025-01-01') OR (src.label IS NULL))" in sql
+
+
+def _relation_sql(columns: list[str], *steps: tuple[str, dict[str, Any]], tables) -> str:
+    """The Athena SQL of a relation reading ``raw_events``; ``tables`` names the date and
+    timestamp columns each table's readers declare (the relation's output is ``out``)."""
+    from semantic_rails.relation_pipelines import lower_relation
+    from semantic_rails.renderer import render_query
+    from semantic_rails.schema import RelationConfig, RelationPipelineStep
+
+    source = RelationPipelineStep("source", {"relation": "raw_events", "columns": columns})
+    relation = RelationConfig(
+        id="relation.t.out",
+        output_name="out",
+        steps=[source, *(RelationPipelineStep(kind, config) for kind, config in steps)],
+    )
+    ctes, _ = lower_relation(relation, warehouse="athena", tables=tables)
+    with use_dialect(DIALECT):
+        return "\n".join(render_query(cte.query) for cte in ctes)
+
+
+def test_athena_relation_filters_read_each_stage_by_its_own_lineage():
+    """A filter reads its own stage's columns: the declared DATE ``day`` is a renamed
+    ``observed_day``, so an earlier filter on the text ``day`` stays text, and one on the
+    date under an intermediate name is a TIMESTAMP literal."""
+    renamed = {"columns": {"id": "id", "day": "observed_day"}}
+    sql = _relation_sql(
+        ["id", "day", "observed_day"],
+        ("where", {"where": [{"field": "day", "op": "is", "value": "2026-01-01"}]}),
+        ("select", renamed),
+        tables={"out": frozenset({"day"})},
+    )
+    assert "src.day = '2026-01-01'" in sql and "TIMESTAMP" not in sql
+
+    sql = _relation_sql(
+        ["id", "observed_day"],
+        ("select", {"columns": {"id": "id", "seen": "observed_day"}}),
+        ("where", {"where": [{"field": "seen", "op": "gte", "value": "2026-01-01"}]}),
+        ("select", {"columns": {"id": "id", "day": "seen"}}),
+        tables={"out": frozenset({"day"})},
+    )
+    assert "src.seen >= TIMESTAMP '2026-01-01'" in sql
+
+
+def test_athena_semi_join_filters_read_each_column_by_its_table():
+    """A semi-join's filter reads a qualified column on its table and an unqualified one on the
+    joined table: the joined table's DATE ``label`` never types the outer text ``label``."""
+    outer = {"kind": "column", "table": "src", "column": "label"}
+    where = [
+        {
+            "kind": "comparison",
+            "op": "=",
+            "left": outer,
+            "right": {"kind": "literal", "value": "2026-01-01"},
+        },  # fmt: skip
+        {"field": "label", "op": "is", "value": "2026-01-02"},
+    ]
+    join = {"relation": "right_dates", "on": [{"left": "id", "right": "id"}], "where": where}
+    sql = _relation_sql(
+        ["id", "label"], ("semi_join", join), tables={"right_dates": frozenset({"label"})}
+    )
+    assert "src.label = '2026-01-01'" in sql
+    assert "\"right\".label = TIMESTAMP '2026-01-02'" in sql
+
+
+def _join(**columns: Any) -> tuple[str, dict[str, Any]]:
+    on = [{"left": "id", "right": "id"}]
+    return "join", {"relation": "right_dates", "on": on, "select": columns}
+
+
+def _is_day(column: str) -> tuple[str, dict[str, Any]]:
+    return "where", {"where": [{"field": column, "op": "is", "value": "2026-01-01"}]}
+
+
+def _ref(column: str, table: str | None = None) -> dict[str, Any]:
+    return {"kind": "column", "column": column, **({"table": table} if table else {})}
+
+
+def test_athena_relation_filters_type_a_column_only_where_its_lineage_is_certain():
+    """A join's projection reads each column on its own table: a text ``day`` replaced by the
+    joined table's DATE stays text before the join and is a TIMESTAMP literal after it, and a
+    DATE replaced by text is never typed. MIN, MAX, LAG, LEAD, FIRST_VALUE and LAST_VALUE keep
+    their argument's type."""
+    date_after_text = _relation_sql(
+        ["id", "day"],
+        _is_day("day"),
+        _join(id=_ref("id", "left"), day=_ref("day", "right")),
+        _is_day("day"),
+        tables={"out": frozenset({"day"}), "right_dates": frozenset({"day"})},
+    )
+    before, after = date_after_text.split("JOIN", 1)
+    assert "src.day = '2026-01-01'" in before
+    assert "src.day = TIMESTAMP '2026-01-01'" in after
+    text_after_date = _relation_sql(
+        ["id", "day"],
+        _join(id=_ref("id", "left"), day=_ref("label", "right")),
+        _is_day("day"),
+        tables={"raw_events": frozenset({"day"})},
+    )
+    assert "src.day = '2026-01-01'" in text_after_date and "TIMESTAMP" not in text_after_date
+
+    dates = {"raw_events": frozenset({"day"})}
+    lowest = {"function": "min", "expr": _ref("day")}
+    previous = {"function": "lag", "expr": _ref("day"), "order_by": [{"column": "id"}]}
+    derived = [
+        ("group_by", {"dimensions": {"id": _ref("id")}, "aggregates": {"mid": lowest}}),
+        ("window", {"columns": {"mid": previous}}),
+        _join(id=_ref("id", "left"), mid=_ref("day", "left")),
+    ]
+    for step in derived:
+        sql = _relation_sql(["id", "day"], step, _is_day("mid"), tables=dates)
+        assert "src.mid = TIMESTAMP '2026-01-01'" in sql, step[0]
+
+
+def test_athena_relation_filters_leave_a_name_two_columns_share_untyped():
+    """A window or an aggregate named like a column the stage already has leaves two columns
+    under one name: the text ``day`` beside ``LAG(dt)`` or ``MIN(dt)`` is never typed by the
+    date ``dt``."""
+    dates = {"raw_events": frozenset({"dt"})}
+    previous = {"function": "lag", "expr": _ref("dt"), "order_by": [{"column": "id"}]}
+    lowest = {"function": "min", "expr": _ref("dt")}
+    keys = {"id": _ref("id"), "day": _ref("day")}
+    for step in (
+        ("window", {"columns": {"day": previous}}),
+        ("group_by", {"dimensions": keys, "aggregates": {"day": lowest}}),
+    ):
+        sql = _relation_sql(["id", "day", "dt"], step, _is_day("day"), tables=dates)
+        assert "src.day = '2026-01-01'" in sql and "TIMESTAMP" not in sql, step[0]
+
+
+def test_athena_relation_filters_leave_types_through_unions_and_other_relations_untyped():
+    """Known limits, left untyped (Athena refuses the comparison, never miscounts): a union
+    of declared dates, and a type a relation infers for a relation that reads it."""
+    branches = [
+        {"source": table, "columns": {"id": _ref("id"), "mid": _ref("day")}}
+        for table in ("raw_events", "right_dates")
+    ]
+    dates = {"raw_events": frozenset({"day"}), "right_dates": frozenset({"day"})}
+    sql = _relation_sql(["id"], ("union_all", {"branches": branches}), _is_day("mid"), tables=dates)
+    assert "src.mid = '2026-01-01'" in sql
+
+    exported = {"relation": "inner_out", "on": [{"left": "id", "right": "id"}]}
+    where = [{"field": "mid", "op": "is", "value": "2026-01-01"}]
+    sql = _relation_sql(["id"], ("semi_join", {**exported, "where": where}), tables=dates)
+    assert "\"right\".mid = '2026-01-01'" in sql
 
 
 # ---------------------------------------------------------------------------

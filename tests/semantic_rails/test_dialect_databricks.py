@@ -71,8 +71,14 @@ def test_registry_returns_databricks_dialect_rendering_spark_forms():
             DIALECT.convert_timezone("UTC", "America/New_York", _col("t", "ts")),
             "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)",
         ),
-        (DIALECT.first_value(_col("t", "x"), _col("t", "ts")), "MIN_BY(t.x, t.ts)"),
-        (DIALECT.last_value(_col("t", "x"), _col("t", "ts")), "MAX_BY(t.x, t.ts)"),
+        (
+            DIALECT.first_value(_col("t", "x"), _col("t", "ts")),
+            "MIN_BY(t.x, t.ts) FILTER (WHERE t.x IS NOT NULL AND t.ts IS NOT NULL)",
+        ),
+        (
+            DIALECT.last_value(_col("t", "x"), _col("t", "ts")),
+            "MAX_BY(t.x, t.ts) FILTER (WHERE t.x IS NOT NULL AND t.ts IS NOT NULL)",
+        ),
         (
             DIALECT.conditional_aggregate(
                 "count", DIALECT.null_safe_eq(_col("t", "status"), SqlLiteral("paid")), None

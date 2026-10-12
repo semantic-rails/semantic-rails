@@ -71,8 +71,16 @@ def test_dialect_renders_postgres_forms():
     rendered = [
         (DIALECT.percentile_cont(X, 0.95), "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY t.x ASC)"),
         (DIALECT.median(X), "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.x ASC)"),
-        (DIALECT.first_value(X, ORDER), "(ARRAY_AGG(t.x ORDER BY t.snapshot_at ASC))[1]"),
-        (DIALECT.last_value(X, ORDER), "(ARRAY_AGG(t.x ORDER BY t.snapshot_at DESC))[1]"),
+        (
+            DIALECT.first_value(X, ORDER),
+            "(ARRAY_AGG(t.x ORDER BY t.snapshot_at ASC)"
+            " FILTER (WHERE t.x IS NOT NULL AND t.snapshot_at IS NOT NULL))[1]",
+        ),
+        (
+            DIALECT.last_value(X, ORDER),
+            "(ARRAY_AGG(t.x ORDER BY t.snapshot_at DESC)"
+            " FILTER (WHERE t.x IS NOT NULL AND t.snapshot_at IS NOT NULL))[1]",
+        ),
         (
             DIALECT.date_diff("day", START, END),
             f"CAST({END_TS} AS DATE) - CAST({START_TS} AS DATE)",
