@@ -351,9 +351,18 @@ def _compile_post_expr(
     table_alias: str = "base",
 ) -> Any:
     group_aliases = list(group_aliases or [])
-    if isinstance(expr, (MeasureRefExpr, AggregateExpr)):
-        return _base_alias_ref(_expression_alias(expr, config), table_alias=table_alias)
-    if isinstance(expr, ScopedAggregateExpr):
+
+    def sub(input_expr: SemanticExpr) -> Any:
+        return _compile_post_expr(
+            input_expr,
+            config,
+            time_alias=time_alias,
+            group_aliases=group_aliases,
+            query_grain=query_grain,
+            table_alias=table_alias,
+        )
+
+    if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         return _base_alias_ref(_expression_alias(expr, config), table_alias=table_alias)
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
@@ -362,34 +371,13 @@ def _compile_post_expr(
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
         with recipe_objects(recipe.id):
-            return _compile_post_expr(
-                recipe.expression,
-                config,
-                time_alias=time_alias,
-                group_aliases=group_aliases,
-                query_grain=query_grain,
-                table_alias=table_alias,
-            )
+            return sub(recipe.expression)
     if isinstance(expr, LiteralExpr):
         return SqlLiteral(expr.value)
     if isinstance(expr, ArithmeticExpr):
         op_map = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}
-        left = _compile_post_expr(
-            expr.left,
-            config,
-            time_alias=time_alias,
-            group_aliases=group_aliases,
-            query_grain=query_grain,
-            table_alias=table_alias,
-        )
-        right = _compile_post_expr(
-            expr.right,
-            config,
-            time_alias=time_alias,
-            group_aliases=group_aliases,
-            query_grain=query_grain,
-            table_alias=table_alias,
-        )
+        left = sub(expr.left)
+        right = sub(expr.right)
         op = op_map.get(expr.op)
         if op is None:
             raise SemanticLayerError(
@@ -401,64 +389,15 @@ def _compile_post_expr(
             return SqlBinary(left, "/", SqlCall("NULLIF", [right, SqlLiteral(0)]))
         return SqlBinary(left, op, right)
     if isinstance(expr, RatioExpr):
-        left = _compile_post_expr(
-            expr.numerator,
-            config,
-            time_alias=time_alias,
-            group_aliases=group_aliases,
-            query_grain=query_grain,
-            table_alias=table_alias,
-        )
-        right = _compile_post_expr(
-            expr.denominator,
-            config,
-            time_alias=time_alias,
-            group_aliases=group_aliases,
-            query_grain=query_grain,
-            table_alias=table_alias,
-        )
+        left = sub(expr.numerator)
+        right = sub(expr.denominator)
         return SqlBinary(left, "/", SqlCall("NULLIF", [right, SqlLiteral(0)]))
     if isinstance(expr, ComparisonExpr):
-        return build_comparison_condition(
-            _compile_post_expr(
-                expr.left,
-                config,
-                time_alias=time_alias,
-                group_aliases=group_aliases,
-                query_grain=query_grain,
-                table_alias=table_alias,
-            ),
-            expr.op,
-            _compile_post_expr(
-                expr.right,
-                config,
-                time_alias=time_alias,
-                group_aliases=group_aliases,
-                query_grain=query_grain,
-                table_alias=table_alias,
-            ),
-        )
+        return build_comparison_condition(sub(expr.left), expr.op, sub(expr.right))
     if isinstance(expr, InExpr):
         return SqlIn(
-            expr=_compile_post_expr(
-                expr.expr,
-                config,
-                time_alias=time_alias,
-                group_aliases=group_aliases,
-                query_grain=query_grain,
-                table_alias=table_alias,
-            ),
-            values=[
-                _compile_post_expr(
-                    value,
-                    config,
-                    time_alias=time_alias,
-                    group_aliases=group_aliases,
-                    query_grain=query_grain,
-                    table_alias=table_alias,
-                )
-                for value in expr.values
-            ],
+            expr=sub(expr.expr),
+            values=[sub(value) for value in expr.values],
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
@@ -476,17 +415,7 @@ def _compile_post_expr(
             )
         if not expr.args:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
-        rendered = [
-            _compile_post_expr(
-                arg,
-                config,
-                time_alias=time_alias,
-                group_aliases=group_aliases,
-                query_grain=query_grain,
-                table_alias=table_alias,
-            )
-            for arg in expr.args
-        ]
+        rendered = [sub(arg) for arg in expr.args]
         if op == "not":
             if len(rendered) != 1:
                 raise SemanticLayerError(
@@ -514,73 +443,16 @@ def _compile_post_expr(
         return current
     if isinstance(expr, CallExpr):
         return dialect_for_warehouse(config.package.warehouse).scalar_call(
-            expr.name,
-            [
-                _compile_post_expr(
-                    arg,
-                    config,
-                    time_alias=time_alias,
-                    group_aliases=group_aliases,
-                    query_grain=query_grain,
-                    table_alias=table_alias,
-                )
-                for arg in expr.args
-            ],
-            distinct=expr.distinct,
+            expr.name, [sub(arg) for arg in expr.args], distinct=expr.distinct
         )
     if isinstance(expr, DateAddExpr):
         return dialect_for_warehouse(config.package.warehouse).date_add(
-            expr.unit,
-            _compile_post_expr(
-                expr.value,
-                config,
-                time_alias=time_alias,
-                group_aliases=group_aliases,
-                query_grain=query_grain,
-                table_alias=table_alias,
-            ),
-            _compile_post_expr(
-                expr.date,
-                config,
-                time_alias=time_alias,
-                group_aliases=group_aliases,
-                query_grain=query_grain,
-                table_alias=table_alias,
-            ),
+            expr.unit, sub(expr.value), sub(expr.date)
         )
     if isinstance(expr, CaseExpr):
         return SqlCase(
-            whens=[
-                SqlCaseWhen(
-                    _compile_post_expr(
-                        item.when,
-                        config,
-                        time_alias=time_alias,
-                        group_aliases=group_aliases,
-                        query_grain=query_grain,
-                        table_alias=table_alias,
-                    ),
-                    _compile_post_expr(
-                        item.then,
-                        config,
-                        time_alias=time_alias,
-                        group_aliases=group_aliases,
-                        query_grain=query_grain,
-                        table_alias=table_alias,
-                    ),
-                )
-                for item in expr.whens
-            ],
-            else_expr=_compile_post_expr(
-                expr.else_expr,
-                config,
-                time_alias=time_alias,
-                group_aliases=group_aliases,
-                query_grain=query_grain,
-                table_alias=table_alias,
-            )
-            if expr.else_expr is not None
-            else None,
+            whens=[SqlCaseWhen(sub(item.when), sub(item.then)) for item in expr.whens],
+            else_expr=sub(expr.else_expr) if expr.else_expr is not None else None,
         )
     offset_expr = _as_offset_window_expr(expr)
     if offset_expr is not None:
@@ -594,14 +466,7 @@ def _compile_post_expr(
         )
     if isinstance(expr, ShareExpr):
         # The total is a window over the rows the query keeps, before limit and having.
-        value = _compile_post_expr(
-            expr.input,
-            config,
-            time_alias=time_alias,
-            group_aliases=group_aliases,
-            query_grain=query_grain,
-            table_alias=table_alias,
-        )
+        value = sub(expr.input)
         total = SqlWindow(
             function=SqlCall("SUM", [value]),
             partition_by=share_partition(expr, table_alias, group_aliases, time_alias, config),
