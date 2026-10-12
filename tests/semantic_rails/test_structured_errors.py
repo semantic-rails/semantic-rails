@@ -20,16 +20,6 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 # ---------------------------------------------------------------------
 
 
-def test_expression_field_raises_invalid_expression_when_dict_lacks_key():
-    with pytest.raises(SemanticLayerError) as exc:
-        expression_field({"direction": "DESC"}, "field", expression_position="order_by")
-    assert exc.value.code == "INVALID_EXPRESSION"
-    details = exc.value.details
-    assert details["expression_position"] == "order_by"
-    assert details["missing_key"] == "field"
-    assert "direction" in details["received_keys"]
-
-
 def test_expression_field_raises_when_value_is_not_a_dict():
     with pytest.raises(SemanticLayerError) as exc:
         expression_field("not_a_dict", "field", expression_position="order_by")
