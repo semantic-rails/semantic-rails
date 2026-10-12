@@ -420,13 +420,9 @@ def test_only_a_balance_summed_across_series_reads_zero(runtime: Runtime) -> Non
         (_is(WEEKDAY, 2, "lte"), "weekday <= 2", 297),
         (_is("dimension.fees_time_week_start", "2026-09-14"), "c.week_start = '2026-09-14'", 599),
         # A second dimension on the clock's entity and column is the same clock.
-        (
-            _is("dimension.fees_account_day_observed_on", "2026-09-16", "lte"),
-            "date_day <= '2026-09-16'",
-            198,
-        ),
+        (_is("dimension.fees_account_day_observed_on", "2026-09-16", "lte"), "date_day <= '2026-09-16'", 198),
     ],
-)
+)  # fmt: skip
 def test_a_time_bound_applies_before_the_snapshot_is_chosen(
     runtime: Runtime, reference, where: dict[str, Any], before: str, expected: int
 ) -> None:

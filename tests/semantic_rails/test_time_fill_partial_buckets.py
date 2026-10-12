@@ -310,14 +310,7 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
 @pytest.mark.parametrize(
     ("zone", "start", "end", "first", "second", "days"),
     [
-        (
-            "UTC",
-            "2017-07-03T00:00:00Z",
-            "2017-07-04T00:00:00-02:00",
-            "2017-07-03 15:00:00+00",
-            "2017-07-04 01:00:00+00",
-            (date(2017, 7, 3), date(2017, 7, 4)),
-        ),
+        ("UTC", "2017-07-03T00:00:00Z", "2017-07-04T00:00:00-02:00", "2017-07-03 15:00:00+00", "2017-07-04 01:00:00+00", (date(2017, 7, 3), date(2017, 7, 4))),
         (
             "America/New_York",
             "2017-07-04T00:00:00-04:00",
@@ -328,7 +321,7 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
         ),
     ],
     ids=["utc-calendar", "new-york-calendar"],
-)
+)  # fmt: skip
 def test_fill_preserves_offset_window_days_with_timestamptz_data(
     tmp_path, zone, start, end, first, second, days
 ):
@@ -379,15 +372,11 @@ def test_fill_preserves_offset_window_days_with_timestamptz_data(
 @pytest.mark.parametrize(
     ("start", "end", "expected"),
     [
-        (
-            "2017-11-05T01:30:00-04:00",
-            "2017-11-05T01:30:00-05:00",
-            {date(2017, 11, 5): 1},
-        ),
+        ("2017-11-05T01:30:00-04:00", "2017-11-05T01:30:00-05:00", {date(2017, 11, 5): 1}),
         ("2017-11-05T01:30:00-05:00", "2017-11-05T01:45:00-04:00", {}),
     ],
     ids=["positive-repeated-hour", "reversed-repeated-hour"],
-)
+)  # fmt: skip
 def test_fill_respects_instant_order_during_dst_fold(tmp_path, start, end, expected):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
@@ -449,21 +438,11 @@ def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path
     [
         ("2017-07-03T00:00:00", "2017-07-04T00:00:00.000000002", {date(2017, 7, 4): 1}, False),
         ("2017-07-04T00:00:00", "2017-07-04T00:00:00.000000002", {date(2017, 7, 4): 1}, False),
-        (
-            "2017-07-04T00:00:00.000000001",
-            "2017-07-04T00:00:00.000000002",
-            {date(2017, 7, 4): 1},
-            False,
-        ),
+        ("2017-07-04T00:00:00.000000001", "2017-07-04T00:00:00.000000002", {date(2017, 7, 4): 1}, False),
         ("2017-07-03T00:00:00", "2017-07-04T00:00:00", {}, False),
         ("2017-07-04T00:00:00.000000001", "2017-07-04T00:00:00.000000001", {}, True),
         ("2017-07-04T00:00:00.000000002", "2017-07-04T00:00:00.000000001", {}, True),
-        (
-            "2017-07-04T00:00:00+00:00",
-            "2017-07-04T00:00:00.000000002+00:00",
-            {date(2017, 7, 4): 1},
-            False,
-        ),
+        ("2017-07-04T00:00:00+00:00", "2017-07-04T00:00:00.000000002+00:00", {date(2017, 7, 4): 1}, False),
     ],
     ids=[
         "end-after-midnight",
@@ -474,7 +453,7 @@ def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path
         "reversed-submicrosecond",
         "offset-positive-submicrosecond",
     ],
-)
+)  # fmt: skip
 def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected, empty_interval):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:

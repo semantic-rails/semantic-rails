@@ -156,22 +156,10 @@ def test_model_variants_normalize_to_explicit_aggregate_relations(tmp_path: Path
 @pytest.mark.parametrize(
     ("dimension", "selected_relation", "other_relation", "selected"),
     [
-        pytest.param(
-            "dimension.demo_store_id",
-            "order_monthly",
-            "order_fact",
-            ["aggregate_relation.orders_monthly"],
-            id="lossless-variant",
-        ),
-        pytest.param(
-            "dimension.demo_customer_id",
-            "order_fact",
-            "order_monthly",
-            [],
-            id="missing-dimension-fallback",
-        ),
+        pytest.param("dimension.demo_store_id", "order_monthly", "order_fact", ["aggregate_relation.orders_monthly"], id="lossless-variant"),
+        pytest.param("dimension.demo_customer_id", "order_fact", "order_monthly", [], id="missing-dimension-fallback"),
     ],
-)
+)  # fmt: skip
 def test_monthly_query_variant_routing(
     tmp_path: Path, dimension, selected_relation, other_relation, selected
 ):
@@ -714,17 +702,11 @@ def test_routing_report_lists_each_rollup_per_leaf(
 @pytest.mark.parametrize(
     ("columns", "error"),
     [
-        pytest.param(
-            {"revenue": {"column": "max_amount", "hold": "max"}}, "unknown keys", id="typo"
-        ),
+        pytest.param({"revenue": {"column": "max_amount", "hold": "max"}}, "unknown keys", id="typo"),
         pytest.param({"revenue": {"column": "revenue", "holds": "avg"}}, "holds 'avg'", id="value"),
-        pytest.param(
-            {"revenue": {"column": "revenue", "holds": "count_distinct"}},
-            "holds 'count_distinct'",
-            id="not-allowed-for-the-measure",
-        ),
+        pytest.param({"revenue": {"column": "revenue", "holds": "count_distinct"}}, "holds 'count_distinct'", id="not-allowed-for-the-measure"),
     ],
-)
+)  # fmt: skip
 def test_rollup_bindings_are_checked(tmp_path: Path, columns: dict, error: str):
     _rollup_package(tmp_path / "p", *_monthly(**columns))
     with pytest.raises(SemanticLayerError, match=error):

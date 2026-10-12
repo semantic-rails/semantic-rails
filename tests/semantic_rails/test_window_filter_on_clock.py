@@ -420,48 +420,18 @@ RUNNING_REFERENCE = (
 @pytest.mark.parametrize(
     ("expression", "where", "reference"),
     [
-        pytest.param(
-            PRIOR_DAY,
-            [_cut(DAY, "lte", "2026-09-14")],
-            PRIOR_REFERENCE.format(cut="a.date_day <= '2026-09-14'"),
-            id="prior-upper",
-        ),
-        pytest.param(
-            PRIOR_DAY,
-            [_cut(CALENDAR_WEEK, "lt", "2026-09-14")],
-            PRIOR_REFERENCE.format(cut="c.week_start < '2026-09-14'"),
-            id="calendar-upper",
-        ),
-        pytest.param(
-            PRIOR_DAY,
-            [_cut(ACCOUNT, "is", "a")],
-            PRIOR_REFERENCE.format(cut="a.account_id = 'a'"),
-            id="prior-account",
-        ),
-        pytest.param(
-            ROLLING,
-            [_cut(OCCURRED_AT, "lt", "2026-09-15")],
-            ROLLING_REFERENCE.format(cut="occurred_at < '2026-09-15'"),
-            id="rolling-upper",
-        ),
-        pytest.param(
-            ROLLING,
-            [_cut(CHANNEL, "is", "web")],
-            ROLLING_REFERENCE.format(cut="channel = 'web'"),
-            id="rolling-channel",
-        ),
+        pytest.param(PRIOR_DAY, [_cut(DAY, "lte", "2026-09-14")], PRIOR_REFERENCE.format(cut="a.date_day <= '2026-09-14'"), id="prior-upper"),
+        pytest.param(PRIOR_DAY, [_cut(CALENDAR_WEEK, "lt", "2026-09-14")], PRIOR_REFERENCE.format(cut="c.week_start < '2026-09-14'"), id="calendar-upper"),
+        pytest.param(PRIOR_DAY, [_cut(ACCOUNT, "is", "a")], PRIOR_REFERENCE.format(cut="a.account_id = 'a'"), id="prior-account"),
+        pytest.param(ROLLING, [_cut(OCCURRED_AT, "lt", "2026-09-15")], ROLLING_REFERENCE.format(cut="occurred_at < '2026-09-15'"), id="rolling-upper"),
+        pytest.param(ROLLING, [_cut(CHANNEL, "is", "web")], ROLLING_REFERENCE.format(cut="channel = 'web'"), id="rolling-channel"),
         pytest.param(
             CUMULATIVE,
             [_cut(OCCURRED_AT, "lte", "2026-09-15 12:00:00")],
             RUNNING_REFERENCE.format(cut="occurred_at <= '2026-09-15 12:00:00'", period=""),
             id="cumulative-upper",
         ),
-        pytest.param(
-            CUMULATIVE,
-            [_cut(CHANNEL, "is", "web")],
-            RUNNING_REFERENCE.format(cut="channel = 'web'", period=""),
-            id="cumulative-channel",
-        ),
+        pytest.param(CUMULATIVE, [_cut(CHANNEL, "is", "web")], RUNNING_REFERENCE.format(cut="channel = 'web'", period=""), id="cumulative-channel"),
         pytest.param(
             MONTH_TO_DATE,
             [_cut(CHANNEL, "not", "web")],
@@ -472,7 +442,7 @@ RUNNING_REFERENCE = (
             id="month-to-date-channel",
         ),
     ],
-)
+)  # fmt: skip
 def test_an_upper_bound_or_another_dimension_matches_reference(
     runtime: Runtime, expression: dict, where: list[dict], reference: str
 ) -> None:

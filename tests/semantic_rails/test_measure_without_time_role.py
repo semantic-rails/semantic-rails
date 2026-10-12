@@ -256,13 +256,10 @@ MONTHLY = {"temporal_role": ROLE, "grain": "month"}
     [
         {"select": [{"expression": "metric.ins.claim_total", "as": "value"}]},
         {"select": [{"expression": CLOCKED, "as": "paid"}, {"expression": AMOUNT, "as": "amount"}]},
-        {
-            "select": [{"expression": CLOCKED, "as": "paid"}],
-            "having": [{"field": "measure.ins.claim_amount", "op": "gt", "value": 0}],
-        },
+        {"select": [{"expression": CLOCKED, "as": "paid"}], "having": [{"field": "measure.ins.claim_amount", "op": "gt", "value": 0}]},
     ],
     ids=["metric_ref", "mixed_select", "having"],
-)
+)  # fmt: skip
 def test_the_refusal_names_the_clockless_measure_however_it_is_reached(tmp_path, query):
     engine = Runtime.from_path(str(_package(tmp_path, NO_CLOCK)))
     try:

@@ -153,34 +153,10 @@ def test_shorthand_parses_like_the_long_form(measure, aggregation, unit, value) 
 @pytest.mark.parametrize(
     ("measure", "role", "aggregation", "reference"),
     [
-        pytest.param(
-            "measure.jaffle.order_count",
-            _ORDER_TIME,
-            None,
-            _ORDER_MONTHS.format(agg="COUNT(DISTINCT order_id)"),
-            id="count_distinct",
-        ),
-        pytest.param(
-            "measure.jaffle.avg_order_total_usd",
-            _ORDER_TIME,
-            None,
-            _ORDER_MONTHS.format(agg="AVG(order_total_cents / 100.0)"),
-            id="avg",
-        ),
-        pytest.param(
-            "measure.jaffle.max_order_total_usd",
-            _ORDER_TIME,
-            None,
-            _ORDER_MONTHS.format(agg="MAX(order_total_cents / 100.0)"),
-            id="max",
-        ),
-        pytest.param(
-            "measure.jaffle.inventory_on_hand_eop",
-            "temporal_role.jaffle_inventory_day",
-            None,
-            _SNAPSHOT_MONTHS,
-            id="last_value",
-        ),
+        pytest.param("measure.jaffle.order_count", _ORDER_TIME, None, _ORDER_MONTHS.format(agg="COUNT(DISTINCT order_id)"), id="count_distinct"),
+        pytest.param("measure.jaffle.avg_order_total_usd", _ORDER_TIME, None, _ORDER_MONTHS.format(agg="AVG(order_total_cents / 100.0)"), id="avg"),
+        pytest.param("measure.jaffle.max_order_total_usd", _ORDER_TIME, None, _ORDER_MONTHS.format(agg="MAX(order_total_cents / 100.0)"), id="max"),
+        pytest.param("measure.jaffle.inventory_on_hand_eop", "temporal_role.jaffle_inventory_day", None, _SNAPSHOT_MONTHS, id="last_value"),
         pytest.param(
             "measure.jaffle.avg_order_total_usd",
             _ORDER_TIME,
@@ -189,7 +165,7 @@ def test_shorthand_parses_like_the_long_form(measure, aggregation, unit, value) 
             id="explicit-sum-on-avg",
         ),
     ],
-)
+)  # fmt: skip
 def test_prior_month_matches_reference_sql(
     authored: tuple[Runtime, pathlib.Path],
     measure: str,

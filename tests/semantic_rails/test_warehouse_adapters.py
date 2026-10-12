@@ -366,18 +366,9 @@ def test_create_warehouse_adapter_selects_snowflake_native_direct_connect(
     ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
     [
         ({}, 10, 65, None),
-        (
-            {
-                "connect_timeout_seconds": "7",
-                "read_timeout_seconds": "45",
-                "statement_timeout_seconds": "40",
-            },
-            7,
-            45,
-            40,
-        ),
+        ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45", "statement_timeout_seconds": "40"}, 7, 45, 40),
     ],
-)
+)  # fmt: skip
 def test_snowflake_native_adapter_queries_with_optional_connector(
     monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout, statement_timeout
 ):
@@ -750,13 +741,9 @@ def test_snowflake_direct_connection_passes_tag_as_session_parameter(monkeypatch
     [
         {},
         {"statement_timeout_seconds": "0"},
-        {
-            "connect_timeout_seconds": "7",
-            "read_timeout_seconds": "45",
-            "statement_timeout_seconds": "20",
-        },
+        {"connect_timeout_seconds": "7", "read_timeout_seconds": "45", "statement_timeout_seconds": "20"},
     ],
-)
+)  # fmt: skip
 def test_snowflake_named_profile_preserves_inherited_session_and_login(monkeypatch, options):
     from unittest.mock import Mock
 

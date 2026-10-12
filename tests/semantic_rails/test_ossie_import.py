@@ -143,18 +143,8 @@ def _without_dataset(document: dict, name: str) -> None:
 @pytest.mark.parametrize(
     ("package_id", "edit", "named"),
     [
-        (
-            "tpch_sf1_showcase",
-            lambda text: text.replace(
-                "SUM(tpch_order.tpch_revenue)", "MAX(tpch_order.tpch_revenue)"
-            ),
-            "document.metrics.sales_revenue",
-        ),
-        (
-            "tpch_sf1_showcase",
-            lambda text: _edited(text, lambda d: _without_metric(d, "sales_orders")),
-            "metrics sales_orders (not in the document)",
-        ),
+        ("tpch_sf1_showcase", lambda text: text.replace("SUM(tpch_order.tpch_revenue)", "MAX(tpch_order.tpch_revenue)"), "document.metrics.sales_revenue"),
+        ("tpch_sf1_showcase", lambda text: _edited(text, lambda d: _without_metric(d, "sales_orders")), "metrics sales_orders (not in the document)"),
         (
             "tpch_sf1_showcase",
             lambda text: _edited(
@@ -180,7 +170,7 @@ def _without_dataset(document: dict, name: str) -> None:
             "datasets without a primary key or defined by a query: ",
         ),
     ],
-)
+)  # fmt: skip
 def test_a_document_edited_after_the_export_is_refused(package_id, edit, named, tmp_path):
     document = _export(PACKAGES[package_id], tmp_path / "ossie")
     document.write_text(edit(document.read_text(encoding="utf-8")), encoding="utf-8")
@@ -207,19 +197,8 @@ def _sidecar(document: Path) -> Path:
         (lambda doc, side: doc.write_text("version: 0.2.0\nname: [\n"), "can't import it"),
         (lambda doc, side: doc.unlink(), "can't import it"),
         (lambda doc, side: side.write_text("{", encoding="utf-8"), "can't import it"),
-        (
-            lambda doc, side: side.write_text(
-                side.read_text().replace('"format_version": 1', '"format_version": 2')
-            ),
-            "not a version-1 Semantic Rails sidecar",
-        ),
-        (
-            lambda doc, side: (
-                side.unlink(),
-                doc.write_text("version: 0.2.0\ndatasets: [orders]\n"),
-            ),
-            "can't import it",
-        ),
+        (lambda doc, side: side.write_text(side.read_text().replace('"format_version": 1', '"format_version": 2')), "not a version-1 Semantic Rails sidecar"),
+        (lambda doc, side: (side.unlink(), doc.write_text("version: 0.2.0\ndatasets: [orders]\n")), "can't import it"),
         (
             lambda doc, side: (
                 side.unlink(),
@@ -239,7 +218,7 @@ def _sidecar(document: Path) -> Path:
             "expressions for more than one warehouse",
         ),
     ],
-)
+)  # fmt: skip
 def test_input_it_cannot_read_is_refused_with_a_typed_error(edit, message, tmp_path) -> None:
     document = _export(PACKAGES["shop_starter"], tmp_path / "ossie")
     edit(document, _sidecar(document))
@@ -369,18 +348,8 @@ SUM_A, COUNT_B = _aggregate("measure.a", "sum"), _aggregate("measure.b", "count_
     ("sql", "expected"),
     [
         ("SUM(d.a)", SUM_A),
-        (
-            "sum(d.a) / NULLIF(count(DISTINCT d.b), 0)",
-            _arithmetic("divide", SUM_A, COUNT_B),
-        ),
-        (
-            "(SUM(d.a) - COUNT(DISTINCT d.b)) * 100",
-            _arithmetic(
-                "multiply",
-                _arithmetic("subtract", SUM_A, COUNT_B),
-                {"kind": "literal", "value": 100},
-            ),
-        ),
+        ("sum(d.a) / NULLIF(count(DISTINCT d.b), 0)", _arithmetic("divide", SUM_A, COUNT_B)),
+        ("(SUM(d.a) - COUNT(DISTINCT d.b)) * 100", _arithmetic("multiply", _arithmetic("subtract", SUM_A, COUNT_B), {"kind": "literal", "value": 100})),
         ("SUM(d.a) + COUNT(DISTINCT d.b)", _arithmetic("add", SUM_A, COUNT_B)),
         # The export never writes COALESCE: an empty group is settled by the engine, not the SQL.
         ("COALESCE(SUM(d.a), 0) + COALESCE(COUNT(DISTINCT d.b), 0)", None),
@@ -394,7 +363,7 @@ SUM_A, COUNT_B = _aggregate("measure.a", "sum"), _aggregate("measure.b", "count_
         ("-SUM(d.a)", None),
         ("SUM(d.a) +", None),
     ],
-)
+)  # fmt: skip
 def test_metric_parser_reads_only_the_export_grammar(sql, expected) -> None:
     expr = _MetricParser(sql, {"d.a": "measure.a", "d.b": "measure.b"}).parse()
     assert (expr_to_dict(expr) if expr else None) == expected

@@ -457,18 +457,11 @@ def _with_home_region(project: ArchitectProject) -> dict[str, Any]:
     ("from_entity", "columns", "new_route"),
     [
         # A second route through the owner: unrecorded, the pair would be refused.
-        pytest.param(
-            "owner",
-            ["home_region_id"],
-            [*INVOICE_ACCOUNT, OWNS, "relationship.owners_region"],
-            id="second-route",
-        ),
+        pytest.param("owner", ["home_region_id"], [*INVOICE_ACCOUNT, OWNS, "relationship.owners_region"], id="second-route"),
         # The new key is on the start's own table: unrecorded, the pair would take it.
-        pytest.param(
-            "invoice", ["issued_region_id"], ["relationship.invoices_region"], id="own-key"
-        ),
+        pytest.param("invoice", ["issued_region_id"], ["relationship.invoices_region"], id="own-key"),
     ],
-)
+)  # fmt: skip
 def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     tmp_path, from_entity, columns, new_route
 ):

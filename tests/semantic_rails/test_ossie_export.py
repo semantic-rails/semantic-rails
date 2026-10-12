@@ -215,13 +215,9 @@ def _export_with(**changes) -> tuple[dict, _Exporter]:
         ({"cardinality": "M:N", "safety": "requires_rewrite"}, None, "M:N relationships"),
         ({"safety": "unsafe"}, None, "unsafe relationships"),
         ({"allowed_directions": ["reverse"]}, None, "relationships closed to many-to-one joins"),
-        (
-            {"cardinality": "1:N", "allowed_directions": ["forward"]},
-            None,
-            "relationships closed to many-to-one joins",
-        ),
+        ({"cardinality": "1:N", "allowed_directions": ["forward"]}, None, "relationships closed to many-to-one joins"),
     ],
-)
+)  # fmt: skip
 def test_relationships_export_only_as_safe_many_to_one_joins(change, exported, construct) -> None:
     config = load_package_snapshot(JAFFLE).config
     relationships = [
@@ -252,25 +248,13 @@ COST = AggregateExpr(measure="measure.jaffle.order_cost_usd", aggregation="sum")
             "SUM(jaffle_order.jaffle_revenue_usd) / "
             "NULLIF(COUNT(DISTINCT jaffle_order.jaffle_order_count), 0) * 100",
         ),
-        (
-            ArithmeticExpr("add", REVENUE, COST),
-            "SUM(jaffle_order.jaffle_revenue_usd) + SUM(jaffle_order.jaffle_order_cost_usd)",
-        ),
+        (ArithmeticExpr("add", REVENUE, COST), "SUM(jaffle_order.jaffle_revenue_usd) + SUM(jaffle_order.jaffle_order_cost_usd)"),
         (replace(REVENUE, aggregation="median"), "metrics using median"),
-        (
-            replace(REVENUE, temporal_role="temporal_role.jaffle_order_time"),
-            "metrics with clock or parameter overrides",
-        ),
-        (
-            MetricRecipeRefExpr("metric.sales.cumulative_revenue"),
-            "metrics built on omitted objects",
-        ),
-        (
-            AggregateExpr(measure="measure.jaffle.revenue_ytd_usd"),
-            "metrics built on omitted objects",
-        ),
+        (replace(REVENUE, temporal_role="temporal_role.jaffle_order_time"), "metrics with clock or parameter overrides"),
+        (MetricRecipeRefExpr("metric.sales.cumulative_revenue"), "metrics built on omitted objects"),
+        (AggregateExpr(measure="measure.jaffle.revenue_ytd_usd"), "metrics built on omitted objects"),
     ],
-)
+)  # fmt: skip
 def test_metrics_export_their_sql_or_stay_in_the_sidecar(expression, expected) -> None:
     config = load_package_snapshot(JAFFLE).config
     probe = MetricConfig(id="metric.test.probe", kind="derived", expression=expression)
@@ -286,13 +270,9 @@ def test_metrics_export_their_sql_or_stay_in_the_sidecar(expression, expected) -
 @pytest.mark.parametrize(
     ("change", "measure_gap", "metric_gap"),
     [
-        (
-            {"expr": ColumnRefExpr(column="customer_id", entity="entity.jaffle_customer")},
-            "measures reading other entities",
-            "metrics built on omitted objects",
-        ),
+        ({"expr": ColumnRefExpr(column="customer_id", entity="entity.jaffle_customer")}, "measures reading other entities", "metrics built on omitted objects"),
     ],
-)
+)  # fmt: skip
 def test_measure_gaps_keep_their_metrics_in_the_sidecar(change, measure_gap, metric_gap) -> None:
     config = load_package_snapshot(JAFFLE).config
     measures = [

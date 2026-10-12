@@ -1295,14 +1295,8 @@ def test_record_route_decision_refuses_a_row_that_would_not_take_effect(tmp_path
         pytest.param({**DIAMOND_ROW, "relationship_path": ["relationship.accounts_branch"]}, id="off-route"),
         pytest.param({**DIAMOND_ROW, "relationship_path": ["relationship.nope"]}, id="unknown-relationship"),
         pytest.param({**DIAMOND_ROW, "target_entity": "entity.bank_nope"}, id="unknown-entity"),
-        pytest.param(
-            {**DIAMOND_ROW, "relationship_path": ["relationship.branches_district"]}, id="broken-chain"
-        ),
-        pytest.param(
-            {"source_entity": AIRPORT, "target_entity": FLIGHT,
-             "relationship_path": ["relationship.flights_origin"]},
-            id="disallowed-direction",
-        ),
+        pytest.param({**DIAMOND_ROW, "relationship_path": ["relationship.branches_district"]}, id="broken-chain"),
+        pytest.param({"source_entity": AIRPORT, "target_entity": FLIGHT, "relationship_path": ["relationship.flights_origin"]}, id="disallowed-direction"),
     ],
 )  # fmt: skip
 def test_record_route_decision_refuses_a_path_that_is_not_a_route_and_writes_nothing(tmp_path, row):

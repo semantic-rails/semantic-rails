@@ -126,17 +126,11 @@ def test_metric_predicate_with_leaf_matches_reference_sql(warehouse, threshold, 
 @pytest.mark.parametrize(
     "extra, reference",
     [
-        (
-            {"where": [{"field": STORE, "op": "=", "value": "Brooklyn"}]},
-            "SELECT DISTINCT store_name FROM jaffle_store WHERE store_name = 'Brooklyn'",
-        ),
-        (
-            {"order_by": [{"field": STORE, "direction": "DESC"}], "limit": 2},
-            "SELECT DISTINCT store_name FROM jaffle_store ORDER BY store_name DESC LIMIT 2",
-        ),
+        ({"where": [{"field": STORE, "op": "=", "value": "Brooklyn"}]}, "SELECT DISTINCT store_name FROM jaffle_store WHERE store_name = 'Brooklyn'"),
+        ({"order_by": [{"field": STORE, "direction": "DESC"}], "limit": 2}, "SELECT DISTINCT store_name FROM jaffle_store ORDER BY store_name DESC LIMIT 2"),
     ],
     ids=["where", "order-limit"],
-)
+)  # fmt: skip
 def test_distinct_sibling_shapes_match_reference_sql(warehouse, extra, reference):
     config, conn = warehouse
     query = {"group_by": [STORE], **extra}

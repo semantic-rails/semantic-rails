@@ -205,18 +205,12 @@ def test_classify_maps_notes_passes_and_failures() -> None:
 @pytest.mark.parametrize(
     ("config", "outcome"),
     [
-        (
-            '{"mcpServers": {"semantic-rails": {"command": "/h/.local/share/uv/tools/semantic-rails/bin/python"}}}',
-            "pass",
-        ),
-        (
-            '{"mcpServers": {"semantic-rails": {"command": "/h/.cache/uv/archive-v0/x/bin/python"}}}',
-            "fail",
-        ),
+        ('{"mcpServers": {"semantic-rails": {"command": "/h/.local/share/uv/tools/semantic-rails/bin/python"}}}', "pass"),
+        ('{"mcpServers": {"semantic-rails": {"command": "/h/.cache/uv/archive-v0/x/bin/python"}}}', "fail"),
         ("", "fail"),
     ],
     ids=["tool install", "uv cache", "no config"],
-)
+)  # fmt: skip
 def test_desktop_setup_needs_a_config_that_runs_the_tool(
     tmp_path: Path, config: str, outcome: str
 ) -> None:
@@ -414,13 +408,10 @@ def server_answering_initialize_with(reply: str) -> str:
         ('{"result": {}}', "no protocol version"),
         ('{"result": {"protocolVersion": "2025-06-18"}}', "lacks serverInfo"),
         ('{"result": "ok"}', "no result"),
-        (
-            '{"result": {"protocolVersion": "2025-06-18", "serverInfo": {"name": "x"}, "capabilities": {}}}',
-            "no tools capability",
-        ),
+        ('{"result": {"protocolVersion": "2025-06-18", "serverInfo": {"name": "x"}, "capabilities": {}}}', "no tools capability"),
     ],
     ids=["error", "empty result", "no serverInfo", "not an object", "no tools"],
-)
+)  # fmt: skip
 def test_mcp_handshake_fails_when_initialize_does_not_succeed(
     tmp_path: Path, reply: str, reason: str
 ) -> None:
@@ -538,26 +529,14 @@ VENV_THEN_VERSION = " && ".join(quickstart.VENV_BLOCK.splitlines()) + " && seman
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
-        (
-            quickstart.TRY,
-            f'uvx --from {SPEC} semantic-rails ask --package jaffle_shop "revenue by store name" --run',
-        ),
+        (quickstart.TRY, f'uvx --from {SPEC} semantic-rails ask --package jaffle_shop "revenue by store name" --run'),
         (quickstart.TOOL_INSTALL, f"uv tool install {SPEC}"),
-        (
-            quickstart.DESKTOP_BLOCK,
-            quickstart.DESKTOP_BLOCK.replace("install semantic-rails\n", f"install {SPEC}\n"),
-        ),
-        (
-            VENV_THEN_VERSION,
-            VENV_THEN_VERSION.replace("pip install semantic-rails", f"pip install {SPEC}"),
-        ),
-        (
-            "uv venv /s/v && uv pip install -q --python /s/v/bin/python semantic-rails",
-            f"uv venv /s/v && uv pip install -q --python /s/v/bin/python {SPEC}",
-        ),
+        (quickstart.DESKTOP_BLOCK, quickstart.DESKTOP_BLOCK.replace("install semantic-rails\n", f"install {SPEC}\n")),
+        (VENV_THEN_VERSION, VENV_THEN_VERSION.replace("pip install semantic-rails", f"pip install {SPEC}")),
+        ("uv venv /s/v && uv pip install -q --python /s/v/bin/python semantic-rails", f"uv venv /s/v && uv pip install -q --python /s/v/bin/python {SPEC}"),
     ],
     ids=["uvx", "tool install", "desktop block", "venv block", "bare venv install"],
-)
+)  # fmt: skip
 def test_spec_replaces_the_package_where_a_command_runs_or_installs_it(
     command: str, expected: str
 ) -> None:

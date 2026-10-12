@@ -231,22 +231,12 @@ def _zone_runtime(root: Path, column: str, zones: str) -> Runtime:
     [
         # A zone-aware column is bucketed and bounded in the role's zone (UTC by default).
         ("ordered_at_tz", "", {"2023-12-01": 7}, {"2023-12-01": 15}),
-        (
-            "ordered_at_tz",
-            ", timezone: America/New_York",
-            {"2023-12-01": 14},
-            {"2023-11-01": 1, "2023-12-01": 14},
-        ),
+        ("ordered_at_tz", ", timezone: America/New_York", {"2023-12-01": 14}, {"2023-11-01": 1, "2023-12-01": 14}),
         # Naive columns keep their stored clock, converted only by column_timezone.
         ("ordered_at", "", {"2023-12-01": 7}, {"2023-12-01": 15}),
-        (
-            "ordered_at",
-            ", timezone: America/New_York, column_timezone: UTC",
-            {"2023-12-01": 14},
-            {"2023-11-01": 1, "2023-12-01": 14},
-        ),
+        ("ordered_at", ", timezone: America/New_York, column_timezone: UTC", {"2023-12-01": 14}, {"2023-11-01": 1, "2023-12-01": 14}),
     ],
-)
+)  # fmt: skip
 def test_answers_do_not_follow_the_session_time_zone(
     tmp_path: Path, column: str, zones: str, days: dict[str, int], months: dict[str, int]
 ) -> None:

@@ -274,10 +274,7 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
         pytest.param(_amount(group_by=[SEGMENT]), id="group-by"),
         pytest.param(_amount(group_by=[HISTORY_KEY]), id="group-by-history-key"),
         pytest.param(_amount(where=STARTER), id="where"),
-        pytest.param(
-            _amount(where=[{"field": HISTORY_KEY, "op": "is", "value": "A1"}]),
-            id="where-history-key",
-        ),
+        pytest.param(_amount(where=[{"field": HISTORY_KEY, "op": "is", "value": "A1"}]), id="where-history-key"),
         pytest.param(_amount(group_by=[TIER]), id="two-hops"),
         pytest.param(
             {
@@ -313,7 +310,7 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
             )
         ],
     ],
-)
+)  # fmt: skip
 def test_a_time_valid_hop_without_a_query_time_is_refused(runtime, query):
     """Without a time, usage 1 would count under both of A1's segments: amount grouped by
     segment would read 38 + 33 + 7 = 78 against a total of 45."""
@@ -588,16 +585,10 @@ SEATED_ACCOUNTS = {
     ("query", "code"),
     [
         pytest.param(_seats(where=[SEATED_ACCOUNTS]), "PREDICATE_SCOPE_UNSAFE", id="entity"),
-        pytest.param(
-            _contextual(group_by=[REGION]), "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE", id="context"
-        ),
-        pytest.param(
-            _contextual(where=[{"field": REGION, "op": "is", "value": "North"}]),
-            "PREDICATE_FILTER_INCOMPATIBLE",
-            id="filter",
-        ),
+        pytest.param(_contextual(group_by=[REGION]), "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE", id="context"),
+        pytest.param(_contextual(where=[{"field": REGION, "op": "is", "value": "North"}]), "PREDICATE_FILTER_INCOMPATIBLE", id="filter"),
     ],
-)
+)  # fmt: skip
 def test_a_metric_predicate_needs_a_time_for_any_time_valid_hop_on_its_path(runtime, query, code):
     """Stricter than the query itself: the predicate's scope refuses even the hop out of the
     segment table, which seats grouped or filtered by region crosses without a time."""
@@ -636,14 +627,9 @@ def _order_conversion(
     [
         pytest.param(_order_conversion(group_by=[CUSTOMER_SEGMENT]), id="group-by"),
         pytest.param(_order_conversion(constant_properties=[CUSTOMER_SEGMENT]), id="property"),
-        pytest.param(
-            _order_conversion(
-                base={"filter": {"all": [{"field": CUSTOMER_SEGMENT, "op": "is", "value": "new"}]}}
-            ),
-            id="operand-filter",
-        ),
+        pytest.param(_order_conversion(base={"filter": {"all": [{"field": CUSTOMER_SEGMENT, "op": "is", "value": "new"}]}}), id="operand-filter"),
     ],
-)
+)  # fmt: skip
 def test_a_conversion_reading_a_history_dimension_without_a_time_is_refused(runtime_factory, query):
     """Each order would join every version of its customer's history."""
     runtime = runtime_factory("jaffle_shop")
@@ -706,11 +692,9 @@ UNKNOWN = {"as": "nope", "expression": "measure.hist.nope"}
     "partial",
     [
         pytest.param(_amount(), id="amount"),
-        pytest.param(
-            {**_amount(), "select": [*_amount()["select"], UNKNOWN]}, id="unknown-measure"
-        ),
+        pytest.param({**_amount(), "select": [*_amount()["select"], UNKNOWN]}, id="unknown-measure"),
     ],
-)
+)  # fmt: skip
 def test_discovery_offers_the_history_grouping_that_compilation_refuses_without_a_time(
     runtime, partial
 ):

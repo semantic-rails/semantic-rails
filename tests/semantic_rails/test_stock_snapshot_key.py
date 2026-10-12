@@ -278,13 +278,9 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
         # Two as-of clocks with one in the key: right on that one, refused on the other.
         ("[repo, snapshot_date]", "as_of_time", {ROLE: [1], COLLECTED: "snapshot_date"}),
         # Two as-of clocks in the key: either one leaves the other in the series.
-        (
-            "[repo, snapshot_date, collected_at]",
-            "as_of_time",
-            {ROLE: "collected_at", COLLECTED: "snapshot_date"},
-        ),
+        ("[repo, snapshot_date, collected_at]", "as_of_time", {ROLE: "collected_at", COLLECTED: "snapshot_date"}),
     ],
-)
+)  # fmt: skip
 def test_a_series_holding_an_as_of_clock_refuses(
     tmp_path: Path, key: str, collected_class: str, answers: dict
 ) -> None:
