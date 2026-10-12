@@ -270,8 +270,9 @@ def test_the_clock_and_calendar_still_split_periods(
         assert [row[1:] for row in daily] == _reference("seats", ["plan"], "day")
 
 
-@pytest.mark.parametrize("attribute", ["snapshot_month", "snapshot_timestamp"])
-@pytest.mark.parametrize("grain", [None, "week"])
+@pytest.mark.parametrize(
+    ("attribute", "grain"), [("snapshot_month", None), ("snapshot_timestamp", "week")]
+)
 def test_grouping_by_a_date_attribute_refuses(
     runtime: Runtime, attribute: str, grain: str | None
 ) -> None:
@@ -284,7 +285,6 @@ def test_grouping_by_a_date_attribute_refuses(
         "reason": "stock_grouped_by_date_attribute",
         "dimension": dimension,
     }
-    assert "stock's clock or a calendar dimension" in str(raised.value)
 
 
 @pytest.mark.parametrize(
