@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -190,6 +191,18 @@ def _expression_nodes(query: Call):
     """Every mapping inside the draft's select expressions."""
     for item in query.select:
         yield from _dict_nodes(item.expression)
+
+
+def _strings(node: Any) -> Iterator[str]:
+    """Every string in a nested dict/list payload."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
 
 
 def _dict_nodes(value: Any):

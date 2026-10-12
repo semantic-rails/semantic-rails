@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .call import Call
-from .coverage import _projected_subject_ids
+from .coverage import _dict_nodes, _projected_subject_ids
 from .intent_ir import IntentIR
 from .plan_query import _append_unique_dicts
 
@@ -134,25 +134,16 @@ def _extract_subject_ids(draft: Any) -> list[str]:
 
 
 def _object_ids_in_node(node: Any) -> list[str]:
-    ids: list[str] = []
-    seen: set[str] = set()
-
-    def _walk(value: Any) -> None:
-        if isinstance(value, dict):
-            for key in ("measure", "metric", "input", "entity", "dimension", "field"):
-                item = value.get(key)
-                if isinstance(item, str) and "." in item and item not in seen:
-                    seen.add(item)
-                    ids.append(item)
-            for child in value.values():
-                if isinstance(child, (dict, list)):
-                    _walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                _walk(child)
-
-    _walk(node)
-    return ids
+    """The object ids a node's dicts name, in walk order, each once."""
+    keys = ("measure", "metric", "input", "entity", "dimension", "field")
+    return list(
+        dict.fromkeys(
+            item
+            for value in _dict_nodes(node)
+            for key in keys
+            if isinstance(item := value.get(key), str) and "." in item
+        )
+    )
 
 
 def _filter_keys(filters: list[dict[str, Any]]) -> set[str]:
