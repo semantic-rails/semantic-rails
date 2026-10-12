@@ -2,9 +2,8 @@
 
 MotherDuck speaks DuckDB SQL, so the dialect contract is "identical to
 DuckDB": MotherDuckDialect subclasses DuckDbDialect and overrides
-NOTHING. Part (a) pins that — every dialect hook renders byte-identical
-to the DuckDB reference dialect, including the exact DuckDB SQL forms
-the conformance suite depends on. Parts (b) and (c) cover the adapter
+NOTHING. Part (a) pins that, and the exact DuckDB SQL forms the
+conformance suite depends on. Parts (b) and (c) cover the adapter
 (option normalization, secret indirection, redacted errors, namespace
 bootstrap) and a compile-only sweep of the full integration battery.
 
@@ -37,36 +36,20 @@ from semantic_rails.schema import ConnectionSpec, PackageMeta, SeedSpec
 from semantic_rails.sql_ast import SqlIdentifier, SqlLiteral
 
 MD = MotherDuckDialect()
-DUCK = DuckDbDialect()
 COL = SqlIdentifier(["t", "c"])
 OTHER = SqlIdentifier(["t", "d"])
 
-# Units the compiler actually emits through date_diff/date_add (grep
-# compiler.py / compiler_parts / relation_pipelines for the call sites)
-# plus every grain the time spec accepts.
-DATE_UNITS = ("second", "minute", "hour", "day", "week", "month", "quarter", "year")
-
-
 # ---------------------------------------------------------------------------
-# (a) Dialect rendering — MotherDuck must be byte-identical to DuckDB.
+# (a) Dialect rendering — MotherDuck is DuckDB SQL: it overrides no hook, so every
+# rendering is DuckDB's own; the concrete forms are pinned once here for the family.
 # ---------------------------------------------------------------------------
 
 
-def test_registry_wires_motherduck_dialect_and_adapter():
+def test_registry_wires_motherduck_dialect_that_overrides_nothing():
     dialect = dialect_for_warehouse("motherduck")
     assert isinstance(dialect, MotherDuckDialect)
     assert isinstance(dialect, DuckDbDialect)  # inheritance IS the contract
     assert dialect.name == "motherduck"
-
-    connector = warehouse_connector("motherduck")
-    assert connector is not None
-    assert connector.connection_kinds == ("motherduck_native",)
-    assert connector.adapter == "semantic_rails.db_parts.motherduck:create_adapter"
-    assert set(connector.connection_options) == {"database", "schema", "token_env", "token_file"}
-
-
-def test_motherduck_dialect_overrides_nothing():
-    # The whole dialect contract: NO method overrides beyond the name.
     overridden = {
         name
         for name, value in vars(MotherDuckDialect).items()
@@ -74,36 +57,11 @@ def test_motherduck_dialect_overrides_nothing():
     }
     assert overridden == set(), f"MotherDuckDialect must not override dialect hooks: {overridden}"
 
-
-@pytest.mark.parametrize(
-    ("label", "build"),
-    [
-        ("percentile", lambda d: d.percentile_cont(COL, 0.95)),
-        ("median", lambda d: d.median(COL)),
-        ("first_value", lambda d: d.first_value(COL, OTHER)),
-        ("last_value", lambda d: d.last_value(COL, OTHER)),
-        ("null_safe_eq", lambda d: d.null_safe_eq(COL, OTHER)),
-        ("timestamp_cast", lambda d: d.timestamp_cast(COL)),
-        ("convert_timezone", lambda d: d.convert_timezone("UTC", "America/New_York", COL)),
-        (
-            "cond_count",
-            lambda d: d.conditional_aggregate("count", d.null_safe_eq(COL, OTHER), None),
-        ),
-        ("cond_sum", lambda d: d.conditional_aggregate("sum", d.null_safe_eq(COL, OTHER), OTHER)),
-    ],
-)
-def test_every_dialect_hook_matches_duckdb(label, build):
-    assert render_expr(build(MD)) == render_expr(build(DUCK)), label
-
-
-@pytest.mark.parametrize("unit", DATE_UNITS)
-def test_date_functions_match_duckdb_for_every_unit(unit):
-    for build in (
-        lambda d: d.date_trunc(unit, COL),
-        lambda d: d.date_diff(unit, COL, OTHER),
-        lambda d: d.date_add(unit, SqlLiteral(3), COL),
-    ):
-        assert render_expr(build(MD)) == render_expr(build(DUCK))
+    connector = warehouse_connector("motherduck")
+    assert connector is not None
+    assert connector.connection_kinds == ("motherduck_native",)
+    assert connector.adapter == "semantic_rails.db_parts.motherduck:create_adapter"
+    assert set(connector.connection_options) == {"database", "schema", "token_env", "token_file"}
 
 
 def test_exact_duckdb_sql_forms():
@@ -127,11 +85,12 @@ def test_exact_duckdb_sql_forms():
         render_expr(MD.conditional_aggregate("count", MD.null_safe_eq(COL, OTHER), None))
         == "COUNT(CASE WHEN t.c IS NOT DISTINCT FROM t.d THEN 1 END)"
     )
+    assert (
+        render_expr(MD.conditional_aggregate("sum", MD.null_safe_eq(COL, OTHER), OTHER))
+        == "SUM(CASE WHEN t.c IS NOT DISTINCT FROM t.d THEN t.d END)"
+    )
     assert MD.timestamp_type_name() == "TIMESTAMP"
-
-
-def test_capabilities_match_duckdb():
-    assert MD.capabilities() == DUCK.capabilities()
+    assert render_expr(MD.timestamp_cast(COL)) == "CAST(t.c AS TIMESTAMP)"
 
 
 # ---------------------------------------------------------------------------
@@ -207,32 +166,20 @@ def test_adapter_normalizes_options_and_reports_truthful_timeout_support():
     assert adapter.connection_kind == "motherduck_native"
 
 
-def test_adapter_rejects_unsupported_options():
-    with pytest.raises(SemanticLayerError) as exc:
-        MotherDuckAdapter(_options(host="example.com"))
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "unsupported package.connection option 'host'" in str(exc.value)
-
-
-def test_adapter_rejects_literal_token_secret():
-    with pytest.raises(SemanticLayerError) as exc:
-        MotherDuckAdapter({"token": "md_live_supersecret", "database": "sr_jaffle"})
-    assert exc.value.code == "INVALID_CONFIG"
-    # The literal secret VALUE must never appear in the error.
-    assert "md_live_supersecret" not in str(exc.value)
-    assert "md_live_supersecret" not in repr(exc.value.details)
-
-
-def test_adapter_requires_database_and_token_indirection():
-    with pytest.raises(SemanticLayerError) as exc:
-        MotherDuckAdapter({"database": "sr_jaffle"})
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "token_env or token_file" in str(exc.value)
-
-    with pytest.raises(SemanticLayerError) as exc:
-        MotherDuckAdapter({"token_env": "SR_MOTHERDUCK_TOKEN"})
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "database" in str(exc.value)
+def test_adapter_rejects_incomplete_or_literal_secret_options():
+    for options, named in [
+        (_options(host="example.com"), "unsupported package.connection option 'host'"),
+        ({"token": "md_live_supersecret", "database": "sr_jaffle"}, "token"),
+        ({"database": "sr_jaffle"}, "token_env or token_file"),
+        ({"token_env": "SR_MOTHERDUCK_TOKEN"}, "database"),
+    ]:
+        with pytest.raises(SemanticLayerError) as exc:
+            MotherDuckAdapter(options)
+        assert exc.value.code == "INVALID_CONFIG"
+        # The message names what to fix (the details carry no option names); a literal
+        # secret VALUE never appears in the error.
+        assert named in str(exc.value)
+        assert "md_live_supersecret" not in str(exc.value) + repr(exc.value.details)
 
 
 def test_adapter_reports_missing_token_env(monkeypatch: pytest.MonkeyPatch):
@@ -330,7 +277,7 @@ def test_adapter_redacts_query_errors(monkeypatch: pytest.MonkeyPatch):
     assert "tok-value" not in repr(details)
 
 
-def test_create_adapter_entry_point_via_registry_factory(monkeypatch: pytest.MonkeyPatch):
+def test_create_adapter_entry_point_via_registry_factory():
     package = PackageMeta(
         package_id="md_demo",
         name="md_demo",
@@ -342,11 +289,8 @@ def test_create_adapter_entry_point_via_registry_factory(monkeypatch: pytest.Mon
     assert isinstance(adapter, MotherDuckAdapter)
     assert adapter.options == _options()
 
-
-def test_create_adapter_rejects_wrong_kind():
-    package = SimpleNamespace(connection=SimpleNamespace(kind="duckdb_native", options={}))
     with pytest.raises(SemanticLayerError) as exc:
-        create_adapter(package)
+        create_adapter(replace(package, connection=ConnectionSpec(kind="duckdb_native")))
     assert exc.value.code == "INVALID_CONFIG"
     assert "duckdb_native" in str(exc.value)
 
