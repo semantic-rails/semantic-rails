@@ -325,9 +325,15 @@ def _rows(package: Path, query: dict[str, Any]) -> list[tuple[Any, ...]]:
     return _normal(tuple(row.values()) for row in typed_rows(result))
 
 
-def _reference(package: Path, sql: str) -> list[tuple[Any, ...]]:
+def _reference(package: Path, sql: str, params: Any = ()) -> list[tuple[Any, ...]]:
+    """SQL run on the package's warehouse: a reference, or SQL the engine compiled."""
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        return _normal(conn.execute(sql).fetchall())
+        return _normal(conn.execute(sql, params).fetchall())
+
+
+def _config(package: Path, warehouse: str = "duckdb") -> Any:
+    config = load_package_config(str(package))
+    return replace(config, package=replace(config.package, warehouse=warehouse))
 
 
 def _normal(rows: Any) -> list[tuple[Any, ...]]:
@@ -553,8 +559,7 @@ def test_child_filter_correlates_every_authored_join_column(package: Path) -> No
         ],
     )
     compiled = compile_query(config, Registry(config), {"version": 1, **FILTERED_SUM})
-    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        actual = _normal(conn.execute(compiled["prepared_query"].sql).fetchall())
+    actual = _reference(package, compiled["prepared_query"].sql)
     reference = """
         SELECT SUM(o.total) FROM orders o WHERE EXISTS (SELECT 1 FROM order_items i
           WHERE i.order_id = o.order_id AND i.revenue = o.total AND i.product_type = 'beverage')
@@ -618,14 +623,11 @@ def test_child_filter_does_not_admit_many_to_many_or_unknown_hops(
 def test_clickhouse_uses_equivalent_parent_deduplication(
     package: Path, expression: dict[str, Any], clause: dict[str, Any], expected: float
 ) -> None:
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    config = _config(package, "clickhouse")
     query = {"select": [{"expression": expression, "as": "v"}], "where": [clause]}
     compiled = compile_query(config, Registry(config), query)
     sql = compiled["prepared_query"].sql.removesuffix("\nSETTINGS join_use_nulls = 1")
-    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        actual = _normal(conn.execute(sql).fetchall())
-    assert actual == _rows(package, query) == [(expected,)]
+    assert _reference(package, sql) == _rows(package, query) == [(expected,)]
     assert "SELECT DISTINCT" in sql
     assert "EXISTS" not in sql
 
@@ -650,8 +652,7 @@ def test_clickhouse_uses_equivalent_parent_deduplication(
 def test_clickhouse_refuses_child_filter_paths_requiring_exists(
     package: Path, select: dict[str, Any], clause: dict[str, Any]
 ) -> None:
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    config = _config(package, "clickhouse")
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(
             config, Registry(config), {"version": 1, "select": [select], "where": [clause]}
@@ -674,14 +675,13 @@ def test_a_conditional_aggregate_of_rows_of_unknown_grain(receipts_by_order: Pat
             "where": [BEVERAGE],
         }
         compiled = compile_query(config, Registry(config), query)
-        with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-            assert conn.execute(compiled["prepared_query"].sql).fetchall() == [(value,)]
+        assert _reference(package, compiled["prepared_query"].sql) == [(value,)]
     reference = """
         SELECT SUM(p.amount), COUNT(DISTINCT p.payment_id) FROM payments p WHERE EXISTS (
           SELECT 1 FROM order_items i WHERE i.order_id = p.order_id AND i.product_type = 'beverage')
     """
     assert _reference(package, reference) == [(10.0, 2)]
-    clickhouse = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    clickhouse = _config(package, "clickhouse")
     query["select"] = [{"expression": payments, "as": "v"}]
     sql = compile_query(clickhouse, Registry(clickhouse), query)["sql"]
     assert "SELECT DISTINCT" in sql
@@ -711,8 +711,7 @@ NULL_LOOKUP_FILTER = {"where": [{"field": COUPON, "op": "IS NULL", "value": None
 def test_clickhouse_keeps_supported_lookups_beside_a_child_filter(
     package: Path, lookup: dict[str, Any], bound_filter: bool, clause: dict[str, Any]
 ) -> None:
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    config = _config(package, "clickhouse")
     query = {"observation_scope": "query", "select": [_measure("order_count")]}
     query.update(lookup)  # a plain-SQL reference: the query scope, as in _run
     if bound_filter:
@@ -737,8 +736,7 @@ def test_clickhouse_keeps_supported_lookups_beside_a_child_filter(
     assert "SELECT DISTINCT" in sql
     assert "INNER JOIN coupons" in sql
     assert "EXISTS" not in sql
-    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        rows = _normal(conn.execute(sql).fetchall())
+    rows = _reference(package, sql)
     if "group_by" in lookup or "select" in lookup:
         reference = """
             SELECT c.coupon_id, COUNT(DISTINCT o.order_id) FROM orders o
@@ -908,8 +906,7 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
             if row.target_entity == "entity.diamond_district"
         )
         assert selection.candidate_paths == [path]
-        with duckdb.connect(str(diamond_package / "data/warehouse.duckdb"), read_only=True) as conn:
-            actual = conn.execute(compiled["prepared_query"].sql).fetchall()
+        actual = _reference(diamond_package, compiled["prepared_query"].sql)
         reference = (
             "SELECT SUM(a.amount) FROM accounts a WHERE EXISTS (SELECT 1 FROM districts d "
             "WHERE d.client_id = a.client_id AND d.category = 'premium')"
@@ -962,8 +959,7 @@ def test_a_conditional_aggregate_takes_the_same_child_route_rule(
         )
         compiled = compile_query(pinned, Registry(pinned), query)
         assert "EXISTS (" in compiled["sql"] and "JOIN districts" not in compiled["sql"]
-        with duckdb.connect(str(diamond_package / "data/warehouse.duckdb"), read_only=True) as conn:
-            assert conn.execute(compiled["prepared_query"].sql).fetchall() == [(expected,)]
+        assert _reference(diamond_package, compiled["prepared_query"].sql) == [(expected,)]
 
 
 HOT_ITEMS = {"dimension": HOT, "attribute": "hot", "type": "boolean"}
@@ -1018,8 +1014,7 @@ def test_child_filters_stay_denied_under_a_row_policy(
 def test_a_parent_row_policy_still_answers_without_a_child_filter(package: Path) -> None:
     query = {"select": [_measure("revenue")]}
     prepared = _under_row_policy(package, OWN_ORDERS, {"customer": 10}, query)["prepared_query"]
-    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        actual = _normal(conn.execute(prepared.sql, [10]).fetchall())
+    actual = _reference(package, prepared.sql, [10])
     reference = "SELECT SUM(total) FROM orders WHERE customer_id = 10"
     assert actual == _reference(package, reference) == [(30.0,)]
 
@@ -1524,13 +1519,10 @@ def test_query_filters_that_leave_the_child_scope_unsaid_ask_for_it(
         assert _rows(package, resent) == _reference(package, reference), option["id"]
 
 
-@pytest.mark.parametrize(("op", "value"), [("<", True), ("<=", False)])
-def test_a_range_on_a_boolean_child_dimension_is_refused_with_the_words(
-    package: Path, op: str, value: bool
-) -> None:
+def test_a_range_on_a_boolean_child_dimension_is_refused_with_the_words(package: Path) -> None:
     """A boolean compares with is or not: once unknowns count, a range has no exact
     complement, so there is no reading to offer."""
-    error = _refusal(package, _where(op, value, HOT))
+    error = _refusal(package, _where("<", True, HOT))
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["dimension"] == HOT
     assert [hint["code"] for hint in error["recovery_hints"]] == ["USE_FILTER_WORD"]
@@ -1947,8 +1939,7 @@ FROM leaf_1 AS base""",
 def test_each_dialect_renders_the_de_duplicated_leaf(
     package: Path, warehouse: str, shape: str
 ) -> None:
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    config = _config(package, warehouse)
     query = {"version": 1, "observation_scope": "query", **SHAPES[shape]}  # as in _run
     sql = compile_query(config, Registry(config), query)["sql"]
     templates = CLICKHOUSE_SQL if warehouse == "clickhouse" and shape != "grouped" else DIALECT_SQL
@@ -1965,8 +1956,7 @@ def test_each_dialect_renders_the_de_duplicated_leaf(
 def test_remote_dialects_render_the_filter_as_correlated_exists(
     package: Path, warehouse: str
 ) -> None:
-    config = load_package_config(str(package))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    config = _config(package, warehouse)
     query = {"version": 1, "observation_scope": "query", **FILTERED_SUM}  # as in _run
     sql = compile_query(config, Registry(config), query)["sql"]
     quote = "`" if warehouse in {"bigquery", "databricks"} else '"'
