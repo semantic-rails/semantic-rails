@@ -878,7 +878,7 @@ def test_parse_config_reads_snowflake_connections(tmp_path: Path, connection, ex
         return
     assert report["ok"] is True, report["errors"]
     assert report["package"]["id"] == "snowflake_demo"
-    assert config.package.warehouse == "snowflake"
+    assert (config.package.warehouse, config.package.default_db) == ("snowflake", "")
     actual = config.package.connection
     assert {key: getattr(actual, key) for key in expected} == expected
 
