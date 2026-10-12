@@ -54,6 +54,7 @@ from ..sql_ast import (
 from .bind import _parse_public_expr, earlier_settlement_applies, is_conditional_case
 from .dependencies import plan_is_root
 from .indexes import _measure_index, _recipe_index
+from .temporal import _source_filter_refusals
 
 GUARDED_BASE = "guarded_base"
 
@@ -281,7 +282,13 @@ def guard_empty_groups(
     dataset = observes_dataset()
     if dataset and (unobserved := [a for a in measures if a in zero and a not in observed]):
         named = (names or {}).get
-        raise _unobserved_error(list(dict.fromkeys(n for a in unobserved for n in named(a, [a]))))
+        error = _unobserved_error(list(dict.fromkeys(n for a in unobserved for n in named(a, [a]))))
+        deferred = _source_filter_refusals.get()
+        if deferred is None:
+            raise error
+        # Binding finishes so the caller's policy gate runs first: a denial outranks this.
+        deferred.append(error)
+        dataset = False
     fields_ = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
