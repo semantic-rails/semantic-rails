@@ -82,10 +82,6 @@ _INTERNAL_ALIASES: dict[str, tuple[str, Any]] = {
     "is distinct from": ("not", None),
 }
 
-# Phrases the planner reads as "keep only" and "leave out".
-KEEP_PHRASE = OPERATORS["is"].phrase
-EXCLUDE_PHRASE = OPERATORS["not"].phrase
-
 
 def _compact(raw: Any) -> str:
     return " ".join(str(raw if raw is not None else "").strip().lower().split())

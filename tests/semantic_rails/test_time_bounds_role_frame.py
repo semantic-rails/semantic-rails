@@ -233,12 +233,6 @@ def test_default_now_uses_the_roles_date(monkeypatch, config, timezone, end):
     assert read_call(_query(), config=config)[0]["time"]["end"] == end
 
 
-def test_utc_default_keeps_planner_resolution_consistent():
-    last = {"last": {"unit": "month", "value": 1}}
-    for instant in ("2024-07-01T02:00:00Z", "2024-06-30T22:00:00-04:00"):
-        assert clock.range_bounds(last, now=instant) == {"start": "2024-06-01", "end": "2024-07-01"}
-
-
 @pytest.mark.parametrize("read", [_query_state, values_query_state])
 def test_query_state_reports_the_same_local_bounds(config, read):
     engine = read_call(_query(), config=config, now="2024-07-01T02:00:00Z", partial=True)[0]

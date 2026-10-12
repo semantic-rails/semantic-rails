@@ -70,10 +70,6 @@ class PackageMeta:
 
 
 ENTITY_KIND_REGULAR = "regular"
-ENTITY_KIND_TIME = "time"
-
-MODEL_KIND_MODEL = "model"
-MODEL_KIND_FACT = "fact"
 
 
 @dataclass(frozen=True)
