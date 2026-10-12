@@ -631,7 +631,7 @@ def _relation_sql(columns: list[str], *steps: tuple[str, dict[str, Any]], tables
     """The Athena SQL of a relation reading ``raw_events``; ``tables`` names the date and
     timestamp columns each table's readers declare (the relation's output is ``out``)."""
     from semantic_rails.relation_pipelines import lower_relation
-    from semantic_rails.renderer import render_select
+    from semantic_rails.renderer import render_query
     from semantic_rails.schema import RelationConfig, RelationPipelineStep
 
     source = RelationPipelineStep("source", {"relation": "raw_events", "columns": columns})
@@ -642,7 +642,7 @@ def _relation_sql(columns: list[str], *steps: tuple[str, dict[str, Any]], tables
     )
     ctes, _ = lower_relation(relation, warehouse="athena", tables=tables)
     with use_dialect(DIALECT):
-        return "\n".join(render_select(cte.query) for cte in ctes)
+        return "\n".join(render_query(cte.query) for cte in ctes)
 
 
 def test_athena_relation_filters_read_each_stage_by_its_own_lineage():
@@ -687,6 +687,72 @@ def test_athena_semi_join_filters_read_each_column_by_its_table():
     )
     assert "src.label = '2026-01-01'" in sql
     assert "\"right\".label = TIMESTAMP '2026-01-02'" in sql
+
+
+def _join(**columns: Any) -> tuple[str, dict[str, Any]]:
+    on = [{"left": "id", "right": "id"}]
+    return "join", {"relation": "right_dates", "on": on, "select": columns}
+
+
+def _is_day(column: str) -> tuple[str, dict[str, Any]]:
+    return "where", {"where": [{"field": column, "op": "is", "value": "2026-01-01"}]}
+
+
+def _ref(column: str, table: str | None = None) -> dict[str, Any]:
+    return {"kind": "column", "column": column, **({"table": table} if table else {})}
+
+
+def test_athena_relation_filters_type_a_column_only_where_its_lineage_is_certain():
+    """A join's projection reads each column on its own table: a text ``day`` replaced by the
+    joined table's DATE stays text before the join and is a TIMESTAMP literal after it, and a
+    DATE replaced by text is never typed. MIN, MAX, LAG, LEAD, FIRST_VALUE and LAST_VALUE keep
+    their argument's type."""
+    date_after_text = _relation_sql(
+        ["id", "day"],
+        _is_day("day"),
+        _join(id=_ref("id", "left"), day=_ref("day", "right")),
+        _is_day("day"),
+        tables={"out": frozenset({"day"}), "right_dates": frozenset({"day"})},
+    )
+    before, after = date_after_text.split("JOIN", 1)
+    assert "src.day = '2026-01-01'" in before
+    assert "src.day = TIMESTAMP '2026-01-01'" in after
+    text_after_date = _relation_sql(
+        ["id", "day"],
+        _join(id=_ref("id", "left"), day=_ref("label", "right")),
+        _is_day("day"),
+        tables={"raw_events": frozenset({"day"})},
+    )
+    assert "src.day = '2026-01-01'" in text_after_date and "TIMESTAMP" not in text_after_date
+
+    dates = {"raw_events": frozenset({"day"})}
+    lowest = {"function": "min", "expr": _ref("day")}
+    previous = {"function": "lag", "expr": _ref("day"), "order_by": [{"column": "id"}]}
+    derived = [
+        ("group_by", {"dimensions": {"id": _ref("id")}, "aggregates": {"mid": lowest}}),
+        ("window", {"columns": {"mid": previous}}),
+        _join(id=_ref("id", "left"), mid=_ref("day", "left")),
+    ]
+    for step in derived:
+        sql = _relation_sql(["id", "day"], step, _is_day("mid"), tables=dates)
+        assert "src.mid = TIMESTAMP '2026-01-01'" in sql, step[0]
+
+
+def test_athena_relation_filters_leave_types_through_unions_and_other_relations_untyped():
+    """Known limits, left untyped (Athena refuses the comparison, never miscounts): a union
+    of declared dates, and a type a relation infers for a relation that reads it."""
+    branches = [
+        {"source": table, "columns": {"id": _ref("id"), "mid": _ref("day")}}
+        for table in ("raw_events", "right_dates")
+    ]
+    dates = {"raw_events": frozenset({"day"}), "right_dates": frozenset({"day"})}
+    sql = _relation_sql(["id"], ("union_all", {"branches": branches}), _is_day("mid"), tables=dates)
+    assert "src.mid = '2026-01-01'" in sql
+
+    exported = {"relation": "inner_out", "on": [{"left": "id", "right": "id"}]}
+    where = [{"field": "mid", "op": "is", "value": "2026-01-01"}]
+    sql = _relation_sql(["id"], ("semi_join", {**exported, "where": where}), tables=dates)
+    assert "\"right\".mid = '2026-01-01'" in sql
 
 
 # ---------------------------------------------------------------------------

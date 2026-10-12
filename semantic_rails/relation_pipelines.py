@@ -10,7 +10,7 @@ should compose Query IR directly rather than authoring pipelines.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
@@ -279,52 +279,95 @@ def _temporal_tables(config: PackageConfig) -> dict[str, frozenset[str]]:
     return {name: frozenset(columns) for name, columns in tables.items()}
 
 
-def _bare_column(raw: Any) -> str | None:
-    """The input column ``raw`` reads unchanged, or None for a computed value."""
+# Functions whose result has their argument's type: MIN(day) is a date when day is.
+_TYPE_PRESERVING = frozenset({"MIN", "MAX", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE"})
+
+
+# A table alias's lookup from a column it reads to that column's lineage (None if unknown).
+_Lineages = Mapping[str, Callable[[str], str | None]]
+
+
+def _bare_column(raw: Any, tables: _Lineages, default: str) -> str | None:
+    """The lineage of the column ``raw`` reads unchanged, by its table (``default`` when
+    unqualified), or None for a computed value or an unknown column."""
     expr = _parse_expr(raw)
-    if isinstance(expr, ColumnRefExpr) and expr.table in {None, "", "src"}:
-        return expr.column
-    return None
+    lookup = tables.get(expr.table or default) if isinstance(expr, ColumnRefExpr) else None
+    return lookup(expr.column) if lookup and isinstance(expr, ColumnRefExpr) else None
+
+
+def _preserved(spec: Any, tables: _Lineages) -> str | None:
+    """The lineage of an aggregate or window that keeps its argument's type
+    (:data:`_TYPE_PRESERVING`) over a column read unchanged, or None."""
+    if not isinstance(spec, dict):
+        return None
+    function = str(spec.get("function", spec.get("agg", spec.get("kind", ""))) or "").upper()
+    expr_raw = spec.get("expr", spec.get("expression"))
+    if function not in _TYPE_PRESERVING or expr_raw is None or spec.get("distinct"):
+        return None
+    return _bare_column(expr_raw, tables, "src")
 
 
 def _lineage(
     step: RelationPipelineStep, before: _RelationState, after: _RelationState, step_id: str
 ) -> dict[str, str]:
-    """Each output column's lineage (:attr:`_RelationState.lineage`): a projection carries a
-    column it reads unchanged under its new name; every other step keeps its input columns."""
+    """Each output column's lineage (:attr:`_RelationState.lineage`), only where it is certain:
+    a filter keeps its input columns; a projection carries a column it reads unchanged (or
+    through a type-preserving aggregate or window) under its new name, resolved by its table;
+    a join's right-hand column is that table's. Anything else starts its own lineage, so a
+    filter on it is never typed by another column's declaration."""
     config = dict(step.config or {})
+    src: _Lineages = {"src": before.lineage.get}
+    carried: dict[str, str | None] = {}
     if step.kind == "source":
         source = _source_from_config(config)
-        return {column: f"{source}.{column}" for column in after.columns}
-    carried: dict[str, str] = {}
-    if step.kind in {"select", "group_by"}:
-        raw = (
-            config.get("columns", config.get("value", config))
-            if step.kind == "select"
-            else config.get("dimensions", config.get("group_by", {}))
-        )
-        for alias, expr_raw in dict(raw or {}).items():
-            column = _bare_column(expr_raw)
-            if column is not None and column in before.lineage:
-                carried[str(alias)] = before.lineage[column]
-    else:
-        carried = {
-            column: before.lineage[column] for column in after.columns if column in before.lineage
+        carried = {column: f"{source}.{column}" for column in after.columns}
+    elif step.kind in {"where", "semi_join", "anti_join", "exclude"}:
+        carried = dict(before.lineage)
+    elif step.kind == "select":
+        columns = config.get("columns", config.get("value", config))
+        carried = {str(alias): _bare_column(raw, src, "src") for alias, raw in columns.items()}
+    elif step.kind == "group_by":
+        dimensions = config.get("dimensions", config.get("group_by", {})) or {}
+        aggregates = config.get("aggregates", config.get("measures", {})) or {}
+        carried = {str(alias): _bare_column(raw, src, "src") for alias, raw in dimensions.items()}
+        carried |= {str(alias): _preserved(spec, src) for alias, spec in aggregates.items()}
+    elif step.kind == "window":
+        windows = config.get("windows", config.get("columns", config))
+        carried = dict(before.lineage)
+        carried |= {str(alias): _preserved(spec, src) for alias, spec in windows.items()}
+    elif step.kind == "join":
+        pre_aggregate = dict(config.get("pre_aggregate", {}) or {})
+        table = _source_from_config(config)
+        sides: _Lineages = {
+            **({} if pre_aggregate.get("left") else {"left": before.lineage.get}),
+            **({} if pre_aggregate.get("right") else {"right": lambda column: f"{table}.{column}"}),
         }
-    return {column: carried.get(column, f"{step_id}.{column}") for column in after.columns}
+        projection = config.get("select") or {
+            column: {"kind": "column", "table": "left", "column": column}
+            for column in before.columns
+        }
+        carried = {
+            str(alias): _bare_column(raw, sides, "left") for alias, raw in projection.items()
+        }
+    # Known limit: a union, an explode, a JSON extract or a state_as_of starts its columns' own
+    # lineage, so a filter on them is typed only by the relation's readers' declarations.
+    return {column: carried.get(column) or f"{step_id}.{column}" for column in after.columns}
 
 
 def _temporal_lineage(
     relation: RelationConfig, final: _RelationState, tables: Mapping[str, frozenset[str]]
 ) -> frozenset[str]:
     """The lineages a relation's dates and timestamps carry: the columns its readers declare,
-    traced back from its output, and those its source tables declare."""
+    traced back from its output, and those the tables it reads (its source, a joined table)
+    declare. A relation another relation reads exports only its readers' declarations: types
+    inferred through it reach no dependent semi-join (left untyped, never mistyped)."""
     declared = tables.get(relation.output_name, frozenset()) | tables.get(relation.id, frozenset())
     lineages = {final.lineage[column] for column in declared if column in final.lineage}
     for step in relation.steps:
-        if step.kind == "source":
-            source = _source_from_config(dict(step.config or {}))
-            lineages |= {f"{source}.{column}" for column in tables.get(source, frozenset())}
+        config = dict(step.config or {})
+        if step.kind in {"source", "join"}:
+            table = _source_from_config(config)
+            lineages |= {f"{table}.{column}" for column in tables.get(table, frozenset())}
     return frozenset(lineages)
 
 
