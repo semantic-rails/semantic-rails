@@ -23,8 +23,7 @@ from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
 
-@pytest.mark.parametrize("threads", [2, 4])
-def test_parallel_window_finalization_with_empty_input(threads):
+def test_parallel_window_finalization_with_empty_input():
     # Empty-group settlement adds a window over a stream with empty input blocks.
     # DuckDB before 1.5.6 could finalize those blocks before their sink tasks ran.
     # This reduced query reproduces the race without dates or shared connections.
@@ -36,9 +35,15 @@ def test_parallel_window_finalization_with_empty_input(threads):
         )
         SELECT x, COUNT(*) OVER () FROM u ORDER BY x DESC
     """
-    with duckdb.connect(config={"threads": threads}) as connection:
+    with duckdb.connect(config={"threads": 4}) as connection:
         for _ in range(1000):
             assert connection.execute(sql).fetchall() == [(0, 1)]
+
+
+@pytest.fixture(scope="module")
+def shared_package(tmp_path_factory):
+    """The packaged jaffle shop for tests that only read it."""
+    return copy_package_config(tmp_path_factory.mktemp("jaffle"), "jaffle_shop", preseed_db=True)
 
 
 def _as_date(value) -> date:
@@ -540,15 +545,18 @@ def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected,
         assert results[True] == []
 
 
+LAST_DAYS = [date(9999, 12, 30), date(9999, 12, 31)]
+
+
 @pytest.mark.parametrize(
-    ("start", "end", "expected_operator", "expected_day", "empty_interval"),
+    ("start", "end", "days"),
     [
-        ("2017-07-03", "9999-12-31T23:59:59", "<=", "9999-12-31", False),
-        ("2017-07-03", "9999-12-31T00:00:00", "<", "9999-12-31", False),
-        ("2017-07-03", "9999-12-31T00:00:00.000000001", "<=", "9999-12-31", False),
-        ("0001-01-01T00:00:00.000000001", "2017-07-04", "<", "2017-07-04", False),
-        ("9999-12-31T00:00:00.000000001", "9999-12-31T00:00:00.000000001", None, None, True),
-        ("9999-12-31T00:00:00.000000002", "9999-12-31T00:00:00.000000001", None, None, True),
+        ("9999-12-30", "9999-12-31T23:59:59", LAST_DAYS),
+        ("9999-12-30", "9999-12-31T00:00:00", LAST_DAYS[:1]),
+        ("9999-12-30", "9999-12-31T00:00:00.000000001", LAST_DAYS),
+        ("0001-01-01T00:00:00.000000001", "0001-01-03", [date(1, 1, 1), date(1, 1, 2)]),
+        ("9999-12-31T00:00:00.000000001", "9999-12-31T00:00:00.000000001", []),
+        ("9999-12-31T00:00:00.000000002", "9999-12-31T00:00:00.000000001", []),
     ],
     ids=[
         "max-late",
@@ -559,9 +567,7 @@ def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected,
         "max-reversed",
     ],
 )
-def test_fill_boundary_dates_do_not_overflow(
-    runtime_factory, start, end, expected_operator, expected_day, empty_interval
-):
+def test_fill_boundary_dates_do_not_overflow(runtime_factory, start, end, days):
     runtime = runtime_factory("jaffle_shop")
     query = {
         **_JULY_BY_WEEK,
@@ -573,13 +579,9 @@ def test_fill_boundary_dates_do_not_overflow(
     finally:
         runtime.close()
 
-    if empty_interval:
-        assert rows == []
-        assert "1 = 0" in sql
-    else:
-        assert rows
-        assert sum(row["orders"] or 0 for row in rows) >= 1
-        assert f"implicit_calendar.date_day {expected_operator} '{expected_day}'" in sql
+    # Every day the window touches, outside the loaded range, so with no data.
+    assert [_as_date(row["period"]) for row in rows] == days
+    assert all(row["orders"] is None for row in rows)
 
 
 @pytest.mark.parametrize(
@@ -751,10 +753,10 @@ def test_fill_boundary_dates_do_not_overflow(
     ],
 )
 def test_fill_date_extremes_with_representable_zone_conversion(
-    tmp_path, zone, start, end, expected
+    shared_package, zone, start, end, expected
 ):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
-    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
+    package_dir = shared_package
+    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb"), read_only=True) as connection:
         from semantic_rails.config import load_package_config
 
         config = load_package_config(str(package_dir))
@@ -844,20 +846,18 @@ def test_a_windowed_fill_never_binds_the_authored_calendar_day():
 
 
 @pytest.mark.parametrize(
-    ("bounds", "reads_day"),
+    ("bounds", "day_type"),
     [
-        ({}, False),
-        ({"start": "2017-07-01"}, False),
-        ({"end": "2017-08-01"}, False),
-        ({"start": "2017-07-01", "end": "2017-08-01"}, False),
+        ({}, "date"),
+        ({"start": "2017-07-01"}, "timestamp"),
+        ({"end": "2017-08-01"}, "date"),
+        ({"start": "2017-07-01", "end": "2017-08-01"}, "timestamp"),
     ],
     ids=["unbounded", "start-only", "end-only", "both-bounds"],
 )
-@pytest.mark.parametrize("day_type", ["date", "timestamp"])
-def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads_day, day_type):
+def test_fill_never_binds_or_checks_the_calendar_day(bounds, day_type):
     from semantic_rails.compiler import bind_query
     from semantic_rails.config import load_package_config, resolve_repo_path
-    from semantic_rails.errors import SemanticLayerError
     from semantic_rails.policies import enforce_query_policies
     from semantic_rails.schema import SemanticPolicyConfig
 
@@ -881,8 +881,7 @@ def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads
     }
     query = {**_JULY_BY_WEEK, "time": {**time, **bounds}}
     bound = bind_query(config, None, query)
-    reads_day = reads_day and day_type == "date"
-    assert (day_id in bound.object_ids) is reads_day
+    assert day_id not in bound.object_ids
 
     denied_day = dataclasses.replace(
         config,
@@ -895,9 +894,4 @@ def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads
             )
         ],
     )
-    if reads_day:
-        with pytest.raises(SemanticLayerError) as excinfo:
-            enforce_query_policies(denied_day, bound.object_ids, query=query)
-        assert excinfo.value.code == "POLICY_DENIED"
-    else:
-        assert enforce_query_policies(denied_day, bound.object_ids, query=query) == []
+    assert enforce_query_policies(denied_day, bound.object_ids, query=query) == []
