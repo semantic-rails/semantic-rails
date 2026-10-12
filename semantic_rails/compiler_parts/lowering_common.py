@@ -37,8 +37,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RollingExpr,
     SemanticExpr,
     expr_to_dict,
@@ -841,9 +839,7 @@ def _expr_contains_distribution(expr: SemanticExpr, config: PackageConfig) -> bo
             or _expr_contains_distribution(item.then, config)
             for item in expr.whens
         ) or (expr.else_expr is not None and _expr_contains_distribution(expr.else_expr, config))
-    if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
-    ):
+    if isinstance(expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr)):
         return _expr_contains_distribution(expr.input, config)
     return False
 

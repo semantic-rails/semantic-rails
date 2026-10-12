@@ -32,8 +32,6 @@ from .expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -369,8 +367,6 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             ShareExpr,
         ),

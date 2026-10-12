@@ -204,18 +204,9 @@ def _dict_nodes(value: Any):
 
 
 def _query_contains_prior_period(runtime: Any, query: Call) -> bool:
-    from ..expressions import PriorPeriodExpr  # local import keeps planner startup light
-
-    if any(
+    return any(
         str(node.get("kind", "") or "").casefold() == "prior_period"
         for node in _expression_nodes(query)
-    ):
-        return True
-    metric_ids = {ref for item in query.select for ref in item.references()}
-    return any(
-        str(getattr(recipe, "id", "") or "") in metric_ids
-        and isinstance(getattr(recipe, "expression", None), PriorPeriodExpr)
-        for recipe in getattr(runtime._config, "metric_recipes", []) or []
     )
 
 

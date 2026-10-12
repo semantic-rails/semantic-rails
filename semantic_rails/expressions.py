@@ -1,9 +1,8 @@
 """Semantic expression AST and the package-expression mini-parser.
 
 Defines the frozen dataclass nodes (``MeasureRefExpr``, ``AggregateExpr``,
-``ArithmeticExpr``, ``MetricPredicateExpr``, ``CumulativeExpr``,
-``PeriodToDateExpr``, …) that compose every metric-recipe and
-measure-expression body. :func:`parse_config_expression` and
+``ArithmeticExpr``, ``MetricPredicateExpr``, ``OffsetWindowExpr``, …) that
+compose every metric-recipe and measure-expression body. :func:`parse_config_expression` and
 :func:`parse_semantic_expression` translate the YAML string form into
 these nodes; the compiler consumes them.
 """
@@ -241,20 +240,6 @@ class RollingExpr:
 
 
 @dataclass(frozen=True)
-class PriorPeriodExpr:
-    input: SemanticExpr
-    unit: str
-    value: int = 1
-
-
-@dataclass(frozen=True)
-class PeriodToDateExpr:
-    input: SemanticExpr
-    period: str
-    partition_by: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
 class OffsetWindowExpr:
     input: SemanticExpr
     kind: str
@@ -389,8 +374,6 @@ SemanticExpr = (
     | CaseExpr
     | CumulativeExpr
     | RollingExpr
-    | PriorPeriodExpr
-    | PeriodToDateExpr
     | OffsetWindowExpr
     | MetricPredicateExpr
     | ConditionalAggregateExpr
@@ -712,19 +695,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             "kind": "rolling",
             "input": expr_to_dict(expr.input),
             "window": {"unit": expr.unit, "value": expr.value},
-            "partition_by": list(expr.partition_by),
-        }
-    if isinstance(expr, PriorPeriodExpr):
-        return {
-            "kind": "prior_period",
-            "input": expr_to_dict(expr.input),
-            "offset": {"unit": expr.unit, "value": expr.value},
-        }
-    if isinstance(expr, PeriodToDateExpr):
-        return {
-            "kind": "period_to_date",
-            "input": expr_to_dict(expr.input),
-            "period": expr.period,
             "partition_by": list(expr.partition_by),
         }
     if isinstance(expr, OffsetWindowExpr):
@@ -2275,12 +2245,6 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
             _walk(node.input)
             return
         if isinstance(node, RollingExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, PriorPeriodExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, PeriodToDateExpr):
             _walk(node.input)
             return
         if isinstance(node, OffsetWindowExpr):

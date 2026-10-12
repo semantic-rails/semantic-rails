@@ -32,8 +32,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -893,8 +891,6 @@ def _collect_measure_refs(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             ShareExpr,
         ),
@@ -957,8 +953,6 @@ def _collect_conversion_exprs(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             MetricPredicateExpr,
             OffsetWindowExpr,
             ShareExpr,
@@ -1427,8 +1421,6 @@ def _rewrite_conditional_aggregates(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
         ),

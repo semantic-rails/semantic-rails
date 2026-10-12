@@ -27,8 +27,6 @@ from .expressions import (
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RollingExpr,
     SemanticExpr,
 )
@@ -103,7 +101,7 @@ def metric_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
             if entity:
                 return entity
         return metric_root_entity(config, expr.else_expr) if expr.else_expr is not None else ""
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return metric_root_entity(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return expr.entity

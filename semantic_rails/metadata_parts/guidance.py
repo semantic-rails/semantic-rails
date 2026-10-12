@@ -36,8 +36,6 @@ from ..expressions import (
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -116,7 +114,7 @@ def _metric_measure_ids(
         if expr.else_expr is not None:
             out.extend(_metric_measure_ids(config, expr.else_expr, seen_metric_ids=seen_metric_ids))
         return out
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return _metric_measure_ids(config, expr.input, seen_metric_ids=seen_metric_ids)
     if isinstance(expr, MetricPredicateExpr):
         return _metric_measure_ids(config, expr.input, seen_metric_ids=seen_metric_ids)

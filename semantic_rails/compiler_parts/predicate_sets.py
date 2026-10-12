@@ -29,8 +29,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -277,8 +275,6 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             ShareExpr,
         ),

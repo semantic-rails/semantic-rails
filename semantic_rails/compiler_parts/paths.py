@@ -23,8 +23,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -328,8 +326,6 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,

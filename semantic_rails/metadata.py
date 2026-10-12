@@ -56,8 +56,6 @@ from .expressions import (
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -221,7 +219,7 @@ def _compatible_temporal_roles_for_expr(config: PackageConfig, expr: SemanticExp
         for row in role_sets[1:]:
             current &= row
         return sorted(current)
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return _compatible_temporal_roles_for_expr(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return []
@@ -273,7 +271,7 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
             if entity:
                 return entity
         return _first_root_entity(config, expr.else_expr) if expr.else_expr is not None else ""
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return _first_root_entity(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return expr.entity
@@ -342,10 +340,6 @@ def _expr_summary(config: PackageConfig, expr: SemanticExpr) -> str:
         # (The ruff/mypy pass on mainline landed a parallel fix using
         # bare attribute access; this defensive form supersedes it.)
         return f"rolling {expr.value or ''}-{expr.unit or ''} {_expr_summary(config, expr.input)}"
-    if isinstance(expr, PriorPeriodExpr):
-        return f"prior-period {_expr_summary(config, expr.input)}"
-    if isinstance(expr, PeriodToDateExpr):
-        return f"{expr.period} to date {_expr_summary(config, expr.input)}"
     if isinstance(expr, MetricPredicateExpr):
         scope = {"contextual": "contextual", "entity_period": "per period"}.get(
             expr.scope_mode, "entity-only"
@@ -746,7 +740,7 @@ def _predicate_exprs_from_expr(
                 _predicate_exprs_from_expr(config, expr.else_expr, seen_metric_ids=seen_metric_ids)
             )
         return predicates
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, (CumulativeExpr, RollingExpr)):
         return _predicate_exprs_from_expr(config, expr.input, seen_metric_ids=seen_metric_ids)
     if isinstance(expr, ConversionExpr):
         return [

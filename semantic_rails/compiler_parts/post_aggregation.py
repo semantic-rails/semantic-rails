@@ -24,8 +24,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -97,20 +95,6 @@ def _as_offset_window_expr(expr: SemanticExpr) -> OffsetWindowExpr | None:
             frame="rows",
             unit=expr.unit,
             value=expr.value,
-            partition_by=list(expr.partition_by),
-        )
-    if isinstance(expr, PriorPeriodExpr):
-        return OffsetWindowExpr(
-            input=expr.input, kind="prior_period", aggregate="lag", unit=expr.unit, value=expr.value
-        )
-    if isinstance(expr, PeriodToDateExpr):
-        return OffsetWindowExpr(
-            input=expr.input,
-            kind="period_to_date",
-            aggregate="sum",
-            frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
-            extra_partition="period",
-            period=expr.period,
             partition_by=list(expr.partition_by),
         )
     return None
@@ -651,7 +635,7 @@ def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bo
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
         return _expr_requires_dense_series(recipe.expression, config)
-    if isinstance(expr, (RollingExpr, PriorPeriodExpr)):
+    if isinstance(expr, RollingExpr):
         return True
     if isinstance(expr, OffsetWindowExpr):
         if expr.kind in {"rolling", "prior_period"}:
@@ -680,8 +664,6 @@ def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bo
             for item in expr.whens
         ) or (expr.else_expr is not None and _expr_requires_dense_series(expr.else_expr, config))
     if isinstance(expr, CumulativeExpr):
-        return _expr_requires_dense_series(expr.input, config)
-    if isinstance(expr, PeriodToDateExpr):
         return _expr_requires_dense_series(expr.input, config)
     if isinstance(expr, MetricPredicateExpr):
         return False

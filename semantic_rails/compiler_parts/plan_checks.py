@@ -33,8 +33,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RollingExpr,
     ScopedAggregateExpr,
     ShareExpr,
@@ -170,7 +168,6 @@ def _can_project_entity_key_from_source(
 _SUMMING_WRAPPERS = (
     CumulativeExpr,
     RollingExpr,
-    PeriodToDateExpr,
     OffsetWindowExpr,
     EntityValueExpr,
     DistributionExpr,
@@ -180,7 +177,7 @@ _SUMMING_WRAPPERS = (
 
 
 # Constructs whose result depends on a time axis, so a window without a grain can't collapse.
-_TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, PriorPeriodExpr, ConversionExpr)
+_TIME_AXIS_EXPRS = (*_SUMMING_WRAPPERS, ConversionExpr)
 
 
 def _time_axis_kind(expr: Any, config: PackageConfig) -> str:
@@ -572,9 +569,7 @@ def _raise_non_additive_sum(
 _LOOKUP_TIME_EXPRS = (
     CumulativeExpr,
     RollingExpr,
-    PeriodToDateExpr,
     OffsetWindowExpr,
-    PriorPeriodExpr,
     ConversionExpr,
 )
 

@@ -29,8 +29,6 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
     RollingExpr,
     ScopedAggregateExpr,
@@ -84,9 +82,7 @@ def _requires_query_time(expr: SemanticExpr, config: PackageConfig) -> bool:
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
         return _requires_query_time(recipe.expression, config)
-    if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
-    ):
+    if isinstance(expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr)):
         return True
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _requires_query_time(expr.left, config) or _requires_query_time(expr.right, config)
@@ -221,8 +217,6 @@ def _expr_compatible_temporal_roles(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             ShareExpr,
         ),
@@ -240,7 +234,7 @@ def _window_measure_exprs(
 ) -> Iterator[MeasureRefExpr | AggregateExpr | ScopedAggregateExpr]:
     """Leaves filtered by an expression's period; conversions filter only base events."""
     if window_inputs and (
-        isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr))
+        isinstance(expr, (CumulativeExpr, RollingExpr))
         or isinstance(expr, OffsetWindowExpr)
         and (expr.kind != "cumulative" or expr.window_scope != "query_period")
     ):
@@ -375,8 +369,6 @@ def _expr_leaf_temporal_role_sets(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             ShareExpr,
         ),
@@ -511,7 +503,7 @@ def window_total_refusal(
 def series_grain(expr: SemanticExpr, config: PackageConfig) -> str:
     """The grain a window in ``expr`` answers at: its own unit, or days for a period to date."""
     lookback = _unsafe_windowed_lookback(expr, config) or {}
-    if lookback.get("kind") in {"PeriodToDateExpr", "OffsetWindowExpr[period_to_date]"}:
+    if lookback.get("kind") == "OffsetWindowExpr[period_to_date]":
         return "day"
     return str(lookback.get("unit") or "")
 
@@ -574,8 +566,6 @@ def _collect_conversion_bindings(
         (
             CumulativeExpr,
             RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,
@@ -813,7 +803,7 @@ def _expr_contains_unsafe_bounded_cumulative(expr: SemanticExpr, config: Package
         )
     if isinstance(
         expr,
-        (RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr, MetricPredicateExpr),
+        (RollingExpr, OffsetWindowExpr, MetricPredicateExpr),
     ):
         return _expr_contains_unsafe_bounded_cumulative(expr.input, config)
     if isinstance(expr, RatioExpr):
@@ -848,7 +838,7 @@ def _expr_contains_unsafe_bounded_windowed(expr: SemanticExpr, config: PackageCo
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
         return _expr_contains_unsafe_bounded_windowed(recipe.expression, config)
-    if isinstance(expr, (RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
+    if isinstance(expr, RollingExpr):
         return True
     if isinstance(expr, OffsetWindowExpr) and expr.kind in {
         "rolling",
@@ -908,20 +898,6 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
             "kind": "RollingExpr",
             "unit": str(expr.unit or ""),
             "value": int(expr.value or 0),
-        }
-    if isinstance(expr, PriorPeriodExpr):
-        return {
-            "kind": "PriorPeriodExpr",
-            "unit": str(expr.unit or ""),
-            "value": int(expr.value or 0),
-        }
-    if isinstance(expr, PeriodToDateExpr):
-        # Period-to-date looks back to the start of the period — one
-        # unit of the period grain is the safe minimum widening.
-        return {
-            "kind": "PeriodToDateExpr",
-            "unit": str(expr.period or ""),
-            "value": 1,
         }
     if isinstance(expr, OffsetWindowExpr) and expr.kind in {
         "rolling",
@@ -1116,10 +1092,7 @@ def _validate_restrictive_time_semantics(
                 f"function depends on, producing silently wrong values. {remedy.capitalize()}"
                 + ending
             )
-            comparison = str((lookback or {}).get("kind", "")) in {
-                "PriorPeriodExpr",
-                "OffsetWindowExpr[prior_period]",
-            }
+            comparison = str((lookback or {}).get("kind", "")) == "OffsetWindowExpr[prior_period]"
             if comparison and query.time.named and "where_path" not in details:
                 # Period comparisons beside a named window ship later; the series answers now.
                 spelled = "last" if query.time.last_unit else "this" if query.time.this else "start"
