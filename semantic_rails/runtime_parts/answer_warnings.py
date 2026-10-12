@@ -622,12 +622,16 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
     else:
         for period in dict.fromkeys(_period_day(row.get(TIME_AXIS), zone) for row in rows):
             if period is not None:
-                end = period_end(period, grain) - timedelta(days=1)
+                try:
+                    end = period_end(period, grain) - timedelta(days=1)
+                except (ValueError, OverflowError):
+                    end = date.max  # the calendar's last period ends with it
                 spans.append((period, max(period, first or period), min(end, last or end)))
     warnings = []
     for period, start, end in spans:
         end = min(end, today)
-        if edge < start or edge + timedelta(days=1) >= min(end + timedelta(days=1), today):
+        # A whole day after the edge and before today, inside the span.
+        if edge < start or edge >= min(end, today - timedelta(days=1)):
             continue
         days, covered = (end - start).days + 1, (min(edge, end) - start).days + 1
         span = "this total" if period is None else f"the {grain} of {period.isoformat()}"
