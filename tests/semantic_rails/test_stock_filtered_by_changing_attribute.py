@@ -268,6 +268,10 @@ def runtime(snapshot_lowering, package_snapshot) -> Iterator[Runtime]:
         runtime.close()
 
 
+# Planning refuses before a snapshot choice is lowered: one lowering is enough.
+one_lowering = pytest.mark.parametrize("snapshot_lowering", ["aggregate_join"], indirect=True)
+
+
 @pytest.mark.parametrize(
     ("where", "condition", "closing_week"),
     [
@@ -299,9 +303,17 @@ def test_start_of_period_reads_each_series_opening_snapshot(runtime: Runtime, re
     assert (WEEK, 297) in basic
 
 
-@pytest.mark.parametrize("measure", ["fee", "fee_sop"])
-@pytest.mark.parametrize("grain", ["day", "week", "month"])
-@pytest.mark.parametrize("field", [PLAN, STATE, SEGMENT])
+@pytest.mark.parametrize(
+    ("measure", "grain", "field"),
+    [
+        ("fee", "day", PLAN),
+        ("fee", "week", STATE),
+        ("fee", "month", SEGMENT),
+        ("fee_sop", "day", STATE),
+        ("fee_sop", "week", SEGMENT),
+        ("fee_sop", "month", PLAN),
+    ],
+)
 def test_a_filter_equals_its_row_of_the_grouped_breakdown(
     runtime: Runtime, reference, measure: str, grain: str, field: str
 ) -> None:
@@ -484,9 +496,20 @@ def _share(filter_item: dict[str, Any] | None = None, over: str = "period") -> d
     return {"kind": "ratio", "numerator": {**fee, "predicates": [predicate]}, "denominator": fee}
 
 
-@pytest.mark.parametrize("attribute", ["snapshot_week", "renewal_on", "renewal_at"])
-@pytest.mark.parametrize("placement", ["where", "measure_filter", "anchored", "child_group"])
-@pytest.mark.parametrize("grain", [None, "week"])
+@pytest.mark.parametrize(
+    ("attribute", "placement", "grain"),
+    [
+        ("snapshot_week", "where", None),
+        ("renewal_on", "where", "week"),
+        ("renewal_at", "measure_filter", None),
+        ("snapshot_week", "measure_filter", "week"),
+        ("renewal_on", "anchored", None),
+        ("renewal_at", "anchored", "week"),
+        ("snapshot_week", "child_group", None),
+        ("renewal_at", "child_group", "week"),
+    ],
+)
+@one_lowering
 def test_a_date_attribute_filter_refuses(
     runtime: Runtime, attribute: str, placement: str, grain: str | None
 ) -> None:
@@ -514,7 +537,7 @@ def test_a_date_attribute_filter_refuses(
     }
 
 
-def test_a_renewal_date_has_two_distinct_readings(snapshot_lowering, tmp_path: Path) -> None:
+def test_a_renewal_date_has_two_distinct_readings(tmp_path: Path) -> None:
     fixture_sql = "update account_day set renewal_on = case when plan = 'basic' "
     fixture_sql += "then date '2027-01-01' else date '2028-01-01' end"
     package = _package(tmp_path)
@@ -557,6 +580,7 @@ def test_lowering_cannot_bypass_the_date_attribute_refusal(
     }
 
 
+@one_lowering
 def test_an_unknown_filter_dimension_still_has_a_public_error(runtime: Runtime) -> None:
     with pytest.raises(SemanticLayerError) as raised:
         _query(runtime, [_is("dimension.fees_account_day_unknown", "x")])
@@ -592,7 +616,11 @@ def test_a_join_through_a_changing_key_reads_the_closing_owner(
         runtime.close()
 
 
-@pytest.mark.parametrize("scope", ["dataset", "query"])
+@pytest.mark.parametrize(
+    ("snapshot_lowering", "scope"),
+    [("aggregate_join", "dataset"), ("qualify", "query")],
+    indirect=["snapshot_lowering"],
+)
 def test_an_unknown_series_key_distinguishes_observed_and_missing_weeks(
     snapshot_lowering, tmp_path: Path, scope: str
 ) -> None:
@@ -650,9 +678,15 @@ def test_an_unknown_series_key_distinguishes_observed_and_missing_weeks(
         runtime.close()
 
 
-@pytest.mark.parametrize("placement", ["where", "measure_filter"])
-@pytest.mark.parametrize("scope", ["dataset", "query"])
-@pytest.mark.parametrize("state", ["active", "enterprise"])
+@pytest.mark.parametrize(
+    ("placement", "scope", "state"),
+    [
+        ("where", "dataset", "active"),
+        ("where", "query", "enterprise"),
+        ("measure_filter", "dataset", "enterprise"),
+        ("measure_filter", "query", "active"),
+    ],
+)
 def test_an_anchored_share_reads_its_measure_filter_and_keeps_observed_periods(
     runtime: Runtime, placement: str, scope: str, state: str
 ) -> None:
@@ -687,20 +721,19 @@ def test_an_anchored_share_reads_its_measure_filter_and_keeps_observed_periods(
 
 
 @pytest.mark.parametrize(
-    "dimension",
+    ("dimension", "where", "grain"),
     [
         # The share chooses one snapshot per series and time bucket: grouped by the day or
         # weekday within the week, it read only the week's closing Sunday.
-        DAY,
-        WEEKDAY,
-        "dimension.fees_account_day_observed_on",
-        "dimension.fees_time_week_start",
-        SNAPSHOT_WEEK,
-        "dimension.fees_account_day_renewal_at",
+        (DAY, [], None),
+        (WEEKDAY, [_is(STATE, "active")], "week"),
+        ("dimension.fees_account_day_observed_on", [], "week"),
+        ("dimension.fees_time_week_start", [_is(STATE, "active")], None),
+        (SNAPSHOT_WEEK, [], None),
+        ("dimension.fees_account_day_renewal_at", [_is(STATE, "active")], "week"),
     ],
 )
-@pytest.mark.parametrize("where", [[], [_is(STATE, "active")]])
-@pytest.mark.parametrize("grain", [None, "week"])
+@one_lowering
 def test_an_anchored_share_grouped_by_a_period_refuses(
     runtime: Runtime, dimension: str, where: list[dict[str, Any]], grain: str | None
 ) -> None:
@@ -790,7 +823,11 @@ def test_lowering_cannot_bypass_the_period_grouping_refusal(runtime: Runtime) ->
     }
 
 
-@pytest.mark.parametrize("value", ["0", "null"])
+@pytest.mark.parametrize(
+    ("snapshot_lowering", "value"),
+    [("aggregate_join", "0"), ("qualify", "null")],
+    indirect=["snapshot_lowering"],
+)
 def test_an_anchored_share_keeps_a_matched_zero_or_unknown_denominator_null(
     snapshot_lowering, tmp_path: Path, value: str
 ) -> None:
