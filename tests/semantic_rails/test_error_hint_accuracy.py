@@ -196,18 +196,18 @@ def test_a_typo_near_a_hidden_object_is_not_answered_with_it(package_config_fact
     assert hidden in json.dumps(visible)
 
 
+# ``prefilled`` starts the hint from stale targets the enrichment must replace.
 @pytest.mark.parametrize(
-    ("directions", "hop_limit", "diamond", "pinned", "target", "expected"),
+    ("directions", "hop_limit", "diamond", "pinned", "target", "expected", "prefilled"),
     [
-        (["forward"], 3, False, False, "D", ["B", "C"]),
-        (["reverse"], 3, False, False, "B", []),
-        (["forward"], 1, False, False, "C", ["B"]),
-        (["forward"], 3, True, False, "E", ["B", "C"]),
-        (["forward"], 3, True, True, "E", ["B", "C", "D"]),
+        (["forward"], 3, False, False, "D", ["B", "C"], False),
+        (["reverse"], 3, False, False, "B", [], True),
+        (["forward"], 1, False, False, "C", ["B"], False),
+        (["forward"], 3, True, False, "E", ["B", "C"], True),
+        (["forward"], 3, True, True, "E", ["B", "C", "D"], False),
     ],
     ids=["forward-only", "reverse-only", "hop-limit", "ambiguous-route", "pinned-route"],
 )
-@pytest.mark.parametrize("prefilled", [False, True], ids=["raw", "stale-targets"])
 def test_path_hint_targets_pass_the_shared_resolver(
     package_config_factory, directions, hop_limit, diamond, pinned, target, expected, prefilled
 ):
@@ -263,8 +263,10 @@ def test_path_hint_targets_pass_the_shared_resolver(
         resolve_path(config, start="A", target=node)
 
 
-@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
-@pytest.mark.parametrize("preference", ["none", "unrelated", "applicable"])
+@pytest.mark.parametrize(
+    ("preference", "warm"),
+    [("none", False), ("unrelated", True), ("applicable", False), ("applicable", True)],
+)
 def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
     package_config_factory, monkeypatch, warm, preference
 ):

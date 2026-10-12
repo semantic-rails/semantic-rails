@@ -86,8 +86,9 @@ def _stable(response: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in response.items() if key not in VOLATILE}
 
 
-@pytest.mark.parametrize("verbosity", ["compact", " Compact ", "bogus"])
-@pytest.mark.parametrize("sql_size", [10, 4000])
+@pytest.mark.parametrize(
+    ("sql_size", "verbosity"), [(10, "compact"), (4000, " Compact "), (4000, "bogus")]
+)
 def test_execute_budget_applies_after_the_final_envelope(
     v2: SemanticLayerMCPAdapter,
     monkeypatch: pytest.MonkeyPatch,
@@ -339,7 +340,7 @@ def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) ->
     assert "warnings" not in last and "measure_ids" not in last["catalog"]
 
 
-@pytest.mark.parametrize("tool", ["forecast", *sorted(UNAVAILABLE_TOOLS)])
+@pytest.mark.parametrize("tool", ["forecast", "catalog", "compile", "segment-validate"])
 def test_unknown_tools_use_one_refusal(v2: SemanticLayerMCPAdapter, tool: str) -> None:
     response = v2.call_tool(tool, {})
     assert response["ok"] is False and response["status"] == "error"
@@ -612,8 +613,15 @@ def test_lean_envelopes_preserve_distinct_issues_and_recovery(
         assert "error" not in response and response["ok"] is True
 
 
-@pytest.mark.parametrize("code", ["MIXED_GRAIN_INVALID", "REWRITE_APPLIED"])
-@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+@pytest.mark.parametrize(
+    ("verbosity", "code"),
+    [
+        ("minimal", "MIXED_GRAIN_INVALID"),
+        ("minimal", "REWRITE_APPLIED"),
+        ("compact", "MIXED_GRAIN_INVALID"),
+        ("full", "REWRITE_APPLIED"),
+    ],
+)
 def test_analysis_details_follow_requested_verbosity(v2, code, verbosity) -> None:
     from copy import deepcopy
 

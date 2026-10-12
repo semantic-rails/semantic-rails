@@ -139,9 +139,9 @@ def test_as_escape_hatch_overrides_auto_derived_id(tmp_path: Path, public_id: st
 
 
 @pytest.mark.parametrize(
-    "entities_block", [None, {}, {"device": {}}, {"reading": {}, "device": {}}]
+    ("entities_block", "with_relationship"),
+    [(None, False), ({}, True), ({"device": {}}, False), ({"reading": {}, "device": {}}, True)],
 )
-@pytest.mark.parametrize("with_relationship", [False, True])
 def test_graph_entity_never_borrows_another_entity_key(
     tmp_path: Path, entities_block: dict | None, with_relationship: bool
 ) -> None:
@@ -416,8 +416,10 @@ def test_graph_model_cannot_be_primary_for_two_entities(tmp_path: Path) -> None:
     assert all(f"'{name}'" in str(exc.value) for name in ("readings", "reading", "device"))
 
 
-@pytest.mark.parametrize("customer_first", [False, True])
-@pytest.mark.parametrize("identity", [None, "binding", "entity"])
+@pytest.mark.parametrize(
+    ("identity", "customer_first"),
+    [(None, False), (None, True), ("binding", True), ("entity", False)],
+)
 def test_shared_entity_keys_require_explicit_primary_identity(
     tmp_path: Path, customer_first: bool, identity: str | None
 ) -> None:

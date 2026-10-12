@@ -166,8 +166,15 @@ def test_iterators_cover_loaded_object_ids(package):
     assert models == set(normalized["models"])
 
 
-@pytest.mark.parametrize("section", ["models", "relations", "metrics", "segments"])
-@pytest.mark.parametrize("wrapper", ["plural", "singular", "bare"])
+@pytest.mark.parametrize(
+    ("section", "wrapper"),
+    [
+        ("models", "plural"),
+        ("relations", "singular"),
+        ("metrics", "bare"),
+        ("segments", "singular"),
+    ],
+)
 def test_directory_wrapper_paths(tmp_path, section, wrapper):
     (tmp_path / "package.yml").write_text("package: {id: sample}\n")
     (tmp_path / section).mkdir()

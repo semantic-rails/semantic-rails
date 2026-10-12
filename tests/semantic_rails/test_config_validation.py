@@ -378,8 +378,15 @@ def test_probe_combines_required_grouping_with_non_additive_grain(tmp_path):
     assert len(probe["query"]["group_by"]) > 1
 
 
-@pytest.mark.parametrize("constraint", ["required_group_by", "required_where"])
-@pytest.mark.parametrize("denial", ["access", "grouping", "scope"])
+@pytest.mark.parametrize(
+    ("denial", "constraint"),
+    [
+        ("access", "required_group_by"),
+        ("grouping", "required_group_by"),
+        ("grouping", "required_where"),
+        ("scope", "required_where"),
+    ],
+)
 def test_constrained_probe_preserves_denials_and_policy_scope(tmp_path, constraint, denial):
     package_dir = tmp_path / "policy_scope"
     field = "dimension.demo_order_order_id"

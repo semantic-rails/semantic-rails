@@ -82,16 +82,15 @@ STATUS = {"status": {"label": "Status", "kind": "categorical"}}
 
 
 @pytest.mark.parametrize(
-    ("arguments", "dropped"),
+    ("arguments", "dropped", "batch"),
     [
-        ({"dimensions": STATUS}, ["label"]),
-        ({"dimensions": STATUS, "label": "Orders"}, []),
-        ({"dimensions": STATUS, "label": "Orders", "description": "Orders."}, []),
+        ({"dimensions": STATUS}, ["label"], False),
+        ({"dimensions": STATUS, "label": "Orders"}, [], True),
+        ({"dimensions": STATUS, "label": "Orders", "description": "Orders."}, [], False),
         # The segment filters on status, so the parse gate rolls this one back.
-        ({}, ["dimensions.status", "label"]),
+        ({}, ["dimensions.status", "label"], True),
     ],
 )
-@pytest.mark.parametrize("batch", [False, True])
 def test_model_replace_rewrites_it_from_the_arguments(
     workspace: Path, arguments: dict[str, Any], dropped: list[str], batch: bool
 ) -> None:

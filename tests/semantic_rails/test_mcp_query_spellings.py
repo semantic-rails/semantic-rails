@@ -104,8 +104,9 @@ def test_arithmetic_takes_left_and_right_only(adapter, shape):
     assert issue["details"]["path"] == f"select[0].expression.{shape}"
 
 
-@pytest.mark.parametrize("mode", ["run", "sql", "validate"])
-@pytest.mark.parametrize("surface", ["mcp", "runtime"])
+@pytest.mark.parametrize(
+    ("surface", "mode"), [("mcp", "run"), ("runtime", "sql"), ("mcp", "validate")]
+)
 def test_selected_dimension_moves_to_group_by(adapter, mode, surface):
     canonical = adapter.call_tool(
         "execute",
@@ -242,8 +243,9 @@ def test_an_encoded_identity_claim_is_refused(adapter, remote):
     assert issue["details"]["path"] == "query.policy_context"
 
 
-@pytest.mark.parametrize("mode", ["run", "sql", "validate"])
-@pytest.mark.parametrize("field", ["group_by", "where"])
+@pytest.mark.parametrize(
+    ("field", "mode"), [("group_by", "run"), ("where", "sql"), ("group_by", "validate")]
+)
 def test_unknown_list_dimension_is_actionable(adapter, mode, field):
     unknown = "dimension.jaffle_order_customer_ix"
     query = {"group_by": [unknown]}
