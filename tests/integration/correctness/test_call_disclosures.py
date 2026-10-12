@@ -25,6 +25,8 @@ def test_a_statistic_override_states_the_rows_it_aggregated(request, backend):
             "aggregation": "max",
             "default": "sum",
             "rows": rows,
+            "message": f"measure.shop.revenue is read as max, not its default sum, over {rows} "
+            "source rows.",
         }
     ]
     assert all(set(row) == {"dimension.shop_order_store_id", "largest"} for row in result["rows"])
@@ -66,6 +68,7 @@ def test_validate_states_the_override_without_rows(duckdb_backend):
             "measure": "measure.shop.revenue",
             "aggregation": "max",
             "default": "sum",
+            "message": "measure.shop.revenue is read as max, not its default sum.",
         }
     ]
 
@@ -116,6 +119,8 @@ def test_a_share_states_its_denominator_and_unit(request, backend):
             "over": [STORE],
             "unit": "fraction",
             "rows": stores,
+            "message": f"order_share is a fraction of the total of measure.shop.order_count across "
+            f"{STORE} in the rows the call keeps ({stores} rows per total).",
         }
     ]
 
@@ -211,7 +216,12 @@ def test_a_name_groups_by_its_entity_key_and_says_so(request, backend):
     result = runtime.query(spec["query"])
     assert [row[CUSTOMER_NAME] for row in result["rows"]] == ["Ann", "Ann"]
     assert result.get("assumptions", []) == [
-        {"code": "GROUPED_BY_KEY", "dimension": CUSTOMER_NAME, "key": CUSTOMER_ID}
+        {
+            "code": "GROUPED_BY_KEY",
+            "dimension": CUSTOMER_NAME,
+            "key": CUSTOMER_ID,
+            "message": f"Grouped by {CUSTOMER_ID} beside {CUSTOMER_NAME}, so namesakes stay apart.",
+        }
     ]
     # By name alone the namesakes would merge into one row.
     merged = source.reference(
@@ -237,6 +247,8 @@ def test_an_entity_with_no_name_is_shown_by_its_key_and_says_so(duckdb_backend):
             "code": "SHOWN_BY_KEY",
             "entity": "entity.shop_order",
             "dimension": "dimension.shop_order_id",
+            "message": "entity.shop_order declares no name, so its rows show only "
+            "dimension.shop_order_id.",
         }
     ]
     # A dimension that is not an entity's key says nothing.

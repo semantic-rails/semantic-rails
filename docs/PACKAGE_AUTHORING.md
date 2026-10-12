@@ -1166,9 +1166,10 @@ the same answer as a package without `display:`; the entity itself stays visible
 
 A call that groups by the `display` dimension itself groups by the entity's one-column key
 too, just before the name, so two customers named Ann stay two rows; the answer carries the
-key column and the assumption `GROUPED_BY_KEY {dimension, key}`. When the caller can't see
-the key, the call groups by the name alone. A call grouped by an entity's key, when the entity
-declares no `display:`, carries `SHOWN_BY_KEY {entity, dimension}`: its rows show only the key.
+key column and the assumption `GROUPED_BY_KEY {dimension, key, message}`. When the caller can't
+see the key, the call groups by the name alone. A call grouped by an entity's key, when the
+entity declares no `display:` and the call groups by none of its other dimensions, carries
+`SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
 ### `disallowed_names:` — explicit anti-pattern guard
 

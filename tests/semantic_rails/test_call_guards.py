@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.issues import ASSUMPTION, CODES
 from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -90,13 +91,33 @@ GOVERNORS = ["metric.sales.high_value_customer_orders", "metric.sales.repeat_cus
 def test_a_raw_measure_names_the_governed_metrics_that_filter_it(runtime: Runtime) -> None:
     result = runtime.query({"select": [ORDERS]}, verbosity="minimal")
     assert result["assumptions"] == [
-        {"code": "GOVERNED_METRIC_EXISTS", "measure": ORDERS, "metric": metric}
-        for metric in GOVERNORS
+        {
+            "code": "GOVERNED_METRIC_EXISTS",
+            "measure": ORDERS,
+            "metrics": GOVERNORS,
+            "count": 2,
+            "message": f"{ORDERS} is also defined as a governed metric ({', '.join(GOVERNORS)}). "
+            "Select one to use the package's definition.",
+        }
     ]
     # A metric the call selects is already in the answer.
     both = runtime.query({"select": [ORDERS, GOVERNORS[1]]})
-    assert [entry["metric"] for entry in both.get("assumptions", [])] == GOVERNORS[:1]
+    assert [entry["metrics"] for entry in both.get("assumptions", [])] == [GOVERNORS[:1]]
+    assert "Select it " in both["assumptions"][0]["message"]
     assert runtime.query({"select": [GOVERNORS[0]]}).get("assumptions", []) == []
+
+
+def test_many_governed_metrics_are_one_entry_naming_three(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipes = {row.id: row for row in runtime._config.metric_recipes}
+    copies = [replace(recipes[GOVERNORS[0]], id=f"{GOVERNORS[0]}_{n}") for n in range(10)]
+    config = replace(runtime._config, metric_recipes=[*recipes.values(), *copies])
+    monkeypatch.setattr(runtime, "_config", config)
+    [entry] = runtime.validate({"select": [ORDERS]})["assumptions"]
+    assert (entry["metrics"], entry["count"]) == ([*GOVERNORS, f"{GOVERNORS[0]}_0"], 12)
+    assert entry["message"].startswith(f"{ORDERS} is also defined as a governed metric (")
+    assert "and 9 more). Select one" in entry["message"]
 
 
 def test_a_governor_hidden_from_the_caller_withholds_the_raw_number(
@@ -118,7 +139,7 @@ def test_a_governor_hidden_from_the_caller_withholds_the_raw_number(
     assert exc.value.code == "POLICY_DENIED"
     # A caller who sees every governor gets the number and the names.
     seen = runtime.query({"select": [ORDERS]}, context={"audience": "internal"})
-    assert [entry["metric"] for entry in seen["assumptions"]] == GOVERNORS
+    assert [entry["metrics"] for entry in seen["assumptions"]] == [GOVERNORS]
 
 
 def test_brooklyns_share_of_revenue_matches_reference_sql(runtime: Runtime) -> None:
@@ -146,6 +167,8 @@ def test_brooklyns_share_of_revenue_matches_reference_sql(runtime: Runtime) -> N
         "over": [STORE],
         "unit": "fraction",
         "rows": 2,
+        "message": f"store_share is a fraction of the total of {REVENUE} across {STORE} in the "
+        "rows the call keeps (2 rows per total).",
     }
 
 
@@ -274,3 +297,67 @@ def test_a_literal_that_looks_like_a_reference_is_data(
     constant = {"kind": "literal", "value": {"measure": ORDERS}}
     call = {"select": [REVENUE, {"expression": constant, "as": "constant"}]}
     assert runtime.validate(call, context={"audience": "external"})["ok"]
+
+
+NOW = "2017-06-14T12:00:00Z"
+CUSTOMER = "entity.jaffle_customer"
+# A call whose answer states each assumption code; a code added to the registry needs one here.
+STATED = {
+    "AGGREGATION_OVERRIDE": {
+        "select": [{"expression": {"kind": "measure", "measure": REVENUE, "aggregation": "max"}}]
+    },
+    "ENTITY_FILTER_OVER": {
+        "select": [REVENUE],
+        "where": [
+            {
+                "entity": CUSTOMER,
+                "having": [{"field": ORDERS, "op": "gte", "value": 2}],
+                "over": "all_time",
+            }
+        ],
+    },
+    "GOVERNED_METRIC_EXISTS": {"select": [ORDERS]},
+    "GROUPED_BY_KEY": {"select": [REVENUE], "group_by": ["dimension.jaffle_customer_name"]},
+    "OBSERVED_PERIODS_ONLY": {
+        "select": [REVENUE],
+        "group_by": ["dimension.jaffle_order_ordered_at"],
+        "time": {"grain": "day", "last": {"unit": "day", "value": 2}},
+    },
+    "PARTIAL_PERIOD": {"select": [REVENUE], "time": {"this": "month"}},
+    "SHARE_OF_TOTAL": {
+        "select": [{"expression": {"kind": "share", "input": REVENUE, "over": [STORE]}}],
+        "group_by": [STORE],
+    },
+    "SHOWN_BY_KEY": {"select": [REVENUE], "group_by": ["dimension.jaffle_store_id"]},
+    "WINDOW_TOTAL": {"select": [REVENUE], "time": {"last": {"unit": "month", "value": 1}}},
+}
+
+
+@pytest.mark.parametrize("code", sorted(c for c, kind in CODES.items() if kind == ASSUMPTION))
+def test_every_assumption_an_answer_states_says_it_in_words(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    # The customer entity names its rows by customer_name, as a package declares with display.
+    entities = [
+        replace(row, display="dimension.jaffle_customer_name") if row.id == CUSTOMER else row
+        for row in runtime._config.entities
+    ]
+    monkeypatch.setattr(runtime, "_config", replace(runtime._config, entities=entities))
+    stated = [row for row in runtime.query(STATED[code], now=NOW)["assumptions"]]
+    assert code in [row["code"] for row in stated]
+    assert all(isinstance(row["message"], str) and row["message"].strip() for row in stated)
+
+
+def test_a_key_beside_another_of_its_entity_s_dimensions_is_not_shown_by_key(
+    runtime: Runtime,
+) -> None:
+    call = {"select": [REVENUE], "group_by": ["dimension.jaffle_store_id", STORE]}
+    assert runtime.validate(call).get("assumptions", []) == []
+    [shown] = runtime.validate({**call, "group_by": call["group_by"][:1]})["assumptions"]
+    assert shown == {
+        "code": "SHOWN_BY_KEY",
+        "entity": "entity.jaffle_store",
+        "dimension": "dimension.jaffle_store_id",
+        "message": "entity.jaffle_store declares no name, so its rows show only "
+        "dimension.jaffle_store_id.",
+    }

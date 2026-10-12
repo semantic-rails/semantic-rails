@@ -17,7 +17,7 @@ Every example on this page runs on the bundled `jaffle_shop` package, sent with
 `now = "2017-09-04T12:00:00Z"` (a Monday; jaffle's orders run from 2016-09-01 through
 2017-08-31). The outputs are real, at `verbosity: "minimal"` (the MCP default); they show the
 rows and the answer fields each section discusses, and leave informational warnings out. Every
-`measure.jaffle.order_count` answer also states `GOVERNED_METRIC_EXISTS` for the two metrics
+`measure.jaffle.order_count` answer also states `GOVERNED_METRIC_EXISTS` naming the two metrics
 that filter that measure ([The `aggregation` override](#the-aggregation-override)); where a
 section shows `assumptions`, it shows them all.
 
@@ -171,9 +171,9 @@ day."), and the one hint's `patch.merge` is the call fragment that meets it
 A dimension the package declares as an entity's `display` (the name of one row, see
 [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)) groups by the entity's key too: the key column
 comes just before the name, so two customers named Ann stay two rows, and the answer's
-`assumptions` carries `GROUPED_BY_KEY {dimension, key}`. A call grouped by an entity's key,
-when the entity declares no `display`, carries `SHOWN_BY_KEY {entity, dimension}`: its rows
-show only the key.
+`assumptions` carries `GROUPED_BY_KEY {dimension, key, message}`. A call grouped by an entity's
+key, when the entity declares no `display` and the call groups by none of its other dimensions,
+carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
 ## `where`
 
@@ -317,8 +317,9 @@ entity passes. It has exactly one of `any`, `none` or `having`:
                   "message": "The time window had no grain, so it was aggregated as one total over the window with no time column. Set time.grain to get one row per period."},
                  {"code": "ENTITY_FILTER_OVER", "entity": "entity.jaffle_customer", "over": "all_time",
                   "message": "Each entity.jaffle_customer's aggregate was taken over all of its rows, ignoring the query window."},
-                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count", "metric": "metric.sales.high_value_customer_orders"},
-                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count", "metric": "metric.sales.repeat_customer_orders"}]}
+                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count",
+                  "metrics": ["metric.sales.high_value_customer_orders", "metric.sales.repeat_customer_orders"], "count": 2,
+                  "message": "measure.jaffle.order_count is also defined as a governed metric (metric.sales.high_value_customer_orders, metric.sales.repeat_customer_orders). Select one to use the package's definition."}]}
 ```
 
 With `"over": "window"` the same call keeps the customers with 20 orders in August and reads
@@ -545,8 +546,9 @@ is partial by definition and says how much of the period it covers:
           {"period": "2017-08-30", "period_partial": true, "order_count": 328}],
  "window": {"start": "2017-08-28", "end": "2017-08-30T15:00:00Z", "now": "2017-08-30T15:00:00Z", "partial": true, "data_through": "2017-08-30"},
  "assumptions": [{"code": "PARTIAL_PERIOD", "message": "the week of 2017-08-28 so far (3 of 7 days)"},
-                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count", "metric": "metric.sales.high_value_customer_orders"},
-                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count", "metric": "metric.sales.repeat_customer_orders"}]}
+                 {"code": "GOVERNED_METRIC_EXISTS", "measure": "measure.jaffle.order_count",
+                  "metrics": ["metric.sales.high_value_customer_orders", "metric.sales.repeat_customer_orders"], "count": 2,
+                  "message": "measure.jaffle.order_count is also defined as a governed metric (metric.sales.high_value_customer_orders, metric.sales.repeat_customer_orders). Select one to use the package's definition."}]}
 ```
 
 `last` counts only complete periods, so it is never partial. A window with only `start` runs to
@@ -763,13 +765,14 @@ answer a rollup serves states none):
 {"rows": [{"dimension.jaffle_store_name": "Brooklyn", "median_order": 6.24},
           {"dimension.jaffle_store_name": "Philadelphia", "median_order": 6.36}],
  "assumptions": [{"code": "AGGREGATION_OVERRIDE", "measure": "measure.jaffle.revenue_usd",
-                  "aggregation": "median", "default": "sum", "rows": 59652}]}
+                  "aggregation": "median", "default": "sum", "rows": 59652,
+                  "message": "measure.jaffle.revenue_usd is read as median, not its default sum, over 59652 source rows."}]}
 ```
 
 Prefer a governed metric when the package has one: the metric is the package's definition,
 and the raw measure may count rows the metric leaves out. Selecting a measure that a governed
-metric filters adds `GOVERNED_METRIC_EXISTS {measure, metric}` for each such metric the caller
-sees and doesn't select. When a metric hidden from the caller governs the measure, the raw
+metric filters adds one `GOVERNED_METRIC_EXISTS {measure, metrics, count, message}` per measure:
+the first three such metrics the caller sees and doesn't select, and how many there are. When a metric hidden from the caller governs the measure, the raw
 number is refused (`POLICY_DENIED`, naming neither the metric nor what it filters).
 
 ### Share of a total
@@ -795,7 +798,8 @@ returned row's total spans the same number:
 {"rows": [{"dimension.jaffle_store_name": "Brooklyn", "revenue_usd": 259424.84999999977, "store_share": 0.34780436277846943},
           {"dimension.jaffle_store_name": "Philadelphia", "revenue_usd": 486468.1799998507, "store_share": 0.6521956372215306}],
  "assumptions": [{"code": "SHARE_OF_TOTAL", "column": "store_share", "input": "measure.jaffle.revenue_usd",
-                  "over": ["dimension.jaffle_store_name"], "unit": "fraction", "rows": 2}]}
+                  "over": ["dimension.jaffle_store_name"], "unit": "fraction", "rows": 2,
+                  "message": "store_share is a fraction of the total of measure.jaffle.revenue_usd across dimension.jaffle_store_name in the rows the call keeps (2 rows per total)."}]}
 ```
 
 ### Per-entity value filters
