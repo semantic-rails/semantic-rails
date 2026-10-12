@@ -104,6 +104,7 @@ from .diagnostics import (
     enrich_path_not_found,
     exception_issue,
     filter_value_miss,
+    lean_issue,
     provenance_summary,
     rewrite_warning_payload,
     semantic_issue,
@@ -1658,7 +1659,7 @@ class Runtime:
         try:
             payload = self.engine_payload(query, now=now, context=context, **options)
         except SemanticLayerError as exc:
-            issue = exception_issue(exc, stage="validate")
+            issue = lean_issue(exception_issue(exc, stage="validate"))
             hints = list(issue.get("recovery_hints") or [])
             return {
                 "ok": False,

@@ -1581,7 +1581,7 @@ def test_live_valid_values_read_through_the_query_rows_route(
         invalid = {**decided, "select": [{"expression": {"kind": "column", "column": "balance"}}]}
         (error,) = runtime.validate(invalid)["errors"]
         code, details, _ = _refused_at("live_valid_values", runtime, invalid)
-        assert (code, details) == (error["code"], error["details"])
+        assert (code, details) == (error["code"], error.get("details", {}))
     assert sql == []
     assert (actual.value.code, actual.value.details, str(actual.value)) == (
         expected.value.code,

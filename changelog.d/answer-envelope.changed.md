@@ -5,4 +5,5 @@
   `warnings`, `assumptions`, `errors` and other lists appear only when they have entries.
   Verbosity no longer changes which warnings exist: every matching caveat is stated and
   `SEMANTIC_CAVEATS_TRUNCATED` is gone. The echoed `query` and `normalized_query` are the
-  call, without identity or `now`.
+  call, without identity or `now`. Error and warning objects leave out their empty fields
+  too, on every transport; `code` and `message` always stay.

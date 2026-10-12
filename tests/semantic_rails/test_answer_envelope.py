@@ -126,3 +126,76 @@ def test_the_echoed_query_is_the_call(runtime, entry):
         assert echo["select"] == ["measure.jaffle.item_revenue_usd"]
         assert echo["order_by"] == [{"field": "item_revenue_usd", "direction": "desc"}]
     assert "query" not in runtime.query(call, now=NOW, verbosity="minimal")
+
+
+# --- Error and warning objects ------------------------------------------------------------
+
+REFUSED = {
+    "unknown id": {"select": ["measure.jaffle.zz_unknown"]},
+    "filter word": {
+        "select": ["measure.jaffle.order_count"],
+        "where": [{"field": STORE, "op": "IS NULL", "value": True}],
+    },
+    "unknown grouping": {"select": ["measure.jaffle.order_count"], "group_by": ["dimension.zz"]},
+}
+# Revenue by store by month: a caveat and a no-data-yet warning.
+WARNED = {
+    "select": ["measure.jaffle.revenue_usd"],
+    "group_by": [STORE],
+    "time": {
+        "temporal_role": ORDER_TIME,
+        "grain": "month",
+        "start": "2017-01-01",
+        "end": "2018-01-01",
+    },
+}
+
+
+def _issues(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every error and warning object in a response, and each one's recovery hints."""
+    found = [
+        *(response.get("errors") or []),
+        *(response.get("warnings") or []),
+        *([response["error"]] if isinstance(response.get("error"), dict) else []),
+    ]
+    return [*found, *(hint for issue in found for hint in issue.get("recovery_hints") or [])]
+
+
+def _responses(runtime, call: dict[str, Any], verbosity: str) -> dict[str, dict[str, Any]]:
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.http_core import SemanticHTTPService
+
+    service = SemanticHTTPService(runtime)
+    adapter = SemanticLayerMCPAdapter(runtime)
+    out = {
+        "sdk": runtime.validate(call, now=NOW, verbosity=verbosity),
+        "mcp_validate": adapter.call_tool(
+            "execute", {"query": call, "now": NOW, "mode": "validate", "verbosity": verbosity}
+        ),
+        "mcp_run": adapter.call_tool(
+            "execute", {"query": call, "now": NOW, "verbosity": verbosity}
+        ),
+    }
+    for route in ("/validate", "/query"):
+        body = {"query": call, "options": {"now": NOW, "verbosity": verbosity}}
+        try:
+            payload, status = service.handle("POST", route, body)
+        except SemanticLayerError as exc:
+            payload, status = service.exception_payload(exc, stage="http")
+        out[f"http{route}"] = service.envelope(status, payload, request_id="r")
+    return out
+
+
+@pytest.mark.parametrize("verbosity", ("minimal", "compact"))
+@pytest.mark.parametrize("call", [*REFUSED, "warned"])
+def test_error_and_warning_objects_carry_no_empty_fields(runtime, call, verbosity):
+    """Like the answer, each error and warning object leaves out empty fields, on every
+    transport and at every verbosity; its code and message always stay."""
+    for transport, response in _responses(runtime, REFUSED.get(call, WARNED), verbosity).items():
+        issues = _issues(response)
+        assert issues, (transport, response)
+        for issue in issues:
+            empty = [key for key, value in issue.items() if value in (None, "", [], {})]
+            assert not empty, (transport, issue.get("code"), empty)
+            if "kind" not in issue:  # a recovery hint is named by its kind
+                assert issue.get("code") and issue.get("message"), (transport, issue)
