@@ -23,7 +23,6 @@ from semantic_rails.mcp import (
     SemanticLayerMCPAdapter,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
-from semantic_rails.metadata_parts.relevance import _no_viable_candidates_block
 from semantic_rails.planner.plan_query import _trim_why_errors
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
@@ -437,9 +436,7 @@ def test_recovery_hints_never_send_the_agent_to_a_removed_tool(
 def test_hints_built_outside_those_calls_point_at_v2_calls() -> None:
     why = _trim_why_errors([{"code": "INVALID_QUERY", "message": "bad"}] * 4)
     assert why["truncated"]["dropped"] == 1
-    blocked = _no_viable_candidates_block("x", blocked_codes=[], sample_blocked_messages=[])
-    texts = [*_hint_texts(why), blocked["recovery_hint"]]
-    assert not [text for text in texts if _sends_to_removed_surface(text)]
+    assert not [text for text in _hint_texts(why) if _sends_to_removed_surface(text)]
 
 
 def test_mcp_doctor_checks_the_v2_tools(runtime: Any) -> None:

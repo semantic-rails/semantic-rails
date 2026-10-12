@@ -136,10 +136,6 @@ def apply_response_verbosity(
     return out
 
 
-def _collect_expr_object_ids(expr_payload: dict[str, Any]) -> list[str]:
-    return collect_object_references(expr_payload)
-
-
 def _object_label_maps(config: Any) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for row in [
@@ -206,14 +202,14 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
     for item in list(query.get("select", []) or []):
         alias = str(item.get("as", "") or "")
         expr = dict(item.get("expression", {}) or {})
-        lineage = list(dict.fromkeys(_collect_expr_object_ids(expr)))
+        lineage = list(dict.fromkeys(collect_object_references(expr)))
         semantic_id = lineage[0] if len(lineage) == 1 else ""
         meta = labels.get(semantic_id, {})
         value_type = str(meta.get("type", "") or "")
         if not value_type and semantic_id.startswith("metric."):
             recipe = next((row for row in config.metric_recipes if row.id == semantic_id), None)
             if recipe is not None:
-                source_ids = _collect_expr_object_ids(expr_to_dict(recipe.expression))
+                source_ids = collect_object_references(expr_to_dict(recipe.expression))
                 source_measure = next(
                     (row for row in config.measures if row.id in source_ids), None
                 )

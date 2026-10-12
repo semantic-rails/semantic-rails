@@ -240,7 +240,7 @@ def test_parameterized_select_cap_preserves_statement_terminators_and_comments(p
         cursor = reference.execute(sql, [42])
         columns = [column[0] for column in cursor.description]
         expected = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
-    database = db.Database.connect_in_memory()
+    database = db.Database.connect(":memory:")
     try:
         if path == "database":
             rows = database.query(sql, [42], max_rows=1)

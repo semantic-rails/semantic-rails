@@ -716,7 +716,7 @@ def test_duckdb_synthetic_parent_geo_total_messages_matches_oracle():
         "order_by": [{"field": "dimension.parent_account_geo", "direction": "asc"}],
     }
     compiled = _compiled(config, query)
-    db = Database.connect_in_memory()
+    db = Database.connect(":memory:")
     try:
         db.execute_script(
             """

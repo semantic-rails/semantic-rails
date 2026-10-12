@@ -27,7 +27,7 @@ def test_limits_cover_direct_runtime_and_child_connections(
     with duckdb.connect(config={"threads": 1, "max_temp_directory_size": "100GB"}) as direct:
         expected = direct.execute(SETTINGS).fetchone()
         assert direct.execute("SELECT current_setting('threads')").fetchone() == (1,)
-        with Database.connect_in_memory().conn as runtime, runtime.cursor() as cursor:
+        with Database.connect(":memory:").conn as runtime, runtime.cursor() as cursor:
             settings = cursor.execute(SETTINGS).fetchone()
         command = f"import duckdb,json; print(json.dumps(duckdb.connect().execute({SETTINGS!r}).fetchone()))"
         child = subprocess.run(

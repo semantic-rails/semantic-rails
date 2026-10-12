@@ -104,7 +104,6 @@ from .diagnostics import (
 )
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
-from .expressions import collect_object_references
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import (
@@ -285,14 +284,6 @@ class _ReentrantReadWriteGate:
 
 
 _LOG = logging.getLogger(__name__)
-
-
-def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
-    """Authorization identities come from actual compiler binding, never strings."""
-    if config is not None:
-        return sorted(bind_query(config, None, payload).object_ids)
-    query = normalize_query(payload)
-    return collect_object_references(query.to_dict())
 
 
 @contextlib.contextmanager

@@ -179,12 +179,6 @@ class Database:
         conn.row_factory = sqlite3.Row
         return cls(conn=conn, engine="sqlite")
 
-    @classmethod
-    def connect_in_memory(cls) -> Database:
-        if duckdb is None:
-            raise RuntimeError("duckdb is not installed. Add it to your environment dependencies.")
-        return cls(conn=connect_duckdb(), engine="duckdb")
-
     def execute(self, sql: str, params: Iterable[Any] | None = None) -> None:
         cur = self.conn.cursor()
         cur.execute(sql, list(params or []))

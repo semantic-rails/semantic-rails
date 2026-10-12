@@ -215,7 +215,7 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
         assert type(rows[0]["payload"]) is python_type
     if python_type is Decimal:
         assert rows[0]["payload"].as_tuple().exponent == -4
-    db = Database.connect_in_memory()
+    db = Database.connect(":memory:")
     try:
         if type_name == "timestamptz":
             reference_rows = (

@@ -80,7 +80,7 @@ def test_local_connection_factories_disable_common_subplan(tmp_path, factory):
             assert warehouse.connection.execute(MULTI_LEAF).fetchone() == (Decimal(11), Decimal(22))
         return
     if factory == "memory":
-        database = db.Database.connect_in_memory()
+        database = db.Database.connect(":memory:")
         database.execute_script(SEED)
         connection, close = database.conn, database.close
     elif factory in {"file", "read_only"}:
