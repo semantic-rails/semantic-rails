@@ -253,10 +253,9 @@ lists what is experimental or out of scope.
 In the current release:
 
 - `plan` reports the parts of a question its draft doesn't honor, as `low_confidence`
-  or a `PLAN_UNMATCHED_TERMS` warning, but its checks don't cover every phrasing. For
-  "revenue by store before today" it plans today alone and reports `ok` with only that
-  warning, and `ask` runs it. Check the query call, or `ask`'s "Interpreted as" line,
-  before you rely on the numbers.
+  or a `PLAN_UNMATCHED_TERMS` warning, but its checks don't cover every phrasing, so a
+  draft can still misread a question and report `ok`, and `ask` runs it. Check the query
+  call, or `ask`'s "Interpreted as" line, before you rely on the numbers.
 - `ask` runs one query, so it refuses a question that `plan` answers as several parts
   (`PLAN_PARTS`) and lists them: ask each part on its own.
 - `ask` rounds its tables, but JSON results (`query`, `ask --json`, MCP `execute` and the

@@ -41,16 +41,50 @@
   `data_through`), plus `clock` and `observation_scope`, at every verbosity. A `this` window
   states how much of the period it covers (`PARTIAL_PERIOD`). Responses echo the call they
   answered in the call's own shape.
-- Numbers that change: a named window (`last`, `this`, or `start` with `end`) answers every
-  period. An empty period inside the data reads 0, one after the last loaded row reads `NULL`
-  with `NO_DATA_YET`, and one before the first row reads `NULL`; before, such periods were
-  missing or the answer was empty. `not` (and `!=`, `NOT IN`) now keeps rows whose value is
-  unknown and counts them in `UNKNOWN_ROWS_KEPT`; add `{"op": "missing", "value": false}` to
-  leave them out. A dimension may declare `unknown_values` that read as unknown. A balance reads
-  each period's closing day (its last day with a snapshot) and no longer carries an earlier
-  snapshot forward; a window total over a balance reads the window's closing day instead of
-  adding days.
-- A metric constraint's allowed filters now check everything the caller adds: `where`, entity
-  filters and the conditions inside inline expressions. A package metric's own `filter:` is
-  its governed definition and is not checked against them; to keep a caller from a metric, deny
-  the metric.
+- **Breaking:** answers that change. Each move below is checked against independent
+  reference SQL; nothing was set to whatever the engine returns.
+  - A named window (`last`, `this`, or `start` with `end`) answers every period, on every
+    warehouse but ClickHouse. An empty period inside the loaded data reads 0, one after the last
+    loaded row reads `NULL` with `NO_DATA_YET` and `window.data_through`, and one before the
+    first row reads `NULL`; before, such periods were missing or the answer was empty. A month
+    of days now returns all its days (31 rows where 2 came back), and a month with no orders
+    inside the data reads 0 instead of leaving a gap.
+  - `this` and a window with only `start` end at the request's `now`, to the microsecond: a row
+    stamped after `now` no longer counts ("this month" with a later-dated row: 3 → 2).
+  - `not` (and `!=`, `NOT IN`) keeps rows whose value is unknown and counts them in
+    `UNKNOWN_ROWS_KEPT`; add `{"op": "missing", "value": false}` to leave them out. "Signups
+    excluding web" now includes the signups with no channel, and a `not` through a lookup keeps
+    the rows the lookup can't match (a "not operating" count through a lookup: 1 → 10). A dimension may declare
+    `unknown_values` that read as unknown.
+  - A balance reads each period's closing day (its last day with a snapshot) and no longer
+    carries an earlier snapshot forward (a weekly stock 1,122 → 1,022); a window total over a
+    balance reads the window's closing day instead of adding days (the bundled `jaffle_shop`
+    inventory for March and April 2017: 1,945 → 860).
+  - An entity filter's unknown aggregate fails every threshold, `not` included (before, `not 0`
+    kept entities whose aggregate was unknown). Under `observation_scope: "dataset"` a period
+    in which the filter keeps no entity reads 0 inside the data (before `NULL`); under
+    `"query"` it stays `NULL` with `NO_DATA_IN_SCOPE`. A group whose value is unknown (no
+    history version at the row's time) is kept beside an entity filter on aggregates; before, it
+    was dropped.
+  - Grouping by an entity's display name keys the rows by the entity, so namesakes are two rows
+    (`GROUPED_BY_KEY`), and a share over that name spans every namesake (1 and 1 → 0.5 and 0.5).
+  - A window with no grain is one total: a `group_by`-only call lists each group once (3 rows,
+    one per raw timestamp → 2), and a running total there is refused with
+    `WINDOW_TOTAL_UNSUPPORTED` and the grain to add.
+  - The time column is `period`, an ISO date; the numbers in it don't change.
+- **Breaking:** `plan` answers more and guesses less. It reads relative phrases against the
+  request's `now` (before, the wall clock), answers exclusions with `not`, and drafts the
+  governed metric a question names, so those questions move from `low_confidence` to `ok`.
+  Two periods side by side return `needs_clarification`
+  with `PERIOD_COMPARISON` and a call that reads them as one series, and a comparison whose
+  period isn't over is held (`PERIOD_COMPARISON_INCOMPLETE`). Fiscal periods are held, never
+  drafted on Gregorian quarters. A question asking "how many distinct orders" counts orders, not
+  customers. An entity filter with no stated period asks `ENTITY_FILTER_PERIOD_UNSTATED`.
+- A metric constraint's allowed filters check everything the caller adds: `where`, entity
+  filters and the conditions inside inline expressions. A package metric's own `filter:` is its
+  governed definition: it passes `allowed_where` and the cut allowlists
+  (`allow_metric_filters`, `allowed_metric_filter_*`), while the caller's `having`, entity
+  filters or inline copies of it are still refused. To keep a caller from a metric, deny the
+  metric. A raw measure that a metric hidden from the caller filters is refused in every read
+  (`POLICY_DENIED`, naming nothing hidden), and `plan` holds it; a caller who sees every metric
+  gets the raw number as before.

@@ -34,8 +34,12 @@ surface.
 - prior-period expressions
 - period-to-date expressions
 - result thresholds (`having`) and entity filters (`any`, `none`, or `having` with `over`)
+- `share` of a total, with the denominator stated in `assumptions`
+- a statistic override (`aggregation`) the measure allows, stated in `assumptions`
+- grouping by an entity's display name keyed by the entity, so namesakes stay apart
 - query-level time grain selection
-- named windows (`last`, `this`, `start`/`end`) that answer every period, and `time.fill` on an open window
+- named windows (`last`, `this`, `start`/`end`) that answer every period (on ClickHouse, the
+  periods with rows, stated as `OBSERVED_PERIODS_ONLY`), and `time.fill` on an open window
 - compile and validate before execution
 - `order_by.field = "period"` when a query has a time axis
 
@@ -118,7 +122,7 @@ measure), jaffle ships both so authors can compare the trade-offs.
 - metric temporal-role metadata
 - dimension provenance for non-local dimensions
 - measure-first aggregation guidance, recommended dimensions, and search-term ranking
-- plan output with `status`, `intent_ir`, `best.query_ir`, and optional alternatives
+- plan output with `status`, `intent_ir`, `best.query`, and optional alternatives
 - comparison-aware planning with validated inline comparison drafts
 - comparison-family and clock-variant metadata on object cards
 - starter query patches on measure, metric, and dimension inspection cards

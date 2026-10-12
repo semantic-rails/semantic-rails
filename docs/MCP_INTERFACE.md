@@ -44,17 +44,17 @@ try:
     tools = adapter.list_tools()  # Paid once at connect time.
     found = adapter.call_tool("discover", {"terms": "orders by store name"})  # "" lists every id.
     draft = adapter.call_tool("plan", {"intent": "orders by store name"})
-    if draft["status"] == "ok" and not draft["warnings"]:
+    if draft["status"] == "ok" and not draft.get("warnings"):
         result = adapter.call_tool(
             "execute",
-            {"query": draft["best"]["query_ir"], "row_format": "columns"},
+            {"query": draft["best"]["query"], "row_format": "columns"},
         )
 finally:
     adapter.close()
 ```
 
 The adapter returns plain dictionaries with the same additive envelope fields used by the HTTP
-API:
+API (`warnings`, `errors`, `error` and `recovery_hints` only when they have entries):
 
 - `ok`
 - `status`
@@ -150,7 +150,8 @@ one gotcha. Every tool returns its smallest response by default (`verbosity="min
 Every tool accepts an optional `request_id` at runtime, including tools with closed schemas,
 but leaves this transport field out of its advertised input schema. Arguments never say who is
 asking: identity comes from credentials (the `request_context` a transport resolved, or a host
-passed to `call_tool`). A `policy_context` beside or inside `query` is refused, with
+passed to `call_tool`). A `policy_context` anywhere in the arguments (beside `query`, inside
+it, or nested deeper) is refused, with
 `IDENTITY_CLAIM_REFUSED` where a transport resolved the caller (Streamable HTTP, or a host
 passing `request_context`) and as an unknown key on stdio and in-process calls; it is never
 stripped and answered.
@@ -250,18 +251,18 @@ Metadata tools read their `query` seed through the same front door.
 ### Plan
 
 `plan` is the only natural-language intent tool. Its default `detail="query"` returns `status`,
-`best.query_ir`, and a `why` or `warnings` entry for any part of the question the draft doesn't
-honor; `detail="best"` adds `intent_ir`, `best.trace` and `next`. Forward `best.query_ir` to
+`best.query`, and a `why` or `warnings` entry for any part of the question the draft doesn't
+honor; `detail="best"` adds `intent_ir`, `best.trace` and `next`. Forward `best.query` to
 `execute` (`row_format="columns"` is the lowest-token shape). When `status="ok"`, the draft has
 already paid validation cost, so run `execute` with `mode="validate"` only when you are editing
 the call or need full diagnostics.
 
-Validate or execute `best.query_ir`; `next` carries only `ready_for` and optional
+Validate or execute `best.query`; `next` carries only `ready_for` and optional
 `valid_values` calls, without another copy of the query. In `detail="best"`, fallback
 drift reasons point to slot paths in `best.trace.intent_slots` and
 `why.details.fallback_slots`. Full/debug detail keeps the expanded slot diagnostics;
 query detail keeps them self-contained because it omits the trace.
-Other exact repeats use `{"$ref": "best.resolved.0"}` or a `best.query_ir` field path;
+Other exact repeats use `{"$ref": "best.resolved.0"}` or a `best.query` field path;
 follow the dot-separated path from the response root (numbers index arrays).
 
 #### Questions that ask several things
@@ -282,7 +283,7 @@ only when every part is `ok`. Otherwise it is the weakest part's status (`needs_
 then `low_confidence`, `unrealizable`, `out_of_scope`), and `why.code="PLAN_PARTS_NOT_READY"`
 lists the parts not ready in `why.details.parts`. Every part's warnings are top-level warnings
 too. `best` and `intent_ir` are the first part's, for clients that read only `best`;
-`detail="query"` returns every part's `best.query_ir`. Execute each part's query and report
+`detail="query"` returns every part's `best.query`. Execute each part's query and report
 each answer.
 
 `plan` doesn't plan the parts when it can't read each one alone. It keeps the whole question's
@@ -319,7 +320,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   metric's own name isn't read again as a window, a ranking or a value;
 - answers with a measure, or the metric that is its plain aggregate, while a metric that
   reads the same measure through a filter fits the question (`governed_metric_unrealized`,
-  the visible metrics in `expected.metrics`). The guard reads the whole question, including
+  the visible metrics in `expected.metrics`). When the metric that filters the measure is
+  hidden from the caller, the draft holds with that gap and generic wording, naming neither
+  the metric nor its filter, and `execute` refuses the raw measure with `POLICY_DENIED`
+  ([What a caller sees of a hidden object](PACKAGE_AUTHORING.md#what-a-caller-sees-of-a-hidden-object)). The guard reads the whole question, including
   relative clauses such as "stores that were active last week". It fits when the question
   holds every word of its label (with or without a parenthetical), an alias or its id, in any order and
   with plurals as singulars, or when the measure is a [building
@@ -434,7 +438,12 @@ A draft that validates can still leave out part of the question. `plan` returns
   with: a prior-period select. A second select (which may spell the first again), a
   `group_by` or a time grain doesn't show what the question compares
   (`comparison_unrealized`: "Were orders up or down last week?", "Compare revenue by store
-  last month", "Food revenue vs drink revenue last month"). Two or more questions for a
+  last month", "Food revenue vs drink revenue last month"). Two periods side by side
+  ("revenue month over month") aren't answered in this release: plan returns
+  `needs_clarification` with `PERIOD_COMPARISON`, whose `why.details.options[].call` reads the
+  compared periods as one series (`last` with a grain), and holds a comparison whose period
+  isn't over at `now` ("this week vs last week") with `PERIOD_COMPARISON_INCOMPLETE`. Two or
+  more questions for a
   value, "how many", "how much", "what is", "what was" or "what's", need a select of their
   own each that names what the question asks about:
   its first words that aren't stopwords, framing words, numbers or a window's words lie where
@@ -452,20 +461,20 @@ A draft that validates can still leave out part of the question. `plan` returns
   the `PLAN_UNMATCHED_TERMS` checks below included, so it holds only a draft nothing else
   holds.
 
-`plan` doesn't answer questions that exclude values yet. An exclusion ("excluding", "except",
-"without", "not", "but not", "other than", "apart from", "aside from", "minus", "outside of",
-"all stores but") holds whatever the draft carries, the caller's `partial_query` included: each
-clause is one gap, `negation_reversed` when a top-level `is` filter keeps a value the
-clause names, otherwise `negation_unrealized`. Its recovery hint (`ask_for_breakdown`) suggests
-asking for the breakdown by the excluded dimension instead ("signups by channel"), which shows
-each value and the rows with no recorded value; listing the values to keep would drop those
-rows. A time phrase inside an exclusion ("signups not in June 2024") is never read as the
-question's window.
-
-An exclusion keeps rows with no recorded value, so its executable form is one top-level `where`
-filter per excluded value, `{"field": ..., "op": "not", "value": ...}`: "signups excluding web"
-counts the signups with no channel ([Unknown values](QUERY_CALL.md#unknown-values)). The held
-draft uses that form, and a hand-written call with it runs through `execute`.
+An exclusion ("excluding", "except", "without", "not", "but not", "other than", "apart from",
+"aside from", "minus", "outside of", "all stores but") keeps rows with no recorded value, so its
+executable form is a top-level `where` filter `{"field": ..., "op": "not", "value": ...}`:
+"signups excluding web" counts the signups with no channel
+([Unknown values](QUERY_CALL.md#unknown-values)). `plan` answers an exclusion when its draft,
+the caller's `partial_query` included, leaves out exactly the values the clause names with
+`not` filters and no `is` filter narrows that dimension ("revenue excluding Brooklyn" is `ok`).
+Every other exclusion holds: each clause the draft doesn't answer that way is one gap,
+`negation_reversed` when a top-level `is` filter keeps a value the clause names, otherwise
+`negation_unrealized` (a value the package doesn't declare, a time window, a clause the planner
+can't split). Its recovery hint (`ask_for_breakdown`) suggests asking for the breakdown by the
+excluded dimension instead ("signups by channel"), which shows each value and the rows with no
+recorded value; listing the values to keep would drop those rows. A time phrase inside an
+exclusion ("signups not in June 2024") is never read as the question's window.
 
 The gap's `expected.items` lists what the clause names, each with its `kind`: a declared value
 name (its value, label or alias, in double quotes or none) with its `field` and `value`, a
@@ -566,7 +575,7 @@ that a draft filter keeps (`is` that value, alone or in a list) holds the plan e
 groups by it, since the filter may narrow the answer. `why.details.filter_inside_grouping` lists
 each such filter as `{"term", "field", "value"}`, `dropped_groupings` keeps the term, and the
 recovery hint asks the caller to confirm the value with the user or remove it from that field's
-filters in `best.query_ir.where`. This reading never reads a hidden dimension, entity, measure,
+filters in `best.query.where`. This reading never reads a hidden dimension, entity, measure,
 metric, temporal role or calendar, so a hidden object answers exactly as an absent one: a hidden
 clock is no clock, and its words keep their obligation. It only holds a plan; the draft and its
 filters are unchanged.
@@ -683,7 +692,7 @@ one beside another condition ("revenue in 2017 from customers who signed up in 2
 conflict, and `TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. `plan`
 resolves days and coarser windows only. A window shorter than a day ("last 24 hours", "past
 hour", "last 30 minutes") returns `TIME_WINDOW_UNRESOLVED` with `why.details.sub_day_phrases` and
-no `best.query_ir`, never a query over all time. Every other hour or zone is caught by one
+no `best.query`, never a query over all time. Every other hour or zone is caught by one
 rule: a draft is `ok` only if every number, number word and clock or zone word in the question
 is consumed by a construct the draft carries. The words it counts are numerals ("9", "14h30",
 "1930"), spelled-out numbers ("nine", "twelve", "twenty", "hundred", "half", and "quarter" in
@@ -740,7 +749,7 @@ windows at once (such as "last month and this month"), return `low_confidence` w
 nearest parsed window. In a question that names fiscal periods, only exact days resolve (days
 with a year, ISO dates, and "last 7 days", "yesterday" or "today"): "fiscal Q2 2017",
 "FY2017", "last fiscal quarter" and even "in 2017" are unresolved, since only the package's
-fiscal calendar can date them. That response has no `best.query_ir` to execute, since a query
+fiscal calendar can date them. That response has no `best.query` to execute, since a query
 without the window answers a different question: pass the window in `query.time`, with the
 temporal role and grain, and plan again. **Qualified relative periods remain a limitation:**
 for phrases such as
@@ -748,7 +757,7 @@ for phrases such as
 with the embedded period's bounds but without the qualifier, rather than
 `TIME_WINDOW_UNRESOLVED`. A `PLAN_UNMATCHED_TERMS` warning may appear, but "until" is treated as
 a framing word, so "until this week" can have no qualifier warning. Regardless of warnings,
-compare `best.query_ir.time` with the intended bounds or provide explicit `query.time` before
+compare `best.query.time` with the intended bounds or provide explicit `query.time` before
 executing such a draft. A total over a window gets
 one bucket when one calendar grain holds the window; an explicit grain ("monthly") wins. When a
 draft can't take the window's start, because the metric looks back over earlier periods or the
@@ -898,7 +907,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. With a `time` block and no `temporal_role`, the call is refused with this code instead: each of `details.options` names one clock and the selections it reads. See [The clock](QUERY_CALL.md#the-clock) |
 | `FILTERED_SERIES_BUCKETS_DROPPED` | `execute` | An unsupported filtered additive series omitted observed buckets. `details.dropped_buckets` lists their time and grouping keys from a separately authorized source query; an average over returned rows omits them |
 | `FILTERED_SERIES_BUCKETS_UNVERIFIED` | `execute` | Missing observed buckets could not be established because the source query was denied, failed or capped, or the answer has a limit or population filter. `details.reason` explains why |
-| `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
+| `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `ROUTE_PASS_THROUGH` | `execute` (every verbosity) | The package's one route for a pair the query reads passes through another table's rows that the package doesn't declare as a link table, so a start row with none is left out and one with several can count under several targets; the message gives the meaning and the fixes, `details.through` the crossed entities and `details.fixes` the declarations that settle it |
 | `NULL_PRESERVING_HISTORY` | `execute` | A dimension the query groups or filters by is read through a hop into a validity window; grouped, the warning counts the answer's empty group from the returned rows, or is dropped from a complete answer without one |
@@ -1180,7 +1189,7 @@ expression kind names the received kind and its request path (for example,
 |------|----------------------|
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
 | `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
-| `PLAN_UNMATCHED_TERMS` | A grouping option also carries `group_by` and `order_by` to apply with its complete `where` for one unclear term. With several, in `best.query_ir` remove each chosen option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`, keep `group_by` sorted, then validate. When two terms could replace the same grouping, plan offers no options; ask the user. |
+| `PLAN_UNMATCHED_TERMS` | A grouping option also carries `group_by` and `order_by` to apply with its complete `where` for one unclear term. With several, in `best.query` remove each chosen option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`, keep `group_by` sorted, then validate. When two terms could replace the same grouping, plan offers no options; ask the user. |
 | `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, its `decision` row, and `query`, the same call with that route in `routes`. Ask the person, then send that option's `query`. The clarification appears once in the error's details. Route and policy guards apply to every shape. A route in a call applies to that call only; record it with Architect `record_route_decision` and the option's `decision` (the package default; an option's `conflicts_with` names the package rows to change first). See [`routes`](QUERY_CALL.md#routes). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema. |

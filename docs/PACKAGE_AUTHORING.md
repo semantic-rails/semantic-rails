@@ -916,6 +916,11 @@ whole package, so hiding an object never removes or changes a `deny`,
   block](#building-block-measures) stays one when its metric is hidden, and `plan` still
   holds a draft over a measure that a metric narrows when that metric is hidden only because
   something it reads is hidden. The hold names nothing hidden.
+- **A measure governed out of view is not answered raw:** when a metric the caller can't see
+  filters a measure, every read of that measure (a select, `having`, an entity filter's
+  threshold, a nested predicate) is refused with `POLICY_DENIED`, naming neither the metric
+  nor what it filters, and `plan` holds a draft that reads it, with a hint to ask a package
+  admin which metric answers it. A caller who sees every metric gets the raw number as before.
 - **Authored text never names a hidden object.** A field of a visible object, or of the
   package, that names a hidden object (its id, or a name, label or alias no visible object
   shares) is shown without it, by what the field is: a text field (description, label,
@@ -1401,7 +1406,9 @@ buckets, and a query's `start`/`end` bounds, are in that zone:
   On those warehouses, store naive timestamps and declare their zone with
   `column_timezone:`. Until a clock in a zone other than UTC declares it, a window
   that ends at now (`this`, or `start` alone) is refused there: a plain and a
-  zone-aware timestamp would need different cutoffs. Dated windows still answer.
+  zone-aware timestamp would need different cutoffs. Dated windows still answer. A
+  BigQuery `TIMESTAMP` column holds instants: declare `column_timezone: UTC`, and the clock
+  reads it in its own zone (`DATETIME(CAST(column AS TIMESTAMP), zone)`).
 
 ### Dimensions
 
