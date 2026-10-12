@@ -637,8 +637,8 @@ option's route in `routes`.
 
 Whether a sum or count with no rows in a group reads 0 or NULL depends on whether its measure
 has data "in scope". `dataset` (the default, or the package's `defaults.observation_scope`)
-judges that before the call's `where`; `query` judges it inside the call's filters. Chicago has
-no orders:
+judges that before the call's `where`, entity filters included; `query` judges it inside the
+call's filters. Chicago has no orders:
 
 ```json
 {"select": ["measure.jaffle.order_count"],
@@ -887,10 +887,11 @@ non-NULL amount, or a count above zero. The scope is the measure's own authored 
 `group_by`; [`observation_scope`](#observation_scope) says whether the call's `where` counts:
 
 - **`dataset`**: it doesn't. "Apples at store 5" reads `0` when store 5 sold no apples, as store
-  5 does in a by-store answer. A string `is` value that matches no row of its dimension (under
-  the caller's row filters) adds `FILTER_VALUE_NOT_FOUND`, naming the value and the closest one,
-  so a misspelled value isn't read as a confident 0; when the check cannot run,
-  `FILTER_VALUE_UNVERIFIED` names what was not verified.
+  5 does in a by-store answer. An entity filter is part of the `where`: a period in which it
+  keeps no entity reads `0` inside the loaded data. A string `is` value that matches no row of
+  its dimension (under the caller's row filters) adds `FILTER_VALUE_NOT_FOUND`, naming the value
+  and the closest one, so a misspelled value isn't read as a confident 0; when the check cannot
+  run, `FILTER_VALUE_UNVERIFIED` names what was not verified.
 - **`query`**: it does. A measure with no value inside the call's filters reads `NULL` in every
   group, with `NO_DATA_IN_SCOPE`.
 

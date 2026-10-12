@@ -6078,10 +6078,14 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     refuse_shared_names(row_counts.values(), taken)
     overrides = override_row_counts(plan, config) if plan_is_root() else {}
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
-    # Under the dataset scope, each measure's own rows, which the query's where filters never
-    # cut. A query metric predicate selects the rows measured, which no such probe reads.
+    # Under the dataset scope, each measure's own rows, which the query's where filters and
+    # entity filters never cut. A where beside an entity filter is not probed, so it refuses.
     observed: dict[str, LeafScope] = {}
-    probing = guard_empty and observes_dataset() and not _query_metric_predicates(plan)
+    probing = (
+        guard_empty
+        and observes_dataset()
+        and not (_query_metric_predicates(plan) and plan.query.get("where"))
+    )
     retained = _retained_filtered_series(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
