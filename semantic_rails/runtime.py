@@ -1648,18 +1648,7 @@ class Runtime:
             refusal = _scope_refusal(payload)
             if refusal is not None:
                 raise refusal
-            binding = self._bind(payload, policy_context)
-            object_ids = binding.object_ids
-            policy_effects = enforce_query_policies(
-                self.package_config,
-                object_ids,
-                environment=str(policy_context.get("environment", "")),
-                audience=str(policy_context.get("audience", "")),
-                roles=policy_context.get("roles", []),
-                query=payload,
-                binding=binding,
-            )
-            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
+            policy_effects, compiled = self._enforced_compile(payload, policy_context)
             report = ValidationReport(
                 version=2,
                 ok=True,
@@ -1754,18 +1743,7 @@ class Runtime:
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
         try:
-            binding = self._bind(payload, policy_context)
-            object_ids = binding.object_ids
-            policy_effects = enforce_query_policies(
-                self.package_config,
-                object_ids,
-                environment=str(policy_context.get("environment", "")),
-                audience=str(policy_context.get("audience", "")),
-                roles=policy_context.get("roles", []),
-                query=payload,
-                binding=binding,
-            )
-            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
+            policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
@@ -1813,18 +1791,7 @@ class Runtime:
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
         try:
-            binding = self._bind(payload, policy_context)
-            object_ids = binding.object_ids
-            policy_effects = enforce_query_policies(
-                self.package_config,
-                object_ids,
-                environment=str(policy_context.get("environment", "")),
-                audience=str(policy_context.get("audience", "")),
-                roles=policy_context.get("roles", []),
-                query=payload,
-                binding=binding,
-            )
-            compiled = self._compile(payload, policy_context=policy_context, binding=binding)
+            policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
@@ -2104,6 +2071,25 @@ class Runtime:
         )
         out["assumptions"].extend(call_assumptions(self._config, compiled, payload or {}, hidden))
         return out
+
+    def _enforced_compile(
+        self, payload: dict[str, Any], policy_context: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Bind the query, enforce the package's policies on every object it reads, then compile
+        it: the policy effects and the compiled query."""
+        binding = self._bind(payload, policy_context)
+        policy_effects = enforce_query_policies(
+            self.package_config,
+            binding.object_ids,
+            environment=str(policy_context.get("environment", "")),
+            audience=str(policy_context.get("audience", "")),
+            roles=policy_context.get("roles", []),
+            query=payload,
+            binding=binding,
+        )
+        return policy_effects, self._compile(
+            payload, policy_context=policy_context, binding=binding
+        )
 
     def _bind(self, payload: dict[str, Any], policy_context: dict[str, Any]) -> BoundQuery:
         """Bind the caller's query on their view; row filters and policies read the base."""
