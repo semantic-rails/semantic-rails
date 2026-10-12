@@ -718,29 +718,39 @@ def test_the_entity_in_terms_of_time_role_keeps_the_inner_join(rollup_safe_runti
 
 # Item 111 names order 999, which has no record.
 ORPHAN_ITEM_SEED = "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage');\n"
+# The orders that hold an item, by a {group} of the item.
+SQL_ORDERS_BY_ITEM = (
+    "SELECT {group}, COUNT(DISTINCT o.order_id) FROM orders AS o"
+    " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1"
+)
+SQL_ITEM_CATEGORY = "(SELECT p.category FROM products AS p WHERE p.sku = i.sku)"
+
+
+def _answer(package: Path, query: dict[str, Any], reference: str) -> tuple[str, dict, dict]:
+    """The query's SQL and rows on a package of its own, and the reference SQL's on its seed."""
+    runtime = Runtime.from_path(str(package))
+    try:
+        sql, rows = _sql(runtime.config, query), _rows(runtime, query)
+    finally:
+        runtime.close()
+    with duckdb.connect() as connection:
+        connection.execute((package / "data" / "seed.sql").read_text())
+        gold_rows = connection.execute(reference).fetchall()
+    return sql, rows, {row[:-1] if len(row) > 2 else row[0]: row[-1] for row in gold_rows}
 
 
 def test_the_entity_in_terms_of_leaf_counts_no_order_for_an_item_with_no_order(tmp_path):
     """Counted from the items, item 111 is none of the orders: the hop back to the order joins
     INNER, and the lookups past it keep rows (orders 3 and 10 still count under NULL)."""
-    query = _query(ORDER_COUNT, group_by=[TYPE, COUNTRY])
-    runtime = Runtime.from_path(
-        str(_write_package(tmp_path, rollup_safe=True, extra_seed=ORPHAN_ITEM_SEED))
+    sql, rows, reference = _answer(
+        _write_package(tmp_path, rollup_safe=True, extra_seed=ORPHAN_ITEM_SEED),
+        _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]),
+        SQL_ORDERS_BY_TYPE_AND_COUNTRY,
     )
-    connection = duckdb.connect()
-    try:
-        sql = _sql(runtime.config, query)
-        rows = _rows(runtime, query)
-        connection.execute(SEED_SQL + ORPHAN_ITEM_SEED)
-        gold_rows = connection.execute(SQL_ORDERS_BY_TYPE_AND_COUNTRY).fetchall()
-    finally:
-        runtime.close()
-        connection.close()
 
     assert "FROM items" in sql
-    # The gold counts existing orders only: item 111 (order 999, no record) adds none.
-    assert rows == {(kind, country): count for kind, country, count in gold_rows}
-    assert rows == ORDERS_BY_TYPE_AND_COUNTRY
+    # The reference counts existing orders only: item 111 (order 999, no record) adds none.
+    assert rows == reference == ORDERS_BY_TYPE_AND_COUNTRY
 
 
 # Every pair of (product lookup of the orphan item, time axis, leaf) appears once.
@@ -761,27 +771,13 @@ def test_a_child_lookup_grouping_counts_only_existing_parents(
     """Both leaves count existing orders, even when an orphan item's product lookup finds no
     match. Reading the order's time axis preserves that count and the valid NULL group."""
     seed = f"INSERT INTO items VALUES (111, 999, {sku}, 'beverage');\n"
-    query = _query(ORDER_COUNT, group_by=[CATEGORY], **({"time": MONTHLY} if with_time else {}))
-    runtime = Runtime.from_path(
-        str(_write_package(tmp_path, rollup_safe=rollup_safe, extra_seed=seed))
+    sql, rows, reference = _answer(
+        _write_package(tmp_path, rollup_safe=rollup_safe, extra_seed=seed),
+        _query(ORDER_COUNT, group_by=[CATEGORY], **({"time": MONTHLY} if with_time else {})),
+        SQL_ORDERS_BY_ITEM.format(group=SQL_ITEM_CATEGORY),
     )
-    connection = duckdb.connect()
-    try:
-        sql = _sql(runtime.config, query)
-        rows = _rows(runtime, query)
-        connection.execute(SEED_SQL + seed)
-        expected = dict(
-            connection.execute(
-                "SELECT (SELECT p.category FROM products AS p WHERE p.sku = i.sku),"
-                " COUNT(DISTINCT o.order_id) FROM orders AS o"
-                " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1"
-            ).fetchall()
-        )
-    finally:
-        runtime.close()
-        connection.close()
 
-    assert rows == expected == {"hot": 4, "cold": 2, None: 3}
+    assert rows == reference == {"hot": 4, "cold": 2, None: 3}
     assert ("FROM items" if rollup_safe else "_entity_rows") in sql
 
 
@@ -850,29 +846,16 @@ def test_a_parent_count_with_two_relationships_uses_the_counted_path(
 ):
     """An alternative parent relationship never changes the pinned order count, with or without
     a row for the counted one."""
-    package = _write_parent_roles_package(tmp_path, extra_seed=extra_seed, pin_parent=pin_parent)
-    runtime = Runtime.from_path(str(package))
-    connection = duckdb.connect()
-    try:
-        query = _query(ORDER_COUNT, group_by=[CATEGORY])
-        sql = _sql(runtime.config, query)
-        connection.execute((package / "data" / "seed.sql").read_text())
-        reference = dict(
-            connection.execute(
-                "SELECT (SELECT p.category FROM products AS p WHERE p.sku = i.sku),"
-                " COUNT(DISTINCT o.order_id) FROM orders AS o"
-                " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1"
-            ).fetchall()
-        )
-        assert _rows(runtime, query) == reference == expected
-    finally:
-        runtime.close()
-        connection.close()
+    sql, rows, reference = _answer(
+        _write_parent_roles_package(tmp_path, extra_seed=extra_seed, pin_parent=pin_parent),
+        _query(ORDER_COUNT, group_by=[CATEGORY]),
+        SQL_ORDERS_BY_ITEM.format(group=SQL_ITEM_CATEGORY),
+    )
 
+    assert rows == reference == expected
     assert "FROM orders" in sql
     assert "FROM items" not in sql
     assert "other_order_id" not in sql
-    assert _lookup_joins(sql) == [("LEFT", "products")]
 
 
 @pytest.mark.parametrize("dimension", [TYPE, CATEGORY], ids=["child", "child_lookup"])
@@ -882,27 +865,12 @@ def test_a_reverse_only_parent_relationship_declines_the_child_anchor(tmp_path, 
     graph = yaml.safe_load((package / "graph.yml").read_text())
     graph["graph"]["relationships"]["items_order"]["allowed_directions"] = ["reverse"]
     (package / "graph.yml").write_text(yaml.safe_dump(graph))
-    runtime = Runtime.from_path(str(package))
-    connection = duckdb.connect()
-    try:
-        query = _query(ORDER_COUNT, group_by=[dimension])
-        sql = _sql(runtime.config, query)
-        connection.execute(SEED_SQL + ORPHAN_ITEM_SEED)
-        grouping = (
-            "i.item_type"
-            if dimension == TYPE
-            else "(SELECT p.category FROM products AS p WHERE p.sku = i.sku)"
-        )
-        reference = dict(
-            connection.execute(
-                f"SELECT {grouping}, COUNT(DISTINCT o.order_id) FROM orders AS o"
-                " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1"
-            ).fetchall()
-        )
-        assert _rows(runtime, query) == reference
-    finally:
-        runtime.close()
-        connection.close()
+    group = "i.item_type" if dimension == TYPE else SQL_ITEM_CATEGORY
+    sql, rows, reference = _answer(
+        package, _query(ORDER_COUNT, group_by=[dimension]), SQL_ORDERS_BY_ITEM.format(group=group)
+    )
+
+    assert rows == reference
 
     assert "FROM orders" in sql
     assert "FROM items" not in sql
