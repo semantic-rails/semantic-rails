@@ -27,10 +27,10 @@ SCRIPTS = (
 )
 
 
-def _load(name: str) -> ModuleType:
+def _load(name: str, path: Path | None = None) -> ModuleType:
     if str(SCRIPTS) not in sys.path:
         sys.path.insert(0, str(SCRIPTS))
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, path or SCRIPTS / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -268,12 +268,7 @@ def test_stale_capture_is_reported_apart_from_the_current_count() -> None:
 
 
 def _load_runner(layer: str) -> ModuleType:
-    path = SCRIPTS.parents[1] / layer / "scripts" / "run_questions.py"
-    spec = importlib.util.spec_from_file_location(f"{layer}_runner", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _load(f"{layer}_runner", SCRIPTS.parents[1] / layer / "scripts" / "run_questions.py")
 
 
 def test_snowflake_run_records_only_one_agreed_fingerprint() -> None:
@@ -354,20 +349,17 @@ def _run_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snowflake: d
 
 
 def test_fresh_snowflake_run_rejoins_the_comparison(tmp_path, monkeypatch) -> None:
-    matching = _run_validator(tmp_path / "a", monkeypatch, {"fingerprint": "fp-now", "orders": 5})
+    fresh = {"fingerprint": "fp-now", "orders": 5, "status": "workaround"}
+    matching = _run_validator(tmp_path / "a", monkeypatch, fresh)
     assert matching["stale_layers"] == {}
     assert matching["summary"]["matched"] == 1
+    # The report records only whether each layer ran, not how.
+    assert matching["questions"][0]["layer_statuses"]["snowflake_semantic_views"] == "executed"
     mismatching = _run_validator(
         tmp_path / "b", monkeypatch, {"fingerprint": "fp-now", "orders": 6}
     )
     assert mismatching["summary"]["mismatched"] == 1
     assert mismatching["questions"][0]["mismatches"][0]["layer"] == "snowflake_semantic_views"
-
-
-def test_the_report_records_only_whether_each_layer_ran(tmp_path, monkeypatch) -> None:
-    status = {"fingerprint": "fp-now", "orders": 5, "status": "workaround"}
-    report = _run_validator(tmp_path, monkeypatch, status)
-    assert report["questions"][0]["layer_statuses"]["snowflake_semantic_views"] == "executed"
 
 
 def test_an_answer_key_from_older_data_is_refused(tmp_path, monkeypatch) -> None:
@@ -1058,18 +1050,11 @@ def test_committed_labels_are_what_the_rubric_derives() -> None:
     assert derived["labels"] == committed["labels"]
 
 
-def test_published_labels_come_from_the_rubric() -> None:
+def test_published_and_generated_contracts_take_rubric_labels_and_count_current_layers() -> None:
     labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
-    matrix = json.loads((SCRIPTS.parent / "capability_matrix.json").read_text(encoding="utf-8"))
-    for row in matrix["rows"]:
-        qid = row["question_id"]
-        assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
-
-
-def test_contracts_take_rubric_labels_and_every_layer_on_current_data_counts() -> None:
+    published = json.loads((SCRIPTS.parent / "capability_matrix.json").read_text("utf-8"))
     _, matrix = generator.build_contracts()
-    labels = json.loads(rubric.OUTPUT_PATH.read_text(encoding="utf-8"))["labels"]
-    for row in matrix["rows"]:
+    for row in published["rows"] + matrix["rows"]:
         qid = row["question_id"]
         assert row["statuses"] == {layer: labels[layer][qid]["label"] for layer in LAYERS}
     assert any("(Semantic Rails, MetricFlow, Cube, Malloy and KtX)" in c for c in matrix["claims"])
@@ -1174,17 +1159,8 @@ def test_hand_written_label_tables_match_the_rubric() -> None:
     _assert_counts(line.split(":", 1)[1], labels["snowflake_semantic_views"])
 
 
-def _load_semantic_rails_runner() -> ModuleType:
-    path = SCRIPTS.parents[1] / "semantic_rails" / "scripts" / "run_questions.py"
-    spec = importlib.util.spec_from_file_location("semantic_rails_runner", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_semantic_rails_provenance_covers_queries_runner_and_questions() -> None:
-    module = _load_semantic_rails_runner()
+    module = _load_runner("semantic_rails")
     assert set(module._provenance()) == {
         "semantic_rails_commit",
         "semantic_rails_tree",
@@ -1201,7 +1177,7 @@ def test_semantic_rails_frozen_queries_reproduce_the_answer_key(tmp_path, monkey
     from semantic_rails.runtime import Runtime
 
     bootstrap = _load("bootstrap_shared_duckdb")
-    runner = _load_semantic_rails_runner()
+    runner = _load_runner("semantic_rails")
     monkeypatch.setattr(bootstrap, "DB_PATH", tmp_path / "shared.duckdb")
     bootstrap.main()
     monkeypatch.setattr(
@@ -1334,7 +1310,7 @@ def test_an_unreleased_engine_is_not_labeled_as_the_release() -> None:
 
 
 def test_engine_release_needs_the_release_tree_and_a_clean_engine(monkeypatch) -> None:
-    runner = _load_semantic_rails_runner()
+    runner = _load_runner("semantic_rails")
     monkeypatch.setattr(runner, "version", lambda name: "0.2.1")
 
     def git_answers(answers: dict[tuple[str, ...], str]):
