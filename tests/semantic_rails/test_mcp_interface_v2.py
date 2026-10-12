@@ -174,8 +174,20 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     assert execute["max_rows"]["default"] == MCP_DEFAULT_MAX_ROWS
     assert execute["mode"]["enum"] == ["run", "validate", "sql"]
     assert "exclusive" in execute["query"]["properties"]["time"]["properties"]["end"]["description"]
-    for tool in ("discover", "inspect", "execute"):
-        assert tools[tool]["inputSchema"]["properties"]["verbosity"]["default"] == "minimal"
+    assert execute["max_rows"]["maximum"] == 100_000
+    for tool, levels in (
+        ("discover", ["minimal", "compact", "full"]),
+        ("inspect", ["minimal", "compact", "full"]),
+        ("execute", None),
+        ("segment", ["minimal", "full"]),
+    ):
+        verbosity = tools[tool]["inputSchema"]["properties"]["verbosity"]
+        assert verbosity["default"] == "minimal", tool
+        assert levels is None or verbosity["enum"] == levels, tool
+    # Empty discover terms page at 100 ids by default; only the calls that read a clock take now.
+    assert "default" not in tools["discover"]["inputSchema"]["properties"]["limit"]
+    assert "now" not in tools["discover"]["inputSchema"]["properties"]
+    assert "now" in execute and "now" in tools["plan"]["inputSchema"]["properties"]
     # Hosts that drop the server instructions still see plan-first and the exclusive end.
     assert "call it before 'execute'" in tools["plan"]["description"]
     assert "call plan first" in tools["execute"]["description"]
@@ -750,10 +762,3 @@ def test_plan_takes_now_on_mcp_and_rest(
         "POST", "/plan", {"intent": "orders last month", "options": {"now": "2017-03-16"}}
     )
     assert seen == ["2017-03-15", "2017-03-16"]
-
-
-def test_discover_takes_no_now() -> None:
-    tools = {tool["name"]: tool for tool in load_contract("query_mcp.v2.json")["tools"]}
-    assert "now" not in tools["discover"]["inputSchema"]["properties"]
-    assert {"now"} <= set(tools["execute"]["inputSchema"]["properties"])
-    assert {"now"} <= set(tools["plan"]["inputSchema"]["properties"])

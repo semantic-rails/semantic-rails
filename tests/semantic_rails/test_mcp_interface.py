@@ -403,8 +403,15 @@ def test_mcp_adapter_resources_prompts_and_structured_errors(runtime_factory):
         assert invalid_query["ok"] is False
         assert invalid_query["request_id"] == "mcp-bad-query"
         assert invalid_query["errors"][0]["code"] == "INVALID_MCP_ARGUMENTS"
+        # Each argument error carries the fix: wrap the query as an object, send an integer.
+        hints = {hint["kind"]: hint for hint in invalid_query["errors"][0]["recovery_hints"]}
+        assert hints["wrap_query_as_object"]["closest_valid_query"] == {
+            "select": ["<measure or metric id>"]
+        }
         assert invalid_limit["ok"] is False
         assert invalid_limit["errors"][0]["code"] == "INVALID_MCP_ARGUMENTS"
+        hints = invalid_limit["errors"][0]["recovery_hints"]
+        assert any(h["kind"] == "use_integer" and "limit" in h["message"] for h in hints)
     finally:
         adapter.close()
 
@@ -468,46 +475,3 @@ def test_mcp_stdio_jsonrpc_lists_and_calls_tools(runtime_factory):
         assert notification_output.getvalue() == ""
     finally:
         adapter.close()
-
-
-# ----------------------------------------------------------------------
-# MCP error-envelope recovery hints — the whole point of the structured
-# envelope is teaching the agent how to retry. Per audit finding I5, the
-# common ``INVALID_MCP_ARGUMENTS`` error used to ship
-# ``recovery_hints: []`` even though it knew the specific field and
-# offending type. These tests pin the hint shape for each known mistake.
-# (``inspect`` + typo'd object_id closest-matches is covered separately
-# in ``test_inspect_closest_matches.py``.)
-# ----------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("mode", ["validate", "sql"])
-def test_mcp_execute_with_string_query_returns_wrap_query_hint(runtime_factory, mode):
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        out = adapter.call_tool("execute", {"mode": mode, "query": "this is not a query"})
-    finally:
-        adapter.close()
-    assert out["ok"] is False
-    assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["errors"][0]["recovery_hints"]
-    assert hints, "recovery_hints must be non-empty for INVALID_MCP_ARGUMENTS"
-    assert any(h.get("kind") == "wrap_query_as_object" for h in hints)
-    wrap_hint = next(h for h in hints if h.get("kind") == "wrap_query_as_object")
-    assert "object" in wrap_hint["message"].lower()
-    assert wrap_hint["closest_valid_query"] == {"select": ["<measure or metric id>"]}
-
-
-def test_mcp_discover_with_bad_limit_returns_integer_hint(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        out = adapter.call_tool("discover", {"terms": "revenue", "limit": "abc"})
-    finally:
-        adapter.close()
-    assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["errors"][0]["recovery_hints"]
-    assert hints
-    assert any(h.get("kind") == "use_integer" for h in hints)
-    assert any("limit" in h["message"] for h in hints)

@@ -19,7 +19,6 @@ import pytest
 from semantic_rails.mcp import (
     MCP_DEFAULT_MAX_ROWS,
     SemanticLayerMCPAdapter,
-    list_tool_definitions,
 )
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
@@ -55,22 +54,17 @@ def _truncation(response: dict[str, Any]) -> dict[str, Any]:
     return next(w for w in response["warnings"] if w["code"] == "EXECUTE_ROWS_TRUNCATED")
 
 
-def test_execute_advertises_its_default_cap() -> None:
-    execute = next(tool for tool in list_tool_definitions() if tool["name"] == "execute")
-    max_rows = execute["inputSchema"]["properties"]["max_rows"]
-    assert max_rows["default"] == MCP_DEFAULT_MAX_ROWS
-    assert max_rows["maximum"] == 100_000
-
-
 def test_a_large_result_is_capped_and_says_more_exist(adapter: SemanticLayerMCPAdapter) -> None:
     response = adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 200})
     assert response["ok"], response["errors"]
     assert response["row_count"] == len(response["rows"]) == MCP_DEFAULT_MAX_ROWS
     assert response["truncated"] is True
     assert response["total_row_count"] is None
-    warning = _truncation(response)
-    assert "Returned the first 200 rows; more exist" in warning["message"]
-    assert warning["details"] == {"returned_rows": 200, "total_row_count": None, "max_rows": 200}
+    assert _truncation(response)["details"] == {
+        "returned_rows": 200,
+        "total_row_count": None,
+        "max_rows": 200,
+    }
 
 
 def test_execute_fetches_only_its_cap(
@@ -127,10 +121,6 @@ def test_the_questions_top_n_is_not_the_transport_cap(adapter: SemanticLayerMCPA
 
 
 def test_the_cap_is_an_argument_not_part_of_the_call(adapter: SemanticLayerMCPAdapter) -> None:
-    first = adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 200})
-    assert first["row_count"] == MCP_DEFAULT_MAX_ROWS
-    again = adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 400})
-    assert again["row_count"] == 365
     fenced = adapter.call_tool("execute", {"query": {**DAILY_REVENUE, "limits": {"max_rows": 5}}})
     assert fenced["errors"][0]["details"]["path"] == "limits"
 

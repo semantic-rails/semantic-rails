@@ -37,14 +37,6 @@ def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
         mcp.close()
 
 
-def test_discover_advertises_slim_default_and_full_card_opt_in() -> None:
-    discover = next(tool for tool in list_tool_definitions() if tool["name"] == "discover")
-    properties = discover["inputSchema"]["properties"]
-    assert properties["verbosity"]["default"] == "minimal"
-    assert properties["verbosity"]["enum"] == ["minimal", "compact", "full"]
-    assert "default" not in properties["limit"]  # empty terms page at 100 ids by default
-
-
 def test_explicit_minimal_discover_returns_five_slim_cards_per_kind(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
