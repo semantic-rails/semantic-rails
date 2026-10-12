@@ -2683,7 +2683,7 @@ model:
 before its edge, on the clock the query reads it by (for a load log, rows before the next local
 midnight after its date, or at or before its timestamp; for `now`, rows at or before the
 request's `now`): series, totals, an answer without a window, running totals, shares, prior
-periods and entity filters all see the same rows. A stray row after the edge is not read, so
+periods, entity filters and each operand of a conversion all see the same rows. A stray row after the edge is not read, so
 its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
 base table, never a rollup, whose buckets can't stop at an instant. A clock on another model
 than the measure's own is not capped.

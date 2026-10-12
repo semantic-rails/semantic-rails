@@ -74,7 +74,7 @@ from .indexes import (
 )
 from .leaf_paths import _unique_path_selections
 from .leaves import _count_key_expr
-from .lowering_common import _query_metric_predicates, _refuse_converted_role
+from .lowering_common import _edge_cap, _query_metric_predicates, _refuse_converted_role
 from .paths import (
     _column_ref,
     _join_condition,
@@ -839,7 +839,16 @@ def _conversion_leaf_cte(
         operand_filters=list(base_source.get("filters") or []),
         config=config,
         query=query,
-        where_items=base_group_where,
+        # Each operand reads only rows its declared edge lets through (``_edge_cap``).
+        where_items=[
+            *base_group_where,
+            *_edge_cap(
+                base_source["measure"],
+                base_source["time_role"],
+                config,
+                entity=base_source["root_entity"],
+            ),
+        ],
     )
     converted_cte = _conversion_event_cte(
         cte_name=converted_cte_name,
@@ -856,7 +865,15 @@ def _conversion_leaf_cte(
         operand_filters=list(converted_source.get("filters") or []),
         config=config,
         query=query,
-        where_items=converted_group_where,
+        where_items=[
+            *converted_group_where,
+            *_edge_cap(
+                converted_source["measure"],
+                converted_source["time_role"],
+                config,
+                entity=converted_source["root_entity"],
+            ),
+        ],
     )
 
     predicate_ctes: list[SqlCte] = []

@@ -16,6 +16,6 @@
   than counting a period after the edge as 0. With `sql_profile: "off"`, no response names a
   load log the caller can't see, and the full `explain` leaves out the SQL too.
 - A declared edge caps what a model's measures read: no row after the load log's mark (or
-  after `now`) is read by any series, total, running total, share, prior period or entity
-  filter, so a stray row past the edge reads NULL like the rest of its period, and an empty
+  after `now`) is read by any series, total, running total, share, prior period, entity
+  filter or conversion operand, so a stray row past the edge reads NULL like the rest of its period, and an empty
   load log reads nothing. Such measures read their base table, never a rollup.

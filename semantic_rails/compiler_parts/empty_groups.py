@@ -66,6 +66,8 @@ from .indexes import _measure_index, _recipe_index
 from .temporal import _source_filter_refusals
 
 GUARDED_BASE = "guarded_base"
+# How a capped leaf's EXISTS names the load log it reads (``declared_cap``).
+LOAD_LOG = "zero_through_log"
 
 _ZERO_AGGREGATIONS = {"sum", "count", "count_distinct"}
 _COUNTING = {"count", "count_distinct"}
@@ -635,7 +637,8 @@ def declared_cap(
     instant = dialect.utc_timestamp(raw, storage_zone)
     cap: list[Any] = [SqlBinary(instant, "<=", now_literal(dialect))]
     if edge.kind == "loaded":
-        mark = SqlIdentifier(parts=[edge.relation, edge.column])
+        # Its own alias: a log on the facts' own table must not shadow the outer row.
+        mark = SqlIdentifier(parts=[LOAD_LOG, edge.column])
         if edge.data_type == "date":
             next_midnight = dialect.date_add("day", SqlLiteral(1), dialect.timestamp_cast(mark))
             covers = SqlBinary(next_midnight, ">", dialect.timestamp_cast(local))
@@ -645,7 +648,7 @@ def declared_cap(
             SqlExists(
                 SqlSelect(
                     select=[SqlField(SqlLiteral(1), "seen")],
-                    from_table=SqlTableRef(name=edge.relation),
+                    from_table=SqlTableRef(name=edge.relation, alias=LOAD_LOG),
                     where=[covers],
                     observation_scan=True,
                 )

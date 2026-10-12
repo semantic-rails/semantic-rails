@@ -448,3 +448,201 @@ def test_no_row_past_the_load_log_is_read_by_anything(logged, backend_name, expr
     assert {row["period"] for row in result["rows"]} == {"2024-10-30"}
     total = logged.query({"select": ["measure.logged.event_count"]}, now=NOW)
     assert total["rows"] == [{"event_count": 2}]
+
+
+def _package(request, backend_name, tmp_path, name, models, entities, seed):
+    """A package of its own on ``backend_name``: ``models`` and graph ``entities`` by key,
+    tables named in ``seed`` as ``{table}`` (made unique per run), seeded by ``seed``."""
+    backend = _backend(request, backend_name)
+    tables = {table: f"{table}_{uuid4().hex}" for table in ("events", "purchases", "loads")}
+    documents = {
+        "package.yml": {
+            "schema_version": 1,
+            "package": {
+                "id": name,
+                "namespace": name,
+                "warehouse": "duckdb",
+                "default_db": f"{name}.duckdb",
+                "seed": {"kind": "external"},
+            },
+        },
+        "graph.yml": {"graph": {"entities": entities}},
+    }
+    for key, model in models.items():
+        documents[f"models/{key}.yml"] = {"model": {**model, "relation": tables[model["relation"]]}}
+    for path_name, document in documents.items():
+        path = tmp_path / path_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    config = load_package_config(str(tmp_path))
+    if backend_name == "postgres":
+        original = backend.runtimes["utc_implicit"].config.package
+        package = replace(
+            config.package,
+            warehouse="postgres",
+            default_db="",
+            seed=SeedSpec(),
+            connection=original.connection,
+        )
+        config = replace(config, package=package)
+    sql = seed.format(**tables)
+    if backend_name == "duckdb":
+        with duckdb.connect(str(tmp_path / f"{name}.duckdb")) as conn:
+            conn.execute(sql)
+    runtime = Runtime.from_config(config, source_path=str(tmp_path))
+    if backend_name == "postgres":
+        _rows(runtime, sql)
+    return runtime, tables
+
+
+EVENT_TIME = {"column": "event_at", "kind": "timestamp", "class": "event_time", "default": True}
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_load_log_on_the_facts_own_table_caps_each_row_by_itself(request, backend_name, tmp_path):
+    """The log reads the same table as the facts it covers: its mark is read under its own
+    name, so each fact row is checked, not admitted by any covered row."""
+    models = {
+        "events": {
+            "id": "events",
+            "relation": "events",
+            "entities": {"event": {}},
+            "zero_through": {"loaded": "marks.through_day"},
+            "times": {"event_at": EVENT_TIME},
+            "measures": {"amount": {"kind": "aggregate", "expr": "amount"}},
+        },
+        "marks": {
+            "id": "marks",
+            "relation": "events",
+            "entities": {"mark": {}},
+            "times": {"through_day": {"column": "through_day", "kind": "date"}},
+        },
+    }
+    entities = {
+        "event": {"key": ["event_id"], "model": "events"},
+        "mark": {"key": ["event_id"], "model": "marks"},
+    }
+    seed = (
+        "CREATE TABLE {events} (event_id INTEGER, event_at TIMESTAMP, amount INTEGER, "
+        "through_day DATE);"
+        "INSERT INTO {events} VALUES (1, TIMESTAMP '2024-11-01 12:00:00', 1, DATE '2024-11-02'), "
+        "(2, TIMESTAMP '2024-11-04 12:00:00', 2, DATE '2024-11-02');"
+        "CREATE TABLE {purchases} (id INTEGER); CREATE TABLE {loads} (id INTEGER);"
+    )
+    runtime, tables = _package(request, backend_name, tmp_path, "shared", models, entities, seed)
+    try:
+        result = runtime.query({"select": ["measure.shared.amount"]}, now=NOW)
+        # Plain SQL, with the cap written out: the facts loaded before the next midnight.
+        [[reference]] = _rows(
+            runtime,
+            "SELECT SUM(amount) FROM {events} WHERE event_at < (SELECT CAST(MAX(through_day) "
+            "AS TIMESTAMP) + INTERVAL '1' DAY FROM {events})".format(**tables),
+        )
+    finally:
+        if backend_name == "postgres":
+            _rows(runtime, "DROP TABLE {events}; DROP TABLE {purchases}; DROP TABLE {loads}".format(**tables))  # fmt: skip
+        runtime.close()
+    assert reference == 1
+    assert result["rows"] == [{"amount": reference}]
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_conversion_reads_each_operand_through_its_own_edge(request, backend_name, tmp_path):
+    """Base events count through now; purchases only through their load log's November 2. The
+    November 4 purchase is past its edge, so the November 4 event converts to nothing read."""
+    models = {
+        "events": {
+            "id": "events",
+            "relation": "events",
+            "entities": {"event": {}},
+            "zero_through": "now",
+            "times": {"event_at": EVENT_TIME},
+            "measures": {
+                "n": {
+                    "kind": "entity_count",
+                    "entity_key": "event_id",
+                    "accumulation": {"kind": "flow"},
+                }
+            },  # fmt: skip
+        },
+        "purchases": {
+            "id": "purchases",
+            "relation": "purchases",
+            "entities": {"purchase": {}, "event": {"expr": "event_id"}},
+            "zero_through": {"loaded": "loads.through_day"},
+            "times": {"purchased_at": {**EVENT_TIME, "column": "purchased_at"}},
+            "measures": {
+                "purchase_count": {
+                    "kind": "entity_count",
+                    "entity_key": "purchase_id",
+                    "accumulation": {"kind": "flow"},
+                }
+            },  # fmt: skip
+        },
+        "loads": {
+            "id": "loads",
+            "relation": "loads",
+            "entities": {"load": {}},
+            "times": {"through_day": {"column": "through_day", "kind": "date"}},
+        },
+    }
+    entities = {
+        "event": {"key": ["event_id"], "model": "events"},
+        "purchase": {"key": ["purchase_id"], "model": "purchases"},
+        "load": {"key": ["run_id"], "model": "loads"},
+    }
+    seed = (
+        "CREATE TABLE {events} (event_id INTEGER, event_at TIMESTAMP);"
+        "INSERT INTO {events} VALUES (1, TIMESTAMP '2024-11-01 12:00:00'), "
+        "(2, TIMESTAMP '2024-11-04 12:00:00');"
+        "CREATE TABLE {purchases} (purchase_id INTEGER, event_id INTEGER, purchased_at TIMESTAMP);"
+        "INSERT INTO {purchases} VALUES (1, 1, TIMESTAMP '2024-11-01 13:00:00'), "
+        "(2, 2, TIMESTAMP '2024-11-04 13:00:00');"
+        "CREATE TABLE {loads} (run_id INTEGER, through_day DATE);"
+        "INSERT INTO {loads} VALUES (1, DATE '2024-11-02');"
+    )
+    runtime, tables = _package(request, backend_name, tmp_path, "conv", models, entities, seed)
+    conversion = {
+        "kind": "conversion",
+        "entity": "entity.conv_event",
+        "base": {"kind": "aggregate", "measure": "measure.conv.n"},
+        "converted": {"kind": "aggregate", "measure": "measure.conv.purchase_count"},
+        "window": {"unit": "day", "value": 1},
+        "matching_mode": "first_converted_after_base",
+    }
+    call = {
+        "select": [{"expression": conversion, "as": "rate"}],
+        "time": {
+            "start": "2024-11-01",
+            "end": "2024-11-05",
+            "grain": "day",
+            "temporal_role": "temporal_role.conv_event_event_at",
+        },  # fmt: skip
+    }
+    try:
+        result = runtime.query(call, now=NOW)
+        # Plain SQL, each stream capped by its own edge.
+        reference = _rows(
+            runtime,
+            "WITH b AS (SELECT * FROM {events} WHERE event_at <= TIMESTAMP '2024-11-05 12:00:00' "
+            "AND event_at >= TIMESTAMP '2024-11-01' AND event_at < TIMESTAMP '2024-11-05'), "
+            "p AS (SELECT * FROM {purchases} WHERE purchased_at < (SELECT CAST(MAX(through_day) "
+            "AS TIMESTAMP) + INTERVAL '1' DAY FROM {loads})) "
+            "SELECT CAST(b.event_at AS DATE), COUNT(DISTINCT p.event_id) * 1.0 "
+            "/ COUNT(DISTINCT b.event_id) FROM b LEFT JOIN p ON p.event_id = b.event_id "
+            "AND p.purchased_at >= b.event_at AND p.purchased_at < b.event_at + INTERVAL '1' DAY "
+            "GROUP BY 1 ORDER BY 1".format(**tables),
+        )
+    finally:
+        if backend_name == "postgres":
+            _rows(runtime, "DROP TABLE {events}; DROP TABLE {purchases}; DROP TABLE {loads}".format(**tables))  # fmt: skip
+        runtime.close()
+    assert [(str(day), float(rate)) for day, rate in reference] == [
+        ("2024-11-01", 1.0),
+        ("2024-11-04", 0.0),
+    ]
+    rates = {row["period"]: row["rate"] for row in result["rows"]}
+    assert {day: rates[day] for day in ("2024-11-01", "2024-11-04")} == {
+        "2024-11-01": 1.0,
+        "2024-11-04": 0.0,
+    }
