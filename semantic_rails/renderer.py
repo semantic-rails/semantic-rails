@@ -12,6 +12,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from .operators import LIKE_ESCAPE
@@ -384,22 +385,6 @@ def _render_table_ref(table: SqlTableRef | SqlTableFunction) -> str:
     return rendered
 
 
-def _select_without_ctes(query: SqlSelect) -> SqlSelect:
-    return SqlSelect(
-        select=query.select,
-        from_table=query.from_table,
-        joins=query.joins,
-        where=query.where,
-        group_by=query.group_by,
-        having=query.having,
-        qualify=query.qualify,
-        order_by=query.order_by,
-        limit=query.limit,
-        ctes=[],
-        distinct=getattr(query, "distinct", False),
-    )
-
-
 def _flatten_ctes(query: SqlSelect) -> SqlSelect:
     def _walk_query(node: SqlQuery) -> tuple[SqlQuery, list[SqlCte]]:
         if isinstance(node, SqlSetQuery):
@@ -420,22 +405,10 @@ def _flatten_ctes(query: SqlSelect) -> SqlSelect:
             cte_query, nested = _walk_query(cte.query)
             hoisted.extend(nested)
             hoisted.append(SqlCte(name=cte.name, query=cte_query))
-        return _select_without_ctes(node), hoisted
+        return replace(node, ctes=[]), hoisted
 
     root, ctes = _walk_select(query)
-    return SqlSelect(
-        select=root.select,
-        from_table=root.from_table,
-        joins=root.joins,
-        where=root.where,
-        group_by=root.group_by,
-        having=root.having,
-        qualify=root.qualify,
-        order_by=root.order_by,
-        limit=root.limit,
-        ctes=ctes,
-        distinct=getattr(root, "distinct", False),
-    )
+    return replace(root, ctes=ctes)
 
 
 def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
