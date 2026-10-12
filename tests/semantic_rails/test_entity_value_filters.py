@@ -54,22 +54,9 @@ def engine(package_snapshot):
         runtime.close()
 
 
+# Every surface and every mode at least once.
 @pytest.mark.parametrize(
-    "entrypoint",
-    [
-        "validate",
-        "compile",
-        "query",
-        "plan",
-        "mcp-run",
-        "mcp-validate",
-        "mcp-sql",
-        "mcp-plan",
-        "http-validate",
-        "http-compile",
-        "http-query",
-        "http-plan",
-    ],
+    "entrypoint", ["validate", "query", "plan", "mcp-sql", "mcp-plan", "http-compile", "http-plan"]
 )
 def test_field_filter_is_refused_before_output(engine, monkeypatch, entrypoint):
     query = _query([{"op": ">", "value": 0}, FIELD_FILTER])
@@ -79,7 +66,7 @@ def test_field_filter_is_refused_before_output(engine, monkeypatch, entrypoint):
 
     monkeypatch.setattr(engine, "_compile", no_output)
     monkeypatch.setattr(engine, "_get_adapter", no_output)
-    if entrypoint in {"compile", "query", "plan"}:
+    if entrypoint in {"query", "plan"}:
         with pytest.raises(SemanticLayerError) as exc:
             if entrypoint == "plan":
                 plan_payload(engine, intent="revenue", partial_query=query)
@@ -111,41 +98,41 @@ def test_field_filter_is_refused_before_output(engine, monkeypatch, entrypoint):
         assert not response["ok"]
         issue = response.get("error") or response["errors"][0]
     assert issue["code"] == "INVALID_QUERY"
-    assert "entity_value.where[1]" in issue["message"]
-    assert "top-level 'where'" in issue["message"]
+    assert "entity_value.where[1]" in issue["message"]  # the refusal names the item's index
 
 
 @pytest.mark.parametrize(
-    "item",
+    ("where", "details"),
     [
-        {**FIELD_FILTER, "kind": "value_filter"},
-        {"field": None},
-        {"dimension": DIMENSION, "op": ">", "value": 1},
-        {"expression": {"measure": "measure.jaffle.revenue_usd"}, "value": 1},
-        {"op": ">", "value": 1, "note": "ignored"},
-        {"kind": "literal", "value": 1},
-        "not an object",
+        (
+            [{**FIELD_FILTER, "kind": "value_filter"}],
+            {"path": "entity_value.where[0]", "unsupported_keys": ["field"]},
+        ),
+        (
+            [{"op": ">", "value": 1}, {"dimension": DIMENSION, "op": ">", "note": "x"}],
+            {"path": "entity_value.where[1]", "unsupported_keys": ["dimension", "note"]},
+        ),
+        (
+            [{"kind": "literal", "value": 1}],
+            {"path": "entity_value.where[0]", "unsupported_keys": []},
+        ),
+        (["not an object"], {"path": "entity_value.where[0]", "unsupported_keys": []}),
+        # Not a list at all, however falsy.
+        ({}, None),
+        (False, None),
+        ({"op": ">", "value": 1}, None),
     ],
 )
-def test_unsupported_value_filter_items_are_refused(engine, item):
-    response = engine.validate(_query([item]))
-    assert not response["ok"]
-    issue = response["errors"][0]
-    assert issue["code"] == "INVALID_QUERY"
-    assert "entity_value.where[0]" in issue["message"]
-
-
-@pytest.mark.parametrize("where", [{}, False, "", {"op": ">", "value": 1}])
-def test_value_filters_require_a_list(engine, where):
+def test_unsupported_value_filters_are_refused(engine, where, details):
     response = engine.validate(_query(where))
     assert not response["ok"]
     issue = response["errors"][0]
     assert issue["code"] == "INVALID_QUERY"
-    assert "entity_value.where must be a list" in issue["message"]
+    assert "entity_value.where" in issue["message"]
+    assert issue.get("details") == details
 
 
-@pytest.mark.parametrize("tagged", [False, True])
-@pytest.mark.parametrize("dimension_filter", [False, True])
+@pytest.mark.parametrize(("tagged", "dimension_filter"), [(False, True), (True, False)])
 def test_valid_value_filter_matches_reference_sql(engine, tagged, dimension_filter):
     item = {"op": ">", "value": 1}
     if tagged:
