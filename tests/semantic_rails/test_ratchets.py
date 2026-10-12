@@ -38,8 +38,8 @@ PINS: dict[str, dict[str, int]] = {
     "filter op spellings": {
         "ast.py": 4,
         "cli/interpretation.py": 4,
-        "compiler.py": 1,
         "compiler_parts/bind.py": 6,
+        "compiler_parts/predicate.py": 1,
         "compiler_parts/temporal.py": 4,
         "diagnostics.py": 1,
         "dialects.py": 4,

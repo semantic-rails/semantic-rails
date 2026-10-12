@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from semantic_rails import compiler
+from semantic_rails.compiler_parts import binding, planning
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
@@ -117,9 +118,10 @@ def test_authorization_precedes_source_refusals(
         arguments = {"query": query, "mode": surface, "verbosity": verbosity}
         actual = adapter.call_tool("execute", arguments, request_context=context)
         with monkeypatch.context() as disabled:
-            disabled.setattr(
-                compiler, "_validate_restrictive_time_semantics", lambda *args, **kwargs: None
-            )
+            for module in (binding, planning):
+                disabled.setattr(
+                    module, "_validate_restrictive_time_semantics", lambda *args, **kwargs: None
+                )
             reference = adapter.call_tool("execute", arguments, request_context=context)
         assert actual["errors"] == reference["errors"]
         # Hidden inputs hide the metric and the clock's time role too: the query names a time

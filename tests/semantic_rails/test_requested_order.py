@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from semantic_rails.compiler import compile_query
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import distribution, predicate_sets, sql_lowering
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 
@@ -112,11 +112,12 @@ def test_requested_term_renders_nulls_last(package_config_factory, warehouse, di
 def test_a_requested_term_without_nulls_last_is_refused(package_config_factory, monkeypatch, shape):
     config, _ = package_config_factory("jaffle_shop")
     requested_order = sql_lowering._requested_order
-    monkeypatch.setattr(
-        sql_lowering,
-        "_requested_order",
-        lambda *args: [replace(term, nulls_last=False) for term in requested_order(*args)],
-    )
+    for module in (distribution, predicate_sets, sql_lowering):
+        monkeypatch.setattr(
+            module,
+            "_requested_order",
+            lambda *args: [replace(term, nulls_last=False) for term in requested_order(*args)],
+        )
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(config, None, _query(shape, "DESC"))
     assert caught.value.code == "INVALID_ORDER_BY"

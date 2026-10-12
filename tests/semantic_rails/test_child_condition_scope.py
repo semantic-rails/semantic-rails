@@ -748,9 +748,9 @@ def test_a_question_with_a_reading_that_cannot_answer_is_refused(
     """Force the bypass: a builder adds a reading no query can answer (a group on the measure's
     own entity). The guard in bind_query binds every option first; one that fails withdraws the
     whole question, never leaving the others offered, and names only its id and code."""
-    import semantic_rails.compiler as compiler
+    from semantic_rails.compiler_parts import plan_checks
 
-    built = compiler._child_scope_clarification
+    built = plan_checks._child_scope_clarification
     broken = {
         "id": "broken",
         "meaning": "",
@@ -764,7 +764,7 @@ def test_a_question_with_a_reading_that_cannot_answer_is_refused(
         return error
 
     config = load_package_config(str(package))
-    monkeypatch.setattr(compiler, "_child_scope_clarification", clarification)
+    monkeypatch.setattr(plan_checks, "_child_scope_clarification", clarification)
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(config, Registry(config), _engine(config, _query([BEVERAGE, OVER_5])))
     assert caught.value.code == "MIXED_GRAIN_INVALID"
@@ -1096,22 +1096,22 @@ def test_a_leaf_planned_without_the_group_route_is_refused_not_answered(
 ) -> None:
     """Force the bypass: plan the leaf as if the group were not there. The plan's guard refuses;
     with that guard gone too, the ordinary leaf refuses the group rather than drop it."""
-    import semantic_rails.compiler as compiler
+    from semantic_rails.compiler_parts import planning
 
-    planned = compiler._leaf_path_selections
+    planned = planning._leaf_path_selections
 
     def without_groups(bound: Any, config: Any, query: Any) -> Any:
         selections, entities, _ = planned(bound, config, replace(query, where=[]))
         return selections, entities, ""
 
     config = load_package_config(str(package))
-    monkeypatch.setattr(compiler, "_leaf_path_selections", without_groups)
+    monkeypatch.setattr(planning, "_leaf_path_selections", without_groups)
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(config, Registry(config), _engine(config, _query(SAME_ROW)))
     assert caught.value.code == "INVALID_QUERY"
     assert "cannot filter 'measure.scope.customer_count'" in str(caught.value)
 
-    monkeypatch.setattr(compiler, "_require_child_group_leaves", lambda *args: None)
+    monkeypatch.setattr(planning, "_require_child_group_leaves", lambda *args: None)
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(config, Registry(config), _engine(config, _query(SAME_ROW)))
     assert caught.value.code == "INVALID_QUERY"

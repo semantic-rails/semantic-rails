@@ -1529,6 +1529,7 @@ def test_literal_containers_remain_data(base_config, value, literal_kind):
 
 def test_binding_prepares_without_rendering_and_compile_reuses_it(base_config, monkeypatch):
     from semantic_rails import compiler
+    from semantic_rails.compiler_parts import binding as binding_module
 
     query = {"select": [{"expression": REF, "as": "x"}]}
     render = compiler.render_select_for_profile
@@ -1541,7 +1542,7 @@ def test_binding_prepares_without_rendering_and_compile_reuses_it(base_config, m
     assert MEASURE in binding.object_ids
     monkeypatch.setattr(compiler, "render_select_for_profile", render)
     monkeypatch.setattr(
-        compiler, "plan_query", lambda *a, **k: pytest.fail("replanned authorized binding")
+        binding_module, "plan_query", lambda *a, **k: pytest.fail("replanned authorized binding")
     )
     assert compiler.compile_query(base_config, None, query, binding=binding)["sql"]
 

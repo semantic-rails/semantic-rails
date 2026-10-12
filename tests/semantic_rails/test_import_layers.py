@@ -48,7 +48,6 @@ ALLOWED_UPWARD: set[tuple[str, str]] = set()
 KNOWN_CYCLES = [
     "expressions schema",
     "config package_snapshot",
-    "compiler compiler_parts.conversion compiler_parts.predicate compiler_parts.sql_lowering",
 ]
 
 

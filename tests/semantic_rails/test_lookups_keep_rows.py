@@ -33,7 +33,14 @@ import pytest
 import yaml
 
 from semantic_rails.compiler import compile_query
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import (
+    leaves,
+    lowering_common,
+    physical_plan,
+    plan_checks,
+    predicate_sets,
+    sql_lowering,
+)
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.ir import PathSelection
@@ -549,7 +556,8 @@ def test_a_leaf_that_joins_its_lookups_inner_fails_the_check(
 ):
     """The check above catches a leaf that bypasses the rule: here every leaf joins INNER."""
     leaf = LEAVES[name]
-    monkeypatch.setattr(sql_lowering, "_joins_for_paths", _inner_lookups)
+    for module in (leaves, lowering_common, plan_checks, predicate_sets):
+        monkeypatch.setattr(module, "_joins_for_paths", _inner_lookups)
     runtime = Runtime.from_path(str(_write_package(tmp_path, rollup_safe=leaf.rollup_safe)))
     try:
         violations = _leaf_violations(runtime, gold, leaf)
@@ -906,7 +914,8 @@ def test_a_child_anchored_count_refuses_a_bypassed_parent_check(tmp_path, monkey
             ]
             return result
 
-        monkeypatch.setattr(sql_lowering, "_entity_in_terms_of_anchor_plan", without_parent_check)
+        for module in (leaves, lowering_common, physical_plan, sql_lowering):
+            monkeypatch.setattr(module, "_entity_in_terms_of_anchor_plan", without_parent_check)
     else:
         monkeypatch.setattr(
             paths,
@@ -1036,7 +1045,7 @@ def test_a_leaf_reading_another_model_s_rows_refuses_the_measure_s_rollup(tmp_pa
     config = _with_rollup(
         load_package_config(str(_write_package(tmp_path, rollup_safe=True))), "entity.geo_order"
     )
-    monkeypatch.setattr(sql_lowering, "rollup_held_lookups", lambda *args: set())
+    monkeypatch.setattr(lowering_common, "rollup_held_lookups", lambda *args: set())
 
     with pytest.raises(SemanticLayerError) as raised:
         _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
@@ -1108,7 +1117,7 @@ def test_one_place_decides_how_a_relationship_joins():
     assert _callers("_join_on_for_relationship") == {"paths:_joins_for_paths"}
     assert _callers("inner_lookups") == {
         "compiler:_compile_predicate_source_ast",
-        "sql_lowering:_distribution_select",
+        "distribution:_distribution_select",
     }
     assert _callers("rollup_dimension_entities") == {
         "paths:_joins_for_paths",

@@ -6,7 +6,7 @@ import duckdb
 import pytest
 
 from semantic_rails.compiler import compile_query
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import lowering_common, sql_lowering
 from semantic_rails.compiler_parts.empty_groups import LeafScope, guard_empty_groups, sql_nodes
 from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.errors import SemanticLayerError
@@ -128,7 +128,8 @@ def test_coverage_renders_where_a_named_window_reads_it(
 
 def test_a_scope_on_a_warehouse_without_coverage_refuses(package_config_factory, monkeypatch):
     config = _config(package_config_factory, "clickhouse")
-    monkeypatch.setattr(sql_lowering, "_needs_time_scope", lambda plan, config: True)
+    for module in (lowering_common, sql_lowering):
+        monkeypatch.setattr(module, "_needs_time_scope", lambda plan, config: True)
     with pytest.raises(SemanticLayerError) as caught:
         _compile(config, {"start": "2017-04-01"}, (REVENUE,))
     assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"
@@ -169,12 +170,12 @@ def test_extra_reads_are_emitted_only_where_they_can_change_results(
 
 def test_an_unrecognized_observation_aggregate_refuses(package_config_factory, monkeypatch):
     config, _ = package_config_factory("jaffle_shop")
-    original = sql_lowering.record_leaf_scope
+    original = lowering_common.record_leaf_scope
 
     def invalid(alias, scope):
         original(alias, replace(scope, value=SqlCall("AVG", [scope.raw_time])))
 
-    monkeypatch.setattr(sql_lowering, "record_leaf_scope", invalid)
+    monkeypatch.setattr(lowering_common, "record_leaf_scope", invalid)
     with pytest.raises(SemanticLayerError) as caught:
         _compile(config, {"start": "2017-04-01"})
     assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"

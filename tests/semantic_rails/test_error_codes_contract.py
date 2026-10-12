@@ -226,6 +226,6 @@ def test_error_codes_are_the_registered_refusals():
 
 def test_rollup_unsafe_has_a_compiler_raise_site(written_codes):
     assert any(
-        site.startswith("semantic_rails/compiler.py:")
+        site.startswith(("semantic_rails/compiler.py:", "semantic_rails/compiler_parts/"))
         for site in written_codes.get("ROLLUP_UNSAFE", [])
     )

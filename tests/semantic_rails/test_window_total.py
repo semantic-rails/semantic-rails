@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.compiler import plan_query
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import leaves, predicate_sets
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.mcp import (
@@ -465,7 +465,8 @@ def test_a_leaf_that_still_groups_by_the_raw_time_is_refused(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     """A leaf that misses the constant time key must not be passed off as one total."""
-    monkeypatch.setattr(sql_lowering, "_time_bucket_expr", lambda time, raw_expr, config: raw_expr)
+    for module in (leaves, predicate_sets):
+        monkeypatch.setattr(module, "_time_bucket_expr", lambda time, raw_expr, config: raw_expr)
     with pytest.raises(SemanticLayerError) as raised:
         runtime.query(GOLD_CASES[case][0])
     assert raised.value.code == "WINDOW_TOTAL_UNSUPPORTED"
