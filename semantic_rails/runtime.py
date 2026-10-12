@@ -124,6 +124,7 @@ from .request_context import (
 )
 from .result_values import result_rows
 from .runtime_parts.answer_warnings import (
+    _covered_through,
     _guard_probe_names,
     _history_result_warnings,
     _requested_window,
@@ -2012,12 +2013,16 @@ class Runtime:
                 # still see the signal. Sibling shape to the existing
                 # STATEMENT_TIMEOUT_NOT_HONORED warning emitted higher
                 # up in this method.
+                through = _covered_through(out.get("window") or {}, actual_data_coverage)
                 out["warnings"].append(
                     {
                         "code": "EMPTY_RESULT_WINDOW",
                         "severity": "warning",
                         "message": (
-                            "Query returned zero rows under the applied "
+                            "No group has rows in this window. The data covers it "
+                            f"(through {through})."
+                            if through
+                            else "Query returned zero rows under the applied "
                             "time filter. The data may not exist in this "
                             f"window; inspect({inspect_target!r}) reveals "
                             "freshness and row-count bounds."
