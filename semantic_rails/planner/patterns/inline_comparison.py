@@ -27,6 +27,7 @@ from .._base import (
     _runtime_composition_terms,
 )
 from ..call import QueryBuilder
+from ..generators import _target_focus_text
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import _add_order
 from ._protocol import IntentPattern
@@ -35,6 +36,7 @@ _VS_RE = re.compile(r"^(?P<left>.+?)\s+(?:vs|versus)\s+(?P<right>.+?)$", re.IGNO
 
 
 _SHARE_HINT_TOKENS = frozenset({"share", "pct", "percent", "percentage", "ratio", "%"})
+_STOP_WORDS = frozenset({"the", "a", "an", "of", "to", "with"})
 
 
 def _resolve_side(
@@ -56,6 +58,10 @@ def _resolve_side(
     Returns ``(row, is_measure)`` or ``None``.
     """
 
+    # A side that only names a period ("the week before") names no subject: that is a
+    # comparison of periods, not of two measures.
+    if not _runtime_composition_terms(_target_focus_text(side_text)) - _STOP_WORDS:
+        return None
     side_terms = _runtime_composition_terms(side_text)
     if not side_terms:
         return None
