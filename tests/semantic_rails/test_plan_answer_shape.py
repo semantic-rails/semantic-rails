@@ -458,7 +458,7 @@ def test_a_prior_period_comparison_asks_which_reading(jaffle: Runtime) -> None:
     [
         ("Who are our customers by store?", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
         ("Revenue per store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        ("Orders by store last week compared with the week before?", UNMATCHED),
+        ("Orders by store last week compared with the week before?", "PERIOD_COMPARISON"),
         ("What's the store's revenue last month?", UNMATCHED),
     ],
 )
@@ -469,7 +469,9 @@ def test_store_shortcut_removal_holds_before_the_shape_check(
     monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
     unchecked = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
 
-    assert payload["status"] == "low_confidence"
+    # A comparison with the week before asks how to read it; the others are held.
+    asked = code == "PERIOD_COMPARISON"
+    assert payload["status"] == ("needs_clarification" if asked else "low_confidence")
     assert "ready_for" not in payload["next"]
     assert payload["why"]["code"] == code
     assert payload == unchecked
@@ -608,11 +610,40 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
 MEANINGFUL = [
     "Which customers ordered last week?",
     "List the customers who ordered last week.",
-    "How many orders did we get last week compared with the week before?",
-    "Orders by store name last week compared with the week before?",
     "How many orders did each plan get last week?",
     "Orders between 9 and 17 on 15 March 2017",
 ]
+
+
+# A week compared with the week before is a period comparison: plan asks whether to read the two
+# weeks as one series, and every option is a whole call that runs.
+COMPARED = [
+    "How many orders did we get last week compared with the week before?",
+    "Orders by store name last week compared with the week before?",
+]
+
+
+@pytest.mark.parametrize("question", COMPARED)
+def test_a_week_against_the_week_before_asks_for_the_series(jaffle: Runtime, question: str) -> None:
+    philadelphia = [{"field": STORE_NAME, "op": "is", "value": "Philadelphia"}]
+    payload = plan_payload(
+        jaffle, intent=question, partial_query={"where": philadelphia, "policy_context": NOW}
+    )
+
+    assert payload["status"] == "needs_clarification", payload.get("why")
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
+    assert "ready_for" not in payload["next"]
+    assert not [hint for hint in _hints(payload) if DROP_HINT.search(hint)]
+    options = payload["why"]["details"]["options"]
+    assert options
+    for option in options:
+        call = (
+            payload["best"]["query"] if option["call"] == {"$ref": "best.query"} else option["call"]
+        )
+        # The caller's own filter stays in every option.
+        assert call["where"] == philadelphia
+        assert call["time"]["last"] == {"unit": "week", "value": 2}
+        assert jaffle.validate(call, now=NOW["now"])["ok"]
 
 
 @pytest.mark.parametrize("question", MEANINGFUL)

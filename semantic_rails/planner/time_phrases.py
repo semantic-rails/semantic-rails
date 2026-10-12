@@ -643,6 +643,11 @@ _PERIOD_SHIFT_TRIGGERS = (
     (r"\bvs\.?\s+(?:last|prior|previous)\s+week\b", "week"),
     (r"\bqoq\b", "quarter"),
     (r"\bquarter[\s\-]?over[\s\-]?quarter\b", "quarter"),
+    # "revenue last week vs the week before"
+    *(
+        (rf"\b(?:vs\.?|versus|compared\s+(?:to|with))\s+the\s+{unit}\s+before\b", unit)
+        for unit in ("day", "week", "month", "quarter", "year")
+    ),
 )
 
 

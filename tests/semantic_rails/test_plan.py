@@ -1135,8 +1135,8 @@ def test_a_fiscal_quarter_is_never_answered_in_gregorian_quarters(runtime_factor
 
 
 def test_a_week_against_the_week_before_compares_one_measure(runtime_factory) -> None:
-    """ "The week before" names a period, not a second subject: the draft reads revenue alone
-    (and is held, since this release doesn't compare the two weeks side by side)."""
+    """ "The week before" names a period, not a second subject: the draft reads revenue alone,
+    and plan asks whether to read the two weeks as one series."""
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
@@ -1144,6 +1144,15 @@ def test_a_week_against_the_week_before_compares_one_measure(runtime_factory) ->
         )
     finally:
         runtime.close()
-    assert payload["best"]["query"]["select"] == ["measure.jaffle.revenue_usd"]
-    assert payload["status"] == "low_confidence", payload.get("why")
+    assert payload["status"] == "needs_clarification", payload.get("why")
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
     assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["best"]["query"] == {
+        "select": ["measure.jaffle.revenue_usd"],
+        "time": {
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "grain": "week",
+            "last": {"unit": "week", "value": 2},
+        },
+        "order_by": [{"field": "period", "direction": "asc"}],
+    }
