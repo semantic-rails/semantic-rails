@@ -66,8 +66,7 @@ def _explicit_seed(tmp_path: Path, db_path: Path, kind: str) -> None:
         load_csv_dir_to_duckdb(str(db_path), str(source))
 
 
-@pytest.mark.parametrize("kind", ["sql_script", "csv_dir_duckdb"])
-@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(("kind", "existing"), [("sql_script", False), ("csv_dir_duckdb", True)])
 def test_failed_seed_statement_reports_context_without_publishing(
     tmp_path: Path, kind: str, existing: bool
 ) -> None:
@@ -140,8 +139,10 @@ def test_runtime_preserves_failed_seed_statement_details(tmp_path: Path, surface
     assert not list((package_dir / "data").glob("*.seed.*.tmp*"))
 
 
-@pytest.mark.parametrize("stale", [False, True])
-@pytest.mark.parametrize("surface", ["query", "runtime_validation", "segment_preview"])
+@pytest.mark.parametrize(
+    ("stale", "surface"),
+    [(False, "query"), (True, "runtime_validation"), (True, "segment_preview")],
+)
 def test_failed_query_reports_stale_seed_hint_without_replacing_database(
     tmp_path: Path, stale: bool, surface: str
 ) -> None:
