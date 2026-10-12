@@ -182,38 +182,33 @@ def test_adapter_rejects_incomplete_or_literal_secret_options():
         assert "md_live_supersecret" not in str(exc.value) + repr(exc.value.details)
 
 
-def test_adapter_reports_missing_token_env(monkeypatch: pytest.MonkeyPatch):
+def test_adapter_refuses_missing_token_and_unsafe_database_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+):
     captured: dict = {}
     _fake_duckdb(monkeypatch, captured)
     monkeypatch.delenv("SR_MOTHERDUCK_TOKEN", raising=False)
-    adapter = MotherDuckAdapter(_options())
 
     with pytest.raises(SemanticLayerError) as exc:
-        adapter.query("select 1")
+        MotherDuckAdapter(_options()).query("select 1")
 
     assert exc.value.code == "INVALID_CONFIG"
     assert exc.value.details["missing_env"] == ["SR_MOTHERDUCK_TOKEN"]
-    assert "connect" not in captured.get("config", {})
-    assert "path" not in captured  # never connected
 
-
-def test_adapter_rejects_non_identifier_database(monkeypatch: pytest.MonkeyPatch):
-    captured: dict = {}
-    _fake_duckdb(monkeypatch, captured)
     monkeypatch.setenv("SR_MOTHERDUCK_TOKEN", "tok-value")
-    adapter = MotherDuckAdapter(_options(database="bad name; DROP"))
-
     with pytest.raises(SemanticLayerError) as exc:
-        adapter.query("select 1")
+        MotherDuckAdapter(_options(database="bad name; DROP")).query("select 1")
 
     assert exc.value.code == "INVALID_CONFIG"
     assert exc.value.details["option"] == "database"
     # Option VALUES never leak into the error.
     assert "DROP" not in str(exc.value)
-    assert "path" not in captured
+    assert "path" not in captured  # never connected
 
 
-def test_adapter_connects_with_token_and_defaults_namespace(monkeypatch: pytest.MonkeyPatch):
+def test_adapter_connects_with_token_and_defaults_namespace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     captured: dict = {}
     _fake_duckdb(monkeypatch, captured)
     monkeypatch.setenv("SR_MOTHERDUCK_TOKEN", "tok-value")
@@ -240,17 +235,11 @@ def test_adapter_connects_with_token_and_defaults_namespace(monkeypatch: pytest.
     adapter.close()
     assert captured["conn"].closed is True
 
-
-def test_adapter_reads_token_from_file(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    captured: dict = {}
-    _fake_duckdb(monkeypatch, captured)
+    # A token file is read (trailing newline stripped) when no token env is set.
     monkeypatch.delenv("SR_MOTHERDUCK_TOKEN", raising=False)
     token_file = tmp_path / "md_token"
     token_file.write_text("file-token\n")
-    adapter = MotherDuckAdapter({"token_file": str(token_file), "database": "sr_jaffle"})
-
-    adapter.query("select 1")
-
+    MotherDuckAdapter({"token_file": str(token_file), "database": "sr_jaffle"}).query("select 1")
     assert captured["config"] == {"motherduck_token": "file-token"}
 
 

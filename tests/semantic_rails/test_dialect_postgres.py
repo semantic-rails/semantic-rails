@@ -401,9 +401,7 @@ def test_create_warehouse_adapter_selects_postgres_native():
 # ---------------------------------------------------------------------------
 
 
-def test_compat_pass_shortens_colliding_long_identifiers():
-    from semantic_rails.dialects import dialect_for_warehouse
-
+def test_compat_pass_shortens_long_identifiers_and_floats_nullif_divisions():
     name_a = "conversion_leaf_1__" + "a" * 50 + "_first"
     name_b = "conversion_leaf_1__" + "a" * 50 + "_second"
     assert len(name_a) > 63 and name_a[:63] == name_b[:63]  # would collide raw
@@ -411,7 +409,7 @@ def test_compat_pass_shortens_colliding_long_identifiers():
         f"WITH {name_a} AS (SELECT 1 AS v), {name_b} AS (SELECT 2 AS v)\n"
         f"SELECT {name_a}.v FROM {name_a} CROSS JOIN {name_b}"
     )
-    rewritten = dialect_for_warehouse("postgres").prepare_query(sql).sql
+    rewritten = DIALECT.prepare_query(sql).sql
 
     new_names = {
         token
@@ -428,15 +426,11 @@ def test_compat_pass_shortens_colliding_long_identifiers():
         assert len(bare.encode()) <= 63
         assert rewritten.count(bare) >= 1
 
-
-def test_compat_pass_keeps_short_identifiers_and_literals_and_floats_nullif_divisions():
-    from semantic_rails.dialects import dialect_for_warehouse
-
-    prepare = dialect_for_warehouse("postgres").prepare_query
-    long_in_literal = "x" * 80
-    sql = f"SELECT name FROM jaffle_order WHERE name = '{long_in_literal}'"
-    assert prepare(sql).sql == sql
-    assert prepare("SELECT a / NULLIF(b / NULLIF(c, 0), 0), ') / NULLIF(' FROM t").sql == (
+    # Short identifiers and long literals stay; the ratio guard divides as floats.
+    sql = f"SELECT name FROM jaffle_order WHERE name = '{'x' * 80}'"
+    assert DIALECT.prepare_query(sql).sql == sql
+    sql = "SELECT a / NULLIF(b / NULLIF(c, 0), 0), ') / NULLIF(' FROM t"
+    assert DIALECT.prepare_query(sql).sql == (
         "SELECT a / CAST(NULLIF(b / CAST(NULLIF(c, 0) AS DOUBLE PRECISION), 0)"
         " AS DOUBLE PRECISION), ') / NULLIF(' FROM t"
     )
