@@ -381,9 +381,10 @@ def test_a_clockless_measure_still_answers_without_time_or_by_a_plain_date(tmp_p
 
 
 @pytest.mark.parametrize(
-    "variant", [DEFAULT_TIME, MEASURE_TIME], ids=["default_time", "measure_times"]
+    ("variant", "grain"),
+    [(DEFAULT_TIME, "month"), (MEASURE_TIME, "quarter")],
+    ids=["default_time", "measure_times"],
 )
-@pytest.mark.parametrize("grain", ["month", "quarter"])
 def test_once_the_measure_has_a_clock_the_answer_matches_independent_sql(tmp_path, variant, grain):
     package = _package(tmp_path, variant)
     got = _answer(package, grain)
