@@ -2,7 +2,6 @@
 the text are escaped in the LIKE pattern, and quotes stay inside the literal."""
 
 import duckdb
-import pytest
 
 from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.renderer import render_select_for_profile
@@ -46,13 +45,10 @@ def _rendered(warehouse: str, text: str = TEXT) -> str:
     return render_select_for_profile(select, dialect=dialect_for_warehouse(warehouse))
 
 
-@pytest.mark.parametrize("warehouse", sorted(EXPECTED))
-def test_contains_renders_an_escaped_case_folded_pattern(warehouse):
-    sql = _rendered(warehouse)
-    assert " ".join(sql.split("WHERE", 1)[1].split()) == EXPECTED[warehouse]
-
-
-def test_contains_matches_the_text_literally_on_duckdb():
+def test_contains_renders_an_escaped_case_folded_pattern_that_matches_literally():
+    for warehouse, expected in EXPECTED.items():
+        sql = _rendered(warehouse)
+        assert " ".join(sql.split("WHERE", 1)[1].split()) == expected, warehouse
     rows = ["50%_OFF\\x'y today", "50x_off\\x'y", "500 offx'y", "nothing"]
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE t (name VARCHAR)")
