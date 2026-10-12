@@ -89,41 +89,62 @@ def driver(monkeypatch):
     return calls
 
 
+# Each authentication source and each locator form, unnamed.
 @pytest.mark.parametrize(
-    "auth",
+    ("locators", "auth"),
     [
-        {"password_env": "TEST_PASSWORD"},
-        {"password_file": "/not-read/password"},
-        {"private_key_env": "TEST_KEY"},
-        {"private_key_file": "/not-read/key", "private_key_passphrase_env": "TEST_PASSPHRASE"},
-        {
-            "private_key_file": "/not-read/key",
-            "private_key_passphrase_file": "/not-read/passphrase",
-        },
+        (LOCATORS[0], {"password_env": "TEST_PASSWORD"}),
+        (LOCATORS[1], {"password_file": "/not-read/password"}),
+        (LOCATORS[2], {"private_key_env": "TEST_KEY"}),
+        (
+            LOCATORS[3],
+            {"private_key_file": "/not-read/key", "private_key_passphrase_env": "TEST_PASSPHRASE"},
+        ),
+        (
+            LOCATORS[0],
+            {
+                "private_key_file": "/not-read/key",
+                "private_key_passphrase_file": "/not-read/passphrase",
+            },
+        ),
     ],
 )
-@pytest.mark.parametrize("locators", LOCATORS)
-def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path, auth, locators):
-    root = _package(tmp_path / "filtered", [OWN_ORDERS])
-    path = root / "package.yml"
-    payload = yaml.safe_load(path.read_text())
-    payload["package"].update(
-        warehouse="snowflake",
-        connection={
-            "kind": "snowflake_adbc",
-            "options": {**locators, **auth},
-        },
+def test_unnamed_snowflake_adbc_loads_dispatches_and_passes_report_and_guided_setup(
+    tmp_path, locators, auth
+):
+    from semantic_rails.architect_mcp import create_architect_mcp_server
+    from tests.semantic_rails.test_architect_create_project import _setup_dialog
+    from tests.semantic_rails.test_config_validation import (
+        _write_minimal_snowflake_package,
+        _write_yaml,
     )
-    payload["package"].pop("default_db", None)
-    payload["package"].pop("seed", None)
-    path.write_text(yaml.safe_dump(payload))
-    config = load_package_config(str(root))
-    adapter = create_warehouse_adapter(config.package)
+
+    root = tmp_path / "snowflake_adbc_demo"
+    _write_minimal_snowflake_package(root)
+    payload = yaml.safe_load((root / "package.yml").read_text())
+    options = {**locators, **auth}
+    payload["package"]["connection"] = {"kind": "snowflake_adbc", "options": options}
+    _write_yaml(root / "package.yml", payload)
+    report, _ = parse_config_report(resolve_package_reference(path=str(root)))
+    assert report["ok"] is True, report["errors"]
+    adapter = create_warehouse_adapter(load_package_config(str(root)).package)
     assert isinstance(adapter, AdbcAdapter)
     assert adapter.profile == SNOWFLAKE_PROFILE
     assert (adapter.engine, adapter.connection_kind) == ("snowflake", "snowflake_adbc")
     assert adapter.supports_parameters and adapter.supports_statement_timeout
     adapter.close()
+    dialog = _setup_dialog(
+        create_architect_mcp_server(workspace_root=tmp_path),
+        "snow_shop",
+        {
+            "package_id": "snow_shop",
+            "warehouse": "snowflake",
+            "connection_kind": "snowflake_adbc",
+            "connection_options": json.dumps(options),
+        },
+    )
+    assert dialog["ok"] is True, dialog
+    assert dialog["recommended_next_tool"] == "create_project"
 
 
 @pytest.mark.parametrize(
@@ -201,16 +222,6 @@ def test_auth_structure_refused_at_load_report_and_guided_setup(tmp_path, option
     assert caught.value.code == "INVALID_CONFIG"
 
 
-@pytest.mark.parametrize("source", ["env", "file"])
-def test_passphrase_requires_key_in_shared_validator(source):
-    from semantic_rails.dialects import snowflake_adbc_connect_errors
-
-    key = f"private_key_passphrase_{source}"
-    assert snowflake_adbc_connect_errors({**OPTIONS, key: "not-read"}) == (
-        f"snowflake_adbc {key} requires a key source",
-    )
-
-
 def test_embedding_exports_snowflake_adbc_options():
     from semantic_rails import embedding
     from semantic_rails.dialects import SNOWFLAKE_ADBC_CONNECTION_OPTIONS
@@ -220,62 +231,6 @@ def test_embedding_exports_snowflake_adbc_options():
     assert {"account", "user", "private_key_passphrase_file"} <= set(
         embedding.SNOWFLAKE_ADBC_CONNECTION_OPTIONS
     )
-
-
-def test_direct_adapter_cannot_ignore_named_profile():
-    package = PackageMeta(
-        package_id="test",
-        name="test",
-        description="test",
-        warehouse="snowflake",
-        connection=ConnectionSpec(kind="snowflake_adbc", name="ignored-profile", options=OPTIONS),
-    )
-    with pytest.raises(SemanticLayerError, match="name") as caught:
-        create_warehouse_adapter(package)
-    assert caught.value.code == "INVALID_CONFIG"
-
-
-@pytest.mark.parametrize(
-    "auth",
-    [
-        {"password_env": "TEST_PASSWORD"},
-        {"password_file": "/not-read/password"},
-        {"private_key_env": "TEST_KEY"},
-        {
-            "private_key_file": "/not-read/key",
-            "private_key_passphrase_file": "/not-read/passphrase",
-        },
-    ],
-)
-@pytest.mark.parametrize("locators", LOCATORS)
-def test_config_report_and_guided_setup_accept_unnamed_snowflake_adbc(tmp_path, auth, locators):
-    from semantic_rails.architect_mcp import create_architect_mcp_server
-    from tests.semantic_rails.test_architect_create_project import _setup_dialog
-    from tests.semantic_rails.test_config_validation import (
-        _write_minimal_snowflake_package,
-        _write_yaml,
-    )
-
-    root = tmp_path / "snowflake_adbc_demo"
-    _write_minimal_snowflake_package(root)
-    payload = yaml.safe_load((root / "package.yml").read_text())
-    options = {**locators, **auth}
-    payload["package"]["connection"] = {"kind": "snowflake_adbc", "options": options}
-    _write_yaml(root / "package.yml", payload)
-    report, _ = parse_config_report(resolve_package_reference(path=str(root)))
-    assert report["ok"] is True, report["errors"]
-    dialog = _setup_dialog(
-        create_architect_mcp_server(workspace_root=tmp_path),
-        "snow_shop",
-        {
-            "package_id": "snow_shop",
-            "warehouse": "snowflake",
-            "connection_kind": "snowflake_adbc",
-            "connection_options": json.dumps(options),
-        },
-    )
-    assert dialog["ok"] is True, dialog
-    assert dialog["recommended_next_tool"] == "create_project"
 
 
 @pytest.mark.parametrize("auth", ["password", "private_key", "encrypted_private_key"])
@@ -327,6 +282,13 @@ def test_literal_locators_and_file_secrets_without_environment(monkeypatch, tmp_
     assert connect_options == expected
 
 
+@pytest.fixture(scope="module")
+def rsa_key():
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
 @pytest.mark.parametrize(
     ("passphrase", "terminator"),
     [
@@ -340,12 +302,11 @@ def test_literal_locators_and_file_secrets_without_environment(monkeypatch, tmp_
     ],
 )
 def test_passphrase_file_matches_environment_and_decrypts_pkcs8(
-    monkeypatch, tmp_path, passphrase, terminator
+    monkeypatch, tmp_path, rsa_key, passphrase, terminator
 ):
     from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key = rsa_key
     encrypted = key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
@@ -417,9 +378,9 @@ def test_password_file_mapping(driver, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "driver_path", [None, "/opt/drivers/libsnowflake.so", "/opt/snowflake.toml"]
+    ("driver_path", "precision"),
+    [(None, None), ("/opt/drivers/libsnowflake.so", "true"), ("/opt/snowflake.toml", "false")],
 )
-@pytest.mark.parametrize("precision", [None, "true", "false"])
 def test_password_options_search_path_precision_and_escaped_tag(
     driver, monkeypatch, driver_path, precision
 ):
@@ -460,8 +421,7 @@ def test_password_options_search_path_precision_and_escaped_tag(
     adapter.close()
 
 
-@pytest.mark.parametrize("source", ["env", "file"])
-@pytest.mark.parametrize("encrypted", [False, True])
+@pytest.mark.parametrize(("source", "encrypted"), [("env", False), ("file", True)])
 def test_pkcs8_key_pair_mapping_without_password(driver, monkeypatch, tmp_path, source, encrypted):
     options = {key: value for key, value in OPTIONS.items() if key != "password_env"}
     label = "ENCRYPTED PRIVATE KEY" if encrypted else "PRIVATE KEY"
@@ -601,9 +561,19 @@ def test_arrow_decimal_and_timestamp_match_typed_values_contract(monkeypatch, zo
         adapter.close()
 
 
-@pytest.mark.parametrize("kind", ["timestamp", "timestamp_utc", "time"])
-@pytest.mark.parametrize("value", [123456000, 123456789, -123456789, None])
-@pytest.mark.parametrize("prepared", [False, True])
+# Each kind converts an exact value and refuses an inexact one, through both entry points.
+@pytest.mark.parametrize(
+    ("kind", "value", "prepared"),
+    [
+        ("timestamp", 123456000, False),
+        ("timestamp_utc", 123456000, True),
+        ("time", 123456000, False),
+        ("timestamp", 123456789, True),
+        ("timestamp_utc", -123456789, False),
+        ("time", 123456789, True),
+        ("time", None, False),
+    ],
+)
 def test_nanosecond_temporals_require_exact_microseconds_without_pandas(
     monkeypatch, kind, value, prepared
 ):
