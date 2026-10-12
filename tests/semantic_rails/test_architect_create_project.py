@@ -467,8 +467,7 @@ def test_completed_overwrite_replays_before_provenance_guard(
                     overwrite=True,
                     dry_run=dry_run,
                 )
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     assert {
         path.name: path.read_bytes()
         for path in _receipt_path(tmp_path, "second").parent.glob("*.json")
@@ -586,6 +585,24 @@ def _create_via_route(
     return report
 
 
+def _create_shop(tmp_path: Path) -> None:
+    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
+        "ok"
+    ]
+
+
+def _overwrite(tmp_path: Path, spec: ProjectSpec, key: str) -> None:
+    revision = project_revision(tmp_path / "shop")
+    assert _create_via_route(tmp_path, spec, key=key, expected_revision=revision, overwrite=True)[
+        "ok"
+    ]
+
+
+def _assert_unchanged(project: Path, before: dict[str, bytes], revision: str) -> None:
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+
+
 def _receipt_path(workspace_root: Path, key: str) -> Path:
     receipt_root = next((workspace_root / ".semantic-rails" / "architect-transactions").glob("*"))
     return receipt_root / f"{hashlib.sha256(key.encode('utf-8')).hexdigest()}.json"
@@ -601,9 +618,7 @@ def _make_legacy_creation_receipt(workspace_root: Path, key: str) -> None:
 
 def test_legacy_receipt_cannot_launder_byte_identical_authored_model(tmp_path: Path) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
-        "ok"
-    ]
+    _create_shop(tmp_path)
     _make_legacy_creation_receipt(tmp_path, "create")
     second = replace(
         EXTERNAL_SHOP,
@@ -629,8 +644,7 @@ def test_legacy_receipt_cannot_launder_byte_identical_authored_model(tmp_path: P
                 )
             assert exc.value.code == "INVALID_CONFIG"
             assert exc.value.details["reason"] == "scaffold_source_modified"
-            assert _project_bytes(project) == before
-            assert project_revision(project) == revision
+            _assert_unchanged(project, before, revision)
             assert not _receipt_path(tmp_path, key).exists()
     assert project_scaffold_files(third)["models/core/orders.yml"] != model_path.read_bytes()
     assert model_path.read_bytes() == before["models/core/orders.yml"]
@@ -655,9 +669,7 @@ def test_legacy_receipt_without_snapshot_refuses_overwrite(
     reason: str,
 ) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
-        "ok"
-    ]
+    _create_shop(tmp_path)
     _make_legacy_creation_receipt(tmp_path, "create")
     spec = {
         "description": replace(EXTERNAL_SHOP, description="Description B"),
@@ -692,8 +704,7 @@ def test_legacy_receipt_without_snapshot_refuses_overwrite(
         )
     assert exc.value.code == "INVALID_CONFIG"
     assert exc.value.details["reason"] == reason
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     assert _receipt_path(tmp_path, "create").read_bytes() == receipt
     assert not _receipt_path(tmp_path, "refused-overwrite").exists()
 
@@ -703,17 +714,9 @@ def test_partial_legacy_receipt_cannot_claim_complete_scaffold(
     tmp_path: Path, noop_first: bool
 ) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
-        "ok"
-    ]
+    _create_shop(tmp_path)
     second = replace(EXTERNAL_SHOP, description="Description B")
-    assert _create_via_route(
-        tmp_path,
-        second,
-        key="second",
-        expected_revision=project_revision(project),
-        overwrite=True,
-    )["ok"]
+    _overwrite(tmp_path, second, "second")
     _make_legacy_creation_receipt(tmp_path, "second")
     revision = project_revision(project)
     if noop_first:
@@ -743,15 +746,12 @@ def test_partial_legacy_receipt_cannot_claim_complete_scaffold(
         assert exc.value.code == "INVALID_CONFIG"
         assert exc.value.details["reason"] == "scaffold_source_modified"
         assert not _receipt_path(tmp_path, f"third-{dry_run}").exists()
-        assert _project_bytes(project) == before
-        assert project_revision(project) == revision
+        _assert_unchanged(project, before, revision)
 
 
 def test_byte_identical_noop_without_receipt_creates_no_provenance(tmp_path: Path) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
-        "ok"
-    ]
+    _create_shop(tmp_path)
     _receipt_path(tmp_path, "create").unlink()
     revision = project_revision(project)
     noop = _create_via_route(
@@ -793,8 +793,7 @@ def test_overwrite_does_not_replace_authored_ignored_file_in_absent_project(tmp_
             idempotency_key="replace-authored-ignore",
             overwrite=True,
         )
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
 
 
 @pytest.mark.parametrize("transition", ["description", "same_graph_model", "moved_model"])
@@ -839,8 +838,7 @@ def test_repeated_scaffold_overwrites_keep_complete_receipt(
             dry_run=True,
         )
         assert preview["ok"] is True, preview
-        assert _project_bytes(project) == before
-        assert project_revision(project) == revision
+        _assert_unchanged(project, before, revision)
         applied = _create_via_route(
             tmp_path,
             spec,
@@ -870,20 +868,9 @@ def test_repeated_overwrite_still_refuses_interleaved_authored_edit(
     tmp_path: Path, edit: str
 ) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(
-        tmp_path,
-        EXTERNAL_SHOP,
-        key="create",
-        expected_revision="absent",
-    )["ok"]
+    _create_shop(tmp_path)
     second = replace(EXTERNAL_SHOP, description="Description B")
-    assert _create_via_route(
-        tmp_path,
-        second,
-        key="second",
-        expected_revision=project_revision(project),
-        overwrite=True,
-    )["ok"]
+    _overwrite(tmp_path, second, "second")
     path = (
         project
         / {"package": "package.yml", "graph": "graph.yml", "model": "models/core/orders.yml"}[edit]
@@ -902,26 +889,14 @@ def test_repeated_overwrite_still_refuses_interleaved_authored_edit(
                 overwrite=True,
                 dry_run=dry_run,
             )
-        assert _project_bytes(project) == before
-        assert project_revision(project) == revision
+        _assert_unchanged(project, before, revision)
 
 
 def test_unchanged_target_does_not_launder_authored_model_into_next_receipt(tmp_path: Path) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(
-        tmp_path,
-        EXTERNAL_SHOP,
-        key="create",
-        expected_revision="absent",
-    )["ok"]
+    _create_shop(tmp_path)
     second = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, relation="main_marts.orders_v1"))
-    assert _create_via_route(
-        tmp_path,
-        second,
-        key="second",
-        expected_revision=project_revision(project),
-        overwrite=True,
-    )["ok"]
+    _overwrite(tmp_path, second, "second")
     third = replace(
         EXTERNAL_SHOP,
         description="Description C",
@@ -941,28 +916,16 @@ def test_unchanged_target_does_not_launder_authored_model_into_next_receipt(tmp_
                 overwrite=True,
                 dry_run=dry_run,
             )
-        assert _project_bytes(project) == before
-        assert project_revision(project) == revision
+        _assert_unchanged(project, before, revision)
 
 
 def test_failed_repeated_overwrite_receipt_cannot_claim_scaffold_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(
-        tmp_path,
-        EXTERNAL_SHOP,
-        key="create",
-        expected_revision="absent",
-    )["ok"]
+    _create_shop(tmp_path)
     second = replace(EXTERNAL_SHOP, description="Description B")
-    assert _create_via_route(
-        tmp_path,
-        second,
-        key="second",
-        expected_revision=project_revision(project),
-        overwrite=True,
-    )["ok"]
+    _overwrite(tmp_path, second, "second")
     before = _project_bytes(project)
     revision = project_revision(project)
     third = replace(EXTERNAL_SHOP, description="Description C")
@@ -986,8 +949,7 @@ def test_failed_repeated_overwrite_receipt_cannot_claim_scaffold_provenance(
             overwrite=True,
         )
     assert failed["status"] == "rolled_back_after_parse_error"
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     receipt_root = next((tmp_path / ".semantic-rails" / "architect-transactions").glob("*"))
     failed_receipt = json.loads(
         (receipt_root / f"{hashlib.sha256(b'failed-third').hexdigest()}.json").read_text(
@@ -1039,8 +1001,7 @@ def test_failed_write_does_not_publish_scaffold_provenance(
                 idempotency_key="failed-write",
                 overwrite=True,
             )
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     receipt_root = next((tmp_path / ".semantic-rails" / "architect-transactions").glob("*"))
     assert not (receipt_root / f"{hashlib.sha256(b'failed-write').hexdigest()}.json").exists()
     assert create_project(
@@ -1204,8 +1165,7 @@ def test_create_overwrite_refuses_semantically_modified_first_model(
             overwrite=True,
             dry_run=dry_run,
         )
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     assert db.read_bytes() == before["data/shop.duckdb"]
     if not same_path:
         assert not (project / "models" / "core" / "customers.yml").exists()
@@ -1294,8 +1254,7 @@ def test_create_overwrite_refuses_when_creation_provenance_is_missing(
             overwrite=True,
             dry_run=dry_run,
         )
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     assert db.read_bytes() == before["data/shop.duckdb"]
 
 
@@ -1320,8 +1279,7 @@ def test_create_same_entity_refuses_to_replace_authored_relation(
             overwrite=True,
             dry_run=dry_run,
         )
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
 
 
 @pytest.mark.parametrize(
@@ -1388,8 +1346,7 @@ def test_create_overwrite_refuses_ambiguous_graph_before_model_replacement(
             dry_run=dry_run,
         )
     assert str(exc.value.details["reason"]).startswith("scaffold_")
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     assert db.read_bytes() == before["data/shop.duckdb"]
 
 
@@ -1413,8 +1370,7 @@ def test_create_overwrite_refuses_modified_shared_scaffold_file(
             overwrite=True,
             dry_run=dry_run,
         )
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     assert db.read_bytes() == before["data/shop.duckdb"]
 
 
@@ -1439,8 +1395,7 @@ def test_create_overwrite_byte_identical_noop_needs_no_receipt(
     ).report
     assert report["ok"] is True, report
     assert report["changes"] == []
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     assert db.read_bytes() == before["data/shop.duckdb"]
 
 
@@ -1482,8 +1437,7 @@ def test_create_project_parse_failure_restores_every_file_and_revision(
     assert changes["models/core/customers.yml"] == "create"
     if overwrite:
         assert changes["models/core/orders.yml"] == "delete"
-    assert _project_bytes(project) == before
-    assert project_revision(project) == revision
+    _assert_unchanged(project, before, revision)
     assert db.read_bytes() == before["data/shop.duckdb"]
     assert not (project / "models" / "core" / "customers.yml").exists()
     if overwrite:

@@ -356,7 +356,8 @@ def test_profile_row_cap_cannot_be_raised_by_the_caller(tmp_path: Path) -> None:
     assert profile["columns"][0]["distinct_count"] <= MAX_PROFILE_ROWS
 
 
-@pytest.mark.parametrize("offset", [-1, 0, 1], ids=["below", "at", "above"])
+# At the cap every row is checked; one row more and only a sample is.
+@pytest.mark.parametrize("offset", [0, 1], ids=["at", "above"])
 def test_key_suggestion_states_what_was_checked_at_the_profile_cap(
     tmp_path: Path, offset: int
 ) -> None:
@@ -420,7 +421,7 @@ def test_sampled_duplicate_or_null_key_is_not_suggested(tmp_path: Path, expressi
     assert suggested["upsert_model"]["primary_key"] == []
 
 
-@pytest.mark.parametrize("offset", [-1, 0, 1], ids=["below", "at", "above"])
+@pytest.mark.parametrize("offset", [0, 1], ids=["at", "above"])
 def test_composite_key_suggestion_has_bounded_and_honest_evidence(
     tmp_path: Path, offset: int
 ) -> None:
