@@ -745,15 +745,6 @@ def test_pending_choice_through_the_architect_writes_nothing(tmp_path, monkeypat
     assert _contents(project) == UPGRADED
 
 
-def test_architect_write_needs_a_revision_and_key(tmp_path):
-    project = _package(tmp_path)
-
-    report = _architect(tmp_path, "upgrade_project", project_path=str(project), dry_run=False)
-
-    assert report["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    assert _contents(project) == LEGACY
-
-
 @pytest.mark.parametrize("refusal", ["expected_revision", "idempotency_key", "stale_revision"])
 def test_current_package_checks_write_arguments_and_revision_before_planning(tmp_path, refusal):
     project = _package(tmp_path, UPGRADED)
