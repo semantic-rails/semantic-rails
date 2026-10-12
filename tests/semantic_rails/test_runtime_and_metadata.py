@@ -384,29 +384,6 @@ def test_validate_compile_and_query_happy_path_on_jaffle_shop(runtime_factory):
         runtime.close()
 
 
-def test_validate_uses_compiled_plan_cache(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # `verbosity="full"` keeps `compile_stats` at the top level —
-        # the new compact default drops it.
-        query = {
-            "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
-            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "limit": 3,
-        }
-
-        first = runtime.validate(query, verbosity="full")
-        second = runtime.validate(query, verbosity="full")
-
-        assert first["ok"] is True
-        assert first["compile_stats"]["cache_hit"] is False
-        assert second["ok"] is True
-        assert second["compile_stats"]["cache_hit"] is True
-        assert second["explain"]["physical_plan"]["nodes"]
-    finally:
-        runtime.close()
-
-
 def test_compile_cache_is_not_mutated_by_returned_compilation(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
@@ -464,11 +441,14 @@ def test_runtime_compile_cache_supports_basic_concurrent_use(runtime_factory):
             "limit": 3,
         }
 
+        first = runtime.validate(query, verbosity="full")
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda _: runtime.validate(query, verbosity="full"), range(16)))
 
+        assert first["ok"] is True and first["compile_stats"]["cache_hit"] is False
         assert all(result["ok"] is True for result in results)
-        assert any(result["compile_stats"]["cache_hit"] is True for result in results)
+        assert all(result["compile_stats"]["cache_hit"] is True for result in results)
+        assert results[0]["explain"]["physical_plan"]["nodes"]
     finally:
         runtime.close()
 
@@ -624,29 +604,6 @@ def test_valid_values_defaults_to_declared_domains_without_live_query(runtime_fa
         runtime.close()
 
 
-def test_catalog_temporal_roles_surface_temporal_class(runtime_factory):
-    """Regression test for MEDIUM #1: every entry in catalog.temporal_roles
-    used to return temporal_class: None even though models declared
-    `class: state_time`, etc. The data was in the YAML; the catalog
-    endpoint wasn't propagating it."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        catalog = catalog_payload(runtime)
-        assert catalog["temporal_roles"], "expected at least one temporal role in catalog"
-        # No row should have a falsy temporal_class — every role is
-        # declared with one of event_time / calendar_time / as_of_time /
-        # state_time.
-        valid = {"event_time", "calendar_time", "as_of_time", "state_time"}
-        observed = {row.get("temporal_class") for row in catalog["temporal_roles"]}
-        assert all(row.get("temporal_class") in valid for row in catalog["temporal_roles"]), (
-            f"some temporal roles are missing temporal_class: {observed}"
-        )
-        # The recently-added `state_time` class must surface end-to-end.
-        assert "state_time" in observed
-    finally:
-        runtime.close()
-
-
 def test_catalog_payload_groups_objects_by_kind(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
@@ -659,6 +616,15 @@ def test_catalog_payload_groups_objects_by_kind(runtime_factory):
         assert "temporal_roles" in catalog
         assert "measures" in catalog
         assert any(row["id"] == "entity.jaffle_order" for row in catalog["entities"])
+        # Every temporal role carries the class its model declares.
+        classes = [row.get("temporal_class") for row in catalog["temporal_roles"]]
+        assert classes and set(classes) <= {
+            "event_time",
+            "calendar_time",
+            "as_of_time",
+            "state_time",
+        }
+        assert "state_time" in classes
         assert "dimensionjafflestorename" in catalog["alias_index"]
         assert "dimension.jaffle_store_name" in catalog["alias_index"]["dimensionjafflestorename"]
         capability_kinds = {row["kind"] for row in catalog["capabilities"]}
@@ -1799,30 +1765,6 @@ def test_query_execution_error_redacts_sql_by_default(runtime_factory, monkeypat
         runtime.close()
 
 
-def test_build_options_empty_query_ranks_by_review_priority(runtime_factory):
-    """Empty-query, empty-terms used to give every candidate the same
-    flat rank (the per-kind stage bonus) with rationale
-    "default ordering" — pure noise. With no scoring context, rank by
-    `review_priority` and surface a topic-based rationale so the rank
-    field actually differentiates candidates."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = build_options_payload(runtime, partial_query={})
-        recommended = list(payload.get("recommended", []) or [])
-        assert recommended, "expected recommended candidates"
-        ranks = sorted({float(row.get("rank", 0.0) or 0.0) for row in recommended})
-        assert len(ranks) >= 2, (
-            f"expected rank to differentiate candidates on empty query; got ranks={ranks}"
-        )
-        for row in recommended:
-            why = str(row.get("why_recommended", "") or "")
-            assert why and why != "default ordering", (
-                f"expected a meaningful why_recommended on empty query; row={row.get('id')} got {why!r}"
-            )
-    finally:
-        runtime.close()
-
-
 def test_build_options_ships_next_legal_steps(runtime_factory):
     """Blind-agent UX: build-options must enumerate the remaining legal
     builder steps, not just the next single step. ``review`` is always
@@ -1830,6 +1772,11 @@ def test_build_options_ships_next_legal_steps(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         empty = build_options_payload(runtime, partial_query={})
+        # With no scoring context, review priority ranks the candidates, each with a reason.
+        recommended = empty["recommended"]
+        assert len({float(row.get("rank", 0.0) or 0.0) for row in recommended}) >= 2
+        for row in recommended:
+            assert row.get("why_recommended") not in ("", None, "default ordering"), row["id"]
         assert empty["next_legal_steps"] == [
             "measure",
             "group_by",
