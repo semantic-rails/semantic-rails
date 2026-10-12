@@ -7,7 +7,7 @@ from typing import Any
 from .call import Call
 from .coverage import _dict_nodes, _projected_subject_ids
 from .intent_ir import IntentIR
-from .plan_query import _append_unique_dicts
+from .plan_query import _unique_dicts
 
 
 def _select_best_plan(
@@ -55,7 +55,7 @@ def _slim_best(
     out: dict[str, Any] = {
         "pattern": pattern,
         "query": draft.query.to_call(),
-        "resolved": _append_unique_dicts([], draft.resolved),
+        "resolved": _unique_dicts(draft.resolved),
         "rationale": list(dict.fromkeys(draft.rationale)),
         "interpreted_intent": draft.interpreted_intent,
         # Audit trail: catalog ids the pattern actually wove into the
