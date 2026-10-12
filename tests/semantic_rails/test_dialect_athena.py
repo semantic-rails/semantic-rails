@@ -608,13 +608,10 @@ def test_athena_expressions_type_text_compared_only_with_temporal_values(athena_
 def test_athena_relation_filters_type_text_compared_only_with_temporal_columns():
     """A relation's filter step reads its columns as the dimensions of what reads it declare
     them: text compared with a date or timestamp column is a TIMESTAMP literal, text compared
-    with a text column stays text. A semi-join's filter reads the joined table's columns."""
+    with a text column stays text."""
     from pathlib import Path
 
     from semantic_rails.config import load_package_config
-    from semantic_rails.relation_pipelines import lower_relation
-    from semantic_rails.renderer import render_select
-    from semantic_rails.schema import RelationConfig, RelationPipelineStep
 
     package = Path(__file__).parents[1] / "integration" / "correctness" / "pipelines"
     config = load_package_config(str(package))
@@ -629,26 +626,67 @@ def test_athena_relation_filters_type_text_compared_only_with_temporal_columns()
     assert "src.ts < TIMESTAMP '2026-02-01 00:00:00'" in sql  # the expression form
     assert "((src.label <> '2025-01-01') OR (src.label IS NULL))" in sql
 
-    where = [
-        {"field": "ordered_at", "op": "gte", "value": "2026-01-01"},
-        {"field": "note", "op": "is", "value": "2026-01-01"},
-    ]
-    semi_join = {"relation": "orders", "on": [{"left": "id", "right": "id"}], "where": where}
+
+def _relation_sql(columns: list[str], *steps: tuple[str, dict[str, Any]], tables) -> str:
+    """The Athena SQL of a relation reading ``raw_events``; ``tables`` names the date and
+    timestamp columns each table's readers declare (the relation's output is ``out``)."""
+    from semantic_rails.relation_pipelines import lower_relation
+    from semantic_rails.renderer import render_select
+    from semantic_rails.schema import RelationConfig, RelationPipelineStep
+
+    source = RelationPipelineStep("source", {"relation": "raw_events", "columns": columns})
     relation = RelationConfig(
-        id="relation.t.kept",
-        output_name="kept",
-        steps=[
-            RelationPipelineStep("source", {"relation": "events", "columns": ["id"]}),
-            RelationPipelineStep("semi_join", semi_join),
-        ],
+        id="relation.t.out",
+        output_name="out",
+        steps=[source, *(RelationPipelineStep(kind, config) for kind, config in steps)],
     )
-    ctes, _ = lower_relation(
-        relation, warehouse="athena", tables={"orders": frozenset({"ordered_at"})}
-    )
+    ctes, _ = lower_relation(relation, warehouse="athena", tables=tables)
     with use_dialect(DIALECT):
-        rendered = "\n".join(render_select(cte.query) for cte in ctes)
-    assert "\"right\".ordered_at >= TIMESTAMP '2026-01-01'" in rendered
-    assert "\"right\".note = '2026-01-01'" in rendered
+        return "\n".join(render_select(cte.query) for cte in ctes)
+
+
+def test_athena_relation_filters_read_each_stage_by_its_own_lineage():
+    """A filter reads its own stage's columns: the declared DATE ``day`` is a renamed
+    ``observed_day``, so an earlier filter on the text ``day`` stays text, and one on the
+    date under an intermediate name is a TIMESTAMP literal."""
+    renamed = {"columns": {"id": "id", "day": "observed_day"}}
+    sql = _relation_sql(
+        ["id", "day", "observed_day"],
+        ("where", {"where": [{"field": "day", "op": "is", "value": "2026-01-01"}]}),
+        ("select", renamed),
+        tables={"out": frozenset({"day"})},
+    )
+    assert "src.day = '2026-01-01'" in sql and "TIMESTAMP" not in sql
+
+    sql = _relation_sql(
+        ["id", "observed_day"],
+        ("select", {"columns": {"id": "id", "seen": "observed_day"}}),
+        ("where", {"where": [{"field": "seen", "op": "gte", "value": "2026-01-01"}]}),
+        ("select", {"columns": {"id": "id", "day": "seen"}}),
+        tables={"out": frozenset({"day"})},
+    )
+    assert "src.seen >= TIMESTAMP '2026-01-01'" in sql
+
+
+def test_athena_semi_join_filters_read_each_column_by_its_table():
+    """A semi-join's filter reads a qualified column on its table and an unqualified one on the
+    joined table: the joined table's DATE ``label`` never types the outer text ``label``."""
+    outer = {"kind": "column", "table": "src", "column": "label"}
+    where = [
+        {
+            "kind": "comparison",
+            "op": "=",
+            "left": outer,
+            "right": {"kind": "literal", "value": "2026-01-01"},
+        },  # fmt: skip
+        {"field": "label", "op": "is", "value": "2026-01-02"},
+    ]
+    join = {"relation": "right_dates", "on": [{"left": "id", "right": "id"}], "where": where}
+    sql = _relation_sql(
+        ["id", "label"], ("semi_join", join), tables={"right_dates": frozenset({"label"})}
+    )
+    assert "src.label = '2026-01-01'" in sql
+    assert "\"right\".label = TIMESTAMP '2026-01-02'" in sql
 
 
 # ---------------------------------------------------------------------------
