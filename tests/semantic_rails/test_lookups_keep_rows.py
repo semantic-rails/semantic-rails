@@ -669,6 +669,8 @@ SQL_ORDERS_BY_ITEM = (
     " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1"
 )
 SQL_ITEM_CATEGORY = "(SELECT p.category FROM products AS p WHERE p.sku = i.sku)"
+# Hot: orders 1, 6, 9 and 10. Cold: 2 and 11. NULL: 3 (no product), 4 (no record) and 5 (melt).
+ORDERS_BY_CATEGORY = {"hot": 4, "cold": 2, None: 3}
 
 
 def _answer(package: Path, query: dict[str, Any], reference: str) -> tuple[str, dict, dict]:
@@ -708,12 +710,12 @@ def test_a_child_lookup_grouping_counts_only_existing_parents(
         SQL_ORDERS_BY_ITEM.format(group=SQL_ITEM_CATEGORY),
     )
 
-    assert rows == reference == {"hot": 4, "cold": 2, None: 3}
+    assert rows == reference == ORDERS_BY_CATEGORY
     assert ("FROM items" if rollup_safe else "_entity_rows") in sql
 
 
-# A second relationship from an item to its order, and the route the order count walks to a
-# product.
+# Appended to the rollup-safe graph: a second relationship from an item to its order, and the
+# route the order count walks to a product.
 OTHER_ORDER = """
     items_other_order:
       id: relationship.items_other_order
@@ -736,69 +738,60 @@ PIN_PARENT = """
       target_entity: order
       relationship_path: [relationship.items_order]
 """
+# The items' relationship to their order, walked from the order only.
+REVERSE_ONLY = "      allowed_directions: [reverse]\n"
 
 
 @pytest.mark.parametrize(
-    ("extra_seed", "expected", "pin_parent"),
+    ("graph", "extra_seed", "dimension", "expected"),
     [
+        # An alternative parent relationship never changes the pinned order count, with or
+        # without a row for the counted one.
         (
-            "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage', 1);\n",
-            {"hot": 4, "cold": 2, None: 3},
-            False,
+            OTHER_ORDER,
+            OTHER_ORDER_SEED + "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage', 1);\n",
+            CATEGORY,
+            ORDERS_BY_CATEGORY,
         ),
         (
-            "UPDATE items SET other_order_id = NULL WHERE order_id = 1;\n",
-            {"hot": 4, "cold": 2, None: 3},
-            True,
+            OTHER_ORDER + PIN_PARENT,
+            OTHER_ORDER_SEED + "UPDATE items SET other_order_id = NULL WHERE order_id = 1;\n",
+            CATEGORY,
+            ORDERS_BY_CATEGORY,
         ),
         (
-            "DELETE FROM items;\nINSERT INTO items VALUES (111, 1, 'coffee', 'beverage', 999);\n",
+            OTHER_ORDER + PIN_PARENT,
+            OTHER_ORDER_SEED + "DELETE FROM items;\n"
+            "INSERT INTO items VALUES (111, 1, 'coffee', 'beverage', 999);\n",
+            CATEGORY,
             {"hot": 1},
-            True,
         ),
+        # A supported parent-to-child grouping needs no prohibited child-to-parent lookup.
+        (REVERSE_ONLY, ORPHAN_ITEM_SEED, TYPE, {"beverage": 5, "food": 4}),
+        (REVERSE_ONLY, ORPHAN_ITEM_SEED, CATEGORY, ORDERS_BY_CATEGORY),
     ],
     ids=[
         "orphan_with_another_existing_parent",
         "valid_parent_with_null_other_parent",
         "valid_parent_with_missing_other_parent",
+        "reverse_only_child",
+        "reverse_only_child_lookup",
     ],
 )
-def test_a_parent_count_with_two_relationships_uses_the_counted_path(
-    tmp_path, extra_seed, expected, pin_parent
+def test_the_orders_own_leaf_counts_them_when_the_child_anchor_declines(
+    tmp_path, graph, extra_seed, dimension, expected
 ):
-    """An alternative parent relationship never changes the pinned order count, with or without
-    a row for the counted one."""
+    group = "i.item_type" if dimension == TYPE else SQL_ITEM_CATEGORY
     sql, rows, reference = _answer(
-        _write_package(
-            tmp_path,
-            rollup_safe=True,
-            extra_seed=OTHER_ORDER_SEED + extra_seed,
-            graph=OTHER_ORDER + (PIN_PARENT if pin_parent else ""),
-        ),
-        _query(ORDER_COUNT, group_by=[CATEGORY]),
-        SQL_ORDERS_BY_ITEM.format(group=SQL_ITEM_CATEGORY),
+        _write_package(tmp_path, rollup_safe=True, extra_seed=extra_seed, graph=graph),
+        _query(ORDER_COUNT, group_by=[dimension]),
+        SQL_ORDERS_BY_ITEM.format(group=group),
     )
 
     assert rows == reference == expected
     assert "FROM orders" in sql
     assert "FROM items" not in sql
     assert "other_order_id" not in sql
-
-
-@pytest.mark.parametrize("dimension", [TYPE, CATEGORY], ids=["child", "child_lookup"])
-def test_a_reverse_only_parent_relationship_declines_the_child_anchor(tmp_path, dimension):
-    """A supported parent-to-child grouping needs no prohibited child-to-parent lookup."""
-    reverse_only = "      allowed_directions: [reverse]\n"  # of the items' relationship
-    group = "i.item_type" if dimension == TYPE else SQL_ITEM_CATEGORY
-    sql, rows, reference = _answer(
-        _write_package(tmp_path, rollup_safe=True, extra_seed=ORPHAN_ITEM_SEED, graph=reverse_only),
-        _query(ORDER_COUNT, group_by=[dimension]),
-        SQL_ORDERS_BY_ITEM.format(group=group),
-    )
-
-    assert rows == reference
-    assert "FROM orders" in sql
-    assert "FROM items" not in sql
 
 
 def _refuses_the_child_anchor(call: Any) -> None:
@@ -874,15 +867,16 @@ def _with_rollup(config: Any, source_entity: str) -> Any:
 
 
 def test_the_entity_in_terms_of_leaf_leaves_a_rollup_dimension_to_the_order_s_leaf(
-    rollup_safe_runtime, gold
+    rollup_safe_runtime, gold, monkeypatch
 ):
     """A rollup of the orders holds the country, so the base answers as that rollup does: every
     hop to the country is INNER. Orders 4, 5 and 11 reach no country record and drop out; order
     3's country has no name. Counted from the items, the leaf would not see the orders' rollup,
-    so the orders' own leaf answers."""
+    so the orders' own leaf answers; with that decline bypassed, the joins refuse."""
     config = _with_rollup(rollup_safe_runtime.config, "entity.geo_order")
+    query = _query(ORDER_COUNT, group_by=[TYPE, COUNTRY])
 
-    sql = _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
+    sql = _sql(config, query)
 
     assert "FROM orders" in sql
     assert _lookup_joins(sql) == [("INNER", table) for table in HOPS[COUNTRY]]
@@ -895,6 +889,8 @@ def test_the_entity_in_terms_of_leaf_leaves_a_rollup_dimension_to_the_order_s_le
     )
     assert gold(sql) == expected
     assert expected == {("beverage", "Atlantis"): 3, ("beverage", None): 1, ("food", "Atlantis"): 1}
+    monkeypatch.setattr(lowering_common, "rollup_held_lookups", lambda *args: set())
+    _refuses_the_child_anchor(lambda: _sql(config, query))
 
 
 @pytest.mark.parametrize(
@@ -935,17 +931,6 @@ def test_a_dimension_only_query_reads_no_rollup(runtime, gold):
     expected = gold(f"SELECT DISTINCT i.item_type, {item_country}, 1 FROM items AS i")
     assert gold(f"SELECT *, 1 FROM ({sql})") == expected
     assert ("food", None) in expected
-
-
-def test_a_leaf_reading_another_model_s_rows_refuses_the_measure_s_rollup(
-    rollup_safe_runtime, monkeypatch
-):
-    """The guard behind the entity_in_terms_of leaf's decline: with the decline bypassed, the
-    joins refuse to answer a dimension the orders' rollup holds from the items' rows."""
-    config = _with_rollup(rollup_safe_runtime.config, "entity.geo_order")
-    monkeypatch.setattr(lowering_common, "rollup_held_lookups", lambda *args: set())
-
-    _refuses_the_child_anchor(lambda: _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY])))
 
 
 def test_a_lookup_after_a_one_to_many_hop_joins_left_inside_exists(runtime, gold):
