@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -11,7 +12,7 @@ from semantic_rails.embedding import RequestContext
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.conftest import copy_package_config, opened
 
 NOW = "2017-09-04T12:00:00Z"
 ORDERS = "measure.jaffle.order_count"
@@ -19,18 +20,11 @@ REVENUE = "measure.jaffle.revenue_usd"
 
 
 @pytest.fixture(scope="module")
-def package_snapshot(tmp_path_factory):
+def runtime(tmp_path_factory):
     path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
-    return load_package_snapshot(path)
-
-
-@pytest.fixture()
-def runtime(package_snapshot):
-    runtime = Runtime.from_snapshot(package_snapshot)
-    try:
-        yield runtime
-    finally:
-        runtime.close()
+    runtime = Runtime.from_snapshot(load_package_snapshot(path))
+    yield opened(runtime)
+    runtime.close()
 
 
 def _error(runtime: Runtime, call: dict[str, Any]) -> dict[str, Any]:
@@ -45,26 +39,28 @@ def _hint(error: dict[str, Any]) -> str:
 
 
 @pytest.mark.parametrize(
-    ("remote", "says"),
-    [(False, "configured credentials"), (True, "from the credentials")],
-    ids=["stdio", "remote"],
+    ("surface", "code", "says"),
+    [
+        ("sdk", "INVALID_QUERY", "`context` argument"),
+        ("mcp_stdio", "INVALID_QUERY", "configured credentials"),
+        ("mcp_remote", "IDENTITY_CLAIM_REFUSED", "from the credentials"),
+    ],
 )
-def test_an_mcp_identity_claim_names_where_mcp_reads_identity(
-    runtime: Runtime, remote: bool, says: str
+def test_an_identity_claim_names_where_the_surface_reads_identity(
+    runtime: Runtime, surface: str, code: str, says: str
 ) -> None:
-    adapter = SemanticLayerMCPAdapter(runtime)
-    claim = {"query": {"select": [ORDERS]}, "policy_context": {"roles": ["admin"]}}
-    context = RequestContext(environment="trusted") if remote else None
-    error = adapter.call_tool("execute", claim, request_context=context)["errors"][0]
-    assert error["details"]["path"] == "policy_context"
+    claim = {"roles": ["admin"]}
+    if surface == "sdk":
+        error = _error(runtime, {"select": [ORDERS], "policy_context": claim})
+    else:
+        # The remote caller's environment is one the package does not declare.
+        context = RequestContext(environment="trusted") if surface == "mcp_remote" else None
+        request = {"query": {"select": [ORDERS]}, "policy_context": claim}
+        adapter = SemanticLayerMCPAdapter(runtime)
+        error = adapter.call_tool("execute", request, request_context=context)["errors"][0]
+        assert "`context`" not in _hint(error)
+    assert (error["code"], error["details"]["path"]) == (code, "policy_context")
     assert says in _hint(error)
-    assert "`context`" not in _hint(error)
-
-
-def test_an_sdk_identity_claim_names_the_context_argument(runtime: Runtime) -> None:
-    error = _error(runtime, {"select": [ORDERS], "policy_context": {"roles": ["admin"]}})
-    assert error["details"]["path"] == "policy_context"
-    assert "`context` argument" in _hint(error)
 
 
 @pytest.mark.parametrize(
@@ -94,11 +90,16 @@ def test_a_malformed_expression_keeps_its_own_hint(runtime: Runtime) -> None:
     assert len(error["recovery_hints"]) == 1
 
 
-@pytest.mark.parametrize("grain", ["hour", "fortnight"])
-def test_a_grain_the_call_does_not_know_names_the_grains(runtime: Runtime, grain: str) -> None:
-    error = _error(runtime, {"select": [ORDERS], "time": {"grain": grain}})
-    assert error["details"]["path"] == "time.grain"
-    assert _hint(error) == "Omit grain for one total, or use day, week, month, quarter or year."
+def test_a_grain_the_call_does_not_know_names_the_grains(runtime: Runtime) -> None:
+    offered = ["day", "week", "month", "quarter", "year"]
+    for grain in ("hour", "fortnight"):
+        error = _error(runtime, {"select": [ORDERS], "time": {"grain": grain}})
+        assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", "time.grain")
+        assert [unit for unit in ["hour", *offered] if unit in _hint(error)] == offered
+    # Each option the hint offers validates: no grain (one total), or a named grain.
+    for time in [None, *({"grain": unit} for unit in offered)]:
+        call = {"select": [ORDERS], **({"time": time} if time else {})}
+        assert runtime.validate(call, now=NOW)["ok"] is True
 
 
 @pytest.mark.parametrize(
@@ -121,18 +122,18 @@ def test_a_child_group_is_pointed_at_the_entity_filter(
     assert runtime.validate({"select": [ORDERS], "where": [shape]}, now=NOW)["ok"] is True
 
 
-@pytest.mark.parametrize(
-    ("unit", "value", "most"),
-    [("year", 10000, 2016), ("day", 10**8, 736575), ("month", 10**30, 24200)],
-)
+@pytest.mark.parametrize(("unit", "value"), [("year", 10000), ("day", 10**8), ("month", 10**30)])
 def test_a_last_window_before_the_calendar_names_the_largest_one(
-    runtime: Runtime, unit: str, value: int, most: int
+    runtime: Runtime, unit: str, value: int
 ) -> None:
-    error = _error(runtime, {"select": [ORDERS], "time": {"last": {"unit": unit, "value": value}}})
+    def last(count: int) -> dict[str, Any]:
+        return {"select": [ORDERS], "time": {"last": {"unit": unit, "value": count}}}
+
+    error = _error(runtime, last(value))
     assert error["details"]["path"] == "time.last.value"
-    assert _hint(error) == f"Use at most {most}, or a dated window with start and end."
-    widest = {"select": [ORDERS], "time": {"last": {"unit": unit, "value": most}}}
-    assert runtime.validate(widest, now=NOW)["ok"] is True
+    most = int(re.search(r"at most (\d+)", _hint(error)).group(1))
+    assert runtime.validate(last(most), now=NOW)["ok"] is True
+    assert _error(runtime, last(most + 1))["details"]["path"] == "time.last.value"
 
 
 @pytest.mark.parametrize(
