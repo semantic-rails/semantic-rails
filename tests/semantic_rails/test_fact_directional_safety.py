@@ -17,7 +17,7 @@ def test_fact_measure_with_unreachable_select_dim_errors():
     config = load_package_config("configs/semantic_rails/jaffle_shop")
     registry = Registry(config)
     customer_dim = next(d for d in config.dimensions if "customer_type" in d.id.lower())
-    with pytest.raises(SemanticLayerError, match="(?i)(no path|unreachable|not reachable)"):
+    with pytest.raises(SemanticLayerError) as raised:
         compile_query(
             config,
             registry,
@@ -35,3 +35,6 @@ def test_fact_measure_with_unreachable_select_dim_errors():
                 },
             },
         )
+    assert raised.value.code == "PATH_NOT_FOUND"
+    assert raised.value.details["start"] == "entity.jaffle_time"
+    assert raised.value.details["target"] == "entity.jaffle_customer"
