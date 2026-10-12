@@ -103,21 +103,21 @@ TWO_CLOCKS = {
 }
 
 
-def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime):
-    for method in METHODS:
-        [warning] = _mixed(getattr(runtime, method)(_query(ORDERS, SESSIONS)))
-        assert warning["severity"] == "warning"
-        # The documented message: it names the roles and how each period is read.
-        assert warning["message"] == (
-            "These measures are dated by different time roles: measure.jaffle.order_count by "
-            f"{ORDER_TIME}; measure.jaffle.session_starts by {SESSION_TIME}. "
-            "Each period is read on its own role's clock."
-        )
-        assert warning["details"] == TWO_CLOCKS
-        assert warning["object_ids"] == [
-            "measure.jaffle.order_count",
-            "measure.jaffle.session_starts",
-        ]
+# The documented message: it names the roles and how each period is read.
+TWO_CLOCKS_MESSAGE = (
+    "These measures are dated by different time roles: measure.jaffle.order_count by "
+    f"{ORDER_TIME}; measure.jaffle.session_starts by {SESSION_TIME}. "
+    "Each period is read on its own role's clock."
+)
+
+
+@pytest.mark.parametrize("method", METHODS)
+def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, method):
+    [warning] = _mixed(getattr(runtime, method)(_query(ORDERS, SESSIONS)))
+    assert warning["severity"] == "warning"
+    assert warning["message"] == TWO_CLOCKS_MESSAGE
+    assert warning["details"] == TWO_CLOCKS
+    assert warning["object_ids"] == ["measure.jaffle.order_count", "measure.jaffle.session_starts"]
 
 
 @pytest.mark.parametrize(
@@ -204,7 +204,8 @@ def test_measures_inside_a_select_expression_are_disclosed_too(runtime, selects,
     assert all(clock in warning["message"] for clock in clocks)
 
 
-def test_package_without_time_never_warns_about_mixed_clocks(runtime):
+@pytest.mark.parametrize("method", METHODS)
+def test_package_without_time_never_warns_about_mixed_clocks(runtime, method):
     config = replace(
         runtime.config,
         temporal_roles=[],
@@ -217,10 +218,9 @@ def test_package_without_time_never_warns_about_mixed_clocks(runtime):
     )
     isolated = Runtime.from_config(config, source_path=runtime.source_path)
     try:
-        for method in METHODS:
-            out = getattr(isolated, method)(_query(ORDERS, SESSIONS))
-            assert out["ok"], out
-            assert _mixed(out) == []
+        out = getattr(isolated, method)(_query(ORDERS, SESSIONS))
+        assert out["ok"], out
+        assert _mixed(out) == []
     finally:
         isolated.close()
 
@@ -244,8 +244,11 @@ def _one_customer(runtime: Runtime, tmp_path, orders: list[str], sessions: list[
     return isolated
 
 
+@pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("kind", ["aggregate", "scoped_aggregate"])
-def test_date_filtered_ratio_discloses_roles_without_claiming_all_history(runtime, tmp_path, kind):
+def test_date_filtered_ratio_discloses_roles_without_claiming_all_history(
+    runtime, tmp_path, method, kind
+):
     isolated = _one_customer(
         runtime,
         tmp_path,
@@ -275,12 +278,12 @@ def test_date_filtered_ratio_discloses_roles_without_claiming_all_history(runtim
         # The bounded September ratio differs from the all-history ratio.
         assert [row["v0"] for row in isolated.query(query)["rows"]] == [2.0]
         assert [row["v0"] for row in isolated.query(_query(RATIO))["rows"]] == [1.0]
-        for method in METHODS:
-            out = getattr(isolated, method)(query)
-            assert out["ok"], out
-            [warning] = _mixed(out)
-            assert warning["details"] == TWO_CLOCKS
-            assert "history" not in warning["message"]
+        out = getattr(isolated, method)(query)
+        assert out["ok"], out
+        [warning] = _mixed(out)
+        assert warning["message"] == TWO_CLOCKS_MESSAGE
+        assert warning["details"] == TWO_CLOCKS
+        assert "history" not in warning["message"]
     finally:
         isolated.close()
 
@@ -300,8 +303,9 @@ def test_daily_ratio_covers_each_day_not_all_history(runtime, tmp_path):
         assert sorted(row["v0"] for row in timed["rows"]) == [1.0, 2.0]
         assert [row["v0"] for row in total["rows"]] == [1.5]
         assert len(_mixed(total)) == 1
-        for out in (timed, isolated.validate(timed_query), isolated.compile(timed_query)):
-            assert _mixed(out) == []
+        assert _mixed(timed) == []
+        assert _mixed(isolated.validate(timed_query)) == []
+        assert _mixed(isolated.compile(timed_query)) == []
     finally:
         isolated.close()
 
