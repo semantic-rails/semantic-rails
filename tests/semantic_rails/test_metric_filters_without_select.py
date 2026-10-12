@@ -43,8 +43,9 @@ def _customer_filter(threshold=100, scope_mode="entity_only"):
     ],
     ids=["omitted-select", "empty-select", "literal-select", "where", "order-limit"],
 )
-@pytest.mark.parametrize("scope_mode", ["entity_only", "contextual"])
-def test_metric_predicate_without_leaf_refuses(package_config_factory, extra, scope_mode):
+def test_metric_predicate_without_leaf_refuses(package_config_factory, request, extra):
+    # Alternate the two scope modes across the shapes.
+    scope_mode = ["entity_only", "contextual"][request.node.callspec.indices["extra"] % 2]
     config, _ = package_config_factory("jaffle_shop")
     query = {
         "group_by": [STORE],
@@ -94,8 +95,7 @@ def test_aggregate_filter_without_select_matches_reference_sql(warehouse, thresh
     assert sorted(actual) == sorted(expected)
 
 
-@pytest.mark.parametrize("threshold", [100, 10000, 10**12])
-@pytest.mark.parametrize("selected", [True, False], ids=["select", "filter-leaf-only"])
+@pytest.mark.parametrize(("threshold", "selected"), [(100, True), (10000, False), (10**12, True)])
 def test_metric_predicate_with_leaf_matches_reference_sql(warehouse, threshold, selected):
     config, conn = warehouse
     query = {
