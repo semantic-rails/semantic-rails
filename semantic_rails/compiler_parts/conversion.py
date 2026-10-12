@@ -93,9 +93,9 @@ from .post_aggregation import (
 from .predicate import (
     _path_selection,
     _predicate_scope,
+    _predicate_set_fields,
+    _predicate_source_query,
     _predicate_where_condition,
-    _predicate_window_filters,
-    _public_time_spec,
     _require_predicate_over_rows,
 )
 
@@ -520,19 +520,7 @@ def _conversion_predicate_set_ctes(
     config: PackageConfig,
     scope: dict[str, Any],
 ) -> tuple[list[SqlCte], str, list[str]]:
-    mini_query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"expression": expr_to_dict(predicate.input), "as": "__predicate_value"}],
-        "group_by": list(scope["group_by_dims"]),
-    }
-    predicate_where_items = [asdict(item) for item in scope["filter_items"]]
-    if scope["time_spec"] is not None and scope["time_spec"].get("entity_only_window"):
-        predicate_where_items.extend(_predicate_window_filters(scope["time_spec"], config))
-    if predicate_where_items:
-        mini_query["where"] = predicate_where_items
-    if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
-        mini_query["time"] = _public_time_spec(scope["time_spec"])
-
+    mini_query = _predicate_source_query(predicate, scope, config)
     _require_predicate_over_rows(predicate, config, shape="a conversion metric")
     # Conversion leaves apply only query metric_filters predicates: whole-query cuts.
     with cut_owners():
@@ -544,21 +532,7 @@ def _conversion_predicate_set_ctes(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
     )
 
-    projected_keys = list(scope["group_by_dims"])
-    source_group_keys = list(scope["group_by_dims"])
-    select_fields = [
-        SqlField(SqlIdentifier(parts=["predicate_source", dim_id]), dim_id)
-        for dim_id in projected_keys
-    ]
-    if scope["time_alias"]:
-        select_fields.append(
-            SqlField(
-                SqlIdentifier(parts=["predicate_source", scope["source_time_alias"]]),
-                scope["time_alias"],
-            )
-        )
-        projected_keys.append(scope["time_alias"])
-        source_group_keys.append(scope["source_time_alias"])
+    select_fields, projected_keys = _predicate_set_fields(scope)
     # `source_cte` already produces one row per key combination, so re-grouping
     # is a no-op. `SELECT DISTINCT` reads as "set of qualifying ids" without
     # implying we need to dedup duplicate rows that don't exist.
@@ -571,7 +545,6 @@ def _conversion_predicate_set_ctes(
             distinct=True,
         ),
     )
-    _ = source_group_keys  # retained to make intent visible; no GROUP BY emitted
     return [source_cte, set_cte], set_name, projected_keys
 
 

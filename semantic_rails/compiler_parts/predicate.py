@@ -902,6 +902,40 @@ def _predicate_scope(
     }
 
 
+def _predicate_source_query(
+    predicate: MetricPredicateExpr, scope: dict[str, Any], config: PackageConfig
+) -> dict[str, Any]:
+    """The query whose rows are each entity's predicate value, read in the predicate's scope."""
+    query: dict[str, Any] = {
+        "version": 1,
+        "select": [{"expression": expr_to_dict(predicate.input), "as": "__predicate_value"}],
+        "group_by": list(scope["group_by_dims"]),
+    }
+    where = [asdict(item) for item in scope["filter_items"]]
+    if scope["time_spec"] is not None and scope["time_spec"].get("entity_only_window"):
+        where.extend(_predicate_window_filters(scope["time_spec"], config))
+    if where:
+        query["where"] = where
+    if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
+        query["time"] = _public_time_spec(scope["time_spec"])
+    return query
+
+
+def _predicate_set_fields(scope: dict[str, Any]) -> tuple[list[SqlField], list[str]]:
+    """A predicate set's columns, read from its source, and the keys it projects."""
+    keys = list(scope["group_by_dims"])
+    fields = [SqlField(SqlIdentifier(parts=["predicate_source", key]), key) for key in keys]
+    if scope["time_alias"]:
+        fields.append(
+            SqlField(
+                SqlIdentifier(parts=["predicate_source", scope["source_time_alias"]]),
+                scope["time_alias"],
+            )
+        )
+        keys.append(scope["time_alias"])
+    return fields, keys
+
+
 def _predicate_window_filters(time: dict[str, Any], config: PackageConfig) -> list[dict[str, Any]]:
     """Build raw-column window filters only for roles without timezone conversion."""
     from .lowering_common import _source_time_window
@@ -945,18 +979,7 @@ def _predicate_ctes_and_join(
             strict=True,
         )
     )
-    mini_query = {
-        "version": 1,
-        "select": [{"expression": expr_to_dict(predicate.input), "as": "__predicate_value"}],
-        "group_by": list(scope["group_by_dims"]),
-    }
-    predicate_where_items = [asdict(item) for item in scope["filter_items"]]
-    if scope["time_spec"] is not None and scope["time_spec"].get("entity_only_window"):
-        predicate_where_items.extend(_predicate_window_filters(scope["time_spec"], config))
-    if scope["filter_items"] or predicate_where_items:
-        mini_query["where"] = predicate_where_items
-    if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
-        mini_query["time"] = _public_time_spec(scope["time_spec"])
+    mini_query = _predicate_source_query(predicate, scope, config)
     with binding_cut():
         _entity_index(config)[predicate.entity]
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
@@ -972,21 +995,7 @@ def _predicate_ctes_and_join(
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
     )
-    projected_keys = [dim_id for dim_id in scope["group_by_dims"]]
-    source_group_keys = [dim_id for dim_id in scope["group_by_dims"]]
-    select_fields = [
-        SqlField(SqlIdentifier(parts=["predicate_source", dim_id]), dim_id)
-        for dim_id in projected_keys
-    ]
-    if scope["time_alias"]:
-        select_fields.append(
-            SqlField(
-                SqlIdentifier(parts=["predicate_source", scope["source_time_alias"]]),
-                scope["time_alias"],
-            )
-        )
-        projected_keys.append(scope["time_alias"])
-        source_group_keys.append(scope["source_time_alias"])
+    select_fields, projected_keys = _predicate_set_fields(scope)
     # `source_cte` already produces one row per key combination; the outer
     # GROUP BY would just re-group identical rows. SELECT DISTINCT expresses
     # "set of qualifying ids" idiomatically.
@@ -1022,7 +1031,6 @@ def _predicate_ctes_and_join(
         where=[where_condition],
         distinct=True,
     )
-    _ = source_group_keys  # retained for naming clarity; no GROUP BY emitted
     set_cte = SqlCte(name=set_name, query=set_query)
     predicate_table = entity_cfg.table
     direct_predicate_keys = [
