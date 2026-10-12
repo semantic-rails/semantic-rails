@@ -936,15 +936,6 @@ def test_date_diff_day_sql_preserves_endpoint_order(warehouse, expected):
     assert render_expr(lowered) == expected
 
 
-@pytest.mark.parametrize("start,end", [(None, END), (START, None), (None, None)])
-def test_date_diff_either_null_endpoint_executes_as_null(start, end):
-    lowered = dialect_for_warehouse("duckdb").scalar_call(
-        "DATE_DIFF", [SqlLiteral("day"), SqlLiteral(start), SqlLiteral(end)]
-    )
-    with duckdb.connect() as conn:
-        assert conn.execute("SELECT " + render_expr(lowered)).fetchall() == [(None,)]
-
-
 def test_date_diff_average_excludes_either_null_endpoint():
     lowered = dialect_for_warehouse("duckdb").scalar_call(
         "DATE_DIFF",
@@ -956,7 +947,11 @@ def test_date_diff_average_excludes_either_null_endpoint():
             "INSERT INTO dates VALUES (?, ?)",
             [(START, END), (None, END), (START, None), (None, None)],
         )
-        assert conn.execute(f"SELECT AVG({render_expr(lowered)}) FROM dates").fetchall() == [(2.0,)]
+        diff = render_expr(lowered)
+        # Either NULL endpoint yields NULL: one counted row, averaging 2 days.
+        assert conn.execute(f"SELECT AVG({diff}), COUNT({diff}) FROM dates").fetchall() == [
+            (2.0, 1)
+        ]
 
 
 INVALID_DATE_DIFF_ARGS = [
