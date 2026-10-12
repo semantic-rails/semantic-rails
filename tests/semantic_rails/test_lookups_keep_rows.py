@@ -491,22 +491,6 @@ def _leaf_violations(runtime: Runtime, gold: Any, leaf: Leaf) -> list[str]:
     return violations
 
 
-@pytest.mark.parametrize("name", list(LEAVES))
-def test_every_leaf_keeps_the_rows(runtime, rollup_safe_runtime, gold, name):
-    """ClickHouse reads '' or 0, not NULL, from an unmatched outer-join column, so its lookups
-    stay inner in every leaf."""
-    leaf = LEAVES[name]
-    leaf_runtime = rollup_safe_runtime if leaf.rollup_safe else runtime
-    package = dataclasses.replace(leaf_runtime.config.package, warehouse="clickhouse")
-    clickhouse = dataclasses.replace(leaf_runtime.config, package=package)
-
-    violations = _leaf_violations(leaf_runtime, gold, leaf)
-
-    assert violations == []
-    joins = _lookup_joins(_sql(clickhouse, leaf.query))
-    assert joins and all(kind == "INNER" for kind, _ in joins)
-
-
 _joins_for_paths = sql_lowering._joins_for_paths
 
 
@@ -516,17 +500,26 @@ def _inner_lookups(*args: Any, **kwargs: Any) -> list[SqlJoin]:
 
 
 @pytest.mark.parametrize("name", list(LEAVES))
-def test_a_leaf_that_joins_its_lookups_inner_fails_the_check(tmp_path, gold, monkeypatch, name):
-    """The check above catches a leaf that bypasses the rule: here every leaf joins INNER."""
+def test_every_leaf_keeps_the_rows(runtime, rollup_safe_runtime, gold, monkeypatch, tmp_path, name):
+    """ClickHouse reads '' or 0, not NULL, from an unmatched outer-join column, so its lookups
+    stay inner in every leaf. The check catches a leaf that bypasses the rule: with every
+    lookup joined INNER, it reports the joins and the lost rows."""
     leaf = LEAVES[name]
+    leaf_runtime = rollup_safe_runtime if leaf.rollup_safe else runtime
+    package = dataclasses.replace(leaf_runtime.config.package, warehouse="clickhouse")
+    clickhouse = dataclasses.replace(leaf_runtime.config, package=package)
+
+    assert _leaf_violations(leaf_runtime, gold, leaf) == []
+    joins = _lookup_joins(_sql(clickhouse, leaf.query))
+    assert joins and all(kind == "INNER" for kind, _ in joins)
+
     for module in (leaves, lowering_common, plan_checks, predicate_sets):
         monkeypatch.setattr(module, "_joins_for_paths", _inner_lookups)
-    runtime = Runtime.from_path(str(_write_package(tmp_path, rollup_safe=leaf.rollup_safe)))
+    inner = Runtime.from_path(str(_write_package(tmp_path, rollup_safe=leaf.rollup_safe)))
     try:
-        violations = _leaf_violations(runtime, gold, leaf)
+        violations = _leaf_violations(inner, gold, leaf)
     finally:
-        runtime.close()
-
+        inner.close()
     assert any(text.startswith("lookup joins") for text in violations)
     assert any("is not gold" in text for text in violations)
 
@@ -954,20 +947,18 @@ def test_a_lookup_after_a_one_to_many_hop_joins_left_inside_exists(runtime, gold
 def _callers(function: str) -> set[str]:
     """``module:function`` for every function in the engine that calls ``function``."""
     root = Path(__file__).resolve().parents[2] / "semantic_rails"
-    callers = set()
-    for path in root.rglob("*.py"):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef):
-                continue
-            for call in ast.walk(node):
-                if (
-                    isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == function
-                ):
-                    callers.add(f"{path.stem}:{node.name}")
-    return callers
+    return {
+        f"{path.stem}:{node.name}"
+        for path in root.rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == function
+            for call in ast.walk(node)
+        )
+    }
 
 
 def test_one_place_decides_how_a_relationship_joins():
