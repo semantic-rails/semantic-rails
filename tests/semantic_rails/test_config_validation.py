@@ -1146,7 +1146,11 @@ def _revenue(key: str, name: str, label: str, **extra) -> dict:
                 **_revenue("revenue_b", "sales.revenue_b", "Revenue"),
             },
             "SEMANTIC_TERM_COLLISION",
-            {"collision_type": "exact_normalized", "normalized_term": "revenue"},
+            {
+                "collision_type": "exact_normalized",
+                "normalized_term": "revenue",
+                "object_ids": ["measure.demo.revenue_a", "measure.demo.revenue_b"],
+            },
             {"measure.demo.revenue_a": ["label"], "measure.demo.revenue_b": ["label"]},
         ),
         (
@@ -1160,7 +1164,10 @@ def _revenue(key: str, name: str, label: str, **extra) -> dict:
                 **_revenue("recognized_revenue", "sales.revenue", "Recognized revenue"),
             },
             "SEMANTIC_TERM_COLLISION",
-            {"normalized_term": "salesrevenue"},
+            {
+                "normalized_term": "salesrevenue",
+                "object_ids": ["measure.demo.booked_revenue", "measure.demo.recognized_revenue"],
+            },
             {
                 "measure.demo.booked_revenue": ["alias"],
                 "measure.demo.recognized_revenue": ["canonical_name"],
@@ -1176,6 +1183,7 @@ def _revenue(key: str, name: str, label: str, **extra) -> dict:
                 "collision_type": "single_edit_typo",
                 "differing_tokens": ["revenue", "reveneu"],
                 "edit_distance": 1,
+                "object_ids": ["measure.demo.recurring_revenue", "measure.demo.recurring_typo"],
             },
             None,
         ),
