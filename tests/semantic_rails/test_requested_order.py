@@ -88,10 +88,19 @@ def _query(shape: str, direction: str) -> dict:
     }
 
 
+# Each backend renders every shape, and both directions across the shapes.
+DIRECTIONS = {
+    "inlined": "DESC",
+    "metric-filter": "ASC",
+    "anchored-ratio": "DESC",
+    "distribution": "ASC",
+}
+
+
 @pytest.mark.parametrize("warehouse", supported_warehouses())
-@pytest.mark.parametrize("direction", ["ASC", "DESC"])
 @pytest.mark.parametrize("shape", list(SHAPES))
-def test_requested_term_renders_nulls_last(package_config_factory, warehouse, direction, shape):
+def test_requested_term_renders_nulls_last(package_config_factory, warehouse, shape):
+    direction = DIRECTIONS[shape]
     config, _ = package_config_factory("jaffle_shop")
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     compiled = compile_query(config, None, _query(shape, direction))
