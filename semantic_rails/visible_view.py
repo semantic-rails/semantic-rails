@@ -553,7 +553,9 @@ def build_view(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
 
 def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list[dict[str, Any]]:
     """The policy effects a response may carry: each private effect as its display policy
-    states it, with hidden ids left out. Execution consumes the private effects unchanged."""
+    states it, with hidden ids left out. A violation is shown whole or not at all: one whose
+    text names a hidden object anywhere (an id or label, alone or inside a value) is left out.
+    Execution consumes the private effects unchanged."""
     meta = get_package_analysis(config).view
     if meta is None:
         return private
@@ -573,6 +575,10 @@ def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list
         for key in ("violations", "withheld_objects", "withheld_column"):
             if key in effect:
                 public[key] = _visible(effect[key], meta.hidden)
+        if "violations" in public:
+            public["violations"] = [
+                row for row in public["violations"] if not _mentions(row, meta.tokens)
+            ]
         out.append(public)
     return out
 
@@ -591,7 +597,9 @@ def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLaye
         "policy_effects": effects,
         "policy_violations": [row for effect in effects for row in effect.get("violations", [])],
     }
-    return exc if details == exc.details else denied(details)
+    # A cut left out is still unmet: the refusal says so without saying what it is.
+    unstated = len(details["policy_violations"]) < len(exc.details.get("policy_violations") or [])
+    return exc if details == exc.details else denied(details, unstated=unstated)
 
 
 @dataclass

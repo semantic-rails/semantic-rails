@@ -361,3 +361,82 @@ def test_a_key_beside_another_of_its_entity_s_dimensions_is_not_shown_by_key(
         "message": "entity.jaffle_store declares no name, so its rows show only "
         "dimension.jaffle_store_id.",
     }
+
+
+GROSS_PROFIT = "measure.jaffle.gross_profit_usd"
+PERISHABLE = "dimension.jaffle_supply_is_perishable"
+HIDE = SemanticPolicyConfig(
+    id="policy.hide_margin",
+    kind="object_visibility",
+    object_ids=[GROSS_PROFIT, PERISHABLE],
+    action="hidden",
+    audiences=["external"],
+)
+GENERIC = f"{REVENUE} can't be read this way under policy"
+ASK = "Ask a package admin what this policy allows you to read."
+
+
+def _cut(**config: Any) -> SemanticPolicyConfig:
+    return SemanticPolicyConfig(
+        id="policy.revenue_cut", kind="metric_constraint", object_ids=[REVENUE], config=config
+    )
+
+
+@pytest.mark.parametrize(
+    ("cut", "call", "message", "hint"),
+    [
+        # A required value that embeds a hidden id, or a hidden label, or is a hidden id.
+        *(
+            (
+                _cut(required_where=[{"field": STORE, "op": "is", "value": value}]),
+                {"select": [REVENUE]},
+                f"{GENERIC}.",
+                ASK,
+            )
+            for value in (f"cohort using {GROSS_PROFIT}", "stores with Gross Profit over plan",
+                          GROSS_PROFIT)
+        ),
+        # A hidden required field beside a visible one: the visible cut is stated, the hidden one
+        # in the generic words.
+        (
+            _cut(required_group_by=[STORE], required_where=[{"field": PERISHABLE}]),
+            {"select": [REVENUE]},
+            f"{REVENUE} can only be read grouped by {STORE}: add {STORE} to group_by; {GENERIC}.",
+            f"Add {STORE} to group_by. {ASK}",
+        ),
+        # The fields a cut allows include a hidden one.
+        (
+            _cut(allowed_where=[STORE, PERISHABLE]),
+            {"select": [REVENUE], "where": [{"field": "dimension.jaffle_customer_type", "op": "is",
+                                             "value": "new"}]},
+            f"{GENERIC}.",
+            ASK,
+        ),
+    ],
+    ids=["embedded-id", "embedded-label", "id-value", "hidden-field-beside-visible",
+         "allowed-hidden-field"],
+)  # fmt: skip
+def test_a_policy_refusal_never_names_what_is_hidden_from_the_caller(
+    runtime: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    cut: SemanticPolicyConfig,
+    call: dict[str, Any],
+    message: str,
+    hint: str,
+) -> None:
+    config = replace(runtime._config, semantic_policies=[HIDE, cut])
+    monkeypatch.setattr(runtime, "_config", config)
+    caller = {"audience": "external"}
+    [error] = runtime.validate(call, context=caller)["errors"]
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(call, context=caller)
+    for said in (error, {"message": str(raised.value), "details": raised.value.details}):
+        text = json.dumps(said).lower()
+        assert GROSS_PROFIT not in text and PERISHABLE not in text
+        assert "gross profit" not in text and "perishable" not in text
+        assert said["message"] == message
+    [fix] = error["recovery_hints"]
+    assert (fix["code"], fix["message"]) == ("FIX_QUERY_CALL", hint)
+    # A caller who sees every object gets the cut in full.
+    seen = runtime.validate(call, context={"audience": "internal"})["errors"][0]
+    assert GENERIC not in seen["message"]
