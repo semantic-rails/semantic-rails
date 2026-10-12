@@ -58,7 +58,6 @@ from .cache import (
     CompiledSqlCache,
     LruCompiledSqlCache,
     compilation_cache_key,
-    package_fingerprint,
 )
 from .catalog_search import CatalogSearchIndex
 from .clock import format_now, parse_now
@@ -78,9 +77,7 @@ from .compiler_parts.empty_groups import (
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
-    get_package_config,
     get_package_path,
-    load_package_config,
     package_root_for_source,
     project_managed_source,
     repo_root,
@@ -88,12 +85,9 @@ from .config import (
     semantic_rails_home,
 )
 from .db import (
-    Database,
     WarehouseAdapter,
     build_seed_database,
     create_warehouse_adapter,
-    load_csv_dir_to_duckdb,
-    seed_db,
     seed_digest,
 )
 from .db_parts.base import query_with_limits, reject_parameters
@@ -106,17 +100,15 @@ from .diagnostics import (
     filter_value_miss,
     lean_issue,
     provenance_summary,
-    rewrite_warning_payload,
     semantic_issue,
 )
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
-from .expressions import collect_object_references, expr_to_dict
+from .expressions import collect_object_references
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import (
     enforce_query_policies,
-    query_policy_effects,
     row_filters_for_context,
     withheld_rank_order,
 )
@@ -156,51 +148,6 @@ from .segments import build_segment_query, normalize_segment, strip_segment_prev
 from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
 from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
-
-__all__ = [
-    "CachedCompilation",
-    "CompiledSqlCache",
-    "Database",
-    "LruCompiledSqlCache",
-    "Registry",
-    "Runtime",
-    "SemanticLayerError",
-    "ValidationReport",
-    "WarehouseAdapter",
-    "apply_response_verbosity",
-    "build_segment_query",
-    "classify_question",
-    "compilation_cache_key",
-    "compile_query",
-    "compile_response_metadata",
-    "context_from_policy_context",
-    "create_warehouse_adapter",
-    "dialect_for_warehouse",
-    "enforce_query_policies",
-    "enrich_object_not_found",
-    "exception_issue",
-    "expr_to_dict",
-    "get_package_config",
-    "get_package_path",
-    "load_csv_dir_to_duckdb",
-    "load_package_config",
-    "normalize_query",
-    "normalize_segment",
-    "package_fingerprint",
-    "package_root_for_source",
-    "provenance_summary",
-    "query_policy_effects",
-    "repo_root",
-    "request_context_payload",
-    "runtime_request_scope",
-    "resolve_repo_path",
-    "resolve_sql_profile",
-    "resolve_verbosity",
-    "rewrite_warning_payload",
-    "seed_db",
-    "semantic_issue",
-    "strip_segment_preview_metric",
-]
 
 
 def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveRefusal:
