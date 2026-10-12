@@ -26,7 +26,8 @@ from semantic_rails.planner import plan_payload
 from semantic_rails.planner.groupings import _time_spec
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolved_time_phrases
-from semantic_rails.planner.time_windows import _time_bounds_from_text
+from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 # ---------------------------------------------------------------------------
 # Pure helper-level tests (no runtime needed)
@@ -129,31 +130,7 @@ def test_time_spec_window_without_a_grain_is_one_total() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_plan_last_month_is_time_bounded_and_ready(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="revenue by store last month")
-    finally:
-        runtime.close()
-    assert payload["status"] == "ok"
-    time_spec = payload["best"]["query"]["time"]
-    assert time_spec["last"] == {"unit": "month", "value": 1}
-    assert payload["best"]["validation_ok"] is True
-    assert payload["next"]["ready_for"] == ["execute"]
-
-
-def test_plan_last_n_days_is_time_bounded(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="revenue by store last 7 days")
-    finally:
-        runtime.close()
-    time_spec = payload["best"]["query"]["time"]
-    assert time_spec["last"] == {"unit": "day", "value": 7}
-    # The question asks for no grain: the 7 days are one total per store, ready to run.
-    assert "grain" not in time_spec
-    assert payload["status"] == "ok", payload.get("why")
-    assert payload["next"]["ready_for"] == ["execute"]
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 ONE_TOTAL_NOW = "2017-03-15T12:00:00Z"
@@ -166,40 +143,41 @@ REVENUE_BY_STORE = (
 
 
 @pytest.mark.parametrize(
-    ("intent", "reference"),
+    ("intent", "last", "reference"),
     [
         # At 2017-03-15 (UTC, the package's zone) the last 7 days are March 8 to 14...
         (
             "revenue by store last 7 days",
+            {"unit": "day", "value": 7},
             REVENUE_BY_STORE.format(start="2017-03-08", end="2017-03-15"),
         ),
         # ...last month is February...
         (
             "revenue by store last month",
+            {"unit": "month", "value": 1},
             REVENUE_BY_STORE.format(start="2017-02-01", end="2017-03-01"),
         ),
         # ...and yesterday is March 14.
         (
             "orders yesterday",
+            {"unit": "day", "value": 1},
             "SELECT COUNT(DISTINCT order_id) FROM jaffle_order "
             "WHERE ordered_at >= TIMESTAMP '2017-03-14' AND ordered_at < TIMESTAMP '2017-03-15'",
         ),
     ],
 )
 def test_a_relative_window_without_a_grain_answers_one_total(
-    runtime_factory, intent: str, reference: str
+    runtime, intent: str, last: dict, reference: str
 ) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=intent, now=ONE_TOTAL_NOW)
-        assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query"]
-        assert "last" in query["time"] and "grain" not in query["time"]
-        rows = runtime.query(query, now=ONE_TOTAL_NOW)["rows"]
-        with duckdb.connect(runtime.db_path, read_only=True) as connection:
-            gold = connection.execute(reference).fetchall()
-    finally:
-        runtime.close()
+    payload = plan_payload(runtime, intent=intent, now=ONE_TOTAL_NOW)
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["best"]["validation_ok"] is True
+    assert payload["next"]["ready_for"] == ["execute"]
+    query = payload["best"]["query"]
+    assert query["time"]["last"] == last and "grain" not in query["time"]
+    rows = runtime.query(query, now=ONE_TOTAL_NOW)["rows"]
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        gold = connection.execute(reference).fetchall()
     assert gold and all(row[-1] for row in gold)
 
     def rounded(values) -> tuple:
@@ -210,80 +188,62 @@ def test_a_relative_window_without_a_grain_answers_one_total(
     assert [rounded(row.values()) for row in rows] == [rounded(row) for row in gold]
 
 
+@pytest.mark.parametrize(
+    ("intent", "phrase"),
+    [("revenue by store over the last few weeks", "last few weeks"), ("revenue since 2023", "since 2023")],
+)  # fmt: skip
 def test_plan_unresolved_window_downgrades_instead_of_silently_dropping(
-    runtime_factory,
+    runtime, intent: str, phrase: str
 ) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="revenue by store over the last few weeks")
-    finally:
-        runtime.close()
+    payload = plan_payload(runtime, intent=intent)
     assert payload["status"] == "low_confidence"
     why = payload["why"]
     assert why["code"] == "TIME_WINDOW_UNRESOLVED"
-    assert "last few weeks" in why["details"]["unresolved_phrases"]
+    assert phrase in why["details"]["unresolved_phrases"]
     assert why["details"]["path"] == "time"
-    hints = why["recovery_hints"]
-    assert hints, "downgrade must carry recovery hints"
-    hint_text = " ".join(str(hint.get("message", "")) for hint in hints)
-    # The hints must teach the supported window forms.
-    assert "last N days" in hint_text
-    assert "time.start" in hint_text or "start" in hint_text
+    # The hints teach the supported window forms and the explicit bounds.
+    assert [hint["kind"] for hint in why["recovery_hints"]] == [
+        "rephrase_time_window",
+        "provide_explicit_bounds",
+    ]
     # There is no unbounded draft to execute at all.
     assert "ready_for" not in payload["next"]
     assert "query" not in payload["best"] and "validate" not in payload["next"]
 
 
-@pytest.mark.parametrize("detail", ["best", "full", None])
-def test_mcp_plan_offers_no_runnable_draft_without_the_window(
-    runtime_factory, detail: str | None
-) -> None:
+def test_mcp_plan_offers_no_runnable_draft_without_the_window(runtime) -> None:
     intent = "Revenue by store and month for January, February and March 2017"
     time = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
     window = {**time, "start": "2017-01-01", "end": "2017-04-01"}
-    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
-    try:
-        plan = mcp.call_tool("plan", {"intent": intent, **({"detail": detail} if detail else {})})
-        bounded = mcp.call_tool("plan", {"intent": intent, "query": {"time": window}})
-        long_plan = mcp.call_tool("plan", {"intent": "revenue by store " + "x " * 1000})
-    finally:
-        mcp.close()
-    for refused in (plan, long_plan):
+    mcp = SemanticLayerMCPAdapter(runtime)
+    refusals = [
+        *(
+            mcp.call_tool("plan", {"intent": intent, **({"detail": detail} if detail else {})})
+            for detail in ("best", "full", None)
+        ),
+        mcp.call_tool("plan", {"intent": "revenue by store " + "x " * 1000}),
+    ]
+    for refused in refusals:
         assert refused["status"] == "low_confidence"
         assert refused["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
         rows = [refused["best"], *refused.get("alternatives", []), *refused.get("blocked", [])]
         assert all("query" not in row for row in rows)
         assert "validate" not in refused.get("next", {})
     # The recovery hint's way out: pass the window with its temporal role and grain.
+    bounded = mcp.call_tool("plan", {"intent": intent, "query": {"time": window}})
     assert bounded["status"] == "ok"
     assert bounded["best"]["query"]["time"] == window
 
 
-def test_plan_since_year_downgrades(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="revenue since 2023")
-    finally:
-        runtime.close()
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-    assert "since 2023" in payload["why"]["details"]["unresolved_phrases"]
-
-
-def test_partial_query_bounds_suppress_the_downgrade(runtime_factory) -> None:
+def test_partial_query_bounds_suppress_the_downgrade(runtime) -> None:
     """When the caller supplies explicit bounds the window is not
     dropped — the plan must stay ``ok`` even though the phrase itself
     did not resolve."""
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(
-            runtime,
-            intent="revenue over the last few weeks",
-            partial_query={"time": {"start": "2025-01-01", "end": "2025-02-01"}},
-        )
-    finally:
-        runtime.close()
+    payload = plan_payload(
+        runtime,
+        intent="revenue over the last few weeks",
+        partial_query={"time": {"start": "2025-01-01", "end": "2025-02-01"}},
+    )
     assert payload["status"] == "ok"
     time_spec = payload["best"]["query"]["time"]
     assert time_spec["start"] == "2025-01-01"
@@ -291,15 +251,10 @@ def test_partial_query_bounds_suppress_the_downgrade(runtime_factory) -> None:
     assert payload["next"]["ready_for"] == ["execute"]
 
 
-def test_plan_period_shift_comparison_with_this_month_is_held(runtime_factory) -> None:
+def test_plan_period_shift_comparison_with_this_month_is_held(runtime) -> None:
     """ "this month vs last month" compares a month not over yet with a complete
     one: held, with the two complete months offered as one series."""
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="revenue this month vs last month")
-    finally:
-        runtime.close()
+    payload = plan_payload(runtime, intent="revenue this month vs last month")
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "PERIOD_COMPARISON_INCOMPLETE"
     assert payload["why"]["details"]["window"] == {"this": "month"}
@@ -309,20 +264,14 @@ def test_plan_period_shift_comparison_with_this_month_is_held(runtime_factory) -
     assert (time_spec["grain"], time_spec["last"]) == ("month", {"unit": "month", "value": 2})
 
 
-def test_intent_ir_time_carries_the_relative_window(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        intent_ir = parse_intent(runtime, "revenue by store last month")
-    finally:
-        runtime.close()
+def test_intent_ir_time_carries_the_relative_window(runtime) -> None:
+    intent_ir = parse_intent(runtime, "revenue by store last month")
     assert intent_ir.time is not None
     assert intent_ir.time["last"] == {"unit": "month", "value": 1}
     assert intent_ir.to_dict()["time"]["last"]["unit"] == "month"
 
 
 def test_since_named_month_has_an_explicit_start():
-    from semantic_rails.planner.time_windows import _time_window
-
     read = _time_window("orders since January", {"now": "2026-10-05T06:00:00Z"})
     assert read.bounds == {"start": "2026-01-01"}
     assert not read.unresolved

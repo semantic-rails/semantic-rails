@@ -21,8 +21,12 @@ validate but are held (``stock_as_of_unrealized``); a count qualifier answers.
 from __future__ import annotations
 
 import duckdb
+import pytest
 
 from semantic_rails.planner import plan_payload
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
+
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 def _drafted_best(runtime, intent):
@@ -36,86 +40,55 @@ def _drafted_best(runtime, intent):
     return payload["best"]["query"]
 
 
-def _predicates(query):
-    return query["select"][0]["expression"]["predicates"]
+@pytest.mark.parametrize(
+    ("intent", "p"),
+    [
+        # Top decile = above the 90th percentile cut-off; "top 20%" the 80th.
+        ("revenue from top decile of customers by lifetime spend", 0.9),
+        ("revenue from top 20% of customers by lifetime spend", 0.8),
+        ("orders from top quartile of customers by lifetime spend", 0.75),
+    ],
+)
+def test_a_population_share_resolves_to_a_percentile_threshold(runtime, intent, p):
+    (predicate,) = _drafted_best(runtime, intent)["select"][0]["expression"]["predicates"]
+    assert predicate["entity"] == "entity.jaffle_customer"
+    assert predicate["op"] == "gte"
+    assert predicate["over"] == "all_time"
+    assert predicate["value"] == {"kind": "percentile", "p": p}
+    # The predicate reads the ranking measure ("lifetime spend") from the "by" phrase.
+    assert predicate["input"] == "measure.jaffle.lifetime_spend_usd"
 
 
-def test_top_decile_intent_resolves_to_percentile_threshold_ir(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        query_ir = _drafted_best(runtime, "revenue from top decile of customers by lifetime spend")
-        (predicate,) = _predicates(query_ir)
-        assert predicate["entity"] == "entity.jaffle_customer"
-        assert predicate["op"] == "gte"
-        assert predicate["over"] == "all_time"
-        # Top decile = above the 90th percentile cut-off.
-        assert predicate["value"] == {"kind": "percentile", "p": 0.9}
-        # The predicate reads the ranking measure ("lifetime spend") from the "by" phrase.
-        assert predicate["input"] == "measure.jaffle.lifetime_spend_usd"
-    finally:
-        runtime.close()
-
-
-def test_top_n_percent_intent_resolves_correct_p(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # "top 20%" → p=0.8 (above the 80th percentile).
-        query_ir = _drafted_best(runtime, "revenue from top 20% of customers by lifetime spend")
-        (predicate,) = _predicates(query_ir)
-        assert predicate["value"] == {"kind": "percentile", "p": 0.8}
-    finally:
-        runtime.close()
-
-
-def test_top_quartile_intent_p_075(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        query_ir = _drafted_best(runtime, "orders from top quartile of customers by lifetime spend")
-        (predicate,) = _predicates(query_ir)
-        assert predicate["value"] == {"kind": "percentile", "p": 0.75}
-    finally:
-        runtime.close()
-
-
-def test_percentile_intent_compiles_to_threshold_cte(runtime_factory):
+def test_percentile_intent_compiles_to_threshold_cte(runtime):
     """The drafted percentile call lowers to the threshold CTE."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        query_ir = _drafted_best(runtime, "revenue from top decile of customers by lifetime spend")
-        compile_result = runtime.compile(query_ir)
-        assert compile_result["ok"], compile_result.get("errors")
-        sql = compile_result["rendered_sql"].lower()
-        # Phase 2 lowering emits the threshold CTE + CROSS JOIN.
-        assert "threshold" in sql
-        assert "cross join" in sql
-        assert "quantile_cont" in sql or "percentile_cont" in sql
-    finally:
-        runtime.close()
+    query_ir = _drafted_best(runtime, "revenue from top decile of customers by lifetime spend")
+    compile_result = runtime.compile(query_ir)
+    assert compile_result["ok"], compile_result.get("errors")
+    sql = compile_result["rendered_sql"].lower()
+    assert "threshold" in sql
+    assert "cross join" in sql
+    assert "quantile_cont" in sql or "percentile_cont" in sql
 
 
-def test_non_percentile_qualification_still_uses_literal_value(runtime_factory):
+def test_non_percentile_qualification_still_uses_literal_value(runtime):
     """The "with at least N" path keeps a literal threshold, on the target's own noun counted
     distinct, and answers: orders from customers with 4 or more orders."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        plan = plan_payload(runtime, intent="orders from customers with at least 4 distinct orders")
-        assert plan["status"] == "ok", plan.get("why")
-        query = plan["best"]["query"]
-        assert query["where"] == [
-            {
-                "entity": "entity.jaffle_customer",
-                "having": [{"field": "measure.jaffle.order_count", "op": "gte", "value": 4}],
-                "over": "all_time",
-            }
-        ]
-        [row] = runtime.query(query)["rows"]
-        with duckdb.connect(runtime.db_path, read_only=True) as connection:
-            (reference,) = connection.execute(
-                "SELECT COUNT(DISTINCT order_id) FROM jaffle_order WHERE customer_id IN "
-                "(SELECT customer_id FROM jaffle_order GROUP BY 1 "
-                "HAVING COUNT(DISTINCT order_id) >= 4)"
-            ).fetchone()
-    finally:
-        runtime.close()
+    plan = plan_payload(runtime, intent="orders from customers with at least 4 distinct orders")
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query"]
+    assert query["where"] == [
+        {
+            "entity": "entity.jaffle_customer",
+            "having": [{"field": "measure.jaffle.order_count", "op": "gte", "value": 4}],
+            "over": "all_time",
+        }
+    ]
+    [row] = runtime.query(query)["rows"]
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        (reference,) = connection.execute(
+            "SELECT COUNT(DISTINCT order_id) FROM jaffle_order WHERE customer_id IN "
+            "(SELECT customer_id FROM jaffle_order GROUP BY 1 "
+            "HAVING COUNT(DISTINCT order_id) >= 4)"
+        ).fetchone()
     assert row["order_count"] == reference
     assert reference > 0
