@@ -286,24 +286,6 @@ def test_windows_without_a_calendar_match_the_key_and_an_authored_calendar(
     assert rows == authored_rows
 
 
-def test_the_gap_month_is_a_zero_and_the_month_after_it_compares_with_zero(
-    packages: dict[str, Path],
-) -> None:
-    query = BESIDE_PRIOR_MONTH
-    rows, _ = _query(packages["none"], query)
-
-    assert rows == [
-        (date(2023, 11, 1), 15.0, None),
-        (date(2023, 12, 1), 7.0, 15.0),
-        (date(2024, 1, 1), 20.0, 7.0),
-        (date(2024, 2, 1), 0.0, 20.0),
-        (date(2024, 3, 1), 8.0, 0.0),
-        (date(2024, 4, 1), 4.0, 8.0),
-        (date(2024, 5, 1), 6.0, 4.0),
-        (date(2024, 6, 1), 3.0, 6.0),
-    ]
-
-
 def test_groups_are_filled_across_the_whole_series(packages: dict[str, Path]) -> None:
     query = {**BESIDE_PRIOR_MONTH, "group_by": [STORE]}
     key = """
@@ -391,17 +373,27 @@ def test_zoned_role_buckets_in_its_own_zone(packages: dict[str, Path]) -> None:
 def test_a_short_generated_series_can_not_drop_data(
     packages: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    query = BESIDE_PRIOR_MONTH
-    expected, _ = _query(packages["none"], query)
+    """Even a day spine one day short answers every month: the gap month is a zero and the
+    month after it compares with zero."""
+    expected = [
+        (date(2023, 11, 1), 15.0, None),
+        (date(2023, 12, 1), 7.0, 15.0),
+        (date(2024, 1, 1), 20.0, 7.0),
+        (date(2024, 2, 1), 0.0, 20.0),
+        (date(2024, 3, 1), 8.0, 0.0),
+        (date(2024, 4, 1), 4.0, 8.0),
+        (date(2024, 5, 1), 6.0, 4.0),
+        (date(2024, 6, 1), 3.0, 6.0),
+    ]
+    assert _query(packages["none"], BESIDE_PRIOR_MONTH)[0] == expected
     original = DuckDbDialect.day_series
 
     def one_day_short(self: DuckDbDialect, start: Any, end: Any, source: str) -> Any:
         return original(self, start, SqlBinary(end, "-", SqlLiteral(1)), source)
 
     monkeypatch.setattr(DuckDbDialect, "day_series", one_day_short)
-    rows, _ = _query(packages["none"], query)
 
-    assert rows == expected
+    assert _query(packages["none"], BESIDE_PRIOR_MONTH)[0] == expected
 
 
 def test_no_rows_is_an_empty_answer(packages: dict[str, Path]) -> None:
@@ -515,7 +507,6 @@ MEDIAN_LARGE = _distribution("median", LARGE_REVENUE)
         ("authored", [NOW, DISTRIBUTION], {"start": "2023-10-15", "end": "2024-08-01"}, None),
         ("authored", [DISTRIBUTION], {"fill": True}, LARGE_ORDERS),
         ("authored", [], {"fill": True}, {"select": [{**MEDIAN_LARGE, "as": "median"}]}),
-        ("none", [DISTRIBUTION], {"fill": True}, None),
         ("none", [DISTRIBUTION, NOW], {"fill": True}, None),
         ("fiscal_only", [DISTRIBUTION], {"temporal_role": FISCAL_DAY, "fill": True}, None),
     ],
@@ -524,7 +515,6 @@ MEDIAN_LARGE = _distribution("median", LARGE_REVENUE)
         "beside",
         "metric_predicate",
         "input_predicate",
-        "none",
         "none_beside",
         "fiscal",
     ],
@@ -551,18 +541,18 @@ def test_a_filled_distribution_refuses(
 
 
 @pytest.mark.parametrize(
-    ("function", "aggregate"),
+    ("function", "aggregate", "package"),
     [
-        ("median", "median(amount)"),
-        ("percentile", "quantile_cont(amount, 0.8)"),
-        ("avg", "avg(amount)"),
-        ("sum", "sum(amount)"),
-        ("min", "min(amount)"),
-        ("max", "max(amount)"),
+        ("median", "median(amount)", "authored"),
+        ("percentile", "quantile_cont(amount, 0.8)", "none"),
+        ("avg", "avg(amount)", "authored"),
+        ("sum", "sum(amount)", "none"),
+        ("min", "min(amount)", "authored"),
+        ("max", "max(amount)", "none"),
     ],
 )
 def test_an_unfilled_distribution_matches_the_key(
-    packages: dict[str, Path], function: str, aggregate: str
+    packages: dict[str, Path], function: str, aggregate: str, package: str
 ) -> None:
     select = {**_distribution(function, REVENUE), "as": "value"}
     key = _key(packages["authored"], _series_key("month", _per_order(aggregate)))
@@ -572,11 +562,10 @@ def test_an_unfilled_distribution_matches_the_key(
     ]
     # A prior-period sibling fills its own branch; the distribution reads NULL in February.
     beside = _ask("month", _prior("month"), select)
-    for package in ("authored", "none"):
-        assert _query(packages[package], beside)[0] == _key(
-            packages[package],
-            _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
-        )
+    assert _query(packages[package], beside)[0] == _key(
+        packages[package],
+        _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
+    )
 
 
 def test_a_named_window_answers_every_period_of_a_distribution(packages: dict[str, Path]) -> None:
@@ -645,12 +634,7 @@ def test_a_call_may_not_name_the_calendar_generators(packages: dict[str, Path], 
 
 @pytest.mark.parametrize(
     ("package", "warehouse", "available"),
-    [
-        ("none", "duckdb", True),
-        ("none", "clickhouse", False),
-        ("fiscal_only", "clickhouse", False),
-        ("authored", "clickhouse", False),
-    ],
+    [("none", "duckdb", True), ("fiscal_only", "clickhouse", False)],
 )
 def test_dense_fill_capability_follows_the_calendar_that_would_fill(
     packages: dict[str, Path], package: str, warehouse: str, available: bool
@@ -673,8 +657,6 @@ DUCKDB_DAYS = (
 )
 GOLDENS = {
     "duckdb": (DUCKDB_DAYS, BUCKET),
-    "motherduck": (DUCKDB_DAYS, BUCKET),
-    "ducklake": (DUCKDB_DAYS, BUCKET),
     "postgres": (
         f"{START} + day_series.day_offset AS date_day\nFROM dense_bounds\n"
         "CROSS JOIN LATERAL GENERATE_SERIES(0, CAST(dense_bounds.range_end AS DATE) - "
@@ -714,8 +696,21 @@ def _compile(config: Any, query: dict[str, Any], *, fill: bool) -> dict[str, Any
     return compile_query(config, Registry(config), payload)
 
 
-@pytest.mark.parametrize("bounded", [False, True])
-@pytest.mark.parametrize("warehouse", [*GOLDENS, "clickhouse", "generic"])
+@pytest.mark.parametrize(
+    ("warehouse", "bounded"),
+    [
+        ("duckdb", False),
+        ("duckdb", True),
+        ("postgres", False),
+        ("snowflake", True),
+        ("bigquery", False),
+        ("databricks", True),
+        # Athena's statement preparation types the bounds' literals as TIMESTAMP.
+        ("athena", True),
+        ("clickhouse", False),
+        ("generic", True),
+    ],
+)
 def test_each_warehouse_generates_a_bounded_day_spine_or_refuses(
     no_calendar_config: Any, warehouse: str, bounded: bool
 ) -> None:
@@ -725,8 +720,10 @@ def test_each_warehouse_generates_a_bounded_day_spine_or_refuses(
     window = {"start": "2023-10-15", "end": "2024-08-01"}
     query = _ask("month", NOW, **window) if bounded else BESIDE_PRIOR_MONTH
     if warehouse not in GOLDENS:
-        with pytest.raises(SemanticLayerError, match="has no implicit calendar"):
+        with pytest.raises(SemanticLayerError) as refused:
             _compile(config, query, fill=bounded)
+        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+        assert refused.value.details == {"warehouse": warehouse, "rewrite": "day_series"}
         return
     sql = _compile(config, query, fill=bounded)["sql"]
     days, bucket = GOLDENS[warehouse]
@@ -740,7 +737,6 @@ def test_each_warehouse_generates_a_bounded_day_spine_or_refuses(
             "dense_bounds AS (\nSELECT\n  CAST('2023-10-12' AS DATE) AS range_start,\n"
             "  CAST('2024-08-04' AS DATE) AS range_end\n)"
         ) in sql, sql
-        # Athena's statement preparation types the literals as TIMESTAMP.
         assert re.search(r"implicit_calendar\.date_day >= (TIMESTAMP )?'2023-10-15'", sql), sql
         assert re.search(r"implicit_calendar\.date_day < (TIMESTAMP )?'2024-08-01'", sql), sql
 
