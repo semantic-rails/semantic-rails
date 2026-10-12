@@ -512,9 +512,7 @@ def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bo
         return _expr_requires_dense_series(expr.expr, config) or any(
             _expr_requires_dense_series(value, config) for value in expr.values
         )
-    if isinstance(expr, BooleanExpr):
-        return any(_expr_requires_dense_series(arg, config) for arg in expr.args)
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         return any(_expr_requires_dense_series(arg, config) for arg in expr.args)
     if isinstance(expr, DateAddExpr):
         return _expr_requires_dense_series(expr.value, config) or _expr_requires_dense_series(
@@ -528,8 +526,6 @@ def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bo
         ) or (expr.else_expr is not None and _expr_requires_dense_series(expr.else_expr, config))
     if isinstance(expr, CumulativeExpr):
         return _expr_requires_dense_series(expr.input, config)
-    if isinstance(expr, MetricPredicateExpr):
-        return False
     if isinstance(expr, ConversionExpr):
         return _expr_requires_dense_series(expr.base, config) or _expr_requires_dense_series(
             expr.converted, config

@@ -850,7 +850,7 @@ def _collect_measure_refs(
         recipe = _recipe_or_raise(config, expr.metric_recipe)
         _collect_measure_refs(recipe.expression, config, query, out)
         return
-    if isinstance(expr, ArithmeticExpr):
+    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         _collect_measure_refs(expr.left, config, query, out)
         _collect_measure_refs(expr.right, config, query, out)
         return
@@ -858,21 +858,10 @@ def _collect_measure_refs(
         _collect_measure_refs(expr.numerator, config, query, out)
         _collect_measure_refs(expr.denominator, config, query, out)
         return
-    if isinstance(expr, EntityValueExpr):
-        _collect_measure_refs(expr.input, config, query, out)
-        return
     if isinstance(expr, DistributionExpr):
         _collect_measure_refs(expr.over, config, query, out)
         return
-    if isinstance(expr, ComparisonExpr):
-        _collect_measure_refs(expr.left, config, query, out)
-        _collect_measure_refs(expr.right, config, query, out)
-        return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _collect_measure_refs(arg, config, query, out)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _collect_measure_refs(arg, config, query, out)
         return
@@ -884,21 +873,11 @@ def _collect_measure_refs(
             _collect_measure_refs(expr.else_expr, config, query, out)
         return
     if isinstance(
-        expr,
-        (
-            CumulativeExpr,
-            RollingExpr,
-            OffsetWindowExpr,
-            ShareExpr,
-        ),
+        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
     ):
         _collect_measure_refs(expr.input, config, query, out)
         return
-    if isinstance(expr, MetricPredicateExpr):
-        return
-    if isinstance(expr, ConversionExpr):
-        return
-    if isinstance(expr, (LiteralExpr, ColumnRefExpr)):
+    if isinstance(expr, (MetricPredicateExpr, ConversionExpr, LiteralExpr, ColumnRefExpr)):
         return
     raise SemanticLayerError(
         "INVALID_QUERY", f"Unsupported expression kind '{expr_to_dict(expr)['kind']}'"
@@ -924,17 +903,10 @@ def _collect_conversion_exprs(
         _collect_conversion_exprs(expr.numerator, config, out)
         _collect_conversion_exprs(expr.denominator, config, out)
         return
-    if isinstance(expr, EntityValueExpr):
-        _collect_conversion_exprs(expr.input, config, out)
-        return
     if isinstance(expr, DistributionExpr):
         _collect_conversion_exprs(expr.over, config, out)
         return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _collect_conversion_exprs(arg, config, out)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _collect_conversion_exprs(arg, config, out)
         return
@@ -953,6 +925,7 @@ def _collect_conversion_exprs(
             MetricPredicateExpr,
             OffsetWindowExpr,
             ShareExpr,
+            EntityValueExpr,
         ),
     ):
         _collect_conversion_exprs(expr.input, config, out)

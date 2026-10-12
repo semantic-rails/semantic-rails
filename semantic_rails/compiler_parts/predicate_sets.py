@@ -241,9 +241,6 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
                 specs.append(spec)
         return specs
 
-    if isinstance(expr, MetricPredicateExpr):
-        return _expression_scan_specs(expr.input, config)
-
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr, RatioExpr)):
         specs = _expression_scan_specs(
             expr.left if hasattr(expr, "left") else expr.numerator, config
@@ -277,11 +274,10 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
             RollingExpr,
             OffsetWindowExpr,
             ShareExpr,
+            EntityValueExpr,
+            MetricPredicateExpr,
         ),
     ):
-        return _expression_scan_specs(expr.input, config)
-
-    if isinstance(expr, EntityValueExpr):
         return _expression_scan_specs(expr.input, config)
 
     if isinstance(expr, DistributionExpr):

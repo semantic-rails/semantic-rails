@@ -2217,11 +2217,7 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
             _walk(node.left)
             _walk(node.right)
             return
-        if isinstance(node, BooleanExpr):
-            for arg in node.args:
-                _walk(arg)
-            return
-        if isinstance(node, CallExpr):
+        if isinstance(node, (BooleanExpr, CallExpr)):
             for arg in node.args:
                 _walk(arg)
             return
@@ -2241,24 +2237,15 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
             if node.else_expr is not None:
                 _walk(node.else_expr)
             return
-        if isinstance(node, CumulativeExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, RollingExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, OffsetWindowExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, MetricPredicateExpr):
+        if isinstance(
+            node,
+            (CumulativeExpr, RollingExpr, OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
+        ):
             _walk(node.input)
             return
         if isinstance(node, RatioExpr):
             _walk(node.numerator)
             _walk(node.denominator)
-            return
-        if isinstance(node, EntityValueExpr):
-            _walk(node.input)
             return
         if isinstance(node, DistributionExpr):
             _walk(node.over)

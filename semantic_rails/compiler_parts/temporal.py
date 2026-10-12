@@ -24,7 +24,6 @@ from ..expressions import (
     CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
-    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
@@ -91,19 +90,13 @@ def _requires_query_time(expr: SemanticExpr, config: PackageConfig) -> bool:
         return _requires_query_time(expr.input, config)
     if isinstance(expr, DistributionExpr):
         return _requires_query_time(expr.over, config)
-    if isinstance(expr, BooleanExpr):
-        return any(_requires_query_time(arg, config) for arg in expr.args)
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         return any(_requires_query_time(arg, config) for arg in expr.args)
     if isinstance(expr, CaseExpr):
         return any(
             _requires_query_time(item.when, config) or _requires_query_time(item.then, config)
             for item in expr.whens
         ) or (expr.else_expr is not None and _requires_query_time(expr.else_expr, config))
-    if isinstance(expr, MetricPredicateExpr):
-        return False
-    if isinstance(expr, ConversionExpr):
-        return False
     return False
 
 
@@ -173,8 +166,6 @@ def _expr_compatible_temporal_roles(
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
         return _recipe_compatible_temporal_roles(recipe, config, query)
-    if isinstance(expr, LiteralExpr):
-        return set()
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _combine_temporal_roles(
             [
@@ -189,15 +180,9 @@ def _expr_compatible_temporal_roles(
                 _expr_compatible_temporal_roles(expr.denominator, config, query),
             ]
         )
-    if isinstance(expr, EntityValueExpr):
-        return _expr_compatible_temporal_roles(expr.input, config, query)
     if isinstance(expr, DistributionExpr):
         return _expr_compatible_temporal_roles(expr.over, config, query)
-    if isinstance(expr, BooleanExpr):
-        return _combine_temporal_roles(
-            _expr_compatible_temporal_roles(arg, config, query) for arg in expr.args
-        )
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         return _combine_temporal_roles(
             _expr_compatible_temporal_roles(arg, config, query) for arg in expr.args
         )
@@ -210,17 +195,9 @@ def _expr_compatible_temporal_roles(
             role_sets.append(_expr_compatible_temporal_roles(expr.else_expr, config, query))
         return _combine_temporal_roles(role_sets)
     if isinstance(
-        expr,
-        (
-            CumulativeExpr,
-            RollingExpr,
-            OffsetWindowExpr,
-            ShareExpr,
-        ),
+        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
     ):
         return _expr_compatible_temporal_roles(expr.input, config, query)
-    if isinstance(expr, MetricPredicateExpr):
-        return set()
     if isinstance(expr, ConversionExpr):
         return _expr_compatible_temporal_roles(expr.base, config, query)
     return set()
@@ -322,29 +299,13 @@ def _expr_leaf_temporal_role_sets(
     if isinstance(expr, MetricRecipeRefExpr):
         return _metric_ref_leaf_temporal_role_sets(expr, config, query, recipe_stack)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return [
-            *visit(expr.left),
-            *visit(expr.right),
-        ]
+        return [*visit(expr.left), *visit(expr.right)]
     if isinstance(expr, RatioExpr):
-        return [
-            *visit(expr.numerator),
-            *visit(expr.denominator),
-        ]
-    if isinstance(expr, EntityValueExpr):
-        return visit(expr.input)
+        return [*visit(expr.numerator), *visit(expr.denominator)]
     if isinstance(expr, DistributionExpr):
         return visit(expr.over)
-    if isinstance(expr, BooleanExpr):
-        out: list[set[str]] = []
-        for arg in expr.args:
-            out.extend(visit(arg))
-        return out
-    if isinstance(expr, CallExpr):
-        call_out: list[set[str]] = []
-        for arg in expr.args:
-            call_out.extend(visit(arg))
-        return call_out
+    if isinstance(expr, (BooleanExpr, CallExpr)):
+        return [roles for arg in expr.args for roles in visit(arg)]
     if isinstance(expr, CaseExpr):
         case_out: list[set[str]] = []
         for item in expr.whens:
@@ -354,20 +315,11 @@ def _expr_leaf_temporal_role_sets(
             case_out.extend(visit(expr.else_expr))
         return case_out
     if isinstance(
-        expr,
-        (
-            CumulativeExpr,
-            RollingExpr,
-            OffsetWindowExpr,
-            ShareExpr,
-        ),
+        expr, (CumulativeExpr, RollingExpr, OffsetWindowExpr, ShareExpr, EntityValueExpr)
     ):
         return visit(expr.input)
     if isinstance(expr, ConversionExpr):
-        return [
-            *visit(expr.base),
-            *visit(expr.converted),
-        ]
+        return [*visit(expr.base), *visit(expr.converted)]
     return []
 
 
@@ -531,11 +483,7 @@ def _collect_conversion_bindings(
         _collect_conversion_bindings(expr.numerator, config, out, recipe_id=recipe_id)
         _collect_conversion_bindings(expr.denominator, config, out, recipe_id=recipe_id)
         return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _collect_conversion_bindings(arg, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _collect_conversion_bindings(arg, config, out, recipe_id=recipe_id)
         return
@@ -554,11 +502,9 @@ def _collect_conversion_bindings(
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,
+            EntityValueExpr,
         ),
     ):
-        _collect_conversion_bindings(expr.input, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(expr, EntityValueExpr):
         _collect_conversion_bindings(expr.input, config, out, recipe_id=recipe_id)
         return
     if isinstance(expr, DistributionExpr):
