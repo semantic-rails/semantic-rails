@@ -757,64 +757,17 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
             )
 
 
-def _expr_contains_unsafe_bounded_cumulative(expr: SemanticExpr, config: PackageConfig) -> bool:
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_or_raise(config, expr.metric_recipe)
-        return _expr_contains_unsafe_bounded_cumulative(recipe.expression, config)
+def _cumulative_window(expr: SemanticExpr) -> bool | None:
+    """A cumulative window truncates under a bounded start unless it sums the query period."""
     if isinstance(expr, CumulativeExpr):
         return True
     if isinstance(expr, OffsetWindowExpr) and expr.kind == "cumulative":
         return expr.window_scope != "query_period"
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _expr_contains_unsafe_bounded_cumulative(
-            expr.left, config
-        ) or _expr_contains_unsafe_bounded_cumulative(expr.right, config)
-    if isinstance(expr, BooleanExpr):
-        return any(_expr_contains_unsafe_bounded_cumulative(arg, config) for arg in expr.args)
-    if isinstance(expr, CallExpr):
-        return any(_expr_contains_unsafe_bounded_cumulative(arg, config) for arg in expr.args)
-    if isinstance(expr, CaseExpr):
-        return any(
-            _expr_contains_unsafe_bounded_cumulative(item.when, config)
-            or _expr_contains_unsafe_bounded_cumulative(item.then, config)
-            for item in expr.whens
-        ) or (
-            expr.else_expr is not None
-            and _expr_contains_unsafe_bounded_cumulative(expr.else_expr, config)
-        )
-    if isinstance(
-        expr,
-        (RollingExpr, OffsetWindowExpr, MetricPredicateExpr),
-    ):
-        return _expr_contains_unsafe_bounded_cumulative(expr.input, config)
-    if isinstance(expr, RatioExpr):
-        return _expr_contains_unsafe_bounded_cumulative(
-            expr.numerator, config
-        ) or _expr_contains_unsafe_bounded_cumulative(expr.denominator, config)
-    if isinstance(expr, EntityValueExpr):
-        return _expr_contains_unsafe_bounded_cumulative(expr.input, config)
-    if isinstance(expr, DistributionExpr):
-        return _expr_contains_unsafe_bounded_cumulative(expr.over, config)
-    if isinstance(expr, ConversionExpr):
-        return _expr_contains_unsafe_bounded_cumulative(
-            expr.base, config
-        ) or _expr_contains_unsafe_bounded_cumulative(expr.converted, config)
-    return False
+    return None
 
 
-def _expr_contains_unsafe_bounded_windowed(expr: SemanticExpr, config: PackageConfig) -> bool:
-    """Walk the expression AST to find rolling/prior_period/period_to_date
-    nodes that would silently truncate when the leaf SQL applies a hard
-    `WHERE t >= start` filter.
-
-    This mirrors `_expr_contains_unsafe_bounded_cumulative` but covers the
-    three newer windowed kinds. `OffsetWindowExpr` with kind=='cumulative'
-    is already handled by the cumulative walker; here we cover its other
-    kinds (rolling, prior_period, period_to_date).
-    """
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_or_raise(config, expr.metric_recipe)
-        return _expr_contains_unsafe_bounded_windowed(recipe.expression, config)
+def _lookback_window(expr: SemanticExpr) -> bool | None:
+    """A rolling, prior-period or period-to-date window reads rows before its period."""
     if isinstance(expr, RollingExpr):
         return True
     if isinstance(expr, OffsetWindowExpr) and expr.kind in {
@@ -823,37 +776,42 @@ def _expr_contains_unsafe_bounded_windowed(expr: SemanticExpr, config: PackageCo
         "period_to_date",
     }:
         return True
+    return None
+
+
+def _expr_contains_unsafe_bounded(
+    expr: SemanticExpr, config: PackageConfig, window: Callable[[SemanticExpr], bool | None]
+) -> bool:
+    """Whether ``expr`` holds a window that would silently truncate when the leaf SQL applies
+    a hard ``WHERE t >= start``; ``window`` answers for a node, or ``None`` to look inside it."""
+    found = window(expr)
+    if found is not None:
+        return found
+
+    def walk(child: SemanticExpr) -> bool:
+        return _expr_contains_unsafe_bounded(child, config, window)
+
+    if isinstance(expr, MetricRecipeRefExpr):
+        return walk(_recipe_or_raise(config, expr.metric_recipe).expression)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _expr_contains_unsafe_bounded_windowed(
-            expr.left, config
-        ) or _expr_contains_unsafe_bounded_windowed(expr.right, config)
-    if isinstance(expr, BooleanExpr):
-        return any(_expr_contains_unsafe_bounded_windowed(arg, config) for arg in expr.args)
-    if isinstance(expr, CallExpr):
-        return any(_expr_contains_unsafe_bounded_windowed(arg, config) for arg in expr.args)
+        return walk(expr.left) or walk(expr.right)
+    if isinstance(expr, (BooleanExpr, CallExpr)):
+        return any(walk(arg) for arg in expr.args)
     if isinstance(expr, CaseExpr):
-        return any(
-            _expr_contains_unsafe_bounded_windowed(item.when, config)
-            or _expr_contains_unsafe_bounded_windowed(item.then, config)
-            for item in expr.whens
-        ) or (
-            expr.else_expr is not None
-            and _expr_contains_unsafe_bounded_windowed(expr.else_expr, config)
+        return any(walk(item.when) or walk(item.then) for item in expr.whens) or (
+            expr.else_expr is not None and walk(expr.else_expr)
         )
-    if isinstance(expr, (CumulativeExpr, MetricPredicateExpr, OffsetWindowExpr)):
-        return _expr_contains_unsafe_bounded_windowed(expr.input, config)
+    if isinstance(
+        expr,
+        (CumulativeExpr, RollingExpr, OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
+    ):
+        return walk(expr.input)
     if isinstance(expr, RatioExpr):
-        return _expr_contains_unsafe_bounded_windowed(
-            expr.numerator, config
-        ) or _expr_contains_unsafe_bounded_windowed(expr.denominator, config)
-    if isinstance(expr, EntityValueExpr):
-        return _expr_contains_unsafe_bounded_windowed(expr.input, config)
+        return walk(expr.numerator) or walk(expr.denominator)
     if isinstance(expr, DistributionExpr):
-        return _expr_contains_unsafe_bounded_windowed(expr.over, config)
+        return walk(expr.over)
     if isinstance(expr, ConversionExpr):
-        return _expr_contains_unsafe_bounded_windowed(
-            expr.base, config
-        ) or _expr_contains_unsafe_bounded_windowed(expr.converted, config)
+        return walk(expr.base) or walk(expr.converted)
     return False
 
 
@@ -863,7 +821,7 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
     ``WINDOWED_TIME_FILTER_UNSUPPORTED`` recovery hint can suggest a
     concrete widened ``query.time.start``. ``None`` when no offending
     node is found — callers should already have established that
-    ``_expr_contains_unsafe_bounded_windowed`` returned True.
+    ``_expr_contains_unsafe_bounded`` found a lookback window.
     """
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
@@ -1009,8 +967,8 @@ def _validate_restrictive_time_semantics(
     ):
         if expr is None:
             continue
-        cumulative = _expr_contains_unsafe_bounded_cumulative(expr, config)
-        if not cumulative and not _expr_contains_unsafe_bounded_windowed(expr, config):
+        cumulative = _expr_contains_unsafe_bounded(expr, config, _cumulative_window)
+        if not cumulative and not _expr_contains_unsafe_bounded(expr, config, _lookback_window):
             continue
         # Preserve time.start/where precedence, then check only this window's population.
         details: dict[str, Any]
