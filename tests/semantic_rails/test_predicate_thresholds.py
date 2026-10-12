@@ -342,6 +342,18 @@ def test_a_difference_over_two_leaves_counts_each_side_as_zero(runtime, op, valu
     assert _scalar(runtime, "customer_count", filters) == expected
 
 
+def test_a_nested_difference_settles_every_operand(runtime):
+    outer = {"kind": "arithmetic", "op": "add", "left": _net_orders(), "right": ORDERS}
+    (expected,) = _gold(
+        "select count(*) from (select c.customer_id, "
+        "(select count(*) from orders o where o.customer_id = c.customer_id) o_n, "
+        "(select count(*) from orders o where o.customer_id = c.customer_id "
+        "and o.status = 'returned') r_n from customers c) where (o_n - r_n) + o_n > 2"
+    )[0]
+    assert expected == 1
+    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, outer, ">", 2)]) == expected
+
+
 @pytest.mark.parametrize(("op", "value"), [(">", 1), ("<", 1)])
 def test_a_predicate_and_a_projection_of_the_same_difference_agree(runtime, op, value):
     """One rule: the entities a predicate keeps are the ones a metric filter keeps."""
@@ -605,6 +617,23 @@ def test_a_distinct_count_of_a_population_is_zero_over_no_rows(runtime):
     ticketing_members = {"measure": "measure.pred.ticketing_member_count"}
     filters = [_having(MEMBER, ticketing_members, "=", 0)]
     assert _scalar(runtime, "activity_count", filters) == 4
+
+
+def test_zero_threshold_composes_with_a_second_predicate(runtime):
+    # Members with no tickets and fewer than two activities.
+    (expected,) = _gold(
+        "select count(*) from members m "
+        "where not exists (select 1 from tickets t where t.member_id = m.member_id) "
+        "and (select count(*) from activities a where a.member_id = m.member_id) < 2"
+    )[0]
+    filters = [
+        _having(MEMBER, {"measure": "measure.pred.ticket_count"}, "=", 0),
+        _having(MEMBER, ACTIVITIES, "<", 2),
+    ]
+    # The first predicate alone keeps 4 members; together they keep 3.
+    assert expected == 3
+    assert _scalar(runtime, "member_count", filters[:1]) == 4
+    assert _scalar(runtime, "member_count", filters) == expected
 
 
 def test_zero_threshold_by_period_keeps_each_period_apart(runtime):
