@@ -122,16 +122,20 @@ def test_a_child_group_is_pointed_at_the_entity_filter(
     assert runtime.validate({"select": [ORDERS], "where": [shape]}, now=NOW)["ok"] is True
 
 
-@pytest.mark.parametrize(("unit", "value"), [("year", 10000), ("day", 10**8), ("month", 10**30)])
+# The largest window before the calendar's first day, counted back from NOW.
+@pytest.mark.parametrize(
+    ("unit", "value", "most"),
+    [("year", 10000, 2016), ("day", 10**8, 736575), ("month", 10**30, 24200)],
+)
 def test_a_last_window_before_the_calendar_names_the_largest_one(
-    runtime: Runtime, unit: str, value: int
+    runtime: Runtime, unit: str, value: int, most: int
 ) -> None:
     def last(count: int) -> dict[str, Any]:
         return {"select": [ORDERS], "time": {"last": {"unit": unit, "value": count}}}
 
     error = _error(runtime, last(value))
     assert error["details"]["path"] == "time.last.value"
-    most = int(re.search(r"at most (\d+)", _hint(error)).group(1))
+    assert int(re.search(r"at most (\d+)", _hint(error)).group(1)) == most
     assert runtime.validate(last(most), now=NOW)["ok"] is True
     assert _error(runtime, last(most + 1))["details"]["path"] == "time.last.value"
 

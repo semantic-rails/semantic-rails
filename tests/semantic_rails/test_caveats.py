@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -101,12 +102,12 @@ def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
         rt.close()
 
 
-def _applied(payload: dict) -> dict[str, dict]:
-    return {
-        row["details"]["caveat_id"]: row
+def _applied(payload: dict) -> list[dict]:
+    return [
+        row
         for row in payload.get("warnings", []) or []
         if row.get("code") == "SEMANTIC_CAVEAT_APPLIED"
-    }
+    ]
 
 
 def _rounded_rows(rows: list[dict]) -> list[dict]:
@@ -140,70 +141,84 @@ def test_invalid_caveat_kind_time_and_object_refs_fail(tmp_path: Path) -> None:
         load_package_config(str(package_dir))
 
 
-def _check(*, present=(), absent=(), call="validate", context=None, verbosity=None, **query):
-    return (call, _revenue_query(**query), context, verbosity, set(present), set(absent))
+def _case(name, *, present=(), absent=(), call="validate", context=None, verbosity=None, **query):
+    """One call, named by the situation, its call and its verbosity."""
+    exact = verbosity is not None  # every matching caveat, and nothing else, exactly once
+    case = (call, _revenue_query(**query), context, verbosity, set(present), set(absent), exact)
+    return pytest.param(*case, id="-".join(filter(None, [name, call, verbosity])))
 
 
 INTERNAL_PRODUCTION = {"audience": "internal", "environment": "production"}
-SITUATIONS = {
+CASES = [
     # A relevant caveat surfaces on validate, compile and query; at every verbosity every
-    # matching caveat is stated, the point inside the window too.
-    "relevant": [
-        *(_check(call=call, present=[FIRST]) for call in ("compile", "query")),
-        *(
-            _check(verbosity=verbosity, present=[*REVENUE_MARCH, POINT])
-            for verbosity in ("minimal", "compact", "full")
-        ),
-    ],
+    # matching caveat is stated once, the point inside the window too.
+    *(_case("relevant", call=call, present=[FIRST]) for call in ("compile", "query")),
+    *(
+        _case("relevant", verbosity=verbosity, present=[*REVENUE_MARCH, POINT])
+        for verbosity in ("minimal", "compact", "full")
+    ),
     # A time-bound caveat needs a query time; a broad scalar window outweighs a short caveat.
-    "time_bound": [
-        _check(time={}, absent=CAVEAT_IDS),
-        _check(
-            time={"temporal_role": ORDER_TIME, "start": "2017-01-01", "end": "2017-12-31"},
-            absent=[FIRST],
-        ),
-    ],
+    _case("time-bound-without-time", time={}, absent=CAVEAT_IDS),
+    _case(
+        "time-bound-broad-window",
+        time={"temporal_role": ORDER_TIME, "start": "2017-01-01", "end": "2017-12-31"},
+        absent=[FIRST],
+    ),
     # The range is half-open at both ends.
-    "half_open": [
-        _check(time={"temporal_role": ORDER_TIME, "start": start, "end": end}, absent=[FIRST])
-        for start, end in [("2017-02-01", "2017-03-01"), ("2017-04-01", "2017-05-01")]
-    ],
+    *(
+        _case(
+            f"half-open-{edge}",
+            time={"temporal_role": ORDER_TIME, "start": start, "end": end},
+            absent=[FIRST],
+        )
+        for edge, start, end in [
+            ("before", "2017-02-01", "2017-03-01"),
+            ("after", "2017-04-01", "2017-05-01"),
+        ]
+    ),
     # An entity-value caveat needs its value in play: grouped or filtered, not every revenue.
-    "entity_value": [
-        _check(absent=[BROOKLYN]),
-        _check(group_by=[STORE_NAME], present=[BROOKLYN]),
-        *(
-            _check(where=[{"field": STORE_NAME, "op": "is", "value": store}], **{key: [BROOKLYN]})
-            for store, key in [("Brooklyn", "present"), ("Philadelphia", "absent")]
-        ),
-    ],
-    "audience_and_environment": [
-        _check(absent=[INTERNAL]),
-        _check(context={**INTERNAL_PRODUCTION, "audience": "external"}, absent=[INTERNAL]),
-        _check(context=INTERNAL_PRODUCTION, present=[INTERNAL]),
-    ],
+    _case("entity-value-ungrouped", absent=[BROOKLYN]),
+    _case("entity-value-grouped", group_by=[STORE_NAME], present=[BROOKLYN]),
+    *(
+        _case(
+            f"entity-value-filtered-{store.lower()}",
+            where=[{"field": STORE_NAME, "op": "is", "value": store}],
+            **{key: [BROOKLYN]},
+        )
+        for store, key in [("Brooklyn", "present"), ("Philadelphia", "absent")]
+    ),
+    _case("scope-without-context", absent=[INTERNAL]),
+    _case(
+        "scope-external", context={**INTERNAL_PRODUCTION, "audience": "external"}, absent=[INTERNAL]
+    ),
+    _case("scope-internal-production", context=INTERNAL_PRODUCTION, present=[INTERNAL]),
     # A comparison whose periods cross the point, or bookend the range, gets the caveat; a
     # longer series whose compared periods stay on one side of the range does not.
-    "comparison": [
-        _check(prior=1, end="2017-04-01", present=[POINT]),
-        _check(prior=2, end="2017-05-01", present=[FIRST]),
-        _check(prior=1, end="2017-07-01", absent=[FIRST]),
-    ],
-}
+    _case("comparison-crosses-point", prior=1, end="2017-04-01", present=[POINT]),
+    _case("comparison-bookends-range", prior=2, end="2017-05-01", present=[FIRST]),
+    _case("comparison-one-side", prior=1, end="2017-07-01", absent=[FIRST]),
+]
 
 
-@pytest.mark.parametrize("situation", SITUATIONS)
-def test_caveats_surface_where_they_apply(runtime: Runtime, situation: str) -> None:
-    for call, query, context, verbosity, present, absent in SITUATIONS[situation]:
-        kwargs = {"verbosity": verbosity} if verbosity else {}
-        payload = getattr(runtime, call)(
-            query, **({"context": context} if context else {}), **kwargs
-        )
-        applied = _applied(payload)
-        assert present <= set(applied), (call, query, context)
-        assert not absent & set(applied), (call, query, context)
-        if FIRST in present:
-            assert applied[FIRST]["details"]["kind"] == "business_event"
+@pytest.mark.parametrize(
+    ("call", "query", "context", "verbosity", "present", "absent", "exact"), CASES
+)
+def test_caveats_surface_where_they_apply(
+    runtime: Runtime, call, query, context, verbosity, present, absent, exact
+) -> None:
+    kwargs = {"verbosity": verbosity} if verbosity else {}
+    payload = getattr(runtime, call)(query, **({"context": context} if context else {}), **kwargs)
+    applied = _applied(payload)
+    ids = Counter(row["details"]["caveat_id"] for row in applied)
+    # No caveat is stated twice.
+    assert all(count == 1 for count in ids.values()), ids
+    if exact:
+        assert ids == Counter(present)
+    assert present <= set(ids)
+    assert not absent & set(ids)
+    if FIRST in present:
+        (first,) = [row for row in applied if row["details"]["caveat_id"] == FIRST]
+        assert first["details"]["kind"] == "business_event"
 
 
 def test_caveats_do_not_change_sql_or_rows(runtime: Runtime, tmp_path: Path) -> None:

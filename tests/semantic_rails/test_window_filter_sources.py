@@ -142,10 +142,12 @@ def test_authorization_precedes_source_refusals(
         runtime.close()
 
 
-# The full-history select and result-filter shapes are answer-ledger cases.
+# The full-history result filter is an answer-ledger case; the open full-history select, with
+# no result filter and no end, is not, so it stays here.
 @pytest.mark.parametrize(
     ("placement", "scope"),
     [
+        ("select", "full-history"),
         ("select", "query-period"),
         ("result-filter", "query-period"),
         ("arithmetic", "query-period"),
