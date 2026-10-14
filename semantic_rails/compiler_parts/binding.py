@@ -21,6 +21,7 @@ from ..ast import (
 from ..clock import parse_now
 from ..config_parts.route_rows import (
     RouteRowError,
+    UnknownRelationshipError,
     check_route_row,
     entity_references,
     walk_entities,
@@ -434,11 +435,10 @@ def query_route_rows(
                 asdict(raw), entities=entities, relationships=config.relationships
             )
         except RouteRowError as exc:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                f"{where} {exc}",
-                details={"path": where, "reason": "invalid_route_decision"},
-            ) from None
+            details: dict[str, Any] = {"path": where, "reason": "invalid_route_decision"}
+            if isinstance(exc, UnknownRelationshipError):
+                details.update(_via_candidates(config, *exc.pair))
+            raise SemanticLayerError("INVALID_QUERY", f"{where} {exc}", details=details) from None
         pair = (row.source_entity, row.target_entity)
         if pair in decided:
             raise SemanticLayerError(
@@ -463,6 +463,38 @@ def query_route_rows(
         _guard_route_row_filters(base, pair, row_filters, where, config)
         decided[pair] = (index, row)
     return decided
+
+
+def _via_candidates(config: PackageConfig, source: str, target: str) -> dict[str, Any]:
+    """What a route's ``via`` can name: the relationships walking from its source to its target
+    in one hop (``closest_matches``); else the first three of the pair's routes, each ready to
+    send (``other_routes``, the rest counted in ``more_routes``); else, when no route joins the
+    pair, the relationships touching either entity (``closest_matches``)."""
+    routes = pair_routes(config, source, target)
+    joining = [path[0] for path in routes if len(path) == 1]
+    found: dict[str, Any] = {}
+    if joining:
+        found["closest_matches"] = joining[:10]
+        listed = "closest_matches lists the relationships that join `from` to `to` in one hop"
+    elif routes:
+        found["other_routes"] = [
+            {"from": source, "to": target, "via": list(path)} for path in routes[:3]
+        ]
+        if len(routes) > 3:
+            found["more_routes"] = len(routes) - 3
+        listed = "other_routes lists the pair's routes, each ready to send in `routes`"
+    else:
+        found["closest_matches"] = sorted(
+            rel.id
+            for rel in config.relationships
+            if {source, target} & {rel.source_entity, rel.target_entity}
+        )[:10]
+        listed = "no route joins the pair; closest_matches lists the relationships at either one"
+    message = (
+        '`via` lists relationship ids ("relationship.<id>"), one per hop from `from` to `to`, '
+        f"not column names or entity ids; {listed}."
+    )
+    return {**found, "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": message}]}
 
 
 def _guard_route_row_filters(

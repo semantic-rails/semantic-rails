@@ -11,7 +11,7 @@ returns and validates; :meth:`Call.from_call` reads a caller's seed.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -19,7 +19,14 @@ from typing import Any
 from .. import operators
 from ..clock import Window, resolve_window
 from ..naming import last_token
-from ..query_call import EXPRESSION_KEYS, REFERENCE_PREFIXES, TIME_AXIS, refusal
+from ..query_call import (
+    EXPRESSION_KEYS,
+    REFERENCE_PREFIXES,
+    TIME_AXIS,
+    ordered_column,
+    own_measure,
+    refusal,
+)
 
 # The window keys of a time block; ``last`` and ``this`` read relative to ``now``.
 WINDOW_KEYS = ("last", "this", "start", "end")
@@ -267,8 +274,9 @@ class Call:
         return call
 
     @classmethod
-    def from_call(cls, payload: Mapping[str, Any] | None) -> Call:
-        """A call in the caller's spelling (already read by the front door) as a draft."""
+    def from_call(cls, payload: Mapping[str, Any] | None, measures: Sequence[Any] = ()) -> Call:
+        """A call in the caller's spelling (already read by the front door) as a draft; the
+        package's ``measures`` say which select item an order_by id names."""
         raw = dict(payload or {})
         select = []
         for index, item in enumerate(raw.get("select") or []):
@@ -293,6 +301,8 @@ class Call:
                 )
             else:
                 where.append(_condition(item))
+        # An order_by field naming a selected id names its column, as the front door reads it.
+        columns = [(item.alias, item.expression) for item in select]
         return cls(
             select=tuple(select),
             group_by=tuple(str(item).strip() for item in raw.get("group_by") or []),
@@ -300,8 +310,13 @@ class Call:
             having=tuple(_condition(row) for row in raw.get("having") or []),
             time=time_of(raw.get("time")),
             order_by=tuple(
-                Order(str(row["field"]).strip(), str(row.get("direction") or "asc").lower())
-                for row in raw.get("order_by") or []
+                Order(
+                    ordered_column(
+                        str(row["field"]).strip(), f"order_by[{index}].field", columns, measures
+                    ),
+                    str(row.get("direction") or "asc").lower(),
+                )
+                for index, row in enumerate(raw.get("order_by") or [])
             ),
             limit=raw.get("limit"),
             routes=tuple(
@@ -447,25 +462,12 @@ class QueryBuilder:
 
     def _canonical(self, expression: Any) -> Any:
         """A measure override equal to its package aggregation is the measure's id."""
-        if isinstance(expression, Mapping) and expression.get("kind") == "measure":
-            measure = _row(self._config.measures, str(expression.get("measure") or ""))
-            extra = set(expression) - {"kind", "measure", "aggregation"}
-            if (
-                measure is not None
-                and not extra
-                and expression.get("aggregation") in (None, "", measure.default_aggregation)
-            ):
-                return measure.id
-        return expression
+        return own_measure(expression, self._config.measures) or expression
 
     def build(self) -> Call:
         call = replace(self._call, **self._fields)
         _check(self._config, call)
         return call
-
-
-def _row(rows: Iterable[Any], object_id: str) -> Any | None:
-    return next((row for row in rows if getattr(row, "id", "") == object_id), None)
 
 
 _WORDS = f"Use a filter word: {', '.join(operators.WORDS)}."

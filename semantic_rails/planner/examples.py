@@ -62,7 +62,7 @@ def example_plan(
             continue
         try:
             values = _references(runtime.engine_seed(query, now=now))
-            call = Call.from_call(query)
+            call = Call.from_call(query, runtime._config.measures)
         except SemanticLayerError:
             invalid.append(example_id)
             continue

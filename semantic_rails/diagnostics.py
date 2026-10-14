@@ -1070,6 +1070,18 @@ def recovery_hints_for_error(
                     "data_type": data_type,
                 }
             ]
+        kind = str(details.get("expression_kind", "") or "")
+        if kind and details.get("supported_kinds"):
+            # A row-level kind (a raw column, ...) as a query value (see ast).
+            message = (
+                f"'{kind}' reads row values, and a query reads measures and metrics: write an id, "
+                f"or one of the kinds {list(details['supported_kinds'])}."
+            )
+            if kind == "column":
+                message += (
+                    " To split or filter by a column, name a dimension on it in group_by or where."
+                )
+            return [{"code": "FIX_QUERY_CALL", "message": message}]
         return list(details.get("recovery_hints", []) or [])
     if code == "QUERY_EXECUTION_ERROR" and details.get("segment_id"):
         segment = details["segment_id"]
@@ -1305,6 +1317,33 @@ def enrich_expression_ast_error(
     if not matches:
         return exc
     details["closest_matches"] = matches[:5]
+    return SemanticLayerError(exc.code, str(exc), details=details)
+
+
+def enrich_column_expression(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
+    """Attach ``closest_matches`` to a refused raw ``column`` expression: the dimensions defined
+    on that column, those of its entity or table when it names one that has any."""
+    details = dict(exc.details or {})
+    column = str(details.get("column") or "").lower()
+    if (
+        exc.code != "INVALID_QUERY"
+        or details.get("expression_kind") != "column"
+        or not column
+        or details.get("closest_matches")
+    ):
+        return exc
+    owners = {
+        entity.id
+        for entity in config.entities
+        if details.get("entity") in (entity.id, entity.name) or details.get("table") == entity.table
+    }
+    on_column = [row for row in config.dimensions if row.column.lower() == column]
+    matches = sorted(
+        row.id for row in [row for row in on_column if row.entity in owners] or on_column
+    )
+    if not matches:
+        return exc
+    details["closest_matches"] = matches[:10]
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 

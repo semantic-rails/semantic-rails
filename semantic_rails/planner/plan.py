@@ -206,7 +206,7 @@ def _caller_call(runtime: Any, partial_query: dict[str, Any] | None, now: Any) -
     if lifted:
         selects = [item for item in seed.get("select") or [] if item not in lifted]
         seed = {**seed, "select": selects, "group_by": [*grouped, *lifted]}
-    call = Call.from_call(seed)
+    call = Call.from_call(seed, runtime._config.measures)
     return None if call == Call() else call
 
 
@@ -843,7 +843,9 @@ def _with_ready_options(
             continue
         try:
             call = _merge_partial_query(
-                runtime._config, Call.from_call(option["call"]), partial_query
+                runtime._config,
+                Call.from_call(option["call"], runtime._config.measures),
+                partial_query,
             )
         except SemanticLayerError:
             continue

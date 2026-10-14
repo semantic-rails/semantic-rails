@@ -13,7 +13,7 @@ options (``max_rows``, ``verbosity``, ...) are arguments beside the call.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from difflib import get_close_matches
@@ -22,7 +22,7 @@ from typing import Any
 from . import operators
 from .clock import UNITS, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
-from .schema import OBSERVATION_SCOPES, PackageConfig
+from .schema import OBSERVATION_SCOPES, MeasureConfig, PackageConfig
 
 SCHEMA_ID = "https://semantic-rails.com/schemas/query.v2.json"
 
@@ -431,7 +431,8 @@ def read_call(
     if time is not None:
         internal["time"] = time
     if "order_by" in payload:
-        internal["order_by"] = _order_by(payload.get("order_by"))
+        measures = config.measures if config is not None else []
+        internal["order_by"] = _order_by(payload.get("order_by"), select, measures)
     if "limit" in payload:
         internal["limit"] = _limit(payload.get("limit"))
     if payload.get("routes") is not None:
@@ -1469,11 +1470,14 @@ def _role_timezone(role: str, config: PackageConfig | None) -> str:
     return str(getattr(row, "timezone", "") or "UTC")
 
 
-def _order_by(raw: Any) -> list[dict[str, Any]]:
+def _order_by(
+    raw: Any, select: list[dict[str, Any]], measures: Sequence[MeasureConfig]
+) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raise refusal(
             "order_by", "is a list", fix='Write [{"field": "<alias>", "direction": "desc"}].'
         )
+    columns = [(row["as"], row["expression"]) for row in select]
     out = []
     for index, item in enumerate(raw):
         path = f"order_by[{index}]"
@@ -1503,8 +1507,79 @@ def _order_by(raw: Any) -> list[dict[str, Any]]:
                 if str(direction).lower() in DIRECTIONS
                 else "Use asc or desc.",
             )
-        out.append({"field": field_id.strip(), "direction": direction.upper()})
+        field_id = ordered_column(field_id.strip(), f"{path}.field", columns, measures)
+        out.append({"field": field_id, "direction": direction.upper()})
     return out
+
+
+def ordered_column(
+    field_id: str,
+    path: str,
+    columns: list[tuple[str, Any]],
+    measures: Sequence[MeasureConfig] = (),
+) -> str:
+    """The column an order_by field names, given the select's ``(alias, expression)`` pairs in
+    either spelling and the package's ``measures``. A measure or metric id that is no alias names
+    the one column reading it as itself; read as itself twice, or only with an override (another
+    statistic, clock or parameter, which is another number), it is refused with those columns.
+    Any other field passes as written."""
+    if not field_id.startswith(REFERENCE_PREFIXES) or any(
+        alias == field_id for alias, _ in columns
+    ):
+        return field_id
+    plain = [
+        alias for alias, expression in columns if _plain_reference(expression, measures) == field_id
+    ]
+    if len(plain) == 1:
+        return plain[0]
+    named = plain or [
+        alias
+        for alias, expression in columns
+        if isinstance(expression, Mapping)
+        and expression.get("kind") == "measure"
+        and expression.get("measure") == field_id
+    ]
+    if named:
+        raise refusal(
+            path,
+            f"'{field_id}' is selected {len(plain)} times"
+            if plain
+            else f"'{field_id}' is selected only with an override, which is another number",
+            fix=f"Order by one of its columns: {named}.",
+            code="INVALID_ORDER_BY",
+            closest_matches=named,
+        )
+    return field_id
+
+
+def own_measure(expression: Any, measures: Sequence[MeasureConfig]) -> str:
+    """The id of the measure a ``measure`` kind reads as itself: with its package aggregation
+    (written out or not) and no other key; "" otherwise."""
+    if not isinstance(expression, Mapping) or expression.get("kind") != "measure":
+        return ""
+    measure = next((row for row in measures if row.id == expression.get("measure")), None)
+    if (
+        measure is None
+        or set(expression) - {"kind", "measure", "aggregation"}
+        or expression.get("aggregation") not in (None, "", measure.default_aggregation)
+    ):
+        return ""
+    return measure.id
+
+
+def _plain_reference(expression: Any, measures: Sequence[MeasureConfig] = ()) -> str:
+    """The id an expression names as itself: an id string, a measure at its own aggregation
+    (``own_measure``), or a measure or metric reference with no override; "" for anything else."""
+    if isinstance(expression, str):
+        return expression.strip()
+    if own := own_measure(expression, measures):
+        return own
+    kind = expression.get("kind") if isinstance(expression, Mapping) else None
+    if kind not in ("measure", "metric") or any(
+        value for key, value in expression.items() if key not in ("kind", kind)
+    ):
+        return ""
+    return str(expression.get(kind) or "")
 
 
 def _limit(raw: Any) -> int:
