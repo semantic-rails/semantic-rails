@@ -10,6 +10,6 @@
   `time.end`), and holds a bound finer than a microsecond; the option ends before any period a
   filter cuts, and is offered only when it is complete. What it can't prove complete is held
   with no option: an entity's aggregate read beside the comparison, a measure's own filter on
-  a date, a bound with a non-UTC offset, or a comma before a fraction. A window that has ended stays as it
+  a date (in its definition or its model's relation pipeline), a bound with a non-UTC offset, or a comma before a fraction. A window that has ended stays as it
   was. The hint of `TIME_WINDOW_START_DROPPED` no longer
   asks to execute a comparison that returns an incomplete period.

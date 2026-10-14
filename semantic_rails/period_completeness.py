@@ -13,7 +13,8 @@ Every clock the draft buckets by counts, as the compiler binds each measure, thr
 and ``having``; clocks in different zones end their periods at different moments, so they hold.
 The check holds whatever it can't read exactly, with no option: a draft it can't plan, one that
 also reads an entity's aggregate (a metric predicate, an entity filter's having, a scoped
-aggregate's conditions), a measure's own filter on a date or time, a ``where`` bound on another
+aggregate's conditions), a measure's own filter on a date or time (in its definition, or in a
+step of the relation pipeline its model reads), a ``where`` bound on another
 date or on a clock it can't line up, a bound with a UTC offset (other than UTC on a UTC clock)
 or a comma before its fraction, or a grain or clock it can't read; a bound finer than a
 microsecond holds with the option below it. Its complete-periods option keeps the draft's filters and ends at the last
@@ -251,6 +252,64 @@ def _check(config: Any, query: Mapping[str, Any], start: Any) -> _Held | None:
     return _held(grain, now_text, cut, cut, reason, first, start, path=_path(source))
 
 
+# Relation steps that drop rows by a condition, and the key each keeps its conditions under.
+_FILTER_STEPS = {
+    "where": "predicates",
+    "semi_join": "where",
+    "anti_join": "where",
+    "exclude": "where",
+}
+
+
+def _relation_cut(config: Any, relation_id: str) -> str:
+    """How a model's relation pipeline, or one it reads, drops rows by a date or time (a
+    condition on a column any dated dimension declares, or an expression plan doesn't read);
+    "" when it doesn't."""
+
+    if not relation_id:
+        return ""
+    relations = {
+        name: row
+        for row in config.relations
+        for name in (row.id, row.output_name, row.name)
+        if name
+    }
+    dated = {row.column for row in config.dimensions if _is_dated(row)}
+    pending, seen = [relation_id], set()
+    while pending:
+        relation = relations.get(pending.pop())
+        if relation is None or relation.id in seen:
+            continue
+        seen.add(relation.id)
+        for step in relation.steps:
+            settings = dict(step.config or {})
+            pending.extend(
+                str(name)
+                for name in _rows_named(settings)
+                if isinstance(name, str) and name in relations
+            )
+            if step.kind not in _FILTER_STEPS:
+                continue
+            raw = settings.get(_FILTER_STEPS[step.kind], settings.get("value", []))
+            for item in raw if isinstance(raw, list) else [raw]:
+                field = item.get("field") if isinstance(item, Mapping) else None
+                if field is None:
+                    return f"by an expression in its {step.kind} step"
+                if str(field) in dated:
+                    return f"on {field} in its {step.kind} step"
+    return ""
+
+
+def _rows_named(value: Any) -> list[Any]:
+    """Every relation a step names (its source, a join's or a branch's relation)."""
+    if isinstance(value, Mapping):
+        named = [value[key] for key in ("relation", "value") if key in value]
+        return named + [name for item in value.values() for name in _rows_named(item)]
+    if isinstance(value, list):
+        return [name for item in value for name in _rows_named(item)]
+    return []
+
+
 def _unproven(reason: str, path: str) -> _Held:
     """A hold plan can't lift with a call of its own: nothing it can offer is provably
     complete."""
@@ -365,7 +424,12 @@ def _unchecked_reads(config: Any, parsed: Any, leaves: list[Any]) -> str:
         elif is_dataclass(node) and not isinstance(node, type):
             pending.extend(getattr(node, item.name) for item in fields(node))
     dimensions = {row.id: row for row in config.dimensions}
+    measures = {row.id: row for row in config.measures}
+    entities = {row.id: row for row in config.entities}
     for leaf in leaves:
+        entity = entities.get(getattr(measures.get(leaf.measure_id), "entity", ""))
+        if cut := _relation_cut(config, getattr(entity, "relation_id", "")):
+            return f"{leaf.measure_id}'s relation, which filters its rows {cut}"
         spec = dict(leaf.filter_spec or {})
         clauses = list(spec.get("all", []) or [])
         if set(spec) - {"all"} or any(clause.get("expression") is not None for clause in clauses):
