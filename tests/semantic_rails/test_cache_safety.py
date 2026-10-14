@@ -10,7 +10,7 @@ from semantic_rails.cache import (
     LruCompiledSqlCache,
     compilation_cache_key,
 )
-from semantic_rails.request_context import RequestContext
+from semantic_rails.request_context import RequestContext, TrustedAttributes
 
 
 def test_lru_compiled_sql_cache_returns_defensive_copies():
@@ -120,6 +120,9 @@ def test_compile_cache_key_is_partitioned_by_trusted_attribute_values():
     variants += [{"customer_id": []}]
     keys = [_key(_host_context(**attributes)) for attributes in variants]
     assert len(set(keys)) == len(variants)
+    # Verified roles decide row-filter exemptions, so they partition the key too.
+    verified = RequestContext(attributes=TrustedAttributes({}, roles=["auditor"]))
+    assert _key(verified.to_policy_context()) != _key(_host_context())
     assert _key(_host_context(a="x", b=2)) == _key(_host_context(b=2, a="x"))
     # Caller JSON never chooses a partition; it is dropped like any untrusted attribute.
     spoofed = {**_host_context(), "attributes": {"customer_id": "1"}}

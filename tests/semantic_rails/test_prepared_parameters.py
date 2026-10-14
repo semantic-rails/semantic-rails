@@ -19,7 +19,7 @@ from semantic_rails.db_parts.snowflake import SnowflakeCliAdapter, SnowflakeNati
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import _adapter_query
-from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery
+from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery, checked_parameter_values
 
 INJECTION = "c-a' OR '1'='1"
 CANARY = "canary-e2-5519"
@@ -182,6 +182,23 @@ def test_a_list_binds_only_through_slots_for_every_item(ledger, monkeypatch, val
         _adapter_query(ledger, LISTED, limits={}, policy_context=_context(customer_id=value))
     assert caught.value.code == "POLICY_DENIED"
     assert caught.value.details == {"reason": reason, "attribute": "customer_id"}
+
+
+def test_a_long_list_checks_each_slot_a_bounded_number_of_times():
+    reads = []
+
+    class Counted(ParameterSlot):
+        def __getattribute__(self, name):
+            if name in {"attribute", "index"}:
+                reads.append(name)
+            return super().__getattribute__(name)
+
+    size = 2_000
+    prepared = PreparedQuery("", parameters=[Counted("regions", "string", i) for i in range(size)])
+    items = tuple(f"r{index}" for index in range(size))
+    reads.clear()
+    assert checked_parameter_values(prepared, [items] * size) == items
+    assert len(reads) <= 8 * size  # linear: a per-slot rescan would read size * size
 
 
 def test_only_host_attributes_or_exact_values_can_bind(ledger, monkeypatch):

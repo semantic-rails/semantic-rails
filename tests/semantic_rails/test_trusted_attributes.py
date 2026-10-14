@@ -84,6 +84,27 @@ def test_unknown_or_wrong_types_fail_without_echoing_values(values, error):
     assert CANARY not in str(raised.value)
 
 
+def test_only_the_host_verifies_roles():
+    verified = TrustedAttributes(roles=["auditor", " auditor ", "analyst"])
+    assert verified.roles == ("analyst", "auditor") and not verified.names
+    assert verified != TrustedAttributes() and hash(verified) != hash(TrustedAttributes())
+    assert copy.deepcopy(verified) == verified == pickle.loads(pickle.dumps(verified))
+    # Carried with no attribute values, and never echoed.
+    context = RequestContext(actor="a", roles=("auditor",), attributes=verified)
+    carried = context_from_policy_context(context.to_policy_context())
+    assert carried.attributes.roles == ("analyst", "auditor")
+    assert context.to_public_dict() == {"actor": "a", "roles": ["auditor"]}
+    for roles in ("auditor", [""], [7], [None]):
+        with pytest.raises(TypeError):
+            TrustedAttributes(roles=roles)
+    # Roles a request header or body claims scope policies; they are never verified roles.
+    headers = {"X-Semantic-Roles": "auditor", "X-Semantic-Trusted-Roles": "auditor"}
+    assert context_from_headers(headers).roles == ("auditor",)
+    assert context_from_headers(headers).attributes.roles == ()
+    claimed = {"roles": ["auditor"], "attributes": {"roles": ["auditor"]}}
+    assert context_from_policy_context(claimed).attributes.roles == ()
+
+
 def test_contexts_without_attributes_are_unchanged():
     context = RequestContext(request_id="r1", actor="a", roles=("analyst",), environment="prod")
     assert context.to_policy_context() == {

@@ -696,7 +696,8 @@ def row_filters_for_context(
 
     Checked before binding, so every surface (validate, compile, plan, execute,
     segment preview) denies a missing attribute or an empty list instead of compiling
-    unfiltered. A role in a filter's ``unless_roles`` exempts the request from it, after scope.
+    unfiltered. A role in a filter's ``unless_roles`` exempts the request from it, after scope,
+    only when the host verified it (``TrustedAttributes.roles``), never as a header claims it.
     """
     require_base(config)
     context = context_from_policy_context(policy_context)
@@ -714,7 +715,7 @@ def row_filters_for_context(
             environment=context.environment,
             audience=context.audience,
             roles=context.roles,
-        ) and not row.exempts(context.roles):
+        ) and not row.exempts(context.attributes.roles):
             filters.append(row.for_value(context.attributes.get(row.slot.attribute)))
     return tuple(filters)
 

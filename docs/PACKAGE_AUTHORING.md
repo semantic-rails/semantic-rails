@@ -795,7 +795,9 @@ kind names must match exactly.
   attribute's value as a parameter; values never enter SQL text. A list value
   (strings or integers, for example a manager's regions) adds
   `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the rows
-  of any of them. The dimension must be a plain `string`, `integer` or `boolean`
+  of any of them; a statement that would bind more parameters than its warehouse
+  accepts (Postgres 65,535, Snowflake 16,384) is refused before it runs. The
+  dimension must be a plain `string`, `integer` or `boolean`
   column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value.
   The policy takes no `object_ids`, `action` or operator. A request it applies to is
   denied (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty
@@ -815,9 +817,12 @@ kind names must match exactly.
   always sets them from verified identity for end-user requests. `validate` warns
   about a filter scoped by `roles:`, since every other role reads every row. To
   let named roles read every row instead, list them in `unless_roles:` (for example
-  `[auditor]`): a request carrying one of them is not filtered, and every other request
-  is filtered, or denied without the attribute. `unless_roles` is a non-empty list
-  and shares no role with `roles:`. A policy of
+  `[auditor]`): a request is not filtered when the embedding host verified one of them
+  for the caller (`TrustedAttributes(..., roles=...)`, see [EMBEDDING.md](EMBEDDING.md)),
+  and every other request is filtered, or denied without the attribute. A role that a
+  request header or the context's `roles` claims never exempts a request, so under the
+  default header resolver `unless_roles` exempts no one. `unless_roles` is a non-empty
+  list and shares no role with `roles:`. A policy of
   another kind that carries `attribute:`, or a kind that is a near miss of
   `row_filter` (`row-filter`, `row_filters`, ...), fails to load rather than
   being ignored.
