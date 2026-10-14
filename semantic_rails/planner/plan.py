@@ -30,7 +30,7 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import _governed_target, _resolved
-from .answer_shape import _answer_shape_why
+from .answer_shape import _answer_shape_why, _listed_entity_terms
 from .call import Call, Order, QueryBuilder
 from .consumed_spans import unconsumed_terms
 from .examples import example_plan
@@ -494,7 +494,13 @@ def _question_payload(
                 set(intent_ir.unresolved),
             )
             or grouping_why
-            or _unasked_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+            or _unasked_grouping_why(
+                runtime,
+                intent_str,
+                best_draft.query,
+                partial_query,
+                _listed_entity_terms(runtime, intent_str, best_draft.query),
+            )
             or _qualifying_entity_why(runtime, intent_ir, best_draft.query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
@@ -879,6 +885,9 @@ def _governed_draft(config: Any, question: str, draft: Any, partial_query: Call 
         .orders(
             Order(alias, row.direction) if row.field == item.alias else row
             for row in query.order_by
+        )
+        .having(
+            replace(row, field=alias) if row.field == item.alias else row for row in query.having
         )
         .build()
     )

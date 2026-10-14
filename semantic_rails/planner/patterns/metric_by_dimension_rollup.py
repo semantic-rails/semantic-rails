@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ...query_call import TIME_AXIS
 from .._base import (
     _NAME_CONNECTORS,
     _TERM_SYNONYMS,
@@ -34,18 +35,22 @@ from .._base import (
     _singular,
     _tokens,
 )
-from ..call import QueryBuilder, Time
+from ..call import Call, Order, QueryBuilder, Time, condition
+from ..coverage import CoverageGap, _coverage_why
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
 from ..groupings import (
+    _display_entities,
     _entity_grouping,
+    _entity_stand_ins,
     _explicit_grain,
     _maybe_group_by,
+    _named_run,
     _names_whole_entity,
     _time_spec,
 )
 from ..intent_ir import _FALLBACK_STOPWORDS
 from ..qualifiers import _add_order, _target_measure_terms, _top_n_intent
-from ..ranking_checks import _dimension_nouns, _ranking_request
+from ..ranking_checks import _dimension_nouns, _ranking_request, _ranking_words, _superlative
 from ..time_windows import _time_bounds_from_text, _time_window
 from ._protocol import IntentPattern
 
@@ -147,6 +152,103 @@ def _named_by_rows(target: Any, noun: str, question: str) -> bool:
     said = {_singular(word) for word in _tokens(question)} - _FALLBACK_STOPWORDS
     names = {_singular(word) for name in _declared_name_forms(target) for word in _tokens(name)}
     return bool(names & said) and names & said <= rows
+
+
+def _listed(runtime: Any, question: str, query: Call) -> tuple[list[str], dict[str, Any]]:
+    """The stand-ins of what a clause opening with "which" or "who" lists, or why plan asks.
+
+    "which" lists the entity named right after it ("which accounts"). "who" lists the one entity
+    with a display the draft's subject reaches, when its clause names no entity: in "who placed
+    an order" the order may be what was placed, so nothing is listed. Several such entities ask
+    which, with one whole call per entity; none, or a term naming no single entity, lists
+    nothing (the answer-shape check holds the draft). A superlative no ranking reads ("who had
+    the most MRR") lists nothing either.
+    """
+
+    from ..answer_shape import _clause_entity, _list_clauses  # noqa: WPS433 - imports patterns
+
+    config = runtime._config
+    words = [word for word, _start, _end in _ranking_words(question)]
+    if any(_superlative(words, index) for index in range(len(words))):
+        return [], {}
+    lowered = question.lower()
+    windows = list(_time_window(question).spans)
+    for word, clause in _list_clauses(config, question):
+        if word not in {"which", "who", "whom"}:
+            continue
+        if word == "which":
+            run = _named_run(config, lowered, clause[0])
+            entity = _entity_grouping(config, lowered[run[0] : run[1]]) if run else None
+            return (entity[1] if entity is not None else []), {}
+        if _clause_entity(config, lowered, windows, clause) is not None:
+            return [], {}
+        entities = _display_entities(runtime, query)
+        if len(entities) != 1:
+            return [], _whose_rows_why(config, word, query, entities) if entities else {}
+        return [ids for part in _entity_stand_ins(config, entities[0]) for ids in part], {}
+    return [], {}
+
+
+def _as_list(config: Any, query: Call, listed: list[str]) -> Call:
+    """``query`` listing the rows of ``listed`` (an entity's stand-ins, the name last): grouped
+    by them, keeping only the rows whose value isn't 0 (or unknown), ordered by the name, then
+    by period and the other groupings."""
+
+    builder = QueryBuilder(config, query).group(*listed)
+    group_by = builder.build().group_by
+    first = listed[-1]
+    return (
+        builder.having([condition(query.select[0].alias, "not", 0)])
+        .orders(
+            [
+                Order(first),
+                *([Order(TIME_AXIS)] if query.time is not None and query.time.grain else []),
+                *(Order(item) for item in group_by if item != first),
+            ]
+        )
+        .build()
+    )
+
+
+def _whose_rows_why(config: Any, word: str, query: Call, entities: list[Any]) -> dict[str, Any]:
+    """Why plan asks whose rows "who" lists when the subject reaches several entities with a
+    display: one option per entity, each a whole call listing its rows."""
+
+    labels = ", ".join(str(row.label) for row in entities)
+    options = []
+    for row in entities:
+        stand_ins = [ids for part in _entity_stand_ins(config, row) for ids in part]
+        options.append(
+            {
+                "entity": row.id,
+                "label": row.label,
+                "call": _as_list(config, query, stand_ins).to_call(),
+            }
+        )
+    gap = CoverageGap(
+        kind="list_unrealized",
+        clause=f'"{word}"',
+        message=(
+            f'The question asks "{word}", and what it counts reaches several entities with a '
+            f"display name ({labels}), so plan doesn't pick whose rows to list."
+        ),
+        expected={"answer": "rows", "entities": [row.id for row in entities]},
+        actual={"group_by": list(query.group_by)},
+        recovery_hint={
+            "kind": "ask_whose_rows",
+            "message": "Ask the user which they mean, then send that option's call, or plan "
+            "again naming it.",
+        },
+    )
+    why = _coverage_why([gap]) or {}
+    return {
+        **why,
+        "details": {
+            **why.get("details", {}),
+            "clarification": {"question": f"Whose rows: {labels}?"},
+            "options": options,
+        },
+    }
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
@@ -278,6 +380,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             )
             held, is_top = {"code": "PLAN_RANKING_NO_KEY", "message": message}, False
     builder.groups(group_by)
+    listed, ask = ([], {}) if is_top else _listed(runtime, question, builder.build())
     drafted = builder.build()
     builder = QueryBuilder(
         config,
@@ -287,9 +390,11 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     )
     if is_top:
         builder.order(drafted.select[0].alias, direction).limit(top_n)
-    else:
+    elif not listed:
         _add_order(builder)
-    query = builder.build()
+    # A list keeps the rows the subject counts, by name.
+    query = _as_list(config, builder.build(), listed) if listed else builder.build()
+    group_by = list(query.group_by)
 
     resolved: list[dict[str, Any]] = [_resolved(target)]
     for dim_id in group_by:
@@ -313,7 +418,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             "top_n": top_n if is_top else None,
         },
         score=_CATCH_ALL_SCORE,
-        blocked_reason=held,
+        blocked_reason=held or ask,
     )
 
 
