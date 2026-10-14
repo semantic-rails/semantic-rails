@@ -196,7 +196,7 @@ def test_what_a_row_grain_model_refuses_to_load(tmp_path, edits, message):
 def test_a_join_into_a_row_grain_model_names_the_fix(tmp_path, spec):
     error = _refusal(_shop(tmp_path, _relationship(spec)))
     assert str(error).endswith(JOIN_INTO_SCANS)
-    assert "which is not its key" not in str(error)
+    assert "not its key" not in str(error)
 
 
 def test_another_model_listing_a_row_grain_model_is_a_join_into_it(tmp_path):
@@ -209,7 +209,6 @@ def test_another_model_listing_a_row_grain_model_is_a_join_into_it(tmp_path):
     )
 
 
-@pytest.mark.xfail(strict=False, reason="lands with the non-key join fix")
 @pytest.mark.parametrize(
     "spec",
     [  # its own lookup on a column that isn't the parent's key: possibly several rows each
@@ -219,7 +218,7 @@ def test_another_model_listing_a_row_grain_model_is_a_join_into_it(tmp_path):
 )
 def test_a_row_grain_lookup_on_a_non_key_column_gets_only_the_non_key_message(tmp_path, spec):
     error = _refusal(_shop(tmp_path, _relationship(spec)))
-    assert "which is not its key" in str(error)
+    assert f"on [{', '.join(spec['target'])}], not its key [" in str(error)
     assert "row-grain" not in str(error)
 
 
