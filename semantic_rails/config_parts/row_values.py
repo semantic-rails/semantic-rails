@@ -7,19 +7,6 @@ from typing import Any
 from ..schema import require_boolean_mnpi
 
 
-def _unique_aliases(*groups: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for group in groups:
-        for value in group:
-            text = str(value or "").strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            out.append(text)
-    return out
-
-
 def _slug(value: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value)).strip("_")
 

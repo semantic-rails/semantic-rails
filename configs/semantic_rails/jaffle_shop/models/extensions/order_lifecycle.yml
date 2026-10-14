@@ -39,7 +39,7 @@ model:
       accumulation:
         kind: event
       value_type: count
-      time: delivered_at
+      times: [delivered_at]
       comparison_family: order_volume
       comparison_mode: coordinated_queries
       meta:
@@ -55,7 +55,7 @@ model:
         kind: flow
       value_type: currency
       currency: USD
-      time: delivered_at
+      times: [delivered_at]
       comparison_family: revenue
       comparison_mode: coordinated_queries
       meta:

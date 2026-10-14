@@ -161,9 +161,12 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
         if edit.op == "rename" and isinstance(parent, MappingNode):
             scalar = _entries(parent)[edit.path[-1]][0]
         value = edit.key if edit.op == "rename" else edit.value
-        if isinstance(scalar, ScalarNode) and not isinstance(value, (dict, list)):
+        # A plain scalar's span holds any flow value; a block scalar's only another scalar.
+        if isinstance(scalar, ScalarNode) and (
+            not isinstance(value, (dict, list)) or not scalar.style
+        ):
             rendered = _render(value, flow=True)
-            if "\n" in rendered:
+            if "\n" in rendered and not isinstance(value, (dict, list)):
                 rendered = (
                     yaml.safe_dump(value, default_style='"', width=10**9)
                     .removesuffix("...\n")
