@@ -277,13 +277,16 @@ def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_pat
     config = load_package_config(str(pkg))
     census = route_census(config)
     assert census["undecided"] == census["assumed"] == []
-    (crossing,) = census["pass_through"]
-    assert (crossing["source_entity"], crossing["target_entity"]) == (
-        "entity.shop_customer",
-        "entity.shop_customer_history",
-    )
-    assert crossing["details"]["route_basis"] == "only_route"
-    assert [row["entity"] for row in crossing["details"]["through"]] == ["entity.shop_order"]
+    # Customers and stores meet only through their orders.
+    assert [(row["source_entity"], row["target_entity"]) for row in census["pass_through"]] == [
+        ("entity.shop_customer", "entity.shop_customer_history"),
+        ("entity.shop_customer", "entity.shop_store"),
+        ("entity.shop_store", "entity.shop_customer"),
+        ("entity.shop_store", "entity.shop_customer_history"),
+    ]
+    for crossing in census["pass_through"]:
+        assert crossing["details"]["route_basis"] == "only_route"
+        assert [row["entity"] for row in crossing["details"]["through"]] == ["entity.shop_order"]
     if surface == "census":
         return
     if surface == "parse":
@@ -300,11 +303,12 @@ def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_pat
         assert not any(action.startswith("Decide") for action in status["next_actions"])
         report = status["parse"]
     assert report["ok"]
-    (warning,) = [row for row in report["warnings"] if row["code"] == "ROUTE_PASS_THROUGH"]
-    assert warning["severity"] == "warning"
-    assert warning["object_ids"] == [crossing["source_entity"], crossing["target_entity"]]
-    assert warning["details"] == crossing["details"]
-    assert warning["message"] == crossing["message"]
+    warnings = [row for row in report["warnings"] if row["code"] == "ROUTE_PASS_THROUGH"]
+    for warning, crossing in zip(warnings, census["pass_through"], strict=True):
+        assert warning["severity"] == "warning"
+        assert warning["object_ids"] == [crossing["source_entity"], crossing["target_entity"]]
+        assert warning["details"] == crossing["details"]
+        assert warning["message"] == crossing["message"]
 
 
 def test_status_setup_and_promotion_point_at_the_undecided_pairs(tmp_path):

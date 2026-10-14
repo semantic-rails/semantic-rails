@@ -2,7 +2,7 @@ model:
   id: orders
   label: Orders
   relation: orders
-  entities: {order: {}, customer: {}, customer_history: {expr: customer_id}}
+  entities: {order: {}, customer: {}, customer_history: {expr: customer_id}, store: {}}
   times:
     ordered_at: {label: Order time, column: ordered_at, kind: timestamp, class: event_time,
       supported_grains: [day, week, month, quarter, year], default: true}
@@ -16,6 +16,9 @@ model:
       value_type: currency, rollup: additive}
     order_count: {label: Orders, kind: entity_count, entity_key: order_id,
       accumulation: {kind: flow}, rollup: additive}
+    # Distinct customers with an order, counted from the orders: customer 108 never signed up.
+    buying_customers: {label: Buying customers, kind: entity_count, entity_key: customer_id,
+      accumulation: {kind: flow}}
     store_a_amount:
       label: Store a amount
       kind: aggregate

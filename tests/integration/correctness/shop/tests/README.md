@@ -49,7 +49,15 @@ confidence cannot satisfy either expectation.
 
 `known_wrong` allows only `engine` and `planner`, each with a nonempty reason.
 It marks only that check as a strict expected failure; reference SQL and hygiene
-always pass. Remove the marker when its fix makes the check pass.
+always pass. Remove the marker when its fix makes the check pass. An answer the
+engine refuses fails its engine check like a wrong number, so the marker covers it.
+
+A case's `context` is who asks, sent as an embedding host sends it: its
+`attributes` arrive as trusted attributes. The shop's regional row filter
+(`policies.yml`) applies to a caller with the `regional` role and a `region`;
+its references read that caller's rows through explicit visibility CTEs, and
+`test_row_filter_visibility.py` checks the same answers against the engine on
+the caller's rows alone.
 
 After an intentional seed change, run
 `uv run python -m tests.integration.correctness.answer_ledger fingerprint`

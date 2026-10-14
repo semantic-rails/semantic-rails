@@ -980,7 +980,15 @@ def test_bundled_routes_through_undeclared_rows_are_exactly_these():
                 (CALENDAR, "entity.jaffle_store"),
             ]
         },
-        ("entity.shop_customer", "entity.shop_customer_history"): ["entity.shop_order"],
+        **{
+            pair: ["entity.shop_order"]
+            for pair in [
+                ("entity.shop_customer", "entity.shop_customer_history"),
+                ("entity.shop_customer", "entity.shop_store"),
+                ("entity.shop_store", "entity.shop_customer"),
+                ("entity.shop_store", "entity.shop_customer_history"),
+            ]
+        },
     }
     shop = load_package_config(str(ROOT / "tests/integration/correctness/shop"))
     path = resolve_path(shop, start="entity.shop_customer", target="entity.shop_customer_history")
