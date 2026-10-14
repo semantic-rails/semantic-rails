@@ -183,12 +183,17 @@ _KIND_TYPES = {
 }
 
 
-def check_text_operand(word: str, data_type: Any, path: str, subject: str) -> None:
+def check_text_operand(
+    word: str, data_type: Any, path: str, subject: str, *, comparison: bool = False
+) -> None:
     """Refuse a text word at ``path`` (an op's) when ``subject`` is not text."""
     canonical = str(data_type or "").strip().lower()
     canonical = _KIND_TYPES.get(canonical, canonical)
     use = _NOT_TEXT.get(canonical, "is or not with the exact values")
-    if word in TEXT_WORDS and canonical not in {"string", ""}:
+    if comparison:
+        use = "a comparison with = or <> and the exact values"
+    text_op = word in TEXT_WORDS or _compact(word).replace("_", " ") in LIKE_SPELLINGS
+    if text_op and canonical not in {"string", ""}:
         raise SemanticLayerError(
             "INVALID_QUERY",
             f"{path}: '{word}' matches text, and {subject} is {data_type}",
