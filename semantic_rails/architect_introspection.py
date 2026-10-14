@@ -23,8 +23,12 @@ file is never created.
 from __future__ import annotations
 
 import contextlib
+import itertools
+import math
 import os
 import re
+import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +46,9 @@ MAX_SAMPLE_CHARS = 200
 DEFAULT_PROFILE_ROWS = 1_000_000
 MAX_PROFILE_ROWS = 1_000_000
 MAX_SUGGESTION_KEY_COLUMNS = 8
+# One deadline covers a key search: sampling, refuting and confirming every candidate.
+KEY_SEARCH_SECONDS = 60.0
+_SAMPLE_TABLE = "__semantic_rails_sample"
 
 _KEY_SUFFIXES = ("_id", "_key", "_code", "_sk")
 _LINE_WORDS = ("line", "line_number", "line_no", "row_number", "seq", "sequence", "position")
@@ -306,9 +313,39 @@ def profile_columns(
         )
     limit = max(0, min(int(sample_limit), MAX_SAMPLE_VALUES))
     row_cap = max(1, min(int(max_rows), MAX_PROFILE_ROWS))
+    with _sample(warehouse, source, row_cap) as (scan, row_count):
+        return _profile(warehouse, described, wanted, scan, row_count, row_cap, limit)
+
+
+@contextlib.contextmanager
+def _sample(warehouse: DuckDBWarehouse, source: str, row_cap: int) -> Iterator[tuple[str, int]]:
+    """The relation, or above ``row_cap`` rows one repeatable reservoir sample of it in a
+    temporary table, which every read of the profile and the key search shares; and its rows."""
     (row_count,) = warehouse.execute(f"SELECT system.main.count(*) FROM {source}")[1][0]
-    sampled = int(row_count) > row_cap
-    scan = f"(SELECT * FROM {source} USING SAMPLE {row_cap} ROWS)" if sampled else source
+    if int(row_count) <= row_cap:
+        yield source, int(row_count)
+        return
+    warehouse.execute(
+        f"CREATE OR REPLACE TEMP TABLE {_SAMPLE_TABLE} AS SELECT * FROM {source} "
+        f"USING SAMPLE reservoir({row_cap} ROWS) REPEATABLE (1)"
+    )
+    try:
+        yield _SAMPLE_TABLE, int(row_count)
+    finally:
+        warehouse.execute(f"DROP TABLE IF EXISTS {_SAMPLE_TABLE}")
+
+
+def _profile(
+    warehouse: DuckDBWarehouse,
+    described: dict[str, Any],
+    wanted: list[str],
+    scan: str,
+    row_count: int,
+    row_cap: int,
+    limit: int,
+) -> dict[str, Any]:
+    available = {column["name"]: column for column in described["columns"]}
+    sampled = row_count > row_cap
     profiles: list[dict[str, Any]] = []
     for column in wanted:
         quoted = quote_identifier(column)
@@ -484,6 +521,17 @@ def draft_roles(
                 "reason": f"counts {entity} rows by their key",
             }
         )
+    elif not key_columns:  # row grain: every stored row counts
+        roles["measures"].append(
+            {
+                "key": f"{entity}_rows",
+                "kind": "aggregate",
+                "aggregation": "sum",
+                "expr": {"kind": "literal", "value": 1},
+                "confidence": "high",
+                "reason": "counts the stored rows; the relation has no key",
+            }
+        )
     skip = set(key_columns) | {column for link in links for column in link_columns(link)}
     unmodeled: list[dict[str, Any]] = []
     for column in columns:
@@ -600,10 +648,10 @@ def upsert_model_draft(
                 if item["kind"] == "entity_count"
                 else {
                     "kind": "aggregate",
-                    "expr": {"kind": "column", "column": item["key"]},
+                    "expr": item.get("expr") or {"kind": "column", "column": item["key"]},
                     "default_agg": item["aggregation"],
                     "accumulation": {"kind": "flow"},
-                    "value_type": "number",
+                    "value_type": "count" if "expr" in item else "number",
                     **({"description": item["description"]} if item.get("description") else {}),
                 }
             )
@@ -652,96 +700,101 @@ def _has_word(column: str, words: tuple[str, ...]) -> bool:
     return any(word in parts or column.lower().endswith(word) for word in words)
 
 
+def _key_candidates(
+    described: dict[str, Any], profile: dict[str, Any], entity: str, foreign: list[str]
+) -> list[list[str]]:
+    """Column sets that could key the rows, most likely first: declared UNIQUE constraints, then
+    sets of at most three columns with no NULL in the sample and no float — an entity-named
+    column, a foreign key and the time, two and the time, any one column, two foreign keys, and a
+    key-like column with a line or sequence number."""
+    types = {column["name"]: str(column["type"]) for column in profile["columns"]}
+    usable = [
+        column["name"]
+        for column in profile["columns"]
+        if column["null_count"] == 0
+        and not _is_container_type(types[column["name"]])
+        and _type_head(types[column["name"]]) not in {"FLOAT", "FLOAT4", "FLOAT8", "DOUBLE", "REAL"}
+    ]
+    names = {"id", f"{entity}_id", f"{entity}_key", f"{entity}key", f"{entity}id"}
+    own = [column for column in usable if column.lower() in names]
+    keys = [c for c in usable if c in foreign and c not in own][:MAX_SUGGESTION_KEY_COLUMNS]
+    clocks = [c for c in usable if classify_column(c, types[c]) == "time"]
+    clock = [c for c in clocks if not _has_word(c, _BOOKKEEPING_WORDS)][:1]
+    pairs = [list(pair) for pair in itertools.combinations(keys, 2)]
+    named = [c for c in usable if _key_like(c)]
+    lines = [[key, c] for key in named for c in usable if _has_word(c, _LINE_WORDS)]
+    ordered = [*described["unique"], *([c] for c in own)]
+    ordered += [[key, *clock] for key in keys if clock]
+    ordered += [[*pair, *clock] for pair in pairs if clock]
+    ordered += [[c] for c in usable] + pairs + [pair for pair in lines if pair[0] != pair[1]]
+    return [list(cols) for cols in dict.fromkeys(tuple(cols) for cols in ordered)]
+
+
 def _suggest_key(
     warehouse: DuckDBWarehouse,
     described: dict[str, Any],
     profile: dict[str, Any],
     entity: str,
     source: str,
-) -> dict[str, Any] | None:
+    scan: str,
+    deadline: float = KEY_SEARCH_SECONDS,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """A key confirmed on every row, or None, and how the search went: ``confirmed``,
+    ``none_found`` (with how many sets it ``checked``), ``timed_out`` (with the sets the sample
+    did not refute but nothing confirmed in time, which no draft writes) or ``empty_table``.
+
+    Candidates are refuted on the profile's one sample, then confirmed in order on the whole
+    relation; a rejection moves on to the next. One deadline covers the search."""
     if described["primary_key"]:
-        return {
-            "columns": described["primary_key"],
-            "confidence": "high",
-            "reason": "declared PRIMARY KEY",
-        }
-    rows = int(profile["row_count"])
-    sampled = bool(profile["sampled"])
-    unique = [
-        column["name"]
-        for column in profile["columns"]
-        if column["rows_profiled"]
-        and column["null_count"] == 0
-        and column["distinct_count"] == column["rows_profiled"]
-        and not _is_container_type(str(column["type"]))
-    ]
-    preferred = [
-        column
-        for column in unique
-        if column.lower() in {"id", f"{entity}_id", f"{entity}_key", f"{entity}key", f"{entity}id"}
-    ]
-    if preferred or [column for column in unique if _key_like(column)]:
-        column = (preferred or [column for column in unique if _key_like(column)])[0]
-        return {
-            "columns": [column],
-            "confidence": "low" if sampled else "high" if preferred else "medium",
-            "reason": (
-                f"{column} is unique and never null in "
-                + (
-                    f"a sample of at most {profile['rows_profiled']} of {rows} rows; "
-                    "full-relation uniqueness must be confirmed before applying"
-                    if sampled
-                    else "every row"
-                )
-                + (f" and is named for the {entity}" if preferred else "")
-            ),
-        }
-    id_like = [
-        column["name"]
-        for column in profile["columns"]
-        if _key_like(column["name"]) or _has_word(column["name"], _LINE_WORDS)
-        if not _is_container_type(str(column["type"]))
-    ]
-    # A bounded prefix is enough for a tentative composite candidate, but it
-    # cannot establish uniqueness outside that prefix.
-    id_like = id_like[:MAX_SUGGESTION_KEY_COLUMNS]
-    probe = f"(SELECT * FROM {source} LIMIT {MAX_PROFILE_ROWS})" if sampled else source
-    for index, first in enumerate(id_like):
-        for second in id_like[index + 1 :]:
-            a, b = quote_identifier(first), quote_identifier(second)
-            checked, present_first, present_second, pairs = warehouse.execute(
-                f"SELECT system.main.count(*), system.main.count({a}), system.main.count({b}), "
-                f"system.main.count(DISTINCT system.main.row({a}, {b})) FROM {probe}"
+        columns = described["primary_key"]
+        key = {"columns": columns, "confidence": "high", "reason": "declared PRIMARY KEY"}
+        return key, {"status": "confirmed", "columns": columns}
+    if not profile["row_count"]:
+        return None, {"status": "empty_table"}
+    rows = profile["rows_profiled"]
+    distinct = {column["name"]: column["distinct_count"] for column in profile["columns"]}
+    start, checked, unconfirmed = time.monotonic(), 0, []
+
+    def unique(columns: list[str], relation: str) -> bool:
+        """No NULL and no repeat in ``relation``, read before the deadline (else TimeoutError)."""
+        quoted = ", ".join(quote_identifier(c) for c in columns)
+        nulls = " OR ".join(f"{quote_identifier(c)} IS NULL" for c in columns)
+        remaining = deadline - (time.monotonic() - start)
+        if remaining <= 0:
+            raise TimeoutError
+        timer = threading.Timer(remaining, warehouse.connection.interrupt)
+        timer.start()
+        try:
+            counted, keyed, missing = warehouse.execute(
+                "SELECT system.main.count(*), "
+                f"system.main.count(DISTINCT system.main.row({quoted})), "
+                f"system.main.count(*) FILTER (WHERE {nulls}) FROM {relation}"
             )[1][0]
-            if checked and checked == present_first == present_second == pairs:
-                return {
-                    "columns": [first, second],
-                    "confidence": "low" if sampled else "medium",
-                    "reason": (
-                        f"({first}, {second}) is unique and non-null in "
-                        + (
-                            f"the first {checked} of {rows} rows; full-relation uniqueness "
-                            "must be confirmed before applying"
-                            if sampled
-                            else "every row; no single column is"
-                        )
-                    ),
-                }
-    if unique:
-        return {
-            "columns": [unique[0]],
-            "confidence": "low",
-            "reason": (
-                f"{unique[0]} appears unique and non-null "
-                + (
-                    f"in a sample of at most {profile['rows_profiled']} of {rows} rows; "
-                    "full-relation uniqueness must be confirmed before applying"
-                    if sampled
-                    else "in every row, but is not named like a key"
-                )
-            ),
-        }
-    return None
+        except duckdb.InterruptException:
+            raise TimeoutError from None
+        finally:
+            timer.cancel()
+        return counted == keyed and not missing
+
+    links = _foreign_keys(warehouse, described, [])
+    foreign = [column for link in links for column in link_columns(link)]
+    for columns in _key_candidates(described, profile, entity, foreign):
+        checked += 1
+        try:
+            if math.prod(distinct[column] for column in columns) < rows or (
+                len(columns) > 1 and not unique(columns, scan)
+            ):
+                continue
+            unconfirmed.append(columns)
+            if profile["sampled"] and not unique(columns, source):
+                unconfirmed.pop()
+                continue
+        except TimeoutError:
+            return None, {"status": "timed_out", "unconfirmed": unconfirmed}
+        reason = f"{', '.join(columns)} is unique and never null in every row"
+        key = {"columns": columns, "confidence": "high", "reason": reason}
+        return key, {"status": "confirmed", "columns": columns}
+    return None, {"status": "none_found", "checked": checked}
 
 
 def _declared_keys(warehouse: DuckDBWarehouse) -> dict[str, list[dict[str, str]]]:
@@ -811,18 +864,27 @@ def _foreign_keys(
     return links
 
 
-def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
+def suggest_model(
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    *,
+    sample_rows: int = MAX_PROFILE_ROWS,
+    deadline: float = KEY_SEARCH_SECONDS,
+) -> dict[str, Any]:
     """Propose a model over ``relation``, each choice with a confidence and a reason.
 
-    Heuristics, in order: declared keys, then uniqueness in the data, then
-    names. Nothing is written: ``upsert_model`` holds draft arguments to review.
+    The key is a declared one, or one the whole relation confirms (``key_search`` says how the
+    search went); without one the draft is a row-grain model that counts its rows. Nothing is
+    written: ``upsert_model`` holds draft arguments to review.
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
     source = quote_relation(f"{schema}.{name}")
-    profile = profile_columns(warehouse, relation, sample_limit=0)
     entity = entity_name(name)
-    key = _suggest_key(warehouse, described, profile, entity, source)
+    columns = [column["name"] for column in described["columns"]]
+    with _sample(warehouse, source, sample_rows) as (scan, row_count):
+        profile = _profile(warehouse, described, columns, scan, row_count, sample_rows, 0)
+        key, search = _suggest_key(warehouse, described, profile, entity, source, scan, deadline)
     key_columns = list(key["columns"]) if key else []
     links = _foreign_keys(warehouse, described, key_columns)
     roles, unmodeled = draft_roles(
@@ -843,6 +905,7 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         "row_count": profile["row_count"],
         "sampled": profile["sampled"],
         "primary_key": key,
+        "key_search": search,
         **roles,
         "foreign_keys": links,
         **({"unsupported_columns": unsupported_columns} if unsupported_columns else {}),

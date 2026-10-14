@@ -1018,11 +1018,7 @@ class ArchitectProject:
         Several models can be staged into one ``documents`` and committed as a
         single transaction; the returned facts describe this model's change.
         """
-        keys = _as_list(primary_key)
-        if not keys:
-            raise SemanticLayerError(
-                "INVALID_CONFIG", "primary_key must contain at least one column"
-            )
+        keys = _as_list(primary_key)  # none: a row-grain model, which lists only its parents
         requested_model = str(model_id or "").strip()
         requested_entity = str(entity_key or "").strip()
         existing_model = self._find_raw(raw["models"], requested_model)
@@ -1069,13 +1065,19 @@ class ArchitectProject:
         previous = model
         if replace:
             model = {field: model[field] for field in _KEPT_ON_REPLACE if field in model}
+        entries = {**dict(model.get("entities", {}) or {}), entity_slug: {}}
+        if not keys:
+            entries.pop(entity_slug)
         model.update(
             {
                 "id": model_slug,
                 "relation": relation,
-                "entities": {**dict(model.get("entities", {}) or {}), entity_slug: {}},
+                "entities": entries,
                 "description": description
-                or model.get("description", f"One row per {_title(entity_slug)}."),
+                or model.get(
+                    "description",
+                    f"One row per {_title(entity_slug)}." if keys else "Every stored row counts.",
+                ),
             }
         )
         if label:
@@ -1139,7 +1141,10 @@ class ArchitectProject:
         elif calendar is False and was_calendar:
             desired_entity.pop("kind", None)
             desired_entity["allowed_as_root"] = True
-        entities[entity_slug] = desired_entity
+        if keys:
+            entities[entity_slug] = desired_entity
+        else:  # a row-grain model has no graph entity
+            desired_entity = existing_spec
         graph["entities"] = entities
         graph_doc["graph"] = graph
         return {
@@ -2036,7 +2041,7 @@ class ArchitectProject:
             self._row(singular, name, owner.source_path, entry, id=ids[owner.key], model=owner.key)
         )
         if singular == "relationship":
-            source = self._primary_entity_for_model(owner, raw["entities"])
+            source = self._primary_entity_for_model(owner, raw["entities"]) or owner.key
             self._drop_graph_relationships(raw, name, documents, removed, source=source)
 
     def _pop_model_entry(
@@ -2478,7 +2483,10 @@ class ArchitectProject:
             "measures": [],
         }
         for model_entry in models:
-            primary_entity = self._primary_entity_for_model(model_entry, entities)
+            # A row-grain model's objects take their ids from the model.
+            primary_entity = (
+                self._primary_entity_for_model(model_entry, entities) or model_entry.key
+            )
             for plural, singular in (
                 ("dimensions", "dimension"),
                 ("times", "time"),
@@ -2619,18 +2627,16 @@ class ArchitectProject:
 
     @staticmethod
     def _primary_entity_for_model(model: _RawObject, entities: list[_RawObject]) -> str:
+        """The graph entity homed on the model, or "" for a row-grain model (no key)."""
         for entity in entities:
             if str(entity.spec.get("model", "") or "") == model.key:
                 return entity.key
         explicit = str(model.spec.get("entity", "") or "").strip()
         if explicit:
             return explicit
-        exposed = model.spec.get("entities", {}) or {}
-        if isinstance(exposed, dict):
-            keys = [str(key) for key in exposed if str(key) != "bridge"]
-            if keys:
-                return keys[0]
-        return model.key
+        exposed = [str(key) for key in dict(model.spec.get("entities") or {}) if key != "bridge"]
+        named = any(entity.key == model.key for entity in entities)
+        return model.key if named and (model.key in exposed or not exposed) else ""
 
     @staticmethod
     def _find_raw(rows: list[_RawObject], key: str) -> _RawObject | None:

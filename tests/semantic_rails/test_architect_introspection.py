@@ -356,7 +356,8 @@ def test_profile_row_cap_cannot_be_raised_by_the_caller(tmp_path: Path) -> None:
     assert profile["columns"][0]["distinct_count"] <= MAX_PROFILE_ROWS
 
 
-# At the cap every row is checked; one row more and only a sample is.
+# At the cap the profile reads every row; one row more and a sample, and the key is confirmed on
+# every row either way.
 @pytest.mark.parametrize("offset", [0, 1], ids=["at", "above"])
 def test_key_suggestion_states_what_was_checked_at_the_profile_cap(
     tmp_path: Path, offset: int
@@ -374,13 +375,8 @@ def test_key_suggestion_states_what_was_checked_at_the_profile_cap(
     key = suggested["primary_key"]
     assert key["columns"] == ["order_id"]
     assert suggested["upsert_model"]["primary_key"] == ["order_id"]
-    if offset > 0:
-        assert suggested["sampled"] is True
-        assert key["confidence"] == "low"
-        assert "sample" in key["reason"] and "confirmed" in key["reason"]
-    else:
-        assert suggested["sampled"] is False
-        assert key["confidence"] == "high" and "every row" in key["reason"]
+    assert suggested["sampled"] is (offset > 0)
+    assert key["confidence"] == "high" and "every row" in key["reason"]
 
 
 def test_declared_key_is_certain_above_the_profile_cap(tmp_path: Path) -> None:
@@ -439,15 +435,10 @@ def test_composite_key_suggestion_has_bounded_and_honest_evidence(
     key = suggested["primary_key"]
     assert key["columns"] == ["order_id", "line_number"]
     assert suggested["upsert_model"]["primary_key"] == ["order_id", "line_number"]
-    if offset > 0:
-        assert key["confidence"] == "low"
-        assert "first" in key["reason"] and "confirmed" in key["reason"]
-    else:
-        assert key["confidence"] == "medium"
-        assert "every row" in key["reason"]
+    assert key["confidence"] == "high" and "every row" in key["reason"]
 
 
-def test_composite_duplicate_outside_probe_remains_tentative(tmp_path: Path) -> None:
+def test_composite_duplicate_outside_the_sample_is_rejected_on_every_row(tmp_path: Path) -> None:
     db_path = tmp_path / "late-duplicate.duckdb"
     with duckdb.connect(str(db_path)) as conn:
         conn.execute(
@@ -459,10 +450,9 @@ def test_composite_duplicate_outside_probe_remains_tentative(tmp_path: Path) -> 
     with open_duckdb(db_path) as warehouse:
         suggested = suggest_model(warehouse, "fct_order_lines")
 
-    assert suggested["primary_key"]["columns"] == ["order_id", "line_number"]
-    assert suggested["primary_key"]["confidence"] == "low"
-    assert "first 1000000" in suggested["primary_key"]["reason"]
-    assert "must be confirmed" in suggested["primary_key"]["reason"]
+    assert suggested["primary_key"] is None
+    assert suggested["key_search"]["status"] == "none_found"
+    assert suggested["upsert_model"]["primary_key"] == []
 
 
 def test_introspection_never_writes_or_creates_a_database(
