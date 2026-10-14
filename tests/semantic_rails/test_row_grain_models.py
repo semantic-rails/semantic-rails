@@ -176,6 +176,15 @@ def test_which_entities_blocks_make_a_model_row_grain(tmp_path, entities, same_n
             [_scans(lambda model: model["entities"].update(account_day={"expr": "order_id"}))],
             "join 'shipment_scans.account_day' key width does not match target key",
         ),
+        (  # summing a value that must not be summed needs each row's key, which it hasn't
+            [_scans(lambda model: model["measures"]["heaviest_scan"].update(default_agg="sum"))],
+            "measure 'heaviest_scan' is additive: false on row-grain model 'shipment_scans' (no "
+            "key), so its default_agg 'sum' can't be computed",
+        ),
+        (  # sum is also the default aggregation
+            [_scans(lambda model: model["measures"]["heaviest_scan"].pop("default_agg"))],
+            "Set default_agg to one of avg, min, max",
+        ),
     ],
 )
 def test_what_a_row_grain_model_refuses_to_load(tmp_path, edits, message):
@@ -280,6 +289,28 @@ def test_telling_its_rows_apart_refuses(shop, query):
     with pytest.raises(SemanticLayerError) as raised:
         shop.query(query)
     assert (raised.value.code, str(raised.value)) == ("ROW_GRAIN_UNSUPPORTED", ROW_GRAIN_MESSAGE)
+
+
+def test_a_sum_of_a_non_additive_measure_names_what_it_can_be(shop):
+    query = {
+        "select": [
+            {
+                "as": "total",
+                "expression": {
+                    "kind": "measure",
+                    "measure": "measure.shop.heaviest_scan",
+                    "aggregation": "sum",
+                },
+            }
+        ]
+    }
+    with pytest.raises(SemanticLayerError) as raised:
+        shop.query(query)
+    assert raised.value.code == "ROW_GRAIN_UNSUPPORTED"
+    message = str(raised.value)
+    assert "'measure.shop.heaviest_scan' is additive: false" in message
+    assert "avg / min / max" in message and "sum its values" not in message
+    assert raised.value.details["model"] == "shipment_scans"
 
 
 def test_segments_and_conversions_on_a_row_grain_model_refuse(tmp_path):

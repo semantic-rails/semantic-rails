@@ -33,7 +33,7 @@ from semantic_rails.architect_transactions import project_revision
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.package_tools import run_examples_report
+from semantic_rails.package_tools import check_package_report, run_examples_report
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse
 
 ORDERS = FirstModel(
@@ -83,6 +83,30 @@ def test_starter_project_runs_immediately(tmp_path: Path) -> None:
     assert "*.duckdb" in (project / ".gitignore").read_text(encoding="utf-8")
     report = _examples_pass(project)
     assert report["ok"] is True, report
+
+
+@pytest.mark.parametrize(
+    "first_model",
+    [
+        FirstModel(),
+        FirstModel(time_column=""),
+        FirstModel(amount_column="amount", dimension_column="event_type"),
+    ],
+    ids=["starter", "no_time", "amount_and_dimension"],
+)
+def test_the_scaffold_passes_every_check_it_writes(tmp_path: Path, first_model) -> None:
+    """The starter example and test validate and pass on this engine, as written."""
+    spec = ProjectSpec(package_id="growth", first_model=first_model)
+    assert create_project("growth", spec, workspace_root=tmp_path).report["ok"] is True
+
+    report = check_package_report(PackageReference(source_path=str(tmp_path / "growth")))
+
+    assert report["ok"] is True, report["blockers"]
+    checks = report["checks"]
+    assert (
+        checks["examples"]["summary"]["passed"] == checks["examples"]["summary"]["examples_total"]
+    )
+    assert checks["tests"]["summary"]["passed"] == checks["tests"]["summary"]["tests_total"] > 0
 
 
 def test_external_duckdb_project_reads_the_dbt_marts(tmp_path: Path) -> None:

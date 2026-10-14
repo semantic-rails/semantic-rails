@@ -577,9 +577,13 @@ def _bind_measure(
         if not measure.compatible_temporal_roles:
             # No clock at all: name the role asked for, so the hint says to declare one.
             details["requested"] = temporal_role
+        roles = ", ".join(measure.compatible_temporal_roles)
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
-            f"Temporal role '{temporal_role}' is not compatible with '{measure_id}'",
+            f"Measure '{measure_id}' is not timed by temporal role '{temporal_role}' "
+            + (f"(its roles: {roles})" if roles else "(it has no time role)")
+            + "; add the role to the measure's `times:` in its model"
+            + (", or use one of its roles." if roles else "."),
             details=details,
         )
     query_role = query.time.temporal_role if query.time else ""

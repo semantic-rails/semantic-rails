@@ -30,6 +30,8 @@ SWITCHED = {
     ("compiler_parts/paths.py", "keyed_entity"),
     ("compiler_parts/plan_checks.py", "_fanout_dedup_refusal"),
     ("compiler_parts/plan_checks.py", "child_group_route"),
+    # Also the keyed sum of a non-additive measure: a row-grain model's refuses with its own fix.
+    ("compiler_parts/plan_checks.py", "_validate_non_additive_sums"),
     ("compiler_parts/post_aggregation.py", "_summing_window_parts.additive"),
     ("compiler_parts/row_counts.py", "_names_in_use"),
     # Also a join's source key: a row-grain source holds no key, so its side reads "foreign".

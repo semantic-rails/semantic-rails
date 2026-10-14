@@ -283,6 +283,17 @@ def restore_project_snapshots(snapshots: Iterable[ProjectFileSnapshot]) -> None:
             snapshot.path.unlink()
 
 
+def _replace_text(value: Any, old: str, new: str) -> Any:
+    """``value`` with ``old`` replaced by ``new`` in every string it holds."""
+    if isinstance(value, str):
+        return value.replace(old, new)
+    if isinstance(value, dict):
+        return {key: _replace_text(item, old, new) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_replace_text(item, old, new) for item in value]
+    return value
+
+
 def _canonical_json_digest(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         payload,
@@ -856,7 +867,8 @@ class ProjectTransaction:
             parse, _ = parse_config_report(
                 PackageReference(source_path=str(self.parse_source(project)))
             )
-        return parse
+        # Its messages name the project, not the temporary copy it was checked in.
+        return _replace_text(parse, str(project), str(self.project_path))
 
     def _guard_routes(
         self,

@@ -21,6 +21,7 @@ from ..ast import (
 )
 from ..clock import UNITS, known_zone
 from ..config_parts.lookup_measures import lookup_links
+from ..config_parts.measure_rows import KEYED_AGGREGATIONS
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -486,9 +487,10 @@ def _validate_non_additive_sums(
             ):
                 _raise_non_additive_sum(measure, "parent_lookup", via_columns, config)
             continue
-        if aggregation not in {"sum", "last_value", "first_value"}:
+        if aggregation not in KEYED_AGGREGATIONS:
             continue
-        # Read only here: a row-grain model's rows have no key to fix, so this refuses for it.
+        if not measure.row_grain and entity.is_row_grain:
+            _raise_row_grain_non_additive(measure, aggregation, entity)
         key = list(measure.row_grain or entity.key)
         required = key
         if measure.measure_class == "semi_additive":
@@ -517,6 +519,25 @@ class NonAdditiveRefusal(SemanticLayerError):
         self.dimensions = dimensions
 
 
+def _statistics(measure: MeasureConfig) -> list[str]:
+    """The aggregations an `additive: false` measure answers at any grain."""
+    return [
+        name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
+    ]
+
+
+def _raise_row_grain_non_additive(measure: MeasureConfig, aggregation: str, entity: Any) -> None:
+    model = entity.model or entity.id
+    instead = " / ".join(_statistics(measure))
+    raise SemanticLayerError(
+        "ROW_GRAIN_UNSUPPORTED",
+        f"Measure '{measure.id}' is additive: false, and its {aggregation} needs each of its rows' "
+        f"key fixed, but '{entity.label or model}' is row grain (no key). Use aggregation "
+        f"{instead}, or declare a key on {model} if its rows have one.",
+        details={"model": model, "entity": entity.id, "measure_id": measure.id},
+    )
+
+
 def _raise_non_additive_sum(
     measure: MeasureConfig, construct: str, missing: list[str], config: PackageConfig
 ) -> None:
@@ -537,9 +558,7 @@ def _raise_non_additive_sum(
         )
     elif missing:
         key = "series key" if measure.measure_class == "semi_additive" else "key"
-        statistics = [
-            name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
-        ]
+        statistics = _statistics(measure)
         instead = f", or use aggregation {' / '.join(statistics)}" if statistics else ""
         message = (
             f"Measure '{measure.id}' is additive: false, and this query would sum more than one "

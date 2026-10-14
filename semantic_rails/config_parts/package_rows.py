@@ -37,6 +37,7 @@ from .loader_chain import _ensure_unique_object_ids, _parse_package_meta
 from .lookup_measures import lookup_measure_spec, resolve_lookup_measures
 from .measure_governance import with_published_flags
 from .measure_rows import (
+    KEYED_AGGREGATIONS,
     _authored_additive,
     _default_topics,
     _derive_measure_semantics,
@@ -496,11 +497,33 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 target="measure",
                 path=f"{path}: measure '{measure_id}' operational",
             )
+            additive = _authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'")
+            if (
+                not additive
+                and entity_cfg.is_row_grain
+                and default_aggregation in KEYED_AGGREGATIONS
+            ):
+                usable = [agg for agg in allowed_aggregations if agg not in KEYED_AGGREGATIONS]
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: measure '{measure_key}' is additive: false on row-grain model "
+                    f"'{model_id}' (no key), so its default_agg '{default_aggregation}' can't be "
+                    "computed: that needs each row's key fixed. Set default_agg to one of "
+                    f"{', '.join(usable)}, or declare a key on {model_id}.",
+                )
+            try:
+                measure_expr = parse_config_expression(expr_raw)
+            except SemanticLayerError as exc:
+                raise SemanticLayerError(
+                    exc.code,
+                    f"{path}: model '{model_id}' measure '{measure_key}' expr: {exc}",
+                    details=exc.details,
+                ) from exc
             measure = MeasureConfig(
                 id=measure_id,
                 entity=entity_id,
                 row_grain=list(row_grain),
-                expr=parse_config_expression(expr_raw),
+                expr=measure_expr,
                 default_aggregation=default_aggregation,
                 allowed_aggregations=allowed_aggregations,
                 invalid_aggregations=invalid_aggregations,
@@ -538,7 +561,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     measure_spec.get("cross_window_policy", "caveat") or "caveat"
                 ),
                 authoring_warnings=authoring_warnings,
-                additive=_authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'"),
+                additive=additive,
                 lookup_from=str(measure_spec.get("from", "") or "").strip(),
                 lookup_via=str(measure_spec.get("via", "") or "").strip(),
                 publish=measure_spec.get("publish") is not False,
@@ -1291,8 +1314,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                                 variant.get("eligible_time_grains")
                             )
                             or _coarser_time_grains(time_grain),
-                            "excluded_entities": list(excluded_entities),
-                            "excluded_dimensions": list(excluded_dimensions),
+                            "excluded_entities": sorted(excluded_entities),
+                            "excluded_dimensions": sorted(excluded_dimensions),
                             "selection_priority": int(selection.get("priority", 0) or 0),
                             "equivalence_kind": str(equivalence.get("kind", "exact") or "exact"),
                             "model_id": model_id,

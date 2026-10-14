@@ -295,7 +295,7 @@ def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_pat
         copy = tmp_path / "shop"
         shutil.copytree(pkg, copy)
         server = create_architect_mcp_server(workspace_root=tmp_path)
-        status = _mcp(server, "project_status", {"project_path": str(copy)})
+        status = _mcp(server, "project_status", {"project_path": str(copy), "full_report": True})
         assert status["route_census"] == census
         assert not any(action.startswith("Decide") for action in status["next_actions"])
         report = status["parse"]
@@ -310,7 +310,7 @@ def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_pat
 def test_status_setup_and_promotion_point_at_the_undecided_pairs(tmp_path):
     pkg = _write_package(tmp_path)
     server = create_architect_mcp_server(workspace_root=tmp_path)
-    status = _mcp(server, "project_status", {"project_path": str(pkg)})
+    status = _mcp(server, "project_status", {"project_path": str(pkg), "full_report": True})
     assert _pairs(status["route_census"]["undecided"]) == DIAMOND_UNDECIDED
     assert "route_census" not in status["parse"]
     assert status["next_actions"][0].startswith("Decide the 13 undecided join routes")

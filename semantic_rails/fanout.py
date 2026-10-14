@@ -142,14 +142,22 @@ def route_pin(start: str, target: str, path: list[str]) -> dict[str, Any]:
 
 
 def _plural(noun: str) -> str:
-    head, space, last = noun.rpartition(" ")
+    """``noun``'s plural: its last word before any closing parenthetical, unless that word
+    already reads as a plural (``Rooms``; ``Status``, ``Address``, ``Iris`` and ``Alias``
+    don't)."""
+    stem, paren, aside = noun.partition(" (") if noun.endswith(")") else (noun, "", "")
+    head, space, last = stem.rpartition(" ")
+    if last.lower().endswith("s") and not last.lower().endswith(("ss", "us", "is", "ias")):
+        return noun
     if last[-1:] == "y" and last[-2:-1].lower() not in set("aeiou"):
         last = f"{last[:-1]}ies"
+    elif last.lower().endswith("sis"):
+        last = f"{last[:-2]}es"  # an analysis, two analyses
     elif last[-1:] in {"s", "x", "z"} or last[-2:] in {"ch", "sh"}:
         last = f"{last}es"
     else:
         last = f"{last}s"
-    return f"{head}{space}{last}"
+    return f"{head}{space}{last}{paren}{aside}"
 
 
 def entity_label(config: PackageConfig, entity_id: str) -> str:

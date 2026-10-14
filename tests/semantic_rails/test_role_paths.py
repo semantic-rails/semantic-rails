@@ -495,6 +495,7 @@ def test_roles_that_share_an_entity_pair_are_undecided_census_pairs(tmp_path):
     codes = [warning["code"] for warning in report["warnings"]]
     assert "RELATIONSHIP_ROLES_UNPINNED" not in codes
     (warning,) = [w for w in report["warnings"] if w["code"] == "ROUTES_UNDECIDED"]
+    rows = warning["details"].pop("first_pair_rows")
     assert warning["details"] == {
         "count": 2,
         "pairs": [
@@ -502,6 +503,9 @@ def test_roles_that_share_an_entity_pair_are_undecided_census_pairs(tmp_path):
             {"source_entity": LEG, "target_entity": AIRPORT},
         ],
     }
+    # The rows that would decide the first pair: one for each role.
+    assert sorted(row["relationship_path"] for row in rows) == both
+    assert {(row["source_entity"], row["target_entity"]) for row in rows} == {(AIRPORT, LEG)}
     assert "graph.path_preferences" in warning["message"]
 
 

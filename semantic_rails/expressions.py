@@ -10,6 +10,7 @@ these nodes; the compiler consumes them.
 from __future__ import annotations
 
 import ast as pyast
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -889,6 +890,10 @@ def _parse_python_expr(text: str) -> SemanticExpr:
 
 
 def parse_config_expression(raw: Any) -> SemanticExpr:
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if not math.isfinite(raw):
+            raise SemanticLayerError("INVALID_CONFIG", f"{raw!r} is not a finite number")
+        raw = str(raw)  # `expr: 1` is the literal it spells, as `expr: "1"` is
     if isinstance(raw, str):
         text = raw.strip()
         if not text:

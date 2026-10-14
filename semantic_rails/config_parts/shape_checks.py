@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from ..naming import slug
@@ -723,6 +724,18 @@ def _check_model_shape(
             measure_raw, _MEASURE_KEYS, label=measure_label, errors=errors, block="measure"
         )
         _check_publish(measure_raw, label=measure_label, errors=errors)
+        expr = measure_raw.get("expr")
+        if expr is not None and (
+            isinstance(expr, bool)
+            or not isinstance(expr, (str, int, float, dict))
+            or (isinstance(expr, float) and not math.isfinite(expr))
+        ):
+            add_error(
+                errors,
+                f"{measure_label} expr {expr!r} is not an expression: write a column or formula "
+                'as text ("amount", "price * quantity", "1") or an expression object '
+                "({kind: literal, value: 1})",
+            )
         kind_value = str(measure_raw.get("kind", "") or "").strip().lower()
         if not kind_value:
             add_error(

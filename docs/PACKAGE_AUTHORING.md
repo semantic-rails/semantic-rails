@@ -1270,6 +1270,43 @@ limitations](QUERY_CALL.md#known-limitations)):
 - A child row whose parent id is missing from the parent table still counts in entity filters:
   the engine trusts the child's id.
 
+### Two roles on one pair
+
+An event has a buyer and a seller, both customers: two relationships between `event` and
+`customer`, each on its own columns. Write the first as the model's foreign key and the second
+as a named `graph.relationships` entry with its own `via`:
+
+```yaml
+# models/events.yml: the buyer, the model's foreign key (relationship.events_customer)
+model:
+  id: events
+  relation: raw_events
+  entities: {event: {}, customer: {expr: buyer_id}}
+```
+
+```yaml
+# graph.yml: the seller, a second role (relationship.event_seller)
+graph:
+  relationships:
+    event_seller:
+      entities: [event, customer]
+      cardinality: many_to_one
+      via: [seller_id]
+      target: [customer_id]
+  path_preferences:       # what "an event's customer" means when a question doesn't say
+    - source_entity: event
+      target_entity: customer
+      relationship_path: [relationship.events_customer]
+```
+
+Through Architect MCP, the same two writes are `upsert_relationship(from_entity: event,
+to_entity: customer, columns: [buyer_id])`, then `upsert_relationship(from_entity: event,
+to_entity: customer, columns: [seller_id], name: event_seller, keep_existing_routes: true)`,
+which also records the buyer as the pair's default route. Without a row for the pair, a
+question that reaches the customer is refused as `AMBIGUOUS_PATH` with both roles as options
+(see [the route rule](#the-route-rule)); a query that means the seller names it in
+[`routes`](QUERY_CALL.md#routes).
+
 ## Models
 
 A model declares one warehouse table or mart, the entities it exposes, the
@@ -1527,7 +1564,10 @@ A measure is timed by the roles in its own `times:` list, or, when it lists none
 model's `default: true` time. A measure with neither has no clock: it answers without `time`
 or grouped by a plain date dimension, but a query that puts it on a time grain (for example
 `time: {temporal_role: ..., grain: month}`) is refused with `INCOMPATIBLE_TEMPORAL_ROLE`. Mark
-the role `default: true` or list it under the measure's `times:`.
+the role `default: true` or list it under the measure's `times:`. When the refusal is for a
+role a measure's `times:` doesn't list, its message and `details.measures` name the measure
+(and the metric that reads it): list each role it can be read by there, as the model's time
+keys or role ids (`times: [ordered_at, shipped_at]`).
 
 `timezone:` (default `UTC`) is the zone the role answers in. Every grain's
 buckets, and a query's `start`/`end` bounds, are in that zone:
@@ -1659,8 +1699,11 @@ measures:
     value_type: count
 ```
 
-An `aggregate` measure with `expr: "1"`, `default_agg: sum`,
-`accumulation: { kind: flow }`, and `value_type: count` counts source rows.
+An `aggregate` measure with `expr: 1` (or `"1"`), `default_agg: sum`,
+`accumulation: { kind: flow }`, and `value_type: count` counts source rows. `expr:` is a
+column or formula as text, a finite number, or an expression object (`{kind: literal, value:
+1}`); anything else (`true`, a list, `.inf`, `.nan`) is refused at load, naming the model and
+measure.
 Package checks treat literal values as constants with no column dependencies;
 columns inside compound expressions are still checked against the warehouse.
 
@@ -1808,6 +1851,10 @@ visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages 
 - `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
   visitors is a real question), and so does `prior_period`. Cumulative, rolling and
   period-to-date metrics, scoped aggregates and metric predicates over it are refused.
+- On a [row-grain model](#row-grain-models) no row key can be fixed, so its `sum`, first and
+  last refuse with `ROW_GRAIN_UNSUPPORTED`, and a `default_agg` of one of them (`sum` is the
+  default) is refused at load: give it `default_agg: avg`, `min`, `max`, `median` or
+  `percentile`.
 - `project validate` probes such a measure grouped by those dimensions.
 - It only applies to `kind: aggregate`: an `entity_count` is a distinct count the
   engine computes itself.
@@ -2547,9 +2594,11 @@ Architect's `project_status`) carries `route_census`:
   with `AMBIGUOUS_PATH`, where `details` is the refusal's own (each route, its
   meaning and `details.clarification.options[*].decision`, the row that records
   it). One `ROUTES_UNDECIDED` warning gives
-  their `count` and `pairs`. Record the route each pair means as a
-  `graph.path_preferences` row with `record_route_decision` before a question
-  needs it. The warning is
+  their `count` and `pairs`, and `first_pair_rows`, the rows that would decide
+  the first pair. Record the route each pair means as a
+  `graph.path_preferences` row before a question needs it: write it in
+  `graph.yml` (`semantic-rails project validate` prints the first pair's rows
+  to choose from) or with Architect's `record_route_decision`. The warning is
   advisory and never blocks a promotion. Leaving a pair undecided is a valid end state: the
   engine asks which route a question means when one needs it. Don't record a meaning the
   business doesn't hold.

@@ -7,6 +7,10 @@ from typing import Any
 from ..errors import SemanticLayerError
 from ..schema import AccumulationConfig
 
+# The aggregations of an `additive: false` measure that need each of its rows' keys fixed: on a
+# row-grain model, which has none, they can't be computed.
+KEYED_AGGREGATIONS = frozenset({"sum", "first_value", "last_value"})
+
 
 def _normalize_accumulation(spec: dict[str, Any]) -> AccumulationConfig:
     """Normalize the nested accumulation block or a kind-only scalar."""
