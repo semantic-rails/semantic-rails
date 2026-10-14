@@ -355,11 +355,13 @@ TOP_REVENUE = {
         ([ORDERS, REVENUE], REVENUE, "revenue_usd"),
         ([ORDERS, {"expression": REVENUE, "as": "revenue"}], REVENUE, "revenue"),
         ([ORDERS, {"expression": {"kind": "measure", "measure": REVENUE}, "as": "revenue"}], REVENUE, "revenue"),
+        # The measure's own aggregation, written out, is no override: the same number.
+        ([ORDERS, {"expression": {"kind": "measure", "measure": REVENUE, "aggregation": "sum"}, "as": "revenue"}], REVENUE, "revenue"),
         # Beside another statistic of it, the id is the item that reads it as itself.
         ([TOP_REVENUE, REVENUE], REVENUE, "revenue_usd"),
         ([ORDERS, AOV], AOV, "aov_usd"),
     ],
-    ids=["measure", "named-measure", "measure-kind", "beside-a-statistic-override", "metric"],
+    ids=["measure", "named-measure", "measure-kind", "default-statistic", "beside-a-statistic-override", "metric"],
 )  # fmt: skip
 def test_order_by_a_selected_id_orders_by_its_column(
     runtime: Runtime, select: list[Any], field: str, column: str

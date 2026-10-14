@@ -239,20 +239,26 @@ def test_plan_keeps_a_caller_select_item_once(runtime, caller, alias, shown) -> 
     assert sorted(rows[0]) == ["dimension.jaffle_store_id", "dimension.jaffle_store_name", alias]
 
 
-def test_plan_reads_a_seed_ordered_by_a_selected_id(runtime) -> None:
+@pytest.mark.parametrize(
+    ("item", "column"),
+    # The measure's own aggregation, written out, reads it as itself.
+    [(REVENUE, "revenue_usd"), ({"as": "rev", "expression": REVENUE_SUM}, "rev")],
+    ids=["id", "default-statistic"],
+)
+def test_plan_reads_a_seed_ordered_by_a_selected_id(runtime, item, column) -> None:
     """The seed's order_by names its select item by id, as execute accepts it."""
     seed = {
-        "select": [REVENUE],
+        "select": [item],
         "group_by": ["dimension.jaffle_store_name"],
         "order_by": [{"field": REVENUE, "direction": "desc"}],
         "limit": 2,
     }
-    assert Call.from_call(seed).order_by[0].field == "revenue_usd"
+    assert Call.from_call(seed, runtime._config.measures).order_by[0].field == column
     payload = plan_payload(runtime, intent="revenue by store", partial_query=seed)
     assert payload["status"] == "ok", payload.get("why")
     query = payload["best"]["query"]
-    assert query["order_by"][0] == {"field": "revenue_usd", "direction": "desc"}
-    by_column = {**seed, "order_by": [{"field": "revenue_usd", "direction": "desc"}]}
+    assert query["order_by"][0] == {"field": column, "direction": "desc"}
+    by_column = {**seed, "order_by": [{"field": column, "direction": "desc"}]}
     assert runtime.query(query)["rows"] == runtime.query(by_column)["rows"]
 
 
