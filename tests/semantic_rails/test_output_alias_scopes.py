@@ -39,6 +39,7 @@ from semantic_rails.sql_ast import (
     SqlJoin,
     SqlLiteral,
     SqlSelect,
+    SqlSetQuery,
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
@@ -258,6 +259,8 @@ def _hit(table: SqlTableRef, condition: SqlBinary) -> SqlExists:
     )
 
 
+_LEAF_UNUSED = SqlCte("leaf", SqlSelect(select=[SqlField(SqlLiteral(1), "unused")]))
+
 # Each case: a query whose answer columns are named "amount" (or "store_id") and the SQL it
 # renders. A column read through a warehouse table is never quoted for it; one read through a
 # CTE in view, or an alias the statement (or an enclosing one) gives a CTE, is.
@@ -376,6 +379,21 @@ FROM leaf
 WHERE
   leaf."store_id" = base.store_id
 )""",
+    ),
+    # The statement's own FROM binds `leaf` to the warehouse table, whatever CTE shares the name.
+    "a_table_aliased_like_a_cte": (
+        SqlSelect(
+            ctes=[_LEAF_UNUSED],
+            select=[SqlField(_ref("leaf", "region"), "region")],
+            from_table=SqlTableRef("orders", alias="leaf"),
+        ),
+        """WITH leaf AS (
+SELECT
+  1 AS unused
+)
+SELECT
+  leaf.region AS "region"
+FROM orders AS leaf""",
     ),
 }
 
@@ -550,3 +568,62 @@ def test_a_cte_is_found_in_another_case_where_names_fold(warehouse: str, referen
     )
     sql = render_select_for_profile(query, dialect=_dialect(warehouse))
     assert f"  {reference} AS " in sql
+
+
+@pytest.mark.parametrize("warehouse", sorted(DIALECT_FORMS))
+@pytest.mark.parametrize("column", ["REGION", "region"])
+def test_a_table_alias_in_another_case_than_a_cte_reads_the_table(
+    warehouse: str, column: str
+) -> None:
+    """`FROM orders AS LEAF` binds LEAF to the table, though unquoted LEAF also names leaf."""
+    query = SqlSelect(
+        ctes=[_LEAF_UNUSED],
+        select=[SqlField(_ref("LEAF", column), column)],
+        from_table=SqlTableRef("orders", alias="LEAF"),
+    )
+    sql = render_select_for_profile(query, dialect=_dialect(warehouse))
+    assert f'\n  LEAF.{column} AS "{column}"\n' in sql
+
+
+def test_a_with_reaches_every_branch_of_its_set_query() -> None:
+    """A WITH on a set query's first SELECT is in view in every branch, unhoisted too."""
+    leaf = SqlCte(
+        "leaf",
+        SqlSelect(select=[SqlField(SqlLiteral(1), "REGION"), SqlField(SqlLiteral(2), "region")]),
+    )
+    branches = [
+        SqlSelect(
+            ctes=[leaf],
+            select=[SqlField(_ref("a", "REGION"), "REGION")],
+            from_table=SqlTableRef("leaf", alias="a"),
+        ),
+        SqlSelect(
+            select=[SqlField(_ref("b", "REGION"), "REGION")],
+            from_table=SqlTableRef("leaf", alias="b"),
+        ),
+    ]
+    query = SqlSelect(
+        ctes=[SqlCte("u", SqlSetQuery("UNION ALL", branches))],
+        select=[SqlField(_ref("u", "REGION"), "REGION")],
+        from_table=SqlTableRef("u"),
+    )
+    branch_sql = """SELECT
+  a."REGION" AS "REGION"
+FROM leaf AS a
+UNION ALL
+SELECT
+  b."REGION" AS "REGION"
+FROM leaf AS b
+)
+SELECT
+  u."REGION" AS "REGION"
+FROM u"""
+    leaf_sql = """leaf AS (
+SELECT
+  1 AS "REGION",
+  2 AS region
+)"""
+    assert (
+        render_select_for_profile(query, "debug") == f"WITH u AS (\nWITH {leaf_sql}\n{branch_sql}"
+    )
+    assert render_select_for_profile(query) == f"WITH {leaf_sql},\nu AS (\n{branch_sql}"
