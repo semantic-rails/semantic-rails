@@ -87,7 +87,6 @@ from .config_parts.row_values import _normalize_meta as _normalize_meta
 from .config_parts.row_values import _optional_int as _optional_int
 from .config_parts.row_values import _slug as _slug
 from .config_parts.row_values import _titleize as _titleize
-from .config_parts.row_values import _unique_aliases as _unique_aliases
 from .config_parts.temporal_rows import _TIME_GRAIN_ORDER as _TIME_GRAIN_ORDER
 from .config_parts.temporal_rows import _coarser_time_grains as _coarser_time_grains
 from .config_parts.temporal_rows import (

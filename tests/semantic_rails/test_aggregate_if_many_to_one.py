@@ -105,17 +105,17 @@ graph:
     order_line: {label: Order line, key: [line_id], model: order_lines}
     receipt: {label: Receipt, key: [row_id], model: receipts}
   relationships:
-    post_owner: {id: relationship.post_owner, entities: [post, user], cardinality: many_to_one,
+    post_owner: {as: relationship.post_owner, entities: [post, user], cardinality: many_to_one,
       via: [owner_user_id], target: [user_id]}
-    post_editor: {id: relationship.post_editor, entities: [post, user],
+    post_editor: {as: relationship.post_editor, entities: [post, user],
       cardinality: many_to_one, via: [editor_user_id], target: [user_id]}
-    post_topic: {id: relationship.post_topic, entities: [post, topic],
+    post_topic: {as: relationship.post_topic, entities: [post, topic],
       cardinality: many_to_many, via: [topic_code], target: [topic_code]}
-    consumption_segment_history: {id: relationship.consumption_segment_history,
+    consumption_segment_history: {as: relationship.consumption_segment_history,
       entities: [consumption, segment_history], cardinality: many_to_one, via: [customer_id],
       target: [customer_id], temporal_validity: {valid_from: segment_history.valid_from,
         valid_to: segment_history.valid_to}}
-    consumption_receipt: {id: relationship.consumption_receipt,
+    consumption_receipt: {as: relationship.consumption_receipt,
       entities: [consumption, receipt], cardinality: one_to_one, via: [row_id], target: [row_id]}
 """
 

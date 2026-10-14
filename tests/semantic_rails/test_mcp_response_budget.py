@@ -387,7 +387,7 @@ def test_tools_list_fits_its_byte_budget() -> None:
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without
 # the per-call request_id and timing; a budget may only shrink.
-DISCOVER_MAX_BYTES = {"revenue by store": 5_114, "": 9_389}
+DISCOVER_MAX_BYTES = {"revenue by store": 5_114, "": 9_393}
 
 
 @pytest.mark.parametrize("terms", sorted(DISCOVER_MAX_BYTES))

@@ -19,8 +19,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 1.855,
-      "compile_ms": 1.52,
+      "cache_lookup_ms": 0.975,
+      "compile_ms": 0.66,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -50,7 +50,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -109,7 +110,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [],
@@ -190,7 +192,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -284,7 +287,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
@@ -317,7 +321,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -344,7 +349,8 @@
             "last_value": 0,
             "start": null,
             "temporal_role": "temporal_role.jaffle_order_time",
-            "this": ""
+            "this": "",
+            "to_now": false
           }
         },
         {
@@ -477,7 +483,8 @@
               "last_value": 0,
               "start": null,
               "temporal_role": "temporal_role.jaffle_order_time",
-              "this": ""
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -766,6 +773,7 @@
                           {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": "month"
                               },
                               {
@@ -803,6 +811,7 @@
                             "expression": {
                               "args": [
                                 {
+                                  "temporal": false,
                                   "value": "month"
                                 },
                                 {
@@ -899,6 +908,7 @@
                                     },
                                     "op": ">",
                                     "right": {
+                                      "temporal": false,
                                       "value": 0
                                     }
                                   },
@@ -911,6 +921,7 @@
                                         ]
                                       },
                                       {
+                                        "temporal": false,
                                         "value": 0
                                       }
                                     ],
@@ -1016,6 +1027,7 @@
                       },
                       "op": ">",
                       "right": {
+                        "temporal": false,
                         "value": 10
                       }
                     }
@@ -1032,6 +1044,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "day"
                   },
                   {
@@ -1073,6 +1086,7 @@
                     "left": {
                       "args": [
                         {
+                          "temporal": false,
                           "value": "month"
                         },
                         {
@@ -1113,6 +1127,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "day"
                     },
                     {
@@ -1200,6 +1215,7 @@
                         },
                         "op": ">",
                         "right": {
+                          "temporal": false,
                           "value": 0
                         }
                       },
@@ -1212,6 +1228,7 @@
                             ]
                           },
                           {
+                            "temporal": false,
                             "value": 0
                           }
                         ],
@@ -1328,7 +1345,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [],
@@ -1409,7 +1427,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -1503,7 +1522,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
@@ -1564,7 +1584,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
@@ -1591,8 +1612,8 @@
       "conflicts_with": [
         {
           "relationship_path": [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_customer"
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer"
           ],
           "rows": [
             {
@@ -1607,8 +1628,8 @@
         },
         {
           "relationship_path": [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer"
+            "relationship.order_lifecycle_order",
+            "relationship.order_lifecycle_customer"
           ],
           "rows": [
             {
@@ -1639,8 +1660,25 @@
         },
         {
           "relationship_path": [
+            "relationship.jaffle_order_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
+            "relationship.order_lifecycle_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
             "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_to_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
             "relationship.customer_history_customer"
           ],
           "rows": [
@@ -1656,23 +1694,6 @@
         },
         {
           "relationship_path": [
-            "relationship.order_to_customer_history",
-            "relationship.order_lifecycle_to_customer_history",
-            "relationship.order_lifecycle_customer"
-          ],
-          "rows": [
-            {
-              "relationship_path": [
-                "relationship.order_items_order",
-                "relationship.orders_customer"
-              ],
-              "source_entity": "entity.jaffle_item",
-              "target_entity": "entity.jaffle_customer"
-            }
-          ]
-        },
-        {
-          "relationship_path": [
             "relationship.orders_store",
             "relationship.order_lifecycle_store",
             "relationship.order_lifecycle_customer"
@@ -1727,7 +1748,7 @@
           "relationship_path": [
             "relationship.orders_store",
             "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_to_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
             "relationship.customer_history_customer"
           ],
           "rows": [
@@ -1769,7 +1790,7 @@
   ],
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 12.13,
+  "timing_ms": 5.904,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1809,6 +1830,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-11T20:14:30.568680Z"
+    "now": "2026-10-14T20:11:47.494550Z"
   }
 }

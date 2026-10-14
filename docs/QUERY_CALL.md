@@ -779,7 +779,7 @@ option's route in `routes`.
  "group_by": ["dimension.jaffle_customer_history_segment"],
  "time": {"grain": "year"},
  "routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
-             "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]}]}
+             "via": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"]}]}
 ```
 
 ```jsonc
@@ -787,10 +787,10 @@ option's route in `routes`.
           {"dimension.jaffle_customer_history_segment": null, "period": "2016-01-01", "period_partial": false, "customer_count": 273},
           {"dimension.jaffle_customer_history_segment": null, "period": "2017-01-01", "period_partial": true, "customer_count": 662}],
  "routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
-             "via": ["relationship.orders_customer", "relationship.order_to_customer_history"],
+             "via": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"],
              "other_routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
                                "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order",
-                                       "relationship.order_to_customer_history"]}]},
+                                       "relationship.jaffle_order_customer_history"]}]},
             {"from": "entity.jaffle_order", "to": "entity.jaffle_customer", "via": ["relationship.orders_customer"]}]}
 ```
 

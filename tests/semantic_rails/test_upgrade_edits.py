@@ -40,6 +40,12 @@ YAML_FILES = sorted(
         ),
         ("a: old\nb: 2\n", Edit("", "rename", ("a",), key="no"), {"no": "old", "b": 2}, False),
         (
+            "a: old # kept\nb: 2\n",
+            Edit("", "replace", ("a",), value=["old"]),
+            {"a": ["old"], "b": 2},
+            False,
+        ),
+        (
             "# above\na: old # remove\n# below\nb: 2 # after\n",
             Edit("", "delete", ("a",)),
             {"b": 2},

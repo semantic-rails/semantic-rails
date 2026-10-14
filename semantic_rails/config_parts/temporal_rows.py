@@ -29,9 +29,9 @@ def _parse_validity_windows(value: Any) -> list[MeasureValidityWindow]:
             continue
         out.append(
             MeasureValidityWindow(
-                from_=str(row.get("from", row.get("from_", "")) or ""),
+                from_=str(row.get("from", "") or ""),
                 to=str(row.get("to", "") or ""),
-                semantics=str(row.get("semantics", row.get("label", "")) or ""),
+                semantics=str(row.get("semantics", "") or ""),
             )
         )
     return out
@@ -46,9 +46,9 @@ def _parse_external_discontinuities(value: Any) -> list[MeasureExternalDiscontin
         magnitude = row.get("magnitude_estimate_pct")
         out.append(
             MeasureExternalDiscontinuity(
-                from_=str(row.get("from", row.get("from_", "")) or ""),
+                from_=str(row.get("from", "") or ""),
                 to=str(row.get("to", "") or ""),
-                what=str(row.get("what", row.get("label", "")) or ""),
+                what=str(row.get("what", "") or ""),
                 magnitude_estimate_pct=float(magnitude)
                 if magnitude is not None and magnitude != ""
                 else None,

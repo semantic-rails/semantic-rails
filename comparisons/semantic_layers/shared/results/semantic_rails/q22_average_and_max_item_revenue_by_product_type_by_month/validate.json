@@ -4,13 +4,15 @@
       "aggregation": "avg",
       "code": "AGGREGATION_OVERRIDE",
       "default": "sum",
-      "measure": "measure.jaffle.item_revenue_usd"
+      "measure": "measure.jaffle.item_revenue_usd",
+      "message": "measure.jaffle.item_revenue_usd is read as avg, not its default sum."
     },
     {
       "aggregation": "max",
       "code": "AGGREGATION_OVERRIDE",
       "default": "sum",
-      "measure": "measure.jaffle.item_revenue_usd"
+      "measure": "measure.jaffle.item_revenue_usd",
+      "message": "measure.jaffle.item_revenue_usd is read as max, not its default sum."
     }
   ],
   "clock": "temporal_role.jaffle_order_time",
@@ -46,8 +48,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.95,
-      "compile_ms": 0.479,
+      "cache_lookup_ms": 0.893,
+      "compile_ms": 0.49,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -133,7 +135,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -241,7 +244,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [
@@ -461,7 +465,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -574,7 +579,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
@@ -620,7 +626,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -647,7 +654,8 @@
             "last_value": 0,
             "start": null,
             "temporal_role": "temporal_role.jaffle_order_time",
-            "this": ""
+            "this": "",
+            "to_now": false
           }
         }
       ],
@@ -818,7 +826,8 @@
               "last_value": 0,
               "start": null,
               "temporal_role": "temporal_role.jaffle_order_time",
-              "this": ""
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -1081,6 +1090,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -1141,6 +1151,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -1170,6 +1181,7 @@
                       },
                       "op": "/",
                       "right": {
+                        "temporal": false,
                         "value": 100.0
                       }
                     }
@@ -1183,6 +1195,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": 1
                     }
                   ],
@@ -1203,6 +1216,7 @@
                       },
                       "op": "/",
                       "right": {
+                        "temporal": false,
                         "value": 100.0
                       }
                     }
@@ -1216,6 +1230,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": 1
                     }
                   ],
@@ -1414,7 +1429,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [
@@ -1634,7 +1650,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -1747,7 +1764,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
@@ -1839,7 +1857,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
@@ -1877,7 +1896,7 @@
   },
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 5.074,
+  "timing_ms": 4.682,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1919,6 +1938,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-11T20:14:31.758258Z"
+    "now": "2026-10-14T20:11:47.892280Z"
   }
 }

@@ -96,6 +96,11 @@ _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
 )
 _UPGRADE = "(`semantic-rails project upgrade` rewrites it)"
 _AS = f"the key derives the id; write `as:` only to keep a public id {_UPGRADE}"
+_BIND = (
+    "bind the model with `graph.entities.<x>.model` and list its entities under `entities:` "
+    + _UPGRADE
+)
+_ON_MODEL = "declare it on the entity's model"
 _ONE_KIND = "write each step as one key naming its kind, such as `{where: [...]}`"
 # Each key a relation step's lowering reads has one spelling: a retired one, by block (a step
 # kind or a mapping nested in one), names the key the lowering reads.
@@ -128,8 +133,24 @@ _REPLACED_KEYS: dict[tuple[str, str], str] = {
     ("document", "aggregate_relations"): "declare rollups under the model's `variants:`",
     ("package", "schema_strict"): f"strict is the only profile; delete this line {_UPGRADE}",
     ("entity", "id"): _AS,
+    ("relationship", "id"): _AS,
     ("dimension", "id"): _AS,
+    ("time", "id"): _AS,
     ("measure", "id"): _AS,
+    ("metric", "id"): _AS,
+    ("segment", "id"): _AS,
+    ("model", "keys"): _BIND,
+    ("model", "entity"): _BIND,
+    ("entity", "freshness_source"): _ON_MODEL,
+    ("entity", "freshness_sla_seconds"): _ON_MODEL,
+    ("entity", "freshness_as_of"): _ON_MODEL,
+    ("measure", "time"): f"name the measure's clocks with `times: [<role>]` {_UPGRADE}",
+    ("measure", "aggregation"): "the loader never read it; write the default as `default_agg:`",
+    ("dimension", "valid_values"): "list the values under `domain:`",
+    ("validity_window", "from_"): "write `from:`",
+    ("validity_window", "label"): "write `semantics:`",
+    ("discontinuity", "from_"): "write `from:`",
+    ("discontinuity", "label"): "write `what:`",
     ("model", "grain"): "the entity's key keys the model's rows; key finer rows as their "
     f"own entity, related to it {_UPGRADE}",
     ("model", "joins"): f"write each join as a `graph.relationships` row {_UPGRADE}",
@@ -204,7 +225,6 @@ _JOIN_KEYS: frozenset[str] = frozenset(
 )
 # What the loader reads from a `graph.relationships` entry when it projects it onto a join.
 _GRAPH_RELATIONSHIP_KEYS: frozenset[str] = frozenset(_RELATIONSHIP_PASSTHROUGH) | {
-    "id",
     "as",
     "entities",
     "cardinality",
@@ -282,11 +302,7 @@ _GRAPH_ENTITY_KEYS: frozenset[str] = frozenset(
         "synonyms",
         "display",
         "description",
-        "topics",
         "allowed_as_root",
-        "freshness_source",
-        "freshness_sla_seconds",
-        "freshness_as_of",
         "disallowed_names",
     }
 )
@@ -299,14 +315,11 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "description",
         "kind",
         "relation",
-        "keys",
-        "entity",
         "entities",
         "times",
         "dimensions",
         "measures",
         "meta",
-        "topics",
         "operational_defaults",
         "calendar_id",
         "freshness_source",
@@ -345,6 +358,9 @@ _MODEL_VARIANT_EQUIVALENCE_KEYS: frozenset[str] = frozenset({"kind"})
 _MEASURE_BINDING_KEYS: frozenset[str] = frozenset({"column", "rollup", "aggregation", "holds"})
 _DIMENSION_BINDING_KEYS: frozenset[str] = frozenset({"column", "path"})
 _MODEL_ENTITY_REF_KEYS: frozenset[str] = frozenset({"expr", "label"})
+# The rows of a measure's `validity_windows` and `external_discontinuities` lists.
+_VALIDITY_WINDOW_KEYS: frozenset[str] = frozenset({"from", "to", "semantics"})
+_DISCONTINUITY_KEYS: frozenset[str] = frozenset({"from", "to", "what", "magnitude_estimate_pct"})
 _DIMENSION_KEYS: frozenset[str] = frozenset(
     {
         "as",
@@ -353,7 +369,6 @@ _DIMENSION_KEYS: frozenset[str] = frozenset(
         "kind",
         "column",
         "domain",
-        "valid_values",
         "value_domain_id",
         "synonyms",
         "description",
@@ -365,7 +380,6 @@ _DIMENSION_KEYS: frozenset[str] = frozenset(
 )
 _TIME_KEYS: frozenset[str] = frozenset(
     {
-        "id",
         "as",
         "dimension_id",
         "name",
@@ -374,7 +388,6 @@ _TIME_KEYS: frozenset[str] = frozenset(
         "kind",
         "class",
         "description",
-        "topics",
         "sample_values_strategy",
         "filterable",
         "groupable",
@@ -391,7 +404,6 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
         "label",
         "kind",
         "expr",
-        "aggregation",
         "default_agg",
         "disallowed_aggregations",
         "suggested_aggregations",
@@ -399,7 +411,6 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
         "additive",
         "entity_key",
         "times",
-        "time",
         "examples",
         "default_temporal_role",
         "operational",
@@ -421,7 +432,6 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
 )
 _METRIC_KEYS: frozenset[str] = frozenset(
     {
-        "id",
         "as",
         "name",
         "label",
@@ -453,7 +463,6 @@ _METRIC_KEYS: frozenset[str] = frozenset(
 )
 _SEGMENT_KEYS: frozenset[str] = frozenset(
     {
-        "id",
         "as",
         "name",
         "label",
@@ -559,7 +568,6 @@ def _key_columns(model_id: str, model: dict[str, Any], graph_entities: dict[str,
     entities = model.get("entities")
     names = {
         *(str(name) for name in (entities if isinstance(entities, dict) else ())),
-        str(model.get("entity", "") or ""),
         *(
             str(name)
             for name, entity in graph_entities.items()
@@ -578,12 +586,6 @@ def _key_columns(model_id: str, model: dict[str, Any], graph_entities: dict[str,
         entity = graph_entities.get(name)
         if isinstance(entity, dict):
             columns.update(_column_list(entity.get("key")))
-    keys = model.get("keys")
-    if isinstance(keys, dict):
-        columns.update(_column_list(keys.get("primary")))
-        foreign = keys.get("foreign")
-        for spec in foreign.values() if isinstance(foreign, dict) else ():
-            columns.update(_column_list(spec))
     return columns
 
 
@@ -591,9 +593,9 @@ def _binding_names(
     model_id: str, model: dict[str, Any], graph_entities: dict[str, Any], namespace: str
 ) -> tuple[set[str], set[str]]:
     """The measure and dimension names a rollup ``columns:`` entry can bind, as the loader reads
-    them: a row by its key or by the one id the loader gives it — ``as:`` when set, else ``id:``,
-    else (a measure) the id the namespace gives it — and a key or foreign-key column the loader
-    turns into a key dimension. An ``id:`` that ``as:`` replaces names nothing."""
+    them: a row by its key or by the one id the loader gives it — ``as:`` when set, else (a
+    measure) the id the namespace gives it — and a key or foreign-key column the loader turns
+    into a key dimension."""
     found = []
     for block in ("measures", "dimensions"):
         rows = model.get(block)
@@ -601,9 +603,8 @@ def _binding_names(
         names = {*map(str, rows)}
         for key, row in rows.items():
             spec = row if isinstance(row, dict) else {}
-            resolved = next(
-                (text for field in ("as", "id") if (text := str(spec.get(field) or "").strip())),
-                f"measure.{namespace}.{slug(str(key))}" if block == "measures" else "",
+            resolved = str(spec.get("as") or "").strip() or (
+                f"measure.{namespace}.{slug(str(key))}" if block == "measures" else ""
             )
             if resolved:
                 names.add(resolved)
@@ -665,18 +666,6 @@ def _check_model_shape(
     _unknown_key_errors(model, _MODEL_KEYS, label=label, errors=errors, block="model")
     if "one_per_key" in model and not isinstance(model["one_per_key"], bool):
         add_error(errors, f"{label} one_per_key must be true or false")
-    keys: dict[str, Any] = model["keys"] if isinstance(model.get("keys"), dict) else {}
-    for problem, current in (
-        ("entity" in model and "entities" not in model, "a singular 'entity:'"),
-        ("foreign" in keys, "'keys.foreign:'"),
-        ("entities" in model and "primary" in keys, "'keys.primary:' beside 'entities:'"),
-    ):
-        if problem:
-            add_error(
-                errors,
-                f"{label} authors {current}; list the model's entities under 'entities:' "
-                f"{_UPGRADE}",
-            )
 
     entities_block = model.get("entities")
     if isinstance(entities_block, dict):
@@ -698,9 +687,8 @@ def _check_model_shape(
         _unknown_key_errors(
             dim_raw, _DIMENSION_KEYS, label=dim_label, errors=errors, block="dimension"
         )
-        for field in ("domain", "valid_values"):
-            if field in dim_raw:
-                _expect_value_list(dim_raw.get(field), label=f"{dim_label} {field}", errors=errors)
+        if "domain" in dim_raw:
+            _expect_value_list(dim_raw.get("domain"), label=f"{dim_label} domain", errors=errors)
         if "unknown_values" in dim_raw:
             _check_unknown_values(dim_raw["unknown_values"], label=dim_label, errors=errors)
 
@@ -708,7 +696,7 @@ def _check_model_shape(
         if not isinstance(time_raw, dict):
             continue
         time_label = f"{label} times entry '{time_key}'"
-        _unknown_key_errors(time_raw, _TIME_KEYS, label=time_label, errors=errors)
+        _unknown_key_errors(time_raw, _TIME_KEYS, label=time_label, errors=errors, block="time")
         if "supported_grains" in time_raw:
             _expect_value_list(
                 time_raw.get("supported_grains"),
@@ -736,6 +724,8 @@ def _check_model_shape(
                 'as text ("amount", "price * quantity", "1") or an expression object '
                 "({kind: literal, value: 1})",
             )
+        _check_measure_rows(measure_raw, label=measure_label, errors=errors)
+
         kind_value = str(measure_raw.get("kind", "") or "").strip().lower()
         if not kind_value:
             add_error(
@@ -882,7 +872,7 @@ def _check_metric_shape(
     metric_key: str, spec: dict[str, Any], *, path_label: str, errors: list[str]
 ) -> None:
     label = f"{path_label}: metric '{metric_key}'"
-    _unknown_key_errors(spec, _METRIC_KEYS, label=label, errors=errors)
+    _unknown_key_errors(spec, _METRIC_KEYS, label=label, errors=errors, block="metric")
     kind = str(spec.get("kind", "") or "").strip().lower()
     if kind and kind not in _VALID_METRIC_KINDS:
         add_error(
@@ -981,6 +971,21 @@ def _check_accumulation(
         )
 
 
+def _check_measure_rows(spec: dict[str, Any], *, label: str, errors: list[str]) -> None:
+    """Unknown keys in a measure's ``validity_windows`` and ``external_discontinuities`` rows
+    (a list, or one row)."""
+    for field, allowed, block in (
+        ("validity_windows", _VALIDITY_WINDOW_KEYS, "validity_window"),
+        ("external_discontinuities", _DISCONTINUITY_KEYS, "discontinuity"),
+    ):
+        rows = spec.get(field)
+        for index, row in enumerate(rows if isinstance(rows, list) else [rows]):
+            if isinstance(row, dict):
+                _unknown_key_errors(
+                    row, allowed, label=f"{label} {field}[{index}]", errors=errors, block=block
+                )
+
+
 def _check_publish(spec: dict[str, Any], *, label: str, errors: list[str]) -> None:
     """``publish: false`` marks a building-block measure; a measure publishes no metric itself."""
     if "publish" in spec and not isinstance(spec["publish"], bool):
@@ -998,7 +1003,7 @@ def _check_segment_shape(
     for key in sorted(membership_spellings & set(spec)):
         add_error(errors, f"{label} has {key!r} outside membership: — {_membership_fix(key)}")
     top_level = {key: value for key, value in spec.items() if key not in membership_spellings}
-    _unknown_key_errors(top_level, _SEGMENT_KEYS, label=label, errors=errors)
+    _unknown_key_errors(top_level, _SEGMENT_KEYS, label=label, errors=errors, block="segment")
     membership = spec.get("membership")
     if not isinstance(membership, dict):
         return
@@ -1144,6 +1149,7 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
         measure = defaults.get("measure")
         if isinstance(measure, dict):
             _check_publish(measure, label=f"{label}.measure", errors=errors)
+            _check_measure_rows(measure, label=f"{label}.measure", errors=errors)
             _check_accumulation(
                 measure.get("accumulation"), label=f"{label}.measure", errors=errors
             )
@@ -1197,7 +1203,9 @@ def _check_package_shapes(raw: dict[str, Any], *, path_label: str, errors: list[
         for name, row in relationships.items() if isinstance(relationships, dict) else ():
             if isinstance(row, dict):
                 label = f"{path_label}: graph relationship '{name}'"
-                _unknown_key_errors(row, _GRAPH_RELATIONSHIP_KEYS, label=label, errors=errors)
+                _unknown_key_errors(
+                    row, _GRAPH_RELATIONSHIP_KEYS, label=label, errors=errors, block="relationship"
+                )
                 if isinstance(row.get("rollup_safe"), dict):
                     _unknown_key_errors(
                         row["rollup_safe"],

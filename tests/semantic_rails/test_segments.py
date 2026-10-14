@@ -101,7 +101,7 @@ def test_normalize_segment_rejects_preview_dimensions_on_other_entities(package_
             {
                 "segments": {
                     "invalid_customer_segment": {
-                        "id": "segment.jaffle.invalid_customer_segment",
+                        "as": "segment.jaffle.invalid_customer_segment",
                         "name": "jaffle.Customer.invalid_customer_segment",
                         "label": "Invalid customer segment",
                         "entity": "entity.jaffle_customer",

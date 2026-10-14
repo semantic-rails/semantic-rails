@@ -31,7 +31,7 @@ model:
       accumulation:
         kind: event
       value_type: count
-      time: temporal_role.jaffle_order_time
+      times: [temporal_role.jaffle_order_time]
       meta:
         owner_team: merchandising_analytics
         review_priority: high
@@ -45,7 +45,7 @@ model:
         kind: flow
       value_type: currency
       currency: USD
-      time: temporal_role.jaffle_order_time
+      times: [temporal_role.jaffle_order_time]
       meta:
         owner_team: merchandising_analytics
         review_priority: high
@@ -59,7 +59,7 @@ model:
         kind: flow
       value_type: currency
       currency: USD
-      time: temporal_role.jaffle_order_time
+      times: [temporal_role.jaffle_order_time]
       meta:
         owner_team: merchandising_analytics
         review_priority: medium
@@ -73,7 +73,7 @@ model:
         kind: flow
       value_type: currency
       currency: USD
-      time: temporal_role.jaffle_order_time
+      times: [temporal_role.jaffle_order_time]
       meta:
         owner_team: merchandising_analytics
         review_priority: high

@@ -70,7 +70,6 @@ from .row_values import (
     _optional_int,
     _slug,
     _titleize,
-    _unique_aliases,
 )
 from .temporal_rows import (
     _coarser_time_grains,
@@ -197,18 +196,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 name=entity_name,
                 label=entity_label,
                 description=str(entity_spec.get("description", entity_label)),
-                topics=_ensure_list(entity_spec.get("topics")),
                 calendar_id=str(model.get("calendar_id", "")),
                 allowed_as_root=bool(entity_spec.get("allowed_as_root", True)),
-                freshness_source=str(
-                    model.get("freshness_source", entity_spec.get("freshness_source", ""))
-                ),
-                freshness_sla_seconds=_optional_int(
-                    model.get("freshness_sla_seconds", entity_spec.get("freshness_sla_seconds"))
-                ),
-                freshness_as_of=str(
-                    model.get("freshness_as_of", entity_spec.get("freshness_as_of", "")) or ""
-                ),
+                freshness_source=str(model.get("freshness_source", "")),
+                freshness_sla_seconds=_optional_int(model.get("freshness_sla_seconds")),
+                freshness_as_of=str(model.get("freshness_as_of", "") or ""),
                 disallowed_names=[
                     str(item).strip()
                     for item in _ensure_list(entity_spec.get("disallowed_names"))
@@ -252,7 +244,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         model_meta = _normalize_meta(model.get("meta"), f"{path}: model '{model_id}'")
         entity_id = model_to_entity[model_id]
         entity_cfg = next(row for row in entities if row.id == entity_id)
-        model_topics = _ensure_list(model.get("topics"))
         model_operational_defaults = normalize_operational_payload(
             model.get("operational_defaults"),
             contract=operational_contract,
@@ -276,7 +267,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             name = str(dim_spec.get("name", f"{entity_cfg.name}.{dim_key}"))
             # Read in any case and spacing, as authoring validation reads it.
             kind = str(dim_spec.get("kind") or "categorical").strip().lower()
-            domain_values = list(dim_spec.get("domain", dim_spec.get("valid_values", [])) or [])
+            domain_values = list(dim_spec.get("domain") or [])
             value_domain_id = ""
             if domain_values:
                 value_domain_id = str(
@@ -326,7 +317,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     label=label,
                     description=str(dim_spec.get("description", label)),
                     semantic_kind=kind,
-                    topics=_unique_aliases(model_topics, _ensure_list(dim_spec.get("topics"))),
                     sample_values_strategy=str(dim_spec.get("sample_values_strategy", "")),
                     filterable=bool(dim_spec.get("filterable", True)),
                     groupable=bool(dim_spec.get("groupable", True)),
@@ -356,7 +346,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         label=label,
                         description=str(time_spec.get("description", label)),
                         semantic_kind=str(time_spec.get("kind", "timestamp")),
-                        topics=_unique_aliases(model_topics, _ensure_list(time_spec.get("topics"))),
                         sample_values_strategy=str(time_spec.get("sample_values_strategy", "")),
                         filterable=bool(time_spec.get("filterable", True)),
                         groupable=bool(time_spec.get("groupable", True)),
@@ -436,12 +425,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     f"{path}: measure '{measure_key}' has default_agg '{default_aggregation}' which is not in allowed_aggregations {allowed_aggregations}",
                 )
             kind = str(measure_spec.get("kind", "")).strip().lower()
-            authoring_warnings: list[str] = []
-            raw_aggregation = str(raw_measure_spec.get("aggregation", "") or "").strip().lower()
-            if raw_aggregation == "count_distinct" and kind != "entity_count":
-                authoring_warnings.append(
-                    f"measure '{measure_id}' declares aggregation: count_distinct, but measure-level aggregation is ignored for kind '{kind or 'additive'}'; use kind: entity_count with entity_key for count-distinct measures"
-                )
             entity_key = _ensure_list(measure_spec.get("entity_key") or row_grain)
             if kind == "entity_count":
                 expr_raw = measure_spec.get("expr")
@@ -467,18 +450,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         f"{path}: measure '{measure_key}' (kind '{kind}') is missing expr",
                     )
             temporal_refs = _ensure_list(
-                measure_spec.get("times")
-                or measure_spec.get("time")
-                or ([default_time] if default_time else [])
+                measure_spec.get("times") or ([default_time] if default_time else [])
             )
             compatible_temporal_roles = [
                 temporal_lookup[(model_id, ref)] if (model_id, ref) in temporal_lookup else str(ref)
                 for ref in temporal_refs
             ]
             _, structured_example_entries = _normalize_examples(measure_spec.get("examples"))
-            measure_topics = _unique_aliases(
-                model_topics, _ensure_list(measure_spec.get("topics"))
-            ) or _default_topics(measure_name, fallback=model_id)
+            measure_topics = _default_topics(measure_name, fallback=model_id)
             default_temporal_role = str(
                 measure_spec.get("default_temporal_role")
                 or (compatible_temporal_roles[0] if compatible_temporal_roles else "")
@@ -560,7 +539,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 cross_window_policy=str(
                     measure_spec.get("cross_window_policy", "caveat") or "caveat"
                 ),
-                authoring_warnings=authoring_warnings,
                 additive=additive,
                 lookup_from=str(measure_spec.get("from", "") or "").strip(),
                 lookup_via=str(measure_spec.get("via", "") or "").strip(),
@@ -941,8 +919,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             name=str(spec.get("name", metric_key)),
             label=str(spec.get("label", _titleize(metric_key))),
             description=str(spec.get("description", spec.get("label", ""))),
-            topics=_ensure_list(spec.get("topics"))
-            or _default_topics(str(spec.get("name", metric_key))),
+            topics=_default_topics(str(spec.get("name", metric_key))),
             comparison_family=str(spec.get("comparison_family", "")),
             comparison_mode=str(spec.get("comparison_mode", "")),
             preferred_companion_metrics=_ensure_list(spec.get("preferred_companion_metrics")),
@@ -1010,8 +987,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 name=str(spec.get("name", segment_id)),
                 label=str(spec.get("label", _titleize(segment_key))),
                 description=str(spec.get("description", spec.get("label", ""))),
-                topics=_ensure_list(spec.get("topics"))
-                or _default_topics(str(spec.get("name", segment_id)), fallback="segments"),
+                topics=_default_topics(str(spec.get("name", segment_id)), fallback="segments"),
             )
         )
 

@@ -103,7 +103,7 @@ order_items:
     is_hot: {label: Hot item, kind: boolean}
   measures:
     item_revenue: {label: Item revenue, kind: aggregate, expr: revenue,
-      accumulation: {kind: flow}, value_type: currency, time: temporal_role.hop_order_ordered_at}
+      accumulation: {kind: flow}, value_type: currency, times: [temporal_role.hop_order_ordered_at]}
 products:
   entities: {product: {}}
   dimensions: {category: {label: Category, kind: categorical}}
@@ -715,7 +715,7 @@ def diamond_package(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     }
     relationships = {
         name: {
-            "id": f"relationship.{name}",
+            "as": f"relationship.{name}",
             "entities": [source, target],
             "cardinality": "many_to_one",
             "via": [column],

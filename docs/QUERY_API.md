@@ -1270,11 +1270,11 @@ jaffle_shop:
         {
           "id": "order_customer_history",
           "meaning": "the Customer history valid at the time of any of the Customer's Orders",
-          "relationship_path": ["relationship.orders_customer", "relationship.order_to_customer_history"],
+          "relationship_path": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"],
           "decision": {
             "source_entity": "entity.jaffle_customer",
             "target_entity": "entity.jaffle_customer_history",
-            "relationship_path": ["relationship.orders_customer", "relationship.order_to_customer_history"],
+            "relationship_path": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"],
             "label": "the Customer history valid at the time of any of the Customer's Orders"
           },
           "query": {
@@ -1282,7 +1282,7 @@ jaffle_shop:
             "group_by": ["dimension.jaffle_customer_history_segment"],
             "time": {"grain": "year"},
             "routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
-                        "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]}]
+                        "via": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"]}]
           }
         }
       ]

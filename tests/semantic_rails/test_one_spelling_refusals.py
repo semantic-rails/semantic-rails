@@ -3,7 +3,6 @@ spec-file shapes each have one spelling; every retired spelling is refused at lo
 
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,7 @@ from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.config_parts.shape_checks import _RELATION_RENAMED_KEYS
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
-from semantic_rails.package_snapshot import json_fingerprint, load_package_snapshot
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.query_call import call_kinds
 from semantic_rails.relation_pipelines import lower_relation
 from semantic_rails.renderer import render_select
@@ -26,16 +25,16 @@ from tests.semantic_rails.conftest import copy_package_config, write_single_file
 
 # Semantic fingerprints of the bundled packages, which refusing the retired spellings leaves
 # unchanged (re-pinned only when the snapshot gains or loses a field, such as an entity's
-# `display`, or a package gains objects, such as the shop's stores and regional policy).
+# `display`, a package gains objects, or an authored relationship alias becomes its id).
 FINGERPRINTS = {
     "configs/semantic_rails/jaffle_shop": (
-        "sha256:df83907a288962a634b26af52a1e5f0b560a086ca0fa982f6281a00c50970be8"
+        "sha256:d2e983646137b0ed58feaad1cf98fd5c6264372484f3dffc17f987848763113d"
     ),
     "configs/semantic_rails/tpch_sf1_showcase": (
         "sha256:5c262ee4eac461c84d55e0d0dbff51e2cd15271cc3e31b44cb7fdd2aa2ab787c"
     ),
     "comparisons/semantic_layers/semantic_rails/package": (
-        "sha256:0c63cea0aa64dc870c51aac7ec1b2bd307e05d7c8d330b3cf1d6fe46915750ff"
+        "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599"
     ),
     "tests/integration/correctness/shop": (
         "sha256:d9134b081a83ae024d24c8fe1facecf351cc0a637ec41b920bc8f235f5ea746d"
@@ -48,11 +47,7 @@ FINGERPRINTS = {
 
 @pytest.mark.parametrize(("path", "fingerprint"), FINGERPRINTS.items())
 def test_bundled_packages_keep_their_semantics(path, fingerprint):
-    semantic = deepcopy(load_package_snapshot(resolve_repo_path(path)).semantic)
-    # Rollup exclusions are collected in a set, so their order varies between processes.
-    for row in semantic.get("aggregate_relations", []):
-        row["excluded_entities"] = sorted(row["excluded_entities"])
-    assert json_fingerprint(semantic) == fingerprint
+    assert load_package_snapshot(resolve_repo_path(path)).semantic_fingerprint == fingerprint
 
 
 COLUMN = {"kind": "column", "column": "channel"}
