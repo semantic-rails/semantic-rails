@@ -783,9 +783,15 @@ comparing the complete periods ("Compare complete months through June 2024: set 
 2024-07-01 (end-exclusive), then plan again"), keeping the rows from a dropped start
 (`why.details.requested_start`). Plan again with that window rather than only validating it:
 validation doesn't run plan's holds. That code takes the place of `TIME_WINDOW_START_DROPPED`,
-whose rows would still hold the incomplete period. A comparison bounded by a `where` filter on a
-date is held the same way, since plan can't read where its periods end. A window that has
-ended (`time.end` on a period boundary before `now`) keeps its answer.
+whose rows would still hold the incomplete period. The check reads every clock the draft buckets
+by, through metrics and `having`: clocks in different time zones hold it
+(`why.details.timezones`), since their periods end at different moments. A `where` upper bound
+(`lt`, `lte`) on a UTC clock's own date ends the window like `time.end`, so the earliest bound
+decides, and the option ends before any period the filter cuts; a bound on another date, or one
+plan can't line up with the clock's buckets, holds the draft with no option. A bound finer than a
+microsecond holds it too. A window that has ended (every bound on a period boundary no later
+than `now`) keeps its answer, and an option is offered only when the same check calls it
+complete.
 Questions longer than 2,000 characters are not partially parsed for time: unless the caller
 provides a complete window in `query.time` (both `start` and `end`, or `last`),
 they return `TIME_WINDOW_UNRESOLVED` with a request to shorten the question or supply those

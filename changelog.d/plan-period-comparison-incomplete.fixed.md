@@ -4,6 +4,10 @@
   expression, or a metric built on one, now returns `low_confidence` with
   `PERIOD_COMPARISON_INCOMPLETE`, which names the incomplete period and offers the
   complete periods (its option's call ends `time.end` on the last period end). A matched
-  package example's authored call, and the granted-metric plan, are held the same way. A
-  window that has ended stays as it was. The hint of `TIME_WINDOW_START_DROPPED` no longer
+  package example's authored call, and the granted-metric plan, are held the same way. The
+  check reads every clock the draft buckets by (clocks in different time zones hold it), every
+  bound that ends the window (a `where` upper bound on the clock's date counts like
+  `time.end`), and holds a bound finer than a microsecond; the option ends before any period a
+  filter cuts, and is offered only when it is complete. A window that has ended stays as it
+  was. The hint of `TIME_WINDOW_START_DROPPED` no longer
   asks to execute a comparison that returns an incomplete period.

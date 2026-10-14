@@ -11,13 +11,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import closing
-from types import SimpleNamespace
+from dataclasses import replace
 from typing import Any
 
 import pytest
 import yaml
 
-from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.period_completeness import compares_periods, incomplete_period_why
 from semantic_rails.planner import examples as examples_module
 from semantic_rails.planner import intent_holds
@@ -59,47 +58,17 @@ def _assert_held(payload: dict[str, Any]) -> dict[str, Any]:
     return payload["why"]["details"]
 
 
-def _metric(metric_id: str, expression: dict[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=metric_id, expression=parse_semantic_expression(expression, context="config")
-    )
-
-
-# A growth metric dividing by its prior month, one built on it, and one comparing nothing.
-_SUM = {"kind": "aggregate", "measure": "m", "aggregation": "sum"}
-_CONFIG = SimpleNamespace(
-    temporal_roles=[SimpleNamespace(id="role", timezone="UTC")],
-    dimensions=[SimpleNamespace(id="dimension.ordered_on", data_type="date")],
-    metric_recipes=[
-        _metric(
-            "metric.growth",
-            {
-                "kind": "arithmetic",
-                "op": "divide",
-                "left": _SUM,
-                "right": {
-                    "kind": "prior_period",
-                    "input": _SUM,
-                    "offset": {"unit": "month", "value": 1},
-                },
-            },
-        ),
-        _metric(
-            "metric.growth_pct",
-            {
-                "kind": "arithmetic",
-                "op": "multiply",
-                "left": {"kind": "metric", "metric": "metric.growth"},
-                "right": {"kind": "literal", "value": 100},
-            },
-        ),
-        _metric("metric.total", {"kind": "aggregate", "measure": "m"}),
-    ],
-)
-_COMPARING = [
-    {"expression": {"kind": "prior_period", "input": _SUM, "offset": {"unit": "day", "value": 1}}},
-    {"expression": {"kind": "metric", "metric": "metric.growth_pct"}},
-]
+def _comparing(grain: str) -> list[dict[str, Any]]:
+    """A prior_period select of its own, and the governed growth metric built on one."""
+    prior = {
+        "kind": "prior_period",
+        "input": {"kind": "measure", "measure": REVENUE},
+        "offset": {"unit": grain, "value": 1},
+    }
+    return [
+        {"expression": prior, "as": "before"},
+        {"expression": {"kind": "metric", "metric": METRIC}, "as": "growth"},
+    ]
 
 
 def _engine(select: dict[str, Any], time: dict[str, Any], now: Any, **extra: Any) -> dict:
@@ -127,11 +96,11 @@ def _engine(select: dict[str, Any], time: dict[str, Any], now: Any, **extra: Any
     ],
 )
 def test_a_period_is_complete_when_its_bucket_has_ended_by_now(
-    grain: str, end: str | None, now: str, complete_end: str | None
+    runtime: Runtime, grain: str, end: str | None, now: str, complete_end: str | None
 ) -> None:
-    time = {"temporal_role": "role", "grain": grain, **({"end": end} if end else {})}
-    for select in _COMPARING:
-        why = incomplete_period_why(_CONFIG, _engine(select, time, now))
+    time = {"temporal_role": ROLE, "grain": grain, **({"end": end} if end else {})}
+    for select in _comparing(grain):
+        why = incomplete_period_why(runtime.config, _engine(select, time, now))
         if complete_end is None:
             assert why is None
         else:
@@ -139,32 +108,39 @@ def test_a_period_is_complete_when_its_bucket_has_ended_by_now(
             assert why["details"]["complete_end"] == complete_end
 
 
-def test_the_clocks_zone_cuts_the_buckets() -> None:
+def test_the_clocks_zone_cuts_the_buckets(runtime: Runtime) -> None:
     """2024-07-01T02:00Z is still June 30 in New York, so June hasn't ended there."""
-    zoned = [SimpleNamespace(id="role", timezone="America/New_York")]
-    config = SimpleNamespace(**{**vars(_CONFIG), "temporal_roles": zoned})
-    time = {"temporal_role": "role", "grain": "month", "end": "2024-07-01"}
-    why = incomplete_period_why(config, _engine(_COMPARING[1], time, "2024-07-01T02:00:00Z"))
+    config = runtime.config
+    roles = [
+        replace(row, timezone="America/New_York", column_timezone="UTC") if row.id == ROLE else row
+        for row in config.temporal_roles
+    ]
+    zoned = replace(config, temporal_roles=roles)
+    time = {"temporal_role": ROLE, "grain": "month", "end": "2024-07-01"}
+    select = _comparing("month")[1]
+    why = incomplete_period_why(zoned, _engine(select, time, "2024-07-01T02:00:00Z"))
     assert why is not None and why["details"]["incomplete_period"]["start"] == "2024-06-01"
-    ended = _engine(_COMPARING[1], time, "2024-07-01T05:00:00Z")
-    assert incomplete_period_why(config, ended) is None
+    assert incomplete_period_why(zoned, _engine(select, time, "2024-07-01T05:00:00Z")) is None
 
 
 @pytest.mark.parametrize(
     "select",
     [
-        {"expression": {"kind": "measure", "measure": "m"}},
-        {"expression": {"kind": "metric", "metric": "metric.total"}},
+        {"expression": {"kind": "measure", "measure": REVENUE}, "as": "revenue"},
+        {"expression": {"kind": "metric", "metric": "metric.sales.aov_usd"}, "as": "aov"},
     ],
 )
-def test_a_draft_that_compares_nothing_is_not_checked(select: dict[str, Any]) -> None:
-    time = {"temporal_role": "role", "grain": "month"}
-    assert incomplete_period_why(_CONFIG, _engine(select, time, NOW)) is None
+def test_a_draft_that_compares_nothing_is_not_checked(
+    runtime: Runtime, select: dict[str, Any]
+) -> None:
+    time = {"temporal_role": ROLE, "grain": "month"}
+    assert incomplete_period_why(runtime.config, _engine(select, time, NOW)) is None
 
 
-def test_a_clock_that_cannot_be_read_holds_a_comparison() -> None:
-    time = {"temporal_role": "role", "grain": "month", "end": "2018-01-01"}
-    why = incomplete_period_why(_CONFIG, _engine(_COMPARING[1], time, "next tuesday"))
+def test_a_clock_that_cannot_be_read_holds_a_comparison(runtime: Runtime) -> None:
+    time = {"temporal_role": ROLE, "grain": "month", "end": "2018-01-01"}
+    engine = _engine(_comparing("month")[1], time, "next tuesday")
+    why = incomplete_period_why(runtime.config, engine)
     assert why is not None and why["code"] == HELD
     assert why["details"] == {"path": "now"}
 
@@ -173,26 +149,30 @@ def test_a_clock_that_cannot_be_read_holds_a_comparison() -> None:
     "query",
     [
         # Execution rejects each: a select that isn't a list, an unknown kind.
-        {"select": {"expression": {"kind": "measure", "measure": "m"}}},
-        {"select": [{"expression": {"kind": "prior_periods", "measure": "m"}}]},
+        {"select": {"expression": {"kind": "measure", "measure": REVENUE}}},
+        {"select": [{"expression": {"kind": "prior_periods", "measure": REVENUE}}]},
         # A metric whose definition can't be read.
         {"select": [{"expression": {"kind": "metric", "metric": "metric.unknown"}}]},
     ],
 )
-def test_a_draft_the_check_cannot_read_counts_as_a_comparison(query: dict[str, Any]) -> None:
-    assert compares_periods(_CONFIG, query)
-    why = incomplete_period_why(_CONFIG, {**query, "policy_context": {"now": NOW}})
+def test_a_draft_the_check_cannot_read_counts_as_a_comparison(
+    runtime: Runtime, query: dict[str, Any]
+) -> None:
+    assert compares_periods(runtime.config, query)
+    why = incomplete_period_why(runtime.config, {**query, "policy_context": {"now": NOW}})
     assert why is not None and why["code"] == HELD
 
 
-def test_a_dated_where_hold_never_asks_to_remove_the_filter() -> None:
-    time = {"temporal_role": "role", "grain": "month", "end": "2018-01-01"}
-    where = [{"field": "dimension.ordered_on", "op": "lt", "value": "2017-12-15"}]
-    why = incomplete_period_why(_CONFIG, _engine(_COMPARING[1], time, NOW, where=where))
-    assert why is not None and why["details"]["fields"] == ["dimension.ordered_on"]
+def test_a_dated_where_hold_never_asks_to_remove_the_filter(runtime: Runtime) -> None:
+    role = next(row for row in runtime.config.temporal_roles if row.id == ROLE)
+    time = {"temporal_role": ROLE, "grain": "month", "end": "2018-01-01"}
+    where = [{"field": role.dimension, "op": "lt", "value": "2017-12-15"}]
+    engine = _engine(_comparing("month")[1], time, NOW, where=where)
+    why = incomplete_period_why(runtime.config, engine)
+    assert why is not None and why["details"]["incomplete_period"]["start"] == "2017-12-01"
     (hint,) = why["recovery_hints"]
     assert hint["message"] == (
-        "Compare complete months through December 2017: set time.end to 2018-01-01 "
+        "Compare complete months through November 2017: set time.end to 2017-12-01 "
         "(end-exclusive), then plan again."
     )
 
