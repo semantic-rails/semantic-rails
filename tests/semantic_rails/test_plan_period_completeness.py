@@ -314,13 +314,19 @@ CREATE OR REPLACE TABLE shop_product AS SELECT 'product_1' AS product_id, 'bever
 """
 
 
-@pytest.fixture(scope="module")
-def growth(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
-    source = write_single_file_package(tmp_path_factory.mktemp("growth") / "growth")
-    (source.parent / "data" / "seed_example.sql").write_text(GROWTH_SEED.lstrip(), "utf-8")
+def _growth_package(
+    target: Any, *, seed: str = GROWTH_SEED, kind: str = "date", filter_all: Any = None
+) -> Runtime:
+    source = write_single_file_package(target / "growth")
+    (source.parent / "data" / "seed_example.sql").write_text(seed.lstrip(), "utf-8")
     doc = safe_load(source.read_bytes())
-    doc["models"]["orders"]["times"]["ordered_at"]["kind"] = "date"
-    revenue = {"kind": "aggregate", "measure": "measure.shop.revenue_usd", "aggregation": "sum"}
+    doc["models"]["orders"]["times"]["ordered_at"]["kind"] = kind
+    revenue: dict[str, Any] = {
+        "kind": "aggregate",
+        "measure": "measure.shop.revenue_usd",
+        "aggregation": "sum",
+        **({"filter": {"all": filter_all}} if filter_all else {}),
+    }
     prior = {"kind": "prior_period", "input": revenue, "offset": {"unit": "month", "value": 1}}
     change = {"kind": "arithmetic", "op": "subtract", "left": revenue, "right": prior}
     doc["metrics"]["growth"] = {
@@ -330,7 +336,12 @@ def growth(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
         "expression": {"kind": "arithmetic", "op": "divide", "left": change, "right": prior},
     }
     source.write_text(yaml.safe_dump(doc, sort_keys=False), "utf-8")
-    with closing(opened(Runtime.from_path(str(source)))) as runtime:
+    return opened(Runtime.from_path(str(source)))
+
+
+@pytest.fixture(scope="module")
+def growth(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    with closing(_growth_package(tmp_path_factory.mktemp("growth"))) as runtime:
         yield runtime
 
 
@@ -423,3 +434,88 @@ def test_a_date_filter_on_the_end_of_a_complete_window_holds_nothing(growth: Run
     payload = _plan_example(growth, call, GROWTH_NOW)
     assert payload["status"] == "ok" and _ready(payload), payload.get("why")
     assert _growth_rows(growth, call)["2018-06-01"] == 0
+
+
+# ---------------------------------------------------------------- round 3: hold what can't be proved
+# The same shop on a UTC TIMESTAMP clock, its last June revenue at 22:00 on June 30.
+GROWTH_TIMESTAMP_SEED = GROWTH_SEED.replace("DATE '2018-05-10'", "TIMESTAMP '2018-05-10 12:00:00'")
+GROWTH_TIMESTAMP_SEED = GROWTH_TIMESTAMP_SEED.replace(
+    "DATE '2018-06-01'", "TIMESTAMP '2018-06-01 12:00:00'"
+).replace("DATE '2018-06-20'", "TIMESTAMP '2018-06-30 22:00:00'")
+
+
+def _held_with_no_option(payload: dict[str, Any]) -> dict[str, Any]:
+    details = _assert_held(payload)
+    assert "options" not in details, details
+    return details
+
+
+def _zoned_jaffle(tmp_path_factory: pytest.TempPathFactory) -> Runtime:
+    """jaffle with its orders clock on New York (UTC storage); sessions stay on UTC."""
+    path = copy_package_config(tmp_path_factory.mktemp("zoned"), "jaffle_shop", preseed_db=True)
+    orders = path / "models" / "core" / "orders.yml"
+    doc = safe_load(orders.read_bytes())
+    doc["model"]["times"]["ordered_at"].update(timezone="America/New_York", column_timezone="UTC")
+    orders.write_text(yaml.safe_dump(doc, sort_keys=False), "utf-8")
+    return opened(Runtime.from_path(str(path)))
+
+
+def test_a_comparison_in_an_entity_filter_is_held(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Customers whose growth is positive, per period: the growth reads New York's June, two
+    hours from its end, though the selected sessions read UTC."""
+
+    having = [{"field": METRIC, "op": "gt", "value": 0}]
+    call = {
+        "select": ["measure.jaffle.session_starts"],
+        "where": [{"entity": "entity.jaffle_customer", "having": having, "over": "period"}],
+        "time": {
+            "temporal_role": "temporal_role.jaffle_session_started_at",
+            "grain": "month",
+            "end": "2018-07-01",
+        },
+    }
+    with closing(_zoned_jaffle(tmp_path_factory)) as runtime:
+        payload = _plan_example(runtime, call, "2018-07-01T02:00:00Z")
+    assert payload["best"]["validation_ok"] is True
+    _held_with_no_option(payload)
+
+
+@pytest.mark.parametrize("end", ["2018-07-01", None])
+def test_a_date_filter_inside_the_metric_is_held(
+    tmp_path_factory: pytest.TempPathFactory, end: str | None
+) -> None:
+    """The growth metric's revenue keeps only orders before June 15: June reads -90%."""
+
+    cut = [{"field": "dimension.shop_order_ordered_at", "op": "lt", "value": "2018-06-15"}]
+    with closing(_growth_package(tmp_path_factory.mktemp("cut"), filter_all=cut)) as runtime:
+        if end:
+            assert _growth_rows(runtime, _growth_call(runtime, end))["2018-06-01"] == pytest.approx(
+                -0.9
+            )
+        _held_with_no_option(_plan_example(runtime, _growth_call(runtime, end), GROWTH_NOW))
+
+
+@pytest.mark.parametrize("where", [False, True], ids=["end", "where"])
+def test_a_bound_with_a_utc_offset_is_held(
+    tmp_path_factory: pytest.TempPathFactory, where: bool
+) -> None:
+    """20:00 at -04:00 is July 1 in UTC, but the SQL compares 20:00 wall time with the column,
+    so the 22:00 revenue on June 30 drops out and June reads -90%."""
+
+    bound = "2018-06-30T20:00:00-04:00"
+    target = tmp_path_factory.mktemp("offset")
+    with closing(_growth_package(target, seed=GROWTH_TIMESTAMP_SEED, kind="timestamp")) as runtime:
+        call = (
+            _growth_call(runtime, "2018-07-01", _cut(runtime, "lt", bound))
+            if where
+            else _growth_call(runtime, bound)
+        )
+        assert _growth_rows(runtime, call)["2018-06-01"] == pytest.approx(-0.9)
+        _held_with_no_option(_plan_example(runtime, call, GROWTH_NOW))
+
+
+def test_a_bound_with_a_comma_fraction_is_held(growth: Runtime) -> None:
+    call = _growth_call(growth, "2018-06-01T00:00:00,0000001")
+    _held_with_no_option(_plan_example(growth, call, GROWTH_NOW))
