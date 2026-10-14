@@ -111,22 +111,22 @@ INSERT INTO order_tags VALUES (1, 1), (1, 1), (1, 2), (2, 2), (4, 1), (4, 3), (9
 
 -- Rooms are stored with no key, one row per room, department and use. r1 is a design lab and
 -- a finance office, r3's office row is stored twice (once without its floor), r4 has no
--- department, r5's two rows disagree on its area, and one row has no room. r1 and r3 have the
--- same area.
+-- department, r5's two rows disagree on its area and on whether it is accessible, and one row
+-- has no room. r1 and r3 have the same area.
 CREATE TABLE room_rows (
-  room_id VARCHAR(8), building VARCHAR(8), floor INTEGER, area INTEGER,
+  room_id VARCHAR(8), building VARCHAR(8), floor INTEGER, area INTEGER, accessible BOOLEAN,
   department VARCHAR(16), room_use VARCHAR(16)
 );
 INSERT INTO room_rows VALUES
-  ('r1', 'north', 1, 100, 'design', 'lab'),
-  ('r1', 'north', 1, 100, 'finance', 'office'),
-  ('r2', 'north', 2, 300, 'design', 'office'),
-  ('r3', 'south', 1, 100, 'finance', 'office'),
-  ('r3', 'south', NULL, 100, 'finance', 'office'),
-  ('r4', 'south', 2, 50, NULL, 'storage'),
-  ('r5', 'south', 3, 80, 'legal', 'office'),
-  ('r5', 'south', 3, 90, 'legal', 'lab'),
-  (NULL, 'north', 9, 999, 'design', 'office');
+  ('r1', 'north', 1, 100, TRUE, 'design', 'lab'),
+  ('r1', 'north', 1, 100, TRUE, 'finance', 'office'),
+  ('r2', 'north', 2, 300, FALSE, 'design', 'office'),
+  ('r3', 'south', 1, 100, TRUE, 'finance', 'office'),
+  ('r3', 'south', NULL, 100, NULL, 'finance', 'office'),
+  ('r4', 'south', 2, 50, NULL, NULL, 'storage'),
+  ('r5', 'south', 3, 80, TRUE, 'legal', 'office'),
+  ('r5', 'south', 3, 90, FALSE, 'legal', 'lab'),
+  (NULL, 'north', 9, 999, TRUE, 'design', 'office');
 -- People sit in rooms: two in r1 on equal pay and one in r2 on more, one each in r3 and r4,
 -- one in a room no row has (r9) and one with no room.
 CREATE TABLE people (

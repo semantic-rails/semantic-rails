@@ -1,6 +1,6 @@
 fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits, ticket_exports, shipment_scans, order_tags, tags, room_rows, people, room_bookings]
-  data_sha256: 30a2377fd43442d2a6e27b1542b9e334c1d9751d684d8e762234bcb32fdb19b6
+  data_sha256: 703241118ddc88ebcd4d181f6d9dcdfd8c0b98f92966fc5625fdc422e591d6e1
 tests:
   shop/sibling-input-clock-filter-keeps-independent-history:
     kind: query_matches_snapshot
@@ -8626,6 +8626,26 @@ tests:
         FROM room_rows WHERE room_id IS NOT NULL GROUP BY room_id
       ) AS rooms
       GROUP BY floor
+  shop/one-per-key-boolean-reads-its-one-value:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A true or false column is read as other columns are. r3's second row doesn't say, so r3 is accessible; r5's rows disagree, so r5, like r4, reads NULL.
+    cites: [tests/integration/correctness/shop/models/rooms.yml#model.dimensions.accessible, docs/PACKAGE_AUTHORING.md#one-row-per-key]
+    tags: [one-per-key]
+    query:
+      select: [measure.shop.room_count]
+      group_by: [dimension.shop_room_accessible]
+    expected_rows:
+      - {dimension.shop_room_accessible: null, room_count: 2}
+      - {dimension.shop_room_accessible: false, room_count: 1}
+      - {dimension.shop_room_accessible: true, room_count: 2}
+    reference_sql: |
+      SELECT accessible, COUNT(*) FROM (
+        SELECT room_id, CASE WHEN COUNT(DISTINCT accessible) = 1 THEN BOOL_OR(accessible) END
+          AS accessible
+        FROM room_rows WHERE room_id IS NOT NULL GROUP BY room_id
+      ) AS rooms
+      GROUP BY accessible
   shop/one-per-key-stored-rows-look-up-their-room:
     kind: query_matches_snapshot
     expect: answer

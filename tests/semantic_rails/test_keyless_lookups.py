@@ -11,6 +11,7 @@ and what the other surfaces say.
 from __future__ import annotations
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +21,12 @@ import yaml
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.config import load_package_config, load_package_snapshot
 from semantic_rails.config_validation import resolve_package_reference
+from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.metadata import inspect_payload
 from semantic_rails.package_tools import check_warehouse_column_reachability_report
+from semantic_rails.relation_pipelines import lower_relation
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse, write_orders_package
 
@@ -82,16 +85,21 @@ def test_a_one_per_key_model_reads_its_relation_once_per_key() -> None:
     assert (room.one_per_key, room.key_columns, room.is_row_grain) == (True, ["room_id"], False)
     relation = next(row for row in config.relations if row.id == room.relation_id)
     assert room.table == relation.output_name == "shop_room__one_per_key"
+    columns = ["building", "floor", "accessible", "area"]
     assert [(step.kind, step.config) for step in relation.steps] == [
-        ("source", {"relation": "room_rows", "columns": ["room_id", "building", "floor", "area"]}),
+        ("source", {"relation": "room_rows", "columns": ["room_id", *columns]}),
         ("where", {"predicates": [{"field": "room_id", "op": "missing", "value": False}]}),
         (
             "group_by",
             {
                 "dimensions": {"room_id": "room_id"},
                 "aggregates": {
-                    column: {"function": "single_value", "expr": column}
-                    for column in ("building", "floor", "area")
+                    column: {
+                        "function": "single_value",
+                        "expr": column,
+                        **({"boolean": True} if column == "accessible" else {}),
+                    }
+                    for column in columns
                 },
             },
         ),
@@ -130,6 +138,22 @@ def test_only_the_row_grain_sibling_on_the_same_relation_is_a_link() -> None:
             "model 'rooms' is one_per_key, which reads its relation as one row per its "
             "entity's key, but no graph entity is homed on it",
         ),
+        (  # a stored rollup would answer from rows the one-per-key reading never sees
+            [
+                _rooms(
+                    lambda model: model.update(
+                        variants={
+                            "monthly": {
+                                "relation": "rooms_monthly",
+                                "grain": {"time": "month", "entities": ["room"]},
+                            }
+                        }
+                    )
+                )
+            ],
+            "model 'rooms' is one_per_key, so it can't have variants: a stored rollup isn't read "
+            "one row per key",
+        ),
     ],
 )
 def test_what_a_one_per_key_model_refuses_to_load(tmp_path, edits, message):
@@ -156,6 +180,72 @@ def test_a_join_into_a_row_grain_model_names_one_per_key(tmp_path):
     assert str(raised.value).endswith(
         "To look up what is fixed per key, model its relation again with one_per_key: true."
     )
+
+
+# The aggregates that read a true/false group's lowest and highest value, where MIN and MAX
+# don't take a boolean (Postgres) or aren't documented to.
+BOOLEAN_BOUNDS = {
+    "athena": ("BOOL_AND", "BOOL_OR"),
+    "bigquery": ("LOGICAL_AND", "LOGICAL_OR"),
+    "postgres": ("BOOL_AND", "BOOL_OR"),
+    "snowflake": ("BOOLAND_AGG", "BOOLOR_AGG"),
+}
+
+
+@pytest.mark.parametrize("warehouse", supported_warehouses())
+def test_a_boolean_column_reads_its_one_value_on_every_warehouse(tmp_path, warehouse):
+    config = load_package_config(str(SHOP))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    room = next(entity for entity in config.entities if entity.id == ROOM)
+    relation = next(row for row in config.relations if row.id == room.relation_id)
+    ctes, _ = lower_relation(relation, warehouse=warehouse)
+    fields = {field.alias: field.expression for field in ctes[-1].query.select}
+    least, most = BOOLEAN_BOUNDS.get(warehouse, ("MIN", "MAX"))
+    for column, (low, high) in {"accessible": (least, most), "area": ("MIN", "MAX")}.items():
+        [when] = fields[column].whens
+        assert (when.condition.left.name, when.condition.right.name) == (low, high), column
+        assert when.result.name == high
+    runtime = Runtime.from_config(config, source_path=str(SHOP), package_id="shop")
+    try:
+        sql = runtime.compile(
+            {"select": [ROOM_COUNT], "group_by": ["dimension.shop_room_accessible"]}
+        )["rendered_sql"]
+    finally:
+        runtime.close()
+    assert f"{least}(" in sql.upper() and f"{most}(" in sql.upper()
+
+
+def test_a_link_that_forbids_the_reverse_walk_names_the_setting(tmp_path):
+    forward_only = (
+        "package.yml",
+        lambda doc: doc.setdefault("defaults", {}).update(relationship={"traversal": ["forward"]}),
+    )
+    runtime = _runtime(_shop(tmp_path / "forward", forward_only))
+    try:
+        error = _refusal(runtime, {"select": [ROOM_COUNT], "group_by": [DEPARTMENT]})
+    finally:
+        runtime.close()
+    assert error.code == "PATH_NOT_FOUND"
+    assert error.details["relationship"] == "relationship.room_rows_room"
+    assert str(error) == (
+        "No path from 'entity.shop_room' to 'entity.shop_room_rows': link relationship "
+        "'relationship.room_rows_room' (Room rows to Room) allows only forward, and its rows "
+        "are reached by walking it in reverse. Set allowed_directions: [forward, reverse] on "
+        "its graph.relationships row (entities: [room_rows, room])."
+    )
+    reverse = {"entities": ["room_rows", "room"], "allowed_directions": ["forward", "reverse"]}
+    allowed = ("graph.yml", lambda doc: doc["graph"]["relationships"].update(room_link=reverse))
+    runtime = _runtime(_shop(tmp_path / "allowed", forward_only, allowed))
+    try:
+        rows = runtime.query({"select": [ROOM_COUNT], "group_by": [DEPARTMENT]})["rows"]
+    finally:
+        runtime.close()
+    assert {row[DEPARTMENT]: row["room_count"] for row in rows} == {
+        None: 1,
+        "design": 2,
+        "finance": 2,
+        "legal": 1,
+    }
 
 
 def test_a_grouping_across_a_link_keeps_one_row_per_entity_and_joins_left(shop):

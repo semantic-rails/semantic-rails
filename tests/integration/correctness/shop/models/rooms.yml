@@ -9,6 +9,7 @@ model:
   dimensions:
     building: {label: Building, kind: categorical}
     floor: {label: Floor, kind: integer}
+    accessible: {label: Accessible, kind: boolean}
   measures:
     room_count: {label: Rooms, kind: aggregate, expr: {kind: literal, value: 1},
       accumulation: {kind: flow}, value_type: count}
