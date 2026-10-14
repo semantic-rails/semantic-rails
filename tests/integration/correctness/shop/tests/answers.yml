@@ -1,6 +1,6 @@
 fixture:
-  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits, ticket_exports, shipment_scans, order_tags, tags]
-  data_sha256: 96e8f1fbe6f1c3bd06f0fa6b1a3b1e25843b1c77c3ce58348d4f19b02ab4df19
+  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits, ticket_exports, shipment_scans, order_tags, tags, room_rows, people, room_bookings]
+  data_sha256: 30a2377fd43442d2a6e27b1542b9e334c1d9751d684d8e762234bcb32fdb19b6
 tests:
   shop/sibling-input-clock-filter-keeps-independent-history:
     kind: query_matches_snapshot
@@ -8589,3 +8589,340 @@ tests:
     reference_sql: |
       SELECT o.store_id, MAX(s.weight) FROM shipment_scans AS s
       LEFT JOIN orders AS o ON o.order_id = s.order_id GROUP BY o.store_id
+  shop/one-per-key-conflicting-area-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A one-per-key model reads one row per room. r5's two rows disagree on its area, so its area reads NULL, and the row with no room is no room.
+    cites: [tests/integration/correctness/shop/models/rooms.yml#model.measures.room_area, docs/PACKAGE_AUTHORING.md#one-row-per-key]
+    tags: [one-per-key]
+    query:
+      select: [measure.shop.room_area]
+      group_by: [dimension.shop_room_id]
+    expected_rows:
+      - {dimension.shop_room_id: r1, room_area: 100}
+      - {dimension.shop_room_id: r2, room_area: 300}
+      - {dimension.shop_room_id: r3, room_area: 100}
+      - {dimension.shop_room_id: r4, room_area: 50}
+      - {dimension.shop_room_id: r5, room_area: null}
+    reference_sql: |
+      SELECT room_id, CASE WHEN COUNT(DISTINCT area) = 1 THEN MIN(area) END FROM room_rows
+      WHERE room_id IS NOT NULL GROUP BY room_id
+  shop/one-per-key-null-beside-a-value-reads-the-value:
+    kind: query_matches_snapshot
+    expect: answer
+    why: One of r3's rows has no floor, so its floor is the one value its rows hold, 1.
+    cites: [tests/integration/correctness/shop/models/rooms.yml#model.dimensions.floor, docs/PACKAGE_AUTHORING.md#one-row-per-key]
+    tags: [one-per-key]
+    query:
+      select: [measure.shop.room_count]
+      group_by: [dimension.shop_room_floor]
+    expected_rows:
+      - {dimension.shop_room_floor: 1, room_count: 2}
+      - {dimension.shop_room_floor: 2, room_count: 2}
+      - {dimension.shop_room_floor: 3, room_count: 1}
+    reference_sql: |
+      SELECT floor, COUNT(*) FROM (
+        SELECT room_id, CASE WHEN COUNT(DISTINCT floor) = 1 THEN MIN(floor) END AS floor
+        FROM room_rows WHERE room_id IS NOT NULL GROUP BY room_id
+      ) AS rooms
+      GROUP BY floor
+  shop/one-per-key-stored-rows-look-up-their-room:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Every stored room row counts and looks up its room's building; the row with no room reads NULL.
+    cites: [tests/integration/correctness/shop/models/room_rows.yml#model.measures.room_row_count, tests/integration/correctness/shop/models/rooms.yml#model.dimensions.building]
+    tags: [one-per-key, row-grain]
+    query:
+      select: [measure.shop.room_row_count]
+      group_by: [dimension.shop_room_building]
+    expected_rows:
+      - {dimension.shop_room_building: null, room_row_count: 1}
+      - {dimension.shop_room_building: north, room_row_count: 3}
+      - {dimension.shop_room_building: south, room_row_count: 5}
+    reference_sql: |
+      SELECT r.building, COUNT(*) FROM room_rows AS s
+      LEFT JOIN (SELECT DISTINCT room_id, building FROM room_rows WHERE room_id IS NOT NULL) AS r
+        ON r.room_id = s.room_id
+      GROUP BY r.building
+  shop/link-rooms-count-once-in-each-department:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A room counts once in every department it has a row in. r1 is in design and finance, r3's duplicated row counts once, and r4, with no department, is the NULL group.
+    cites: &room_link_cites [tests/integration/correctness/shop/models/rooms.yml#model.measures.room_count, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.department, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link]
+    query:
+      select: [measure.shop.room_count]
+      group_by: [dimension.shop_room_rows_department]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, room_count: 1}
+      - {dimension.shop_room_rows_department: design, room_count: 2}
+      - {dimension.shop_room_rows_department: finance, room_count: 2}
+      - {dimension.shop_room_rows_department: legal, room_count: 1}
+    reference_sql: |
+      SELECT department, COUNT(DISTINCT room_id) FROM room_rows WHERE room_id IS NOT NULL
+      GROUP BY department
+  shop/link-room-total-counts-unique-rooms:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An ungrouped total crosses no link, so it counts five rooms, though the departments' counts add up to six.
+    cites: *room_link_cites
+    tags: [link]
+    query:
+      select: [measure.shop.room_count]
+    expected_rows:
+      - {room_count: 5}
+    reference_sql: |
+      SELECT COUNT(DISTINCT room_id) FROM room_rows
+  shop/link-equal-areas-both-count:
+    kind: query_matches_snapshot
+    expect: answer
+    why: r1 and r3 are both 100 and both in finance, so finance is 200; a room's amount is kept by room, never merged by value. Legal's only room, r5, has no one area, so legal reads NULL.
+    cites: [tests/integration/correctness/shop/models/rooms.yml#model.measures.room_area, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.department, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link, null-vs-zero]
+    query:
+      select: [measure.shop.room_area]
+      group_by: [dimension.shop_room_rows_department]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, room_area: 50}
+      - {dimension.shop_room_rows_department: design, room_area: 400}
+      - {dimension.shop_room_rows_department: finance, room_area: 200}
+      - {dimension.shop_room_rows_department: legal, room_area: null}
+    reference_sql: |
+      WITH rooms AS (
+        SELECT room_id, CASE WHEN COUNT(DISTINCT area) = 1 THEN MIN(area) END AS area
+        FROM room_rows WHERE room_id IS NOT NULL GROUP BY room_id
+      ), memberships AS (
+        SELECT DISTINCT room_id, department FROM room_rows WHERE room_id IS NOT NULL
+      )
+      SELECT m.department, SUM(r.area) FROM memberships AS m JOIN rooms AS r ON r.room_id = m.room_id
+      GROUP BY m.department
+  shop/link-average-area-per-room:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A department's average area is over its rooms, each once (design's 100 and 300, finance's 100 and 100).
+    cites: [tests/integration/correctness/shop/models/rooms.yml#model.measures.average_area, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.department, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link]
+    query:
+      select: [measure.shop.average_area]
+      group_by: [dimension.shop_room_rows_department]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, average_area: 50}
+      - {dimension.shop_room_rows_department: design, average_area: 200}
+      - {dimension.shop_room_rows_department: finance, average_area: 100}
+      - {dimension.shop_room_rows_department: legal, average_area: null}
+    reference_sql: |
+      WITH rooms AS (
+        SELECT room_id, CASE WHEN COUNT(DISTINCT area) = 1 THEN MIN(area) END AS area
+        FROM room_rows WHERE room_id IS NOT NULL GROUP BY room_id
+      ), memberships AS (
+        SELECT DISTINCT room_id, department FROM room_rows WHERE room_id IS NOT NULL
+      )
+      SELECT m.department, AVG(r.area) FROM memberships AS m JOIN rooms AS r ON r.room_id = m.room_id
+      GROUP BY m.department
+  shop/link-headcount-keeps-orphans-in-the-null-group:
+    kind: query_matches_snapshot
+    expect: answer
+    why: People reach departments through their room. Person 5's room has no department, person 6's room has no row and person 7 has no room, so all three are the NULL group, none dropped; r1's two people count in design and in finance.
+    cites: &people_link_cites [tests/integration/correctness/shop/models/people.yml#model.measures.headcount, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.department, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link, null-vs-zero]
+    query:
+      select: [measure.shop.headcount]
+      group_by: [dimension.shop_room_rows_department]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, headcount: 3}
+      - {dimension.shop_room_rows_department: design, headcount: 3}
+      - {dimension.shop_room_rows_department: finance, headcount: 3}
+    reference_sql: |
+      SELECT m.department, COUNT(DISTINCT p.person_id) FROM people AS p
+      LEFT JOIN (SELECT DISTINCT room_id, department FROM room_rows WHERE room_id IS NOT NULL) AS m
+        ON m.room_id = p.room_id
+      GROUP BY m.department
+  shop/link-average-salary-weighs-people-not-rooms:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Design's average is over its three people (100, 100 and 400), 200; the average of its two rooms' averages would be 250.
+    cites: [tests/integration/correctness/shop/models/people.yml#model.measures.average_salary, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.department, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link]
+    query:
+      select: [measure.shop.average_salary]
+      group_by: [dimension.shop_room_rows_department]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, average_salary: 60}
+      - {dimension.shop_room_rows_department: design, average_salary: 200}
+      - {dimension.shop_room_rows_department: finance, average_salary: 150}
+    reference_sql: |
+      SELECT department, AVG(salary) FROM (
+        SELECT DISTINCT p.person_id, m.department, p.salary FROM people AS p
+        LEFT JOIN (SELECT DISTINCT room_id, department FROM room_rows WHERE room_id IS NOT NULL) AS m
+          ON m.room_id = p.room_id
+      ) AS members
+      GROUP BY department
+  shop/link-distinct-titles-repeat-across-rooms:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Design's two rooms hold only engineers, so design has one title, not one per room.
+    cites: [tests/integration/correctness/shop/models/people.yml#model.measures.titles, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.department, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link]
+    query:
+      select: [measure.shop.titles]
+      group_by: [dimension.shop_room_rows_department]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, titles: 2}
+      - {dimension.shop_room_rows_department: design, titles: 1}
+      - {dimension.shop_room_rows_department: finance, titles: 2}
+    reference_sql: |
+      SELECT m.department, COUNT(DISTINCT p.title) FROM people AS p
+      LEFT JOIN (SELECT DISTINCT room_id, department FROM room_rows WHERE room_id IS NOT NULL) AS m
+        ON m.room_id = p.room_id
+      GROUP BY m.department
+  shop/link-ratio-divides-department-totals:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Salary per person divides each department's total by its people (design 600 over 3), never averages its rooms' ratios (250).
+    cites: [tests/integration/correctness/shop/models/people.yml#model.measures.salary, tests/integration/correctness/shop/models/people.yml#model.measures.headcount, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link]
+    query:
+      select:
+        - as: per_person
+          expression: {kind: ratio, numerator: measure.shop.salary, denominator: measure.shop.headcount}
+      group_by: [dimension.shop_room_rows_department]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, per_person: 60.0}
+      - {dimension.shop_room_rows_department: design, per_person: 200.0}
+      - {dimension.shop_room_rows_department: finance, per_person: 150.0}
+    reference_sql: |
+      SELECT department, SUM(salary) / CAST(COUNT(*) AS DOUBLE PRECISION) FROM (
+        SELECT DISTINCT p.person_id, m.department, p.salary FROM people AS p
+        LEFT JOIN (SELECT DISTINCT room_id, department FROM room_rows WHERE room_id IS NOT NULL) AS m
+          ON m.room_id = p.room_id
+      ) AS members
+      GROUP BY department
+  shop/link-filter-counts-each-person-once:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A filter on a department keeps the people whose room has a row there; r1 is in both departments, and its two people still count once each.
+    cites: *people_link_cites
+    tags: [link, child-scope]
+    query:
+      select: [measure.shop.headcount]
+      where:
+        - {field: dimension.shop_room_rows_department, op: in, value: [design, finance]}
+    expected_rows:
+      - {headcount: 4}
+    reference_sql: |
+      SELECT COUNT(*) FROM people AS p WHERE EXISTS (
+        SELECT 1 FROM room_rows AS r
+        WHERE r.room_id = p.room_id AND r.department IN ('design', 'finance')
+      )
+  shop/link-negated-filter-asks:
+    kind: validate_fails_with_code
+    expect: clarify
+    why: Not in design may mean a room with a row outside design (r1) or a room with no design row; the call must say which.
+    cites: *people_link_cites
+    tags: [link, child-scope]
+    query:
+      select: [measure.shop.headcount]
+      where:
+        - {field: dimension.shop_room_rows_department, op: not, value: design}
+    code: AMBIGUOUS_CHILD_SCOPE
+    clarify: {options: [any_not, none]}
+  shop/link-two-groupings-read-one-stored-row:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Department and use are read off the same stored row. r1 is a design lab and a finance office, so it is never a design office.
+    cites: [tests/integration/correctness/shop/models/rooms.yml#model.measures.room_count, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.room_use, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link]
+    query:
+      select: [measure.shop.room_count]
+      group_by: [dimension.shop_room_rows_department, dimension.shop_room_rows_room_use]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, dimension.shop_room_rows_room_use: storage, room_count: 1}
+      - {dimension.shop_room_rows_department: design, dimension.shop_room_rows_room_use: lab, room_count: 1}
+      - {dimension.shop_room_rows_department: design, dimension.shop_room_rows_room_use: office, room_count: 1}
+      - {dimension.shop_room_rows_department: finance, dimension.shop_room_rows_room_use: office, room_count: 2}
+      - {dimension.shop_room_rows_department: legal, dimension.shop_room_rows_room_use: lab, room_count: 1}
+      - {dimension.shop_room_rows_department: legal, dimension.shop_room_rows_room_use: office, room_count: 1}
+    reference_sql: |
+      SELECT department, room_use, COUNT(DISTINCT room_id) FROM room_rows
+      WHERE room_id IS NOT NULL GROUP BY department, room_use
+  shop/link-grouping-and-filter-read-one-stored-row:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Rooms by department where the use is office read both off one row, so design counts r2 only; r1's office row is finance's.
+    cites: [tests/integration/correctness/shop/models/rooms.yml#model.measures.room_count, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.room_use, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link]
+    query:
+      select: [measure.shop.room_count]
+      group_by: [dimension.shop_room_rows_department]
+      where:
+        - {field: dimension.shop_room_rows_room_use, op: is, value: office}
+    expected_rows:
+      - {dimension.shop_room_rows_department: design, room_count: 1}
+      - {dimension.shop_room_rows_department: finance, room_count: 2}
+      - {dimension.shop_room_rows_department: legal, room_count: 1}
+    reference_sql: |
+      SELECT department, COUNT(DISTINCT room_id) FROM room_rows
+      WHERE room_id IS NOT NULL AND room_use = 'office' GROUP BY department
+  shop/link-distinct-bookers-need-no-row-key:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Bookings have no key, but a distinct count of bookers needs none. Ana books r1 and r2 and counts once in design; dee's room has no row and eve's booking has no room, so both are the NULL group.
+    cites: [tests/integration/correctness/shop/models/room_bookings.yml#model.measures.bookers, tests/integration/correctness/shop/models/room_rows.yml#model.dimensions.department, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link, row-grain]
+    query:
+      select: [measure.shop.bookers]
+      group_by: [dimension.shop_room_rows_department]
+    expected_rows:
+      - {dimension.shop_room_rows_department: null, bookers: 2}
+      - {dimension.shop_room_rows_department: design, bookers: 1}
+      - {dimension.shop_room_rows_department: finance, bookers: 2}
+      - {dimension.shop_room_rows_department: legal, bookers: 1}
+    reference_sql: |
+      SELECT m.department, COUNT(DISTINCT b.booker) FROM room_bookings AS b
+      LEFT JOIN (SELECT DISTINCT room_id, department FROM room_rows WHERE room_id IS NOT NULL) AS m
+        ON m.room_id = b.room_id
+      GROUP BY m.department
+  shop/link-booking-rows-refuse:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: MIXED_GRAIN_INVALID
+    why: Bookings have no key, so nothing tells their rows apart to count each once in a department; a sum of them across a link is refused.
+    cites: [tests/integration/correctness/shop/models/room_bookings.yml#model.measures.bookings, docs/QUERY_CALL.md#groups-across-a-link]
+    tags: [link, row-grain, refusal]
+    query:
+      select: [measure.shop.bookings]
+      group_by: [dimension.shop_room_rows_department]
+  shop/link-share-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: MIXED_GRAIN_INVALID
+    why: The departments overlap, so a share of their summed headcount (9) is no share of the 7 people.
+    cites: *people_link_cites
+    tags: [link, refusal]
+    query:
+      select:
+        - as: share
+          expression: {kind: share, input: measure.shop.headcount, over: [dimension.shop_room_rows_department]}
+      group_by: [dimension.shop_room_rows_department]
+  shop/link-cumulative-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: MIXED_GRAIN_INVALID
+    why: A running total adds groups up, and groups across a link overlap.
+    cites: *people_link_cites
+    tags: [link, refusal]
+    query:
+      select:
+        - {as: running, expression: {kind: cumulative, input: measure.shop.headcount}}
+      group_by: [dimension.shop_room_rows_department]
+      time: {temporal_role: temporal_role.shop_person_started_on, grain: month}
+  shop/not-a-link-keeps-refusing:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: MIXED_GRAIN_INVALID
+    why: Bookings are not on the rooms' relation, so people grouped by booker cross a lookup and then a plain one-to-many hop, which stays refused.
+    cites: [tests/integration/correctness/shop/models/people.yml#model.measures.headcount, tests/integration/correctness/shop/models/room_bookings.yml#model.dimensions.booker]
+    tags: [link, refusal]
+    query:
+      select: [measure.shop.headcount]
+      group_by: [dimension.shop_room_bookings_booker]

@@ -1,0 +1,18 @@
+# One row per room, read from room_rows, which has no key. Each column is the room's one value,
+# or NULL where its rows disagree (r5's area). A row with no room is no room.
+model:
+  id: rooms
+  label: Rooms
+  relation: room_rows
+  one_per_key: true
+  entities: {room: {}}
+  dimensions:
+    building: {label: Building, kind: categorical}
+    floor: {label: Floor, kind: integer}
+  measures:
+    room_count: {label: Rooms, kind: aggregate, expr: {kind: literal, value: 1},
+      accumulation: {kind: flow}, value_type: count}
+    room_area: {label: Area, kind: aggregate, expr: area, accumulation: {kind: flow}}
+    average_area: {label: Average area, kind: aggregate, expr: area, default_agg: avg}
+    room_buildings: {label: Buildings, kind: entity_count, expr: building,
+      accumulation: {kind: flow}}

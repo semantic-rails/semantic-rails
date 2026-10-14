@@ -6,6 +6,8 @@ graph:
       model: customer_history, allowed_as_root: false}
     refund: {label: Refund, key: [refund_id], model: refunds}
     tag: {label: Tag, key: [tag_id], model: tags}
+    room: {label: Room, key: [room_id], model: rooms}
+    person: {label: Person, key: [person_id], model: people}
     clock_edge: {label: Clock edge, key: [id], model: clock_edges}
     account_day: {label: Account day, key: [account_id, snapshot_day], model: account_days}
     ticket: {label: Ticket, key: [ticket_id], model: tickets}

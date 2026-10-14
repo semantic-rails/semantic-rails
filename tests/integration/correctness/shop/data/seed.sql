@@ -109,6 +109,44 @@ INSERT INTO tags VALUES (1, 'gift'), (2, 'rush'), (3, 'fragile');
 CREATE TABLE order_tags (order_id INTEGER, tag_id INTEGER);
 INSERT INTO order_tags VALUES (1, 1), (1, 1), (1, 2), (2, 2), (4, 1), (4, 3), (9, 3);
 
+-- Rooms are stored with no key, one row per room, department and use. r1 is a design lab and
+-- a finance office, r3's office row is stored twice (once without its floor), r4 has no
+-- department, r5's two rows disagree on its area, and one row has no room. r1 and r3 have the
+-- same area.
+CREATE TABLE room_rows (
+  room_id VARCHAR(8), building VARCHAR(8), floor INTEGER, area INTEGER,
+  department VARCHAR(16), room_use VARCHAR(16)
+);
+INSERT INTO room_rows VALUES
+  ('r1', 'north', 1, 100, 'design', 'lab'),
+  ('r1', 'north', 1, 100, 'finance', 'office'),
+  ('r2', 'north', 2, 300, 'design', 'office'),
+  ('r3', 'south', 1, 100, 'finance', 'office'),
+  ('r3', 'south', NULL, 100, 'finance', 'office'),
+  ('r4', 'south', 2, 50, NULL, 'storage'),
+  ('r5', 'south', 3, 80, 'legal', 'office'),
+  ('r5', 'south', 3, 90, 'legal', 'lab'),
+  (NULL, 'north', 9, 999, 'design', 'office');
+-- People sit in rooms: two in r1 on equal pay and one in r2 on more, one each in r3 and r4,
+-- one in a room no row has (r9) and one with no room.
+CREATE TABLE people (
+  person_id INTEGER, room_id VARCHAR(8), title VARCHAR(16), salary INTEGER, started_on DATE
+);
+INSERT INTO people VALUES
+  (1, 'r1', 'engineer', 100, DATE '2024-01-10'),
+  (2, 'r1', 'engineer', 100, DATE '2024-02-10'),
+  (3, 'r2', 'engineer', 400, DATE '2024-02-20'),
+  (4, 'r3', 'analyst', 250, DATE '2024-03-05'),
+  (5, 'r4', 'clerk', 60, DATE '2024-03-15'),
+  (6, 'r9', 'analyst', 50, DATE '2024-04-01'),
+  (7, NULL, 'clerk', 70, DATE '2024-04-20');
+-- Room bookings, with no key: ana's r1 booking is stored twice, one booking's room no row has
+-- (r9), and one has no room.
+CREATE TABLE room_bookings (room_id VARCHAR(8), booker VARCHAR(16));
+INSERT INTO room_bookings VALUES
+  ('r1', 'ana'), ('r1', 'ana'), ('r2', 'ana'), ('r3', 'ben'), ('r5', 'cy'), ('r9', 'dee'),
+  (NULL, 'eve');
+
 -- Daily seats per account, a stock. In the week of 2024-01-01 account 1 is on plan builder
 -- Monday to Wednesday and pro from Thursday, account 2 is pro Monday and Tuesday and builder
 -- from Wednesday, and account 3's last snapshot is Friday's. Nobody is observed the next week.

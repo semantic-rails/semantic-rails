@@ -43,7 +43,8 @@ JOIN_INTO_SCANS = (
     "relationship.order_scans joins into 'shipment_scans', a row-grain model (no key), so one row "
     "can't be looked up there. Fix: write it from shipment_scans's side (entities: "
     "[shipment_scans, order], cardinality: many_to_one, via: [order_id]), or declare a key on "
-    "shipment_scans if its rows have one."
+    "shipment_scans if its rows have one. To look up what is fixed per key, model its relation "
+    "again with one_per_key: true."
 )
 
 
@@ -205,7 +206,8 @@ def test_another_model_listing_a_row_grain_model_is_a_join_into_it(tmp_path):
         "relationship.refunds_shipment_scans joins into 'shipment_scans', a row-grain model (no "
         "key), so one row can't be looked up there. Fix: write it from shipment_scans's side "
         "(entities: [shipment_scans, refund], cardinality: many_to_one, via: [refund_id]), or "
-        "declare a key on shipment_scans if its rows have one."
+        "declare a key on shipment_scans if its rows have one. To look up what is fixed per "
+        "key, model its relation again with one_per_key: true."
     )
 
 
@@ -364,7 +366,9 @@ def test_validate_names_the_row_grain_models(tmp_path, capsys):
         base_ref="",
     )
     project_commands.cmd_project_validate(args)
-    assert "Row grain (no key): order_tags, shipment_scans" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Row grain (no key): order_tags, room_bookings, room_rows, shipment_scans" in out
+    assert "One row per key: Room" in out
 
 
 def test_policies_hide_it_and_filter_its_rows(tmp_path):

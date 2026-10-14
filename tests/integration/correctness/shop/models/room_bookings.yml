@@ -1,0 +1,13 @@
+# Bookings with no key: every stored row counts. They look up their room, and through it reach
+# the room's departments.
+model:
+  id: room_bookings
+  label: Room bookings
+  relation: room_bookings
+  entities: {room: {}}
+  dimensions:
+    booker: {label: Booker, kind: categorical}
+  measures:
+    bookings: {label: Bookings, kind: aggregate, expr: {kind: literal, value: 1},
+      accumulation: {kind: flow}, value_type: count}
+    bookers: {label: Bookers, kind: entity_count, entity_key: booker, accumulation: {kind: flow}}
