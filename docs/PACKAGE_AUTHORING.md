@@ -826,8 +826,9 @@ kind names must match exactly.
     that counts or lists it ("how many customers do we have?") is refused with
     `row_filter_uncovered_root`; ask about the rows the filter does reach instead
     ("customers who bought in my stores"). List such a model in the filter's `shared:`
-    (entity ids) to let every caller the filter applies to read all of its rows; `shared`
-    only loosens, and names only models the filter doesn't reach.
+    (entity ids) to let every caller the filter applies to read all of its rows. `shared`
+    only loosens, and names only models the filter doesn't reach: a model it filters, covers
+    or can't trace fails to load (`INVALID_CONFIG`).
   - A lookup into a filtered or covered model along a route that isn't how the walking
     model is owned (revenue by a customer's *home* store, when orders belong to the store
     they were placed in) is refused with `row_filter_route_not_owned`: visible orders would

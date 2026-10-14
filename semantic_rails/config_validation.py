@@ -1102,7 +1102,11 @@ def parse_snapshot_report(
         source = capture_package_source(ref.source_path)
         messages = validate_runtime_package(Path(ref.source_path))
         if not messages:
-            snapshot = load_package_snapshot(ref.source_path)
+            from .row_filter_visibility import check_shared
+
+            loaded = load_package_snapshot(ref.source_path)
+            check_shared(loaded.config)
+            snapshot = loaded
             if snapshot.source_fingerprint != source.fingerprint:
                 messages.append(
                     "Package sources changed during validation; retry after writes complete."

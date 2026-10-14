@@ -1066,6 +1066,9 @@ class Runtime:
     def _replace_base(self, config: Any) -> None:
         """Serve ``config`` as the whole package (``package_config``); every view of the
         previous one is dropped with the caches computed from it."""
+        from .row_filter_visibility import check_shared
+
+        check_shared(config)
         with self._cache_lock:
             self.package_config = config
             self._generation += 1

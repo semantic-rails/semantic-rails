@@ -311,3 +311,17 @@ def withheld_value_dimensions(
             reach = coverage(base, row_filter(base, policy).entity)
             models.update(reach.filtered, reach.covered, reach.unsupported)
     return frozenset(row.id for row in base.dimensions if row.entity in models)
+
+
+def check_shared(config: PackageConfig) -> None:
+    """``shared:`` names only models its filter doesn't reach: one it filters, covers or can't
+    trace is ``INVALID_CONFIG`` (sharing it would not loosen anything, or would loosen rows
+    the filter restricts)."""
+    for row in coverage_report(config):
+        reached = {*row["filtered"], *row["covered"], *row["unsupported"]}
+        if named := [model for model in row["shared"] if model in reached]:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"row_filter policy '{row['policy_id']}': 'shared' lists '{named[0]}', which "
+                "the filter reaches; 'shared' names only models the filter doesn't reach",
+            )

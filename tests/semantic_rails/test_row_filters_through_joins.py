@@ -649,7 +649,9 @@ def test_a_warehouse_without_subqueries_in_on_refuses_an_optional_covered_lookup
     verify_row_filters(enforce_row_filters(inner, covered), covered)
 
 
-@pytest.mark.parametrize("model", ["entity.rj_store", "entity.rj_order"], ids=["filtered", "covered"])
+@pytest.mark.parametrize(
+    "model", ["entity.rj_store", "entity.rj_order"], ids=["filtered", "covered"]
+)
 def test_shared_naming_a_model_the_filter_reaches_is_invalid_config(tmp_path, model):
     root = _package(tmp_path / "rj", [{**REGION, "shared": [model]}])
     with pytest.raises(SemanticLayerError) as caught:
