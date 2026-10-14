@@ -183,19 +183,34 @@ def test_a_join_into_a_row_grain_model_names_one_per_key(tmp_path):
 
 
 # The aggregates that read a true/false group's lowest and highest value, where MIN and MAX
-# don't take a boolean (Postgres) or aren't documented to.
+# aren't documented to take a boolean. Postgres takes no MIN or MAX of a boolean, and a column
+# only a measure reads has no declared type, so it reads every column's least and greatest value
+# by sorting (ARRAY_AGG ... ORDER BY).
 BOOLEAN_BOUNDS = {
     "athena": ("BOOL_AND", "BOOL_OR"),
     "bigquery": ("LOGICAL_AND", "LOGICAL_OR"),
-    "postgres": ("BOOL_AND", "BOOL_OR"),
     "snowflake": ("BOOLAND_AGG", "BOOLOR_AGG"),
 }
 
 
-@pytest.mark.parametrize("warehouse", supported_warehouses())
+def _on(warehouse: str, *edits: tuple[str, Any], tmp_path: Path) -> Any:
+    config = load_package_config(str(_shop(tmp_path, *edits)))
+    return replace(config, package=replace(config.package, warehouse=warehouse))
+
+
+def _single_value_sql(config: Any, query: dict[str, Any]) -> str:
+    """The rendered statement, from its start through the one-per-key CTE."""
+    runtime = Runtime.from_config(config, source_path=str(SHOP), package_id="shop")
+    try:
+        sql = " ".join(str(runtime.compile(query)["rendered_sql"]).split())
+    finally:
+        runtime.close()
+    return sql[: sql.index("GROUP BY src.room_id")]
+
+
+@pytest.mark.parametrize("warehouse", sorted(set(supported_warehouses()) - {"postgres"}))
 def test_a_boolean_column_reads_its_one_value_on_every_warehouse(tmp_path, warehouse):
-    config = load_package_config(str(SHOP))
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    config = _on(warehouse, tmp_path=tmp_path)
     room = next(entity for entity in config.entities if entity.id == ROOM)
     relation = next(row for row in config.relations if row.id == room.relation_id)
     ctes, _ = lower_relation(relation, warehouse=warehouse)
@@ -205,14 +220,140 @@ def test_a_boolean_column_reads_its_one_value_on_every_warehouse(tmp_path, wareh
         [when] = fields[column].whens
         assert (when.condition.left.name, when.condition.right.name) == (low, high), column
         assert when.result.name == high
-    runtime = Runtime.from_config(config, source_path=str(SHOP), package_id="shop")
+    sql = _single_value_sql(
+        config, {"select": [ROOM_COUNT], "group_by": ["dimension.shop_room_accessible"]}
+    )
+    assert f"{least}(" in sql.upper() and f"{most}(" in sql.upper()
+
+
+@pytest.mark.parametrize(
+    "edits",
+    [
+        [],  # the boolean is a dimension
+        [  # only a measure reads it (Sol round 1, finding 4)
+            _rooms(lambda model: model["dimensions"].pop("accessible")),
+            _rooms(
+                lambda model: model["measures"].update(
+                    accessible_rooms={
+                        "kind": "aggregate",
+                        "expr": {
+                            "kind": "case",
+                            "whens": [
+                                {
+                                    "when": {
+                                        "kind": "comparison",
+                                        "op": "=",
+                                        "left": {"kind": "column", "column": "accessible"},
+                                        "right": {"kind": "literal", "value": True},
+                                    },
+                                    "then": {"kind": "literal", "value": 1},
+                                }
+                            ],
+                            "else": {"kind": "literal", "value": 0},
+                        },
+                    }
+                )
+            ),
+        ],
+    ],
+)
+def test_postgres_reads_every_one_per_key_column_without_min_or_max(tmp_path, edits):
+    config = _on("postgres", *edits, tmp_path=tmp_path)
+    sql = _single_value_sql(config, {"select": [ROOM_COUNT]})
+    assert "MIN(" not in sql.upper() and "MAX(" not in sql.upper()
+    for column in ("building", "floor", "accessible", "area"):
+        assert f"ARRAY_AGG(src.{column}) WITHIN GROUP" not in sql  # an ordered ARRAY_AGG
+        assert f"ARRAY_AGG(src.{column} ORDER BY src.{column} ASC)" in sql, column
+        assert f"ARRAY_AGG(src.{column} ORDER BY src.{column} DESC)" in sql, column
+
+
+def test_a_parent_count_across_a_link_keeps_the_link_rules(tmp_path):
+    """Sol round 1, finding 1: a distinct count of the room key, with the link declared safe to
+    count in reverse, still overlaps across departments: its share refuses, and its rows count
+    each room once in every department."""
+    distinct = {"kind": "entity_count", "entity_key": "room_id", "accumulation": {"kind": "flow"}}
+    link = {
+        "entities": ["room_rows", "room"],
+        "cardinality": "many_to_one",
+        "rollup_safe": {"reverse": ["count_distinct"]},
+    }
+    package = _shop(
+        tmp_path,
+        _rooms(lambda model: model["measures"].update(distinct_rooms=distinct)),
+        ("graph.yml", lambda doc: doc["graph"]["relationships"].update(room_link=link)),
+    )
+    runtime = _runtime(package)
     try:
-        sql = runtime.compile(
-            {"select": [ROOM_COUNT], "group_by": ["dimension.shop_room_accessible"]}
-        )["rendered_sql"]
+        share = {"kind": "share", "input": "measure.shop.distinct_rooms", "over": [DEPARTMENT]}
+        error = _refusal(
+            runtime, {"select": [{"as": "share", "expression": share}], "group_by": [DEPARTMENT]}
+        )
+        result = runtime.query(
+            {"select": ["measure.shop.distinct_rooms"], "group_by": [DEPARTMENT]}
+        )
     finally:
         runtime.close()
-    assert f"{least}(" in sql.upper() and f"{most}(" in sql.upper()
+    assert error.code == "MIXED_GRAIN_INVALID"
+    assert "A share across a link is not supported" in error.details["why_invalid"]
+    assert {row[DEPARTMENT]: row["distinct_rooms"] for row in result["rows"]} == {
+        None: 1,
+        "design": 2,
+        "finance": 2,
+        "legal": 1,
+    }
+    [step] = [w for w in result["warnings"] if w["code"] == "REWRITE_APPLIED"]
+    assert "the groups can overlap and need not add up to the total" in str(step)
+
+
+@pytest.mark.parametrize(
+    "table", ["shop_room__one_per_key", "SHOP_ROOM__One_Per_Key", "shop_room__one_per_key__2_where"]
+)
+def test_a_name_the_one_per_key_relation_reads_under_can_t_be_a_table(tmp_path, table):
+    """Sol round 1, finding 2: a physical table under the generated name would read as rooms."""
+    renamed = ("models/people.yml", lambda doc: doc["model"].update(relation=table))
+    with pytest.raises(SemanticLayerError) as raised:
+        load_package_config(str(_shop(tmp_path, renamed)))
+    assert raised.value.code == "INVALID_CONFIG"
+    assert (
+        "'entity.shop_room' is one_per_key, and its relation is read under the name "
+        "'shop_room__one_per_key'"
+    ) in str(raised.value)
+    assert f"'{table}'" in str(raised.value)
+
+
+def test_a_lookup_into_a_one_per_key_model_on_another_column_reads_it(tmp_path):
+    """Sol round 1, finding 3: a lookup on a column the model declares no dimension for."""
+    package = _shop(
+        tmp_path,
+        (
+            "graph.yml",
+            lambda doc: doc["graph"]["relationships"].update(
+                people_room={
+                    "entities": ["person", "room"],
+                    "via": ["room_id"],
+                    "target": ["external_id"],
+                    "cardinality": "many_to_one",
+                }
+            ),
+        ),
+    )
+    seed = package / "data" / "seed.sql"
+    seed.write_text(
+        seed.read_text(encoding="utf-8")
+        + "\nALTER TABLE room_rows ADD COLUMN external_id VARCHAR(8);\n"
+        + "UPDATE room_rows SET external_id = room_id;\n",
+        encoding="utf-8",
+    )
+    runtime = _runtime(package)
+    try:
+        rows = runtime.query({"select": [HEADCOUNT], "group_by": ["dimension.shop_room_building"]})
+    finally:
+        runtime.close()
+    assert {row["dimension.shop_room_building"]: row["headcount"] for row in rows["rows"]} == {
+        None: 2,
+        "north": 3,
+        "south": 2,
+    }
 
 
 def test_a_link_that_forbids_the_reverse_walk_names_the_setting(tmp_path):
