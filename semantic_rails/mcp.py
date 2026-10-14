@@ -16,6 +16,7 @@ import os
 import re
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -1212,6 +1213,25 @@ _OPTIONAL_RESPONSE_FIELDS = (
 )
 
 
+def _record_rows(result: Mapping[str, Any]) -> bool:
+    rows = result.get("rows")
+    return isinstance(rows, list) and any(isinstance(row, Mapping) for row in rows)
+
+
+def _largest_field(result: Mapping[str, Any]) -> str:
+    """The answer column holding the most characters across the rows, else the response's
+    largest top-level field."""
+    sizes: Counter[str] = Counter()
+    columns = list(result.get("columns") or [])
+    for row in result.get("rows") or []:
+        cells = row.items() if isinstance(row, Mapping) else zip(columns, row, strict=False)
+        for key, value in cells:
+            sizes[str(key)] += len(json_text(value))
+    if not sizes:
+        sizes.update({str(key): len(json_text(value)) for key, value in result.items()})
+    return sizes.most_common(1)[0][0] if sizes else ""
+
+
 def _bound_response(
     payload: dict[str, Any], *, compact: bool, query: Mapping[str, Any], sql_required: bool = True
 ) -> dict[str, Any]:
@@ -1246,13 +1266,23 @@ def _bound_response(
     if len(json_text(result)) <= limit:
         return result
 
+    largest = _largest_field(result)
+    retry = {
+        **({"row_format": "columns"} if _record_rows(result) else {}),
+        **({"sql_profile": "off"} if "rendered_sql" in result else {}),
+    }
     details: dict[str, Any] = {
         "max_result_chars": limit,
         "result_chars": len(json_text(result)),
+        "largest_field": largest,
+        **({"retry": retry} if retry else {}),
     }
+    retry_text = " and ".join(f'{key} "{value}"' for key, value in retry.items())
     message = (
-        f"Response exceeds the {limit:,}-character budget after omitting optional details. "
-        "Request fewer objects, rows or columns."
+        f"Response exceeds the {limit:,}-character budget after omitting optional details; "
+        f"'{largest}' is its largest field. "
+        + (f"Retry with {retry_text}, or request" if retry_text else "Request")
+        + " fewer objects, rows or columns."
     )
     if "rows" in result:
         returned = int(result.get("row_count", result.get("preview_row_count", 0)) or 0)
@@ -1260,8 +1290,10 @@ def _bound_response(
         counted = f"{total:,}" if total is not None else f"more than {returned:,}"
         message = (
             f"The result has {counted} rows and exceeds the {limit:,}-character response budget "
-            f"without optional details. No rows returned; {_narrowing_advice(query)}, "
-            "lower max_rows or select fewer columns."
+            "without optional details. No rows returned. Retry "
+            + (f"with {retry_text}, " if retry_text else "")
+            + f"selecting fewer columns ('{largest}' is the largest); or "
+            f"{_narrowing_advice(query)}, or lower max_rows."
         )
         details.update(row_count=returned, total_row_count=total)
     error = SemanticLayerError("RESULT_TOO_LARGE", message, details=details)

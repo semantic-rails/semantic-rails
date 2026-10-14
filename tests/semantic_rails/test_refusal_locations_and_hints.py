@@ -203,9 +203,20 @@ def test_an_oversized_answer_names_its_largest_field_and_a_retry(adapter, monkey
     error = response["errors"][0]
     assert error["code"] == "RESULT_TOO_LARGE"
     assert error["details"]["largest_field"] == "note"
-    assert error["details"]["retry"] == {"row_format": "columns", "sql_profile": "off"}
-    assert "'note'" in error["message"]
-    assert "row_format" in error["message"] and "sql_profile" in error["message"]
+    # A run already leaves its SQL out, so only the row format would shrink it.
+    assert error["details"]["retry"] == {"row_format": "columns"}
+    assert "'note'" in error["message"] and 'row_format "columns"' in error["message"]
+
+
+def test_an_oversized_sql_answer_offers_to_leave_the_sql_out(adapter, monkeypatch):
+    monkeypatch.setattr(
+        adapter.runtime, "compile", lambda *_a, **_k: {"ok": True, "rendered_sql": "x" * 50_000}
+    )
+    response = adapter.call_tool("execute", {"query": {"select": [ORDERS]}, "mode": "sql"})
+    error = response["errors"][0]
+    assert error["code"] == "RESULT_TOO_LARGE"
+    assert error["details"]["largest_field"] == "rendered_sql"
+    assert error["details"]["retry"] == {"sql_profile": "off"}
 
 
 # --- execute's arguments -----------------------------------------------------------------------
