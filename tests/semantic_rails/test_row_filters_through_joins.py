@@ -16,7 +16,6 @@ import pytest
 import yaml
 
 from semantic_rails import row_filters as row_filters_module
-from semantic_rails import runtime as runtime_module
 from semantic_rails.compiler import compile_query
 from semantic_rails.config_validation import parse_config_report, resolve_package_reference
 from semantic_rails.embedding import RequestContext
@@ -465,19 +464,36 @@ def test_the_limit_probe_reads_the_visible_database(runtime):
     assert _rows(everyone) == [("Pine", 900)] and not ties(everyone)
 
 
-def test_zero_rows_skip_the_data_coverage_probe_under_any_filter(runtime, monkeypatch):
-    probes = []
-    monkeypatch.setattr(
-        runtime_module, "_data_coverage_probe", lambda *a, **k: probes.append(1) or {}
-    )
-    window = {
-        "select": [{"expression": REVENUE, "as": "revenue"}],
-        "group_by": ["dimension.rj_store_store_name"],
-        "time": {"temporal_role": "temporal_role.rj_order_ordered_at", "grain": "month",
-                 "start": "2027-01-01"},
-    }  # fmt: skip
-    runtime.query(window, context=_context("North"))
-    assert probes == []
+EMPTY_WINDOW = {
+    "select": [{"expression": REVENUE, "as": "revenue"}],
+    "group_by": ["dimension.rj_store_store_name"],
+    "time": {"temporal_role": "temporal_role.rj_order_ordered_at", "grain": "month",
+             "start": "2027-01-01"},
+}  # fmt: skip
+
+
+def test_an_empty_window_reports_the_callers_own_data_coverage(package):
+    """Zero rows in the window: the diagnostics report where the caller's visible data lies,
+    as an unfiltered caller's would on the visible rows alone, never the whole relation's."""
+    runtime = Runtime.from_path(str(package))
+    try:
+        west = runtime.query(EMPTY_WINDOW, context=WEST)["data_diagnostics"]
+        north = runtime.query(EMPTY_WINDOW, context=_context("North"))["data_diagnostics"]
+    finally:
+        runtime.close()
+    with duckdb.connect(str(package / "rj.duckdb")) as connection:
+        connection.execute(
+            "DELETE FROM order_fact WHERE store_id IS NULL OR store_id NOT IN "
+            "(SELECT store_id FROM store_dim WHERE region = 'West')"
+        )
+    visible_only = Runtime.from_path(str(package))
+    try:
+        control = visible_only.query(EMPTY_WINDOW, context=EVERYONE)["data_diagnostics"]
+    finally:
+        visible_only.close()
+    assert west["actual_data_coverage"] == control["actual_data_coverage"]
+    assert west["actual_data_coverage"]["max"].startswith("2026-02-11")
+    assert north["actual_data_coverage"] == {}  # no visible row: nothing to report
 
 
 def test_compile_never_reads_values_and_unfiltered_sql_is_unchanged(runtime):
