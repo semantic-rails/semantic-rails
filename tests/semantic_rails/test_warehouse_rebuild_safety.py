@@ -159,7 +159,7 @@ def test_failed_query_reports_stale_seed_hint_without_replacing_database(
                 {
                     "segments": {
                         "orders": {
-                            "id": "segment.shop.orders",
+                            "as": "segment.shop.orders",
                             "label": "Orders",
                             "entity": "entity.shop_order",
                             "basis_metric": "metric.shop.revenue",

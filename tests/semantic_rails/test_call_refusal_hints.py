@@ -504,8 +504,8 @@ def test_a_route_via_with_no_one_hop_join_offers_the_pair_s_routes(runtime: Runt
     assert "closest_matches" not in error["details"]
     routes = error["details"]["other_routes"]
     assert routes == [
-        {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]},
-        {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order", "relationship.order_to_customer_history"]},
+        {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"]},
+        {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order", "relationship.jaffle_order_customer_history"]},
     ]  # fmt: skip
     assert "more_routes" not in error["details"]
     assert "relationship ids" in _hint(error)
