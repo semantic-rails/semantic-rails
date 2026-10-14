@@ -99,6 +99,9 @@ package with one model, its count and amount metrics, an example, a package test
 5. Use `upsert_model`, `upsert_relationship`, `upsert_metric`, `upsert_segment`,
    `upsert_example`, `upsert_test`, or scoped file tools with the latest project revision. Generate a new idempotency key for each
    logical mutation and reuse that key only when retrying the identical call.
+   `upsert_model` with `primary_key: []` writes a row-grain model: no graph entity, an
+   `entities` block of its parents only. It is refused while a graph entity named `entity_key`
+   exists.
    `upsert_relationship` relates `from_entity` to `to_entity`: `columns` on `from_entity`'s
    model hold `to_entity`'s key, in key order, and go in that model's `entities` block (as
    `expr` when named differently). That is a many-to-one relationship; `cardinality:
@@ -154,11 +157,19 @@ never create, seed or change it.
   The full row count and the sample's row count are reported separately; counting the full relation
   may inspect all its rows.
 - `suggest_model`: a key, time roles, dimensions, measures with an aggregation and foreign-key
-  links, each with a `confidence` (`high`, `medium`, `low`) and a `reason`. Declared keys come first,
-  then uniqueness in the data, then names. For tables above the profile cap, a key that appears
-  unique and non-null in the sample is a low-confidence candidate; the draft includes it for
-  review, and its reason requires full-relation confirmation before applying. Composite-key probes
-  check at most the first one million rows and eight key-like columns. A declared foreign key is
+  links, each with a `confidence` (`high`, `medium`, `low`) and a `reason`. A declared primary
+  key is the key. Otherwise candidates are declared unique columns, then sets of at most three
+  never-null, non-float columns: an entity-named column (`id`, `<entity>_id`), a key-like column
+  with a line or sequence number, a key-like column with the time column (two with it), any other
+  column but a measure, then two key-like columns; a set whose sample distinct counts multiply to
+  fewer than the profiled rows is skipped. Each candidate is refuted on the profile's one sample,
+  and a survivor is confirmed never null and unique on the whole relation, grouped by its
+  columns as joins compare them (so a case-insensitive collation's `a` and `A` repeat); a
+  rejection moves on to the next. The sample is a temporary table, dropped afterwards. One 60-second deadline covers the search. `key_search.status` says how it ended:
+  `confirmed`, `none_found` (with the number `checked`), `timed_out` (with the `unconfirmed`
+  sets, which you may declare yourself) or `empty_table`. Only a confirmed key is suggested;
+  otherwise the draft is a [row-grain model](PACKAGE_AUTHORING.md#row-grain-models)
+  (`primary_key: []`) with a `<entity>_rows` count of its rows. A declared foreign key is
   authoritative. Otherwise a key-like column (`id`, or ending in `_id`, `_key`, `_code`, `_sk`)
   links to each other relation whose declared single-column primary key has the same name and a
   compatible type; values are not compared, so such a link is `medium`, or `low` when several
@@ -431,7 +442,7 @@ should stay.
   wrote) and its `calendar_id`. The report's `dropped_fields` names every field, dimension, time,
   measure and join the rewrite drops, such as `label` or `dimensions.status`; restate what should
   stay. Without a `description` argument the model gets the default one, and `description` is listed
-  too. `upsert_model` refuses fact models.
+  too.
 - A metric or segment keeps its `id`, `as` and `name` unless the spec restates them, so its public
   id doesn't move.
 

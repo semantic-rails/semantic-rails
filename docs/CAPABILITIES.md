@@ -207,7 +207,7 @@ Current guardrails:
 - weekly rollups answer only week queries, and query bounds must fall on the
   rollup's bucket boundaries
 - `count_distinct` routes across rollup rows only for the single-column row key
-  of a model that isn't a fact model; a declared `holds: count_distinct` column
+  of a model; a declared `holds: count_distinct` column
   also answers at the rollup's own grain when every rollup dimension is grouped
   or pinned by a one-value `is`
 - entity filters on aggregates and other `metric_predicate` filters, relations that declare `filters`, roles

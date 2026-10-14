@@ -629,7 +629,9 @@ ranked period such as "which 3 months had the highest revenue by store"), is hel
 code. Every such hold has no `clarification` and no call in `why.details`: as its
 `ask_which_ranking` hint says, ask the user which ranking they mean and plan again with a
 question that names it. Both checks only hold a plan; neither changes a draft or makes one
-ready.
+ready. A ranking of an entity with no single key to rank by (a row-grain model, or a composite
+key: "top 5 scans") is held with `why.code="PLAN_RANKING_NO_KEY"` instead of drafting a single
+total with a limit; its message says to rank by one of the entity's dimensions.
 
 Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
@@ -1241,6 +1243,7 @@ expression kind names the received kind and its request path (for example,
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
 | `RESULT_TOO_LARGE` | Required tool response fields exceed the shared character budget after optional detail is trimmed. No partial answer is returned; request fewer rows, columns or objects. See `details.max_result_chars`. |
 | `WINDOW_TOTAL_UNSUPPORTED` | A `time` window with no `grain` answers one total, but a select or `having` is read per period (a running total, a comparison, a rolling window, a conversion, a distribution), an entity filter is tested per period, or part of the call still groups by the raw time column. Nothing is returned; `details.path` is `time.grain` and the hint is the call's `time` block with a grain to add. |
+| `ROW_GRAIN_UNSUPPORTED` | The query needs to tell apart the rows of a row-grain model (one with no key, where every stored row counts): a segment, an entity filter, a per-entity value or distribution, a conversion or an anchored set on it, or a sum, first or last of an `additive: false` measure on it. `details` names the `model` and its `entity`; the message says what works instead (count its rows, sum its values, group by its or its parents' columns) and to declare a key on the model if its rows have one. |
 | `EMPTY_GROUPS_UNSETTLED` | Under `observation_scope: "dataset"`, a `where` beside an entity filter on aggregates can't tell no data from data of nothing: resend with `observation_scope: "query"` ([Empty groups](QUERY_CALL.md#empty-groups-null-or-0)); `details.outputs` names the call's outputs it can't settle. Otherwise the compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`, or a sum missing a required row count, so a group whose amounts are all unknown could read `0`. A measure containing a nested CASE forced onto a rollup is also refused (`details.aggregate_relation`). An engine defect, not a query error; nothing is returned. `details.measures` names them, or `details.row_counts_named_like` a row count named like another column. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |
 

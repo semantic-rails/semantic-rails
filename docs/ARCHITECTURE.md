@@ -236,7 +236,7 @@ Aggregate relation rules:
   must nest in the query's (a week rollup answers only week queries), and the
   query's bounds must fall on its bucket boundaries
 - a `count_distinct` routes only when it counts the single-column row key of a
-  model that isn't a fact model; relations that declare `filters`, leaves with
+  model; relations that declare `filters`, leaves with
   metric predicates, roles that convert time zones and non-default calendars
   don't route
 - all selected measures, grouped dimensions, and filtered dimensions must be
@@ -676,5 +676,5 @@ Representative semantic errors:
 ## Active Remaining Limits
 
 - DuckDB is the zero-setup local backend; Snowflake execution depends on a configured `snowflake_cli`, `snowflake_native`, or opt-in `snowflake_adbc` connection (see [ADBC profiles](ADDING_A_DIALECT.md#adbc-profiles)).
-- The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner. Each operand counts the rows of its entity's table by the entity key, so an operand measure must count exactly that key, spelled as the entity declares it: a measure that counts an expression (such as `CASE WHEN ... THEN key END`), another column or a fact model's rows is rejected with `CONVERSION_NOT_SUPPORTED`. Write a `CASE` condition as the operand's `filter` instead, and for another column use a measure on the entity whose rows are the events. Both operands counting the conversion entity itself on one clock is rejected too, by package validation and at query time: each entity is then a single event that converts to itself, so the window never applies.
+- The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner. Each operand counts the rows of its entity's table by the entity key, so an operand measure must count exactly that key, spelled as the entity declares it: a measure that counts an expression (such as `CASE WHEN ... THEN key END`) or another column is rejected with `CONVERSION_NOT_SUPPORTED`, and an operand on a row-grain model with `ROW_GRAIN_UNSUPPORTED`. Write a `CASE` condition as the operand's `filter` instead, and for another column use a measure on the entity whose rows are the events. Both operands counting the conversion entity itself on one clock is rejected too, by package validation and at query time: each entity is then a single event that converts to itself, so the window never applies.
 - `metric_predicate` is implemented for the supported contextual and entity-only cases used by the active package, but it is not yet a fully general arbitrary nested predicate planner.
