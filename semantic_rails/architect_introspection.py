@@ -748,27 +748,22 @@ def _suggest_key(
     entity: str,
     source: str,
     scan: str,
+    deadline: float,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """The key suggestion (None for row grain) and how the search ended: ``confirmed``,
     ``none_found`` (with how many sets it ``checked``), ``timed_out`` (with the sets left
     ``unconfirmed``, which no draft writes) or ``empty_table``.
 
-    A declared PRIMARY KEY is the key. Otherwise each candidate (declared UNIQUE columns first)
-    is refuted on the profile's own sample, and a survivor is confirmed never null and unique on
-    the whole relation; a rejection moves on, and one search deadline covers it all.
+    Each candidate (a declared PRIMARY KEY, then declared UNIQUE columns) is refuted on the
+    profile's own sample, and a survivor is confirmed never null and unique on the whole
+    relation; a rejection moves on. ``deadline`` is the whole search's (``time.monotonic``).
     """
-    if described["primary_key"]:
-        reason = "declared PRIMARY KEY"
-        return {"columns": described["primary_key"], "confidence": "high", "reason": reason}, {
-            "status": "confirmed"
-        }
     if not profile["row_count"]:
         return None, {"status": "empty_table"}  # no rows are no evidence of a key
-    candidates = [*described["unique"], *_key_candidates(profile, entity)]
+    declared = described["primary_key"]
+    candidates = [*([declared] if declared else []), *described["unique"]]
+    candidates = [*candidates, *_key_candidates(profile, entity)]
     candidates = [cols for i, cols in enumerate(candidates) if cols not in candidates[:i]]
-    deadline = time.monotonic() + KEY_SEARCH_SECONDS
-    timer = threading.Timer(KEY_SEARCH_SECONDS, warehouse.connection.interrupt)
-    timer.start()
     index = 0
     try:
         for index, columns in enumerate(candidates):
@@ -787,12 +782,11 @@ def _suggest_key(
                     break  # refuted on the sample, or rejected on the whole relation
             else:
                 reason = f"({', '.join(columns)}) is never null and unique in all {rows} rows"
+                reason = "declared PRIMARY KEY" if columns == declared else reason
                 key = {"columns": columns, "confidence": "high", "reason": reason}
                 return key, {"status": "confirmed", "checked": index + 1}
     except duckdb.InterruptException:
         return None, {"status": "timed_out", "unconfirmed": candidates[index:]}
-    finally:
-        timer.cancel()
     return None, {"status": "none_found", "checked": len(candidates)}
 
 
@@ -875,9 +869,28 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     source = _qualified(warehouse, schema, name)
     entity = entity_name(name)
     columns = [column["name"] for column in described["columns"]]
-    with _sample(warehouse, source, MAX_PROFILE_ROWS) as (scan, row_count):
-        profile = _profile(warehouse, described, columns, scan, row_count, MAX_PROFILE_ROWS, 0)
-        key, search = _suggest_key(warehouse, described, profile, entity, source, scan)
+    # Without a profile in time, the roles come from the column types alone.
+    profile: dict[str, Any] = {"row_count": None, "sampled": None, "columns": described["columns"]}
+    key, search = None, {"status": "timed_out", "unconfirmed": []}
+    # One deadline covers sampling, profiling and the key search; a query past it is interrupted.
+    deadline = time.monotonic() + KEY_SEARCH_SECONDS
+    timer = threading.Timer(KEY_SEARCH_SECONDS, warehouse.connection.interrupt)
+    timer.start()
+    try:
+        with _sample(warehouse, source, MAX_PROFILE_ROWS) as (scan, row_count):
+            try:
+                profile = _profile(
+                    warehouse, described, columns, scan, row_count, MAX_PROFILE_ROWS, 0
+                )
+                key, search = _suggest_key(
+                    warehouse, described, profile, entity, source, scan, deadline
+                )
+            finally:
+                timer.cancel()  # the sample is dropped uninterrupted
+    except duckdb.InterruptException:
+        pass  # out of time while sampling or profiling: no key
+    finally:
+        timer.cancel()
     key_columns = list(key["columns"]) if key else []
     links = _foreign_keys(warehouse, described, key_columns)
     roles, unmodeled = draft_roles(
