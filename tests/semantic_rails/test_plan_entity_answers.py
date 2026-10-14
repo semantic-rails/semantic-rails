@@ -255,6 +255,44 @@ def _ready(payload: dict[str, Any]) -> dict[str, Any]:
     return payload["best"]["query"]
 
 
+@pytest.mark.parametrize(
+    ("clause", "predicate", "expected"),
+    [
+        ("", "", [("North Star", 1)]),
+        (" where region is south", " AND e.region = 'south'", [("North Star", 1)]),
+        (" where region is north", " AND e.region = 'north'", []),
+        (" excluding north", " AND (e.region != 'north' OR e.region IS NULL)", [("North Star", 1)]),
+    ],
+)
+def test_a_resolved_name_never_adds_a_value_filter(
+    subscriptions: Callable[..., Runtime], clause: str, predicate: str, expected: list[Any]
+) -> None:
+    runtime = subscriptions(
+        event_region=True,
+        extra="""
+        ALTER TABLE events ADD COLUMN region VARCHAR;
+        UPDATE events SET region = 'south';
+        UPDATE accounts SET name = 'North Star' WHERE account_id = 'a';
+        UPDATE accounts SET name = 'Star Labs' WHERE account_id = 'd';
+        """,
+    )
+    query = _ready(_plan(runtime, f"How many new accounts did North Star have last month{clause}?"))
+    region = "dimension.subscriptions_event_region"
+    if not clause:
+        assert all(row["field"] != region for row in query.get("where", []))
+    else:
+        assert any(row["field"] == region for row in query["where"])
+    rows = runtime.query(query, now=NOW["now"])["rows"]
+    actual = [(row[ACCOUNT_NAME], row["new_accounts"]) for row in rows]
+    sql = f"""
+    SELECT a.name, COUNT(DISTINCT e.event_id) FROM events e JOIN accounts a USING (account_id)
+    WHERE a.segment = 'customer' AND e.kind = 'signup' AND a.account_id = 'a'
+      AND e.occurred_at >= DATE '2026-09-01' AND e.occurred_at < DATE '2026-10-01'{predicate}
+    GROUP BY a.name
+    """
+    assert actual == _reference(runtime, sql) == expected
+
+
 _EVENTS_LAST_WEEK = """
 SELECT a.account_id, a.name, COUNT(DISTINCT e.event_id)
 FROM events e JOIN accounts a USING (account_id)

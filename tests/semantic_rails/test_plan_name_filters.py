@@ -314,6 +314,28 @@ GROUP BY a.name
         ("MRR of the Globex account", "Globex", "b", _MRR_ON_OCTOBER_4, [("Globex", 0.0)]),
         # A sentence's first word, with its possessive.
         ("Globex's MRR", "Globex", "b", _MRR_ON_OCTOBER_4, [("Globex", 0.0)]),
+        ("What is Acme MRR?", "Acme", "a", _MRR_ON_OCTOBER_4, [("Acme Data Co", 500.0)]),
+        (
+            "Show Acme MRR on 2026-10-04",
+            "Acme",
+            "a",
+            _MRR_ON_OCTOBER_4,
+            [("Acme Data Co", 500.0)],
+        ),
+        (
+            "What is Acme Data Co MRR?",
+            "Acme Data Co",
+            "a",
+            _MRR_ON_OCTOBER_4,
+            [("Acme Data Co", 500.0)],
+        ),
+        (
+            "What is MRR Acme Data Co?",
+            "Acme Data Co",
+            "a",
+            _MRR_ON_OCTOBER_4,
+            [("Acme Data Co", 500.0)],
+        ),
         # A sentence's first word that only the sentence capitalizes starts no name.
         (
             "Did Acme have new accounts last month?",
