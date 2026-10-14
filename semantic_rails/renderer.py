@@ -144,13 +144,6 @@ def _quote_ident(value: str) -> str:
     return quote_identifier(raw)
 
 
-def column_identity(name: str) -> str:
-    """The column a warehouse reads for ``name`` as rendered: a name written unquoted in any
-    case, a quoted one exactly."""
-    raw = str(name)
-    return raw.casefold() if _quote_ident(raw) == raw else raw
-
-
 # The answer's own column names (the outermost SELECT's aliases), and the names that qualify a
 # derived relation (a CTE, or an alias of one). An output alias is always quoted where it is
 # defined and wherever it is referenced (unqualified, or through a derived relation), so a

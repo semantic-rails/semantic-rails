@@ -2,12 +2,12 @@
 
 Without an authored ``cardinality:``, a side of a relationship is unique only when its columns
 hold every column of its entity's key, and that key is declared ``primary`` (the default) or
-``unique``. Columns compare as the warehouse resolves them: in any order, with extra columns
-allowed, and an unquoted name in any case. A ``target:`` off the target's key could repeat a
-target row and double a measure, so loading refuses it rather than guessing; a ``via:`` on part
-of a composite key, or on a key declared ``natural`` or ``foreign``, is an ordinary foreign key.
-An authored ``cardinality:`` (or ``target_key_role:``) is the author's statement and loads as
-written.
+``unique``. Columns compare as written, in any order and with extra columns allowed; a column
+that differs from a key column only in case is refused. A ``target:`` off the target's key
+could repeat a target row and double a measure, so loading refuses it rather than guessing; a
+``via:`` on part of a composite key, or on a key declared ``natural`` or ``foreign``, is an
+ordinary foreign key. An authored ``cardinality:`` (or ``target_key_role:``) is the author's
+statement and loads as written.
 
 Fixture: parents 1 and 2 share category x and region east, parent 3 is y/west; children 1 and 2
 are x (weights 5 and 7), child 3 is y (100). Joined on category, the east children weigh 12,
@@ -171,29 +171,71 @@ def test_a_target_off_the_key_is_refused_without_a_cardinality(
 
 
 @pytest.mark.parametrize(
-    ("relationship", "keys", "cardinality", "ask", "totals"),
+    ("relationship", "keys", "column", "key_column"),
     [
         (
             {"entities": ["child", "parent"], "via": ["child_id"], "target": ["ID"]},
             {},
-            "1:1",
-            WEIGHT_BY_REGION,
-            {"east": 12, "west": 100},
+            "ID",
+            "id",
+        ),
+        (
+            {
+                "entities": ["child", "parent"],
+                "via": ["child_id"],
+                "target": ["ID"],
+                "cardinality": "many_to_one",
+            },
+            {},
+            "ID",
+            "id",
+        ),
+        (
+            {"entities": ["child", "parent"], "via": ["child_id"], "target": ["order id"]},
+            {"parent": ["Order ID"]},
+            "order id",
+            "Order ID",
         ),
         (
             {"entities": ["line", "ord"], "via": ["order_id"], "target": ["ORDER_ID"]},
             {},
-            "N:1",
-            QTY_BY_STATUS,
-            {"open": 4},
+            "ORDER_ID",
+            "order_id",
         ),
         (
             {"entities": ["child", "parent"], "via": ["CHILD_ID"], "target": ["id"]},
             {},
-            "1:1",
-            WEIGHT_BY_REGION,
-            {"east": 12, "west": 100},
+            "CHILD_ID",
+            "child_id",
         ),
+    ],
+    ids=[
+        "target_in_another_case",
+        "under_an_authored_cardinality",
+        "a_quoted_name_in_another_case",
+        "many_to_one_in_another_case",
+        "via_in_another_case",
+    ],
+)
+def test_a_column_spelled_in_another_case_than_the_key_is_refused(
+    tmp_path: Path, relationship: dict[str, Any], keys: dict[str, Any], column: str, key_column: str
+) -> None:
+    """A warehouse may read the two spellings as one column or as two, and a quoted name in
+    another case as either: the loader compares names as written and asks for the key's."""
+    root = _package(tmp_path, relationship, **keys)
+    with pytest.raises(SemanticLayerError) as caught:
+        load_package_config(str(root))
+    assert caught.value.code == "INVALID_CONFIG"
+    edge = "lines.ord" if relationship["entities"][0] == "line" else "children.parent"
+    assert (
+        f"join '{edge}' names column '{column}' but the key is spelled '{key_column}': spell it "
+        "exactly as the key (column names are compared as written)"
+    ) in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("relationship", "keys"),
+    [
         (
             {
                 "entities": ["child", "parent"],
@@ -201,9 +243,6 @@ def test_a_target_off_the_key_is_refused_without_a_cardinality(
                 "target": ["category", "id"],
             },
             {"parent": ["id", "category"]},
-            "1:1",
-            WEIGHT_BY_REGION,
-            {"east": 12, "west": 100},
         ),
         (
             {
@@ -212,30 +251,16 @@ def test_a_target_off_the_key_is_refused_without_a_cardinality(
                 "target": ["id", "id"],
             },
             {},
-            "1:1",
-            WEIGHT_BY_REGION,
-            {"east": 12, "west": 100},
         ),
     ],
-    ids=[
-        "target_in_another_case",
-        "many_to_one_in_another_case",
-        "via_in_another_case",
-        "composite_key_in_another_order",
-        "a_repeated_key_column",
-    ],
+    ids=["composite_key_in_another_order", "a_repeated_key_column"],
 )
-def test_a_join_on_the_key_loads_however_its_columns_are_spelled(
-    tmp_path: Path,
-    relationship: dict[str, Any],
-    keys: dict[str, Any],
-    cardinality: str,
-    ask: dict[str, str],
-    totals: dict[str, Any],
+def test_a_join_on_the_key_loads_in_any_column_order(
+    tmp_path: Path, relationship: dict[str, Any], keys: dict[str, Any]
 ) -> None:
     root = _package(tmp_path, relationship, **keys)
-    assert _probe(root).cardinality == cardinality
-    assert _totals(root, ask) == totals
+    assert _probe(root).cardinality == "1:1"
+    assert _totals(root, WEIGHT_BY_REGION) == {"east": 12, "west": 100}
 
 
 def test_columns_holding_the_whole_key_and_more_are_still_unique(tmp_path: Path) -> None:

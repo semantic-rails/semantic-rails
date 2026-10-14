@@ -4,4 +4,5 @@
   (`many_to_many` when the values repeat). A side reads as unique only when its columns hold
   its entity's whole key and that key is declared `primary` or `unique`, so a `via:` on part of
   a composite key, or on a `natural` or `foreign` key, no longer reads as one-to-one. Key
-  columns match in any order and, when unquoted, in any case.
+  columns match in any order; a join column that differs from a key column only in case now
+  fails loading, since warehouses disagree on whether the two spellings name one column.
