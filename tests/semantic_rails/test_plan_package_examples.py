@@ -247,6 +247,20 @@ def test_contractions_use_the_same_normalizer(subscriptions, question):
     assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, "2026-10-04", 2)
 
 
+def test_an_example_ordered_by_a_selected_id_answers_by_its_column(subscriptions):
+    """An example's order_by may name its select item by id, as execute accepts it."""
+    by_id = [{"field": "metric.subscriptions.mrr", "direction": "desc"}, *QUERY["order_by"][1:]]
+    _replace_entries(
+        subscriptions, {"top_mrr": {"question": QUESTION, "query": {**QUERY, "order_by": by_id}}}
+    )
+    result = _plan(subscriptions)
+    assert result["status"] == "ok", result.get("why")
+    assert result["best"]["pattern"] == "package_example"
+    assert result["best"]["query"]["order_by"] == QUERY["order_by"]
+    rows = subscriptions.query(result["best"]["query"], now=NOW["now"])["rows"]
+    assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, "2026-10-04", 2)
+
+
 @pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
 def test_two_matching_examples_clarify_instead_of_choosing(subscriptions, detail):
     _replace_entries(

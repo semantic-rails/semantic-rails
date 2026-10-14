@@ -6,16 +6,22 @@ import ast
 import json
 import re
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import semantic_rails
+from semantic_rails.ast import normalize_partial_query
+from semantic_rails.compiler_parts import binding
+from semantic_rails.diagnostics import enrich_column_expression
 from semantic_rails.embedding import RequestContext
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.package_snapshot import load_package_snapshot
-from semantic_rails.query_call import V2_POINTER
+from semantic_rails.query_call import V2_POINTER, call_kinds
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
 
@@ -348,10 +354,12 @@ TOP_REVENUE = {
     [
         ([ORDERS, REVENUE], REVENUE, "revenue_usd"),
         ([ORDERS, {"expression": REVENUE, "as": "revenue"}], REVENUE, "revenue"),
-        ([ORDERS, TOP_REVENUE], REVENUE, "top"),
+        ([ORDERS, {"expression": {"kind": "measure", "measure": REVENUE}, "as": "revenue"}], REVENUE, "revenue"),
+        # Beside another statistic of it, the id is the item that reads it as itself.
+        ([TOP_REVENUE, REVENUE], REVENUE, "revenue_usd"),
         ([ORDERS, AOV], AOV, "aov_usd"),
     ],
-    ids=["measure", "named-measure", "statistic-override", "metric"],
+    ids=["measure", "named-measure", "measure-kind", "beside-a-statistic-override", "metric"],
 )  # fmt: skip
 def test_order_by_a_selected_id_orders_by_its_column(
     runtime: Runtime, select: list[Any], field: str, column: str
@@ -363,17 +371,30 @@ def test_order_by_a_selected_id_orders_by_its_column(
     assert runtime.query(by_id, now=NOW)["rows"] == runtime.query(by_column, now=NOW)["rows"]
 
 
-def test_order_by_an_id_selected_twice_names_its_columns(runtime: Runtime) -> None:
-    call = {"select": [REVENUE, TOP_REVENUE], "group_by": [STORE], "order_by": [{"field": REVENUE}]}
+@pytest.mark.parametrize(
+    ("select", "columns"),
+    [
+        # Two columns read it as itself: which one orders is the caller's to say.
+        ([REVENUE, {"expression": REVENUE, "as": "revenue"}], ["revenue_usd", "revenue"]),
+        # Only another statistic reads it: the id names a number no column holds.
+        ([ORDERS, TOP_REVENUE], ["top"]),
+    ],
+    ids=["selected-twice", "only-a-statistic-override"],
+)  # fmt: skip
+def test_order_by_an_id_no_one_column_reads_names_its_columns(
+    runtime: Runtime, select: list[Any], columns: list[str]
+) -> None:
+    call = {"select": select, "group_by": [STORE], "order_by": [{"field": REVENUE}]}
     error = _error(runtime, call)
     assert (error["code"], error["details"]["path"]) == ("INVALID_ORDER_BY", "order_by[0].field")
-    assert error["details"]["closest_matches"] == ["revenue_usd", "top"]
-    assert all(column in _hint(error) for column in ("revenue_usd", "top"))
-    for column in error["details"]["closest_matches"]:
+    assert error["details"]["closest_matches"] == columns
+    assert all(column in _hint(error) for column in columns)
+    for column in columns:
         assert runtime.validate({**call, "order_by": [{"field": column}]}, now=NOW)["ok"] is True
     # An id no select item reads is refused as before, with the columns the call can name.
-    unselected = _error(runtime, {**call, "order_by": [{"field": ORDERS}]})
-    assert unselected["details"]["available_select_aliases"] == ["revenue_usd", "top"]
+    unselected = _error(runtime, {**call, "order_by": [{"field": AOV}]})
+    assert unselected["code"] == "INVALID_ORDER_BY"
+    assert "available_select_aliases" in unselected["details"]
 
 
 STORE_IDS = [
@@ -400,11 +421,14 @@ STORE_IDS = [
 def test_a_raw_column_names_the_query_kinds_and_its_dimensions(
     runtime: Runtime, column: dict[str, str], dimensions: list[str] | None
 ) -> None:
-    error = _error(runtime, {"select": [{"expression": {"kind": "column", **column}, "as": "x"}]})
+    select = [ORDERS, {"expression": {"kind": "column", **column}, "as": "x"}]
+    error = _error(runtime, {"select": select})
     assert (error["code"], error["message"]) == ("INVALID_QUERY", "Unsupported query expression kind 'column'")  # fmt: skip
+    assert error["details"]["path"] == "select[1].expression"
     assert error["details"].get("closest_matches") == dimensions
     kinds = error["details"]["supported_kinds"]
-    assert "column" not in kinds and {"measure", "ratio", "aggregate", "share"} <= set(kinds)
+    # Every kind of the call is offered but those a select item cannot be.
+    assert set(call_kinds()) - set(kinds) == {"column", "in", "not_in", "date_add", "metric_predicate"}  # fmt: skip
     hint = _hint(error)
     assert all(f"'{kind}'" in hint for kind in kinds) and "group_by" in hint
     if dimensions and len(dimensions) == 1:
@@ -412,39 +436,44 @@ def test_a_raw_column_names_the_query_kinds_and_its_dimensions(
         assert runtime.validate({"select": [ORDERS], "group_by": dimensions}, now=NOW)["ok"] is True
 
 
+def test_a_raw_column_in_a_draft_names_its_path() -> None:
+    draft = {"select": [{"expression": {"kind": "column", "column": "store_id"}, "as": "x"}]}
+    with pytest.raises(SemanticLayerError) as raised:
+        normalize_partial_query(draft)
+    assert raised.value.details["path"] == "select[0].expression"
+
+
+def test_the_dimensions_on_a_column_are_capped(package_config_factory) -> None:
+    config, _ = package_config_factory("jaffle_shop")
+    store = next(row for row in config.dimensions if row.id == STORE)
+    copies = [replace(store, id=f"dimension.store_name_{n:02d}") for n in range(12)]
+    details = {"expression_kind": "column", "column": "store_name"}
+    error = SemanticLayerError("INVALID_QUERY", "Unsupported query expression kind 'column'", details=details)  # fmt: skip
+    enriched = enrich_column_expression(error, replace(config, dimensions=copies))
+    assert enriched.details["closest_matches"] == [row.id for row in copies[:10]]
+
+
 ORDER = "entity.jaffle_order"
 CUSTOMER = "entity.jaffle_customer"
+HISTORY = "entity.jaffle_customer_history"
 
 
 @pytest.mark.parametrize(
     ("route", "relationships"),
     [
         ({"from": ORDER, "to": CUSTOMER, "via": ["customer_id"]}, ["relationship.orders_customer"]),
+        # No route joins a calendar to a customer: the relationships touching either entity.
         (
-            {"from": "entity.jaffle_item", "to": CUSTOMER, "via": [ORDER, CUSTOMER]},
+            {"from": "entity.jaffle_fiscal_calendar", "to": CUSTOMER, "via": [ORDER, CUSTOMER]},
             [
                 "relationship.customer_history_customer",
-                "relationship.order_items_order",
-                "relationship.order_items_product",
                 "relationship.order_lifecycle_customer",
-                "relationship.orders_customer",
-                "relationship.storefront_sessions_customer",
-            ],
-        ),
-        # The one relationship joining the pair walks only from the history to the customer.
-        (
-            {"from": CUSTOMER, "to": "entity.jaffle_customer_history", "via": ["customer_id"]},
-            [
-                "relationship.customer_history_customer",
-                "relationship.customer_history_store",
-                "relationship.order_lifecycle_customer",
-                "relationship.order_to_customer_history",
                 "relationship.orders_customer",
                 "relationship.storefront_sessions_customer",
             ],
         ),
     ],
-    ids=["column-joining-the-pair", "entity-ids-no-direct-join", "join-walks-the-other-way"],
+    ids=["column-joining-the-pair", "entity-ids-no-route"],
 )  # fmt: skip
 def test_a_route_via_that_names_no_relationship_lists_the_relationships_at_its_pair(
     runtime: Runtime, route: dict[str, Any], relationships: list[str]
@@ -454,7 +483,42 @@ def test_a_route_via_that_names_no_relationship_lists_the_relationships_at_its_p
     assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", "routes[0]")
     assert error["details"]["reason"] == "invalid_route_decision"
     assert error["details"]["closest_matches"] == relationships
+    assert "other_routes" not in error["details"]
     assert "relationship ids" in _hint(error)
+
+
+SEGMENTS = {
+    "select": ["measure.jaffle.customer_count"],
+    "group_by": ["dimension.jaffle_customer_history_segment"],
+    "time": {"grain": "year"},
+}
+
+
+def test_a_route_via_with_no_one_hop_join_offers_the_pair_s_routes(runtime: Runtime) -> None:
+    call = {**SEGMENTS, "routes": [{"from": CUSTOMER, "to": HISTORY, "via": ["customer_id"]}]}
+    error = _error(runtime, call)
+    assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", "routes[0]")
+    # The one relationship joining the pair walks only from the history to the customer.
+    assert "closest_matches" not in error["details"]
+    routes = error["details"]["other_routes"]
+    assert routes == [
+        {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]},
+        {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order", "relationship.order_to_customer_history"]},
+    ]  # fmt: skip
+    assert "more_routes" not in error["details"]
+    assert "relationship ids" in _hint(error)
+    for route in routes:
+        assert runtime.validate({**SEGMENTS, "routes": [route]}, now=NOW)["ok"] is True
+
+
+def test_the_relationships_touching_a_pair_are_capped(monkeypatch) -> None:
+    monkeypatch.setattr(binding, "pair_routes", lambda *args: [])
+    touching = [
+        SimpleNamespace(id=f"relationship.r{n:02d}", source_entity=ORDER, target_entity=f"entity.e{n}")
+        for n in range(12)
+    ]  # fmt: skip
+    details = binding._via_candidates(SimpleNamespace(relationships=touching), ORDER, CUSTOMER)
+    assert details["closest_matches"] == [row.id for row in touching[:10]]
 
 
 # The modules that write refusal messages, hints and answer disclosures, and the call words

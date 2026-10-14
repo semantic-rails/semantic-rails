@@ -36,9 +36,57 @@ ORDERS = "measure.jaffle.order_count"
 EXTERNAL = RequestContext(audience="external")
 # A fixed clock, so two answers to one call compare equal.
 NOW = "2018-01-01T00:00:00Z"
+CUSTOMER = "entity.jaffle_customer"
+HISTORY = "entity.jaffle_customer_history"
+# Each refusal that offers candidates from the package, with the one object hidden, a name of it
+# that no visible object shares, the issue field and the candidates a caller who sees it gets.
+CANDIDATE_CASES = {
+    "raw_column": (
+        {"select": [{"expression": {"kind": "column", "column": "store_id"}, "as": "x"}]},
+        "dimension.jaffle_order_store_id",
+        "jaffle.Order.store_id",
+        "closest_matches",
+        [
+            "dimension.jaffle_order_lifecycle_store_id",
+            "dimension.jaffle_order_store_id",
+            "dimension.jaffle_store_id",
+            "dimension.jaffle_store_inventory_snapshot_store_id",
+            "dimension.jaffle_storefront_session_store_id",
+        ],
+    ),
+    "via_relationship": (
+        {
+            "select": [ORDERS],
+            "group_by": ["dimension.jaffle_customer_name"],
+            "routes": [{"from": "entity.jaffle_order", "to": CUSTOMER, "via": ["customer_id"]}],
+        },
+        "relationship.orders_customer",
+        "Order to Customer",
+        "closest_matches",
+        ["relationship.orders_customer"],
+    ),
+    "via_entity": (
+        {
+            "select": [CUSTOMERS],
+            "group_by": ["dimension.jaffle_customer_history_segment"],
+            "time": {"grain": "year"},
+            "routes": [{"from": CUSTOMER, "to": HISTORY, "via": ["customer_id"]}],
+        },
+        "entity.jaffle_storefront_session",
+        "Storefront session",
+        "other_routes",
+        [
+            {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]},
+            {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order", "relationship.order_to_customer_history"]},
+        ],
+    ),
+}  # fmt: skip
 
 
 def _producer_case(runtime, monkeypatch, producer):
+    if producer in CANDIDATE_CASES:
+        query, hidden_id, label, field, alternatives = CANDIDATE_CASES[producer]
+        return query, hidden_id, label, "INVALID_QUERY", field, alternatives
     query = {
         "select": [{"expression": ORDERS, "as": "orders"}],
         "time": {"temporal_role": ORDER_TIME, "grain": "month"},
@@ -146,7 +194,8 @@ def _producer_response(runtime, query, transport):
 
 
 @pytest.mark.parametrize(
-    "producer", ["alias", "measure_clocks", "predicate_clocks", "conversion_events"]
+    "producer",
+    ["alias", "measure_clocks", "predicate_clocks", "conversion_events", *CANDIDATE_CASES],
 )
 @pytest.mark.parametrize("visibility", ["hidden", "visible", "unknown"])
 @pytest.mark.parametrize("transport", ["validate", "http", "mcp"])
