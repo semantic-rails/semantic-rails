@@ -866,8 +866,9 @@ kind names must match exactly.
   A measure's row arithmetic is computed in the same `SELECT` that checks its rows'
   visibility. DuckDB computes it only for visible rows, so a value that would overflow on a
   hidden row never changes a filtered answer; on Postgres and Snowflake the warehouse's plan
-  decides the order inside that `SELECT`, so such an overflow can refuse a filtered
-  question with an execution error (it never returns a hidden value).
+  decides the order inside that `SELECT`, so such an overflow, or a hidden text value the
+  warehouse can't convert where a measure reads text as a number (`COALESCE(amount_text, 0)`),
+  can refuse a filtered question with an execution error (it never returns a hidden value).
 
   A filter value on a model no filter reaches (`where` on a customer's segment, say) isn't
   checked against the data for a filtered caller, since listing that model is held: such a

@@ -744,6 +744,25 @@ def test_a_model_the_filter_cant_be_traced_through_is_refused_never_read(
     assert model in region["unsupported"] and model not in region["covered"]
 
 
+def test_tables_of_one_name_in_two_schemas_are_two_relations(package):
+    """``main.order_fact`` and ``archive.order_fact`` are different tables: the filtered
+    caller gets the visible answer, not a refusal."""
+    with duckdb.connect(str(package / "rj.duckdb")) as connection:
+        connection.execute("CREATE SCHEMA archive")
+        connection.execute("CREATE TABLE archive.order_fact AS SELECT * FROM order_fact")
+    base = Runtime.from_path(str(package)).package_config
+    entities = [
+        replace(entity, table="main.order_fact") if entity.table == "order_fact" else entity
+        for entity in base.entities
+    ]
+    config = replace(base, entities=[*entities, _another_order_model("archive.order_fact")])
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        assert _rows(runtime.query(_query({"revenue": REVENUE}), context=WEST)) == [(60,)]
+    finally:
+        runtime.close()
+
+
 def test_an_undecided_ownership_route_is_refused_and_listed(home_stores):
     """Lines reach stores through their order or through their order's customer's home
     store: which owns them is undecided, so lines are refused under the filter."""

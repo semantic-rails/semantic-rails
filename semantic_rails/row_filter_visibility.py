@@ -113,9 +113,7 @@ def _coverage(base: PackageConfig, entity_id: str) -> Coverage:
     restricted = {target, *hops}
     for relation in by_relation:
         spellings = {
-            other
-            for other in by_relation
-            if other != relation and other.rsplit(".", 1)[-1] == relation.rsplit(".", 1)[-1]
+            other for other in by_relation if other != relation and _may_alias(other, relation)
         }
         if spellings and (spellings | {relation}) & restricted:
             refused[relation] = "another model reads this relation under another name"
@@ -127,6 +125,14 @@ def _coverage(base: PackageConfig, entity_id: str) -> Coverage:
         hops=hops,
         refused=refused,
     )
+
+
+def _may_alias(one: str, other: str) -> bool:
+    """Whether two relation names may be one table: the shorter is the longer's trailing
+    parts (``stores`` and ``main.stores``); ``sales.stores`` and ``archive.stores`` are two."""
+    a, b = one.split("."), other.split(".")
+    n = min(len(a), len(b))
+    return a[-n:] == b[-n:]
 
 
 def _far_end(analysis: Any, current: str, rel_id: str) -> str:
