@@ -358,10 +358,12 @@ def _bind_with_row_filters(
             bound = _bind_query(config, registry, payload)
     except SemanticLayerError as exc:
         if row_filters and exc.code == "AMBIGUOUS_PATH":
-            # Offered only if every option answers under the caller's filters.
+            # Offered only if every option can be taken and answers under the caller's filters.
+            pair = (exc.details["start"], exc.details["target"])
+            _guard_route_row_filters(base_of(config), pair, row_filters, "", config)
             visibility = visibility_for(config, shown_filters)
             for option in (exc.details.get("clarification") or {}).get("options") or []:
-                route = (exc.details["start"], exc.details["target"], option["relationship_path"])
+                route = (*pair, option["relationship_path"])
                 hold_unowned_reads(config, visibility, roots=(), routes=[route])
         raise
     except RecursionError as exc:
@@ -583,13 +585,14 @@ def _guard_route_row_filters(
     policies = {row.policy_id for row in row_filters if row.table in tables}
     if policies:
         shown = {row.id for row in display_config.semantic_policies}
+        asked = f"{where} chooses" if where else "This question needs a choice of"
         raise SemanticLayerError(
             "POLICY_DENIED",
-            f"{where} chooses a route from '{pair[0]}' to '{pair[1]}' under a row filter; "
+            f"{asked} a route from '{pair[0]}' to '{pair[1]}' under a row filter; "
             "a query cannot choose a route under a row filter",
             details={
                 "reason": "route_override_under_row_policy",
-                "path": where,
+                **({"path": where} if where else {}),
                 "policy_ids": sorted(policies & shown),
                 "hint": "Under a row filter only a reviewed graph.path_preferences row "
                 "(record_route_decision) changes which route the package means.",

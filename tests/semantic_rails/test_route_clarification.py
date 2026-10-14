@@ -694,10 +694,15 @@ def test_an_ambiguous_route_under_a_row_policy_is_refused_up_front(tmp_path):
     assert "clarification" not in refused.value.details and refused.value.details["hint"]
     # Each option sent back is refused the same way: nothing offered could be taken.
     for path in (BRANCH_ROUTE, OWNER_ROUTE):
-        routed = _engine(_routed(BALANCE_BY_DISTRICT, {**DIAMOND_ROW, "relationship_path": path}), config)
+        routed = _engine(
+            _routed(BALANCE_BY_DISTRICT, {**DIAMOND_ROW, "relationship_path": path}), config
+        )
         with pytest.raises(SemanticLayerError) as taken:
             compile_query(
-                config, Registry(config), routed, row_filters=row_filters_for_context(config, context)
+                config,
+                Registry(config),
+                routed,
+                row_filters=row_filters_for_context(config, context),
             )
         assert taken.value.details["reason"] == "route_override_under_row_policy"
 
