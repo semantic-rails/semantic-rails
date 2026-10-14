@@ -850,3 +850,61 @@ def test_package_arithmetic_reads_rows_in_the_scope_that_checks_their_visibility
     for scope in scopes:
         assert scope.from_table.name == "order_fact"
         assert any(isinstance(item, SqlInQuery) for item in sql_nodes(scope.where))
+
+
+@pytest.fixture
+def two_spellings(tmp_path):
+    """A second store model reads the stores' relation as ``main.store_dim``, with its own
+    filter (East) beside the stores' (West), and a hidden duplicate of s1 says East: the two
+    models are one relation, so no row of it passes both filters."""
+    root = _package(tmp_path / "rj_spellings")
+    graph = yaml.safe_load((root / "graph.yml").read_text())
+    graph["graph"]["entities"]["store_main"] = {"key": ["store_id"], "model": "stores_main"}
+    graph["graph"]["relationships"]["orders_store_main"] = {
+        "id": "relationship.orders_store_main",
+        "entities": ["order", "store_main"],
+        "cardinality": "many_to_one",
+    }
+    _put(root, "graph.yml", graph)
+    orders = yaml.safe_load((root / "models/orders.yml").read_text())
+    orders["model"]["entities"]["store_main"] = {}
+    _put(root, "models/orders.yml", orders)
+    _put(root, "models/stores_main.yml", {"model": {
+        "id": "stores_main", "relation": "main.store_dim", "entities": {"store_main": {}},
+        "dimensions": {"region": {"kind": "categorical"}},
+    }})  # fmt: skip
+    east = {**REGION, "id": "policy.rj.region_main", "attribute": "region_main"}
+    east["dimension"] = "dimension.rj_store_main_region"
+    _put(root, "policies.yml", {"semantic_policies": [REGION, east]})
+    with duckdb.connect(str(root / "rj.duckdb")) as connection:
+        connection.execute(SEED)
+        connection.execute("INSERT INTO store_dim VALUES ('s1', 'Secret', 'East', 999)")
+    return Runtime.from_path(str(root))
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        _query({"revenue": REVENUE}),
+        _query({"revenue": REVENUE}, ["dimension.rj_order_store_id"]),
+        _query({"qty": QTY}),
+    ],
+    ids=["revenue", "revenue_by_store", "line_quantity"],
+)
+def test_a_relation_read_under_two_spellings_is_refused_never_read(two_spellings, query):
+    caller = _context("West", region_main="East")
+    assert _denied(lambda: two_spellings.query(query, context=caller)) == (
+        "row_filter_coverage_unsupported"
+    )
+
+
+def test_a_predicate_through_a_refused_owner_is_refused():
+    owner = ParentHop("k", "u", "k")
+    refused = _vis(OTHER, parents={"t": (owner,)}, refused={"u": "two spellings"})
+    statement = _scan(SqlTableRef("t"))
+    assert _denied(lambda: enforce_row_filters(statement, refused)) == (
+        "row_filter_coverage_unsupported"
+    )
+    # A statement built under a visibility without the refusal fails the check too.
+    built = enforce_row_filters(statement, replace(refused, refused={}))
+    assert _denied(lambda: verify_row_filters(built, refused)) == "row_filter_coverage_unsupported"
