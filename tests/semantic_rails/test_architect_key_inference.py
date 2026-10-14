@@ -4,6 +4,7 @@ row-grain model, and the search says why."""
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -181,3 +182,59 @@ def test_a_key_is_confirmed_under_the_equality_joins_use(tmp_path):
         suggested = suggest_model(warehouse, "accounts")
     assert suggested["primary_key"] is None, suggested["key_search"]
     assert suggested["key_search"]["status"] == "none_found"
+
+
+def test_a_declared_primary_key_is_confirmed_like_any_other(tmp_path):
+    # DuckDB keeps 'a' and 'A' under a NOCASE primary key, but joins read them as one value.
+    path = tmp_path / "declared.duckdb"
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(
+            "CREATE TABLE accounts (account_id VARCHAR COLLATE NOCASE PRIMARY KEY, "
+            "category VARCHAR); INSERT INTO accounts VALUES ('a', 'x'), ('A', 'x')"
+        )
+    with open_duckdb(path) as warehouse:
+        suggested = suggest_model(warehouse, "accounts")
+    assert suggested["primary_key"] is None, suggested["key_search"]
+    assert suggested["upsert_model"]["primary_key"] == []
+
+
+def test_one_deadline_covers_sampling_profiling_and_the_search(
+    warehouse: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(architect_introspection, "KEY_SEARCH_SECONDS", 0.01)
+    monkeypatch.setattr(architect_introspection, "MAX_PROFILE_ROWS", 100)  # a sampled relation
+    profile = architect_introspection._profile
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.035)
+        return profile(*args, **kwargs)
+
+    monkeypatch.setattr(architect_introspection, "_profile", slow)
+    suggested = suggest_model(warehouse, "events")
+    temporary = warehouse.execute(
+        "SELECT system.main.count(*) FROM system.main.duckdb_tables() WHERE temporary"
+    )[1][0][0]
+    assert suggested["key_search"]["status"] == "timed_out"
+    assert suggested["primary_key"] is None and suggested["upsert_model"]["primary_key"] == []
+    assert temporary == 0
+
+
+@pytest.mark.parametrize(
+    ("sql", "key"),
+    [  # a key column named like an internal alias reads as itself
+        (
+            "CREATE TABLE accounts (account_id VARCHAR COLLATE NOCASE, n INTEGER); "
+            "INSERT INTO accounts VALUES ('a', 1), ('A', 1)",
+            None,
+        ),
+        ("CREATE TABLE letters (n VARCHAR); INSERT INTO letters VALUES ('a'), ('b')", ["n"]),
+    ],
+)
+def test_key_columns_never_collide_with_internal_names(tmp_path, sql, key):
+    path = tmp_path / "names.duckdb"
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(sql)
+    relation = sql.split()[2]
+    with open_duckdb(path) as warehouse:
+        suggested = suggest_model(warehouse, relation)
+    assert (suggested["primary_key"] or {}).get("columns") == key, suggested["key_search"]
