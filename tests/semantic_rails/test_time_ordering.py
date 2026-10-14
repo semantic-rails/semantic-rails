@@ -123,9 +123,10 @@ def test_default_order_covers_alternate_lowering_paths(config, shape):
             {"expression": {"measure": "measure.jaffle.order_count"}, "op": ">", "value": 0}
         ]
     else:
+        # The opening balance: a closing-day balance's share by entity sets is refused.
         aggregate = {
             "kind": "scoped_aggregate",
-            "measure": "measure.jaffle.inventory_on_hand_eop",
+            "measure": "measure.jaffle.inventory_on_hand_sop",
             "aggregation": "sum",
         }
         query["select"] = [
