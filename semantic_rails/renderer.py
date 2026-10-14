@@ -27,6 +27,7 @@ from .sql_ast import (
     SqlDatePart,
     SqlExists,
     SqlExpr,
+    SqlFrom,
     SqlIdentifier,
     SqlIn,
     SqlIndexAccess,
@@ -148,10 +149,11 @@ def _quote_ident(value: str) -> str:
 # is always quoted where it is defined and wherever it is referenced (unqualified, or through a
 # derived relation), so a keyword such as end, user or order is a name on every warehouse; a
 # physical column keeps the selective quoting above, since Snowflake folds an unquoted name to
-# upper case. A statement's derived names are the CTEs in view (its WITH's earlier ones, as a
-# WITH without RECURSIVE reads them, and an enclosing statement's), the aliases its FROM and
-# JOINs give them, and an enclosing statement's derived names, so a warehouse table named like
-# a CTE alias elsewhere, or like a CTE defined after it, is read as a table.
+# upper case. A statement's derived names are an enclosing statement's, then each name its FROM
+# and JOINs bind in turn: to a CTE in view (its WITH's earlier ones, as a WITH without RECURSIVE
+# reads them, and an enclosing statement's), or to a table or table function, which hides an
+# enclosing CTE alias of that name. So a warehouse table named or aliased like a CTE elsewhere,
+# or like a CTE defined after it, is read as a table.
 _OUTPUT_ALIASES: ContextVar[frozenset[str]] = ContextVar("output_aliases", default=frozenset())
 _DERIVED: ContextVar[frozenset[str]] = ContextVar("derived_relations", default=frozenset())
 _CTES: ContextVar[frozenset[str]] = ContextVar("ctes_in_view", default=frozenset())
@@ -168,6 +170,16 @@ def _relation_key(name: str) -> str:
     if _quote_ident(name) != name or (dialect is not None and dialect.identifiers_case_sensitive):
         return name
     return name.lower()
+
+
+def _bind(derived: frozenset[str], table: SqlFrom | None, ctes: frozenset[str]) -> frozenset[str]:
+    """``derived`` once ``table`` binds its name."""
+    if table is None:
+        return derived
+    name = _relation_key(table.alias or table.name)
+    if isinstance(table, SqlTableRef) and _relation_key(table.name) in ctes:
+        return derived | {name}
+    return derived - {name}
 
 
 @contextmanager
@@ -446,34 +458,36 @@ def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
                 )
             ctes_in_view |= {_relation_key(cte.name)}
         chunks.append("WITH " + ",\n".join(ctes))
-    aliases = {
-        _relation_key(table.alias)
-        for table in [query.from_table, *(join.table for join in query.joins)]
-        if isinstance(table, SqlTableRef)
-        and table.alias
-        and _relation_key(table.name) in ctes_in_view
-    }
-    with _reading(enclosing | ctes_in_view | aliases, ctes_in_view):
-        return "\n".join([*chunks, *_select_clauses(query)])
+    # The derived names before each FROM and JOIN binds its own, then after the last one.
+    bound = [enclosing]
+    for table in [query.from_table, *(join.table for join in query.joins)]:
+        bound.append(_bind(bound[-1], table, ctes_in_view))
+    with _reading(bound[-1], ctes_in_view):
+        return "\n".join([*chunks, *_select_clauses(query, bound)])
 
 
-def _select_clauses(query: SqlSelect) -> list[str]:
-    """``query``'s statement after its WITH: SELECT through LIMIT."""
+def _select_clauses(query: SqlSelect, bound: list[frozenset[str]]) -> list[str]:
+    """``query``'s statement after its WITH: SELECT through LIMIT. A table function's arguments
+    read the names bound before it, and an ON predicate those bound through its join."""
     chunks: list[str] = []
+    ctes = _CTES.get()
     select_sql = ",\n  ".join(
         f"{render_expr(field.expression)} AS {_alias_name(field.alias)}" for field in query.select
     )
     select_keyword = "SELECT DISTINCT" if getattr(query, "distinct", False) else "SELECT"
     chunks.append(f"{select_keyword}\n  {select_sql}")
     if query.from_table is not None:
-        chunks.append(f"FROM {_render_table_ref(query.from_table)}")
-    for join in query.joins:
+        with _reading(bound[0], ctes):
+            chunks.append(f"FROM {_render_table_ref(query.from_table)}")
+    for index, join in enumerate(query.joins, start=1):
         join_type = normalize_sql_join_type(join.join_type)
-        join_sql = f"{join_type} JOIN {_render_table_ref(join.table)}"
+        with _reading(bound[index], ctes):
+            join_sql = f"{join_type} JOIN {_render_table_ref(join.table)}"
         if join_type != "CROSS":
             if join.on is None:
                 raise TypeError(f"{join_type} JOIN requires an ON expression")
-            join_sql += f" ON {render_expr(join.on)}"
+            with _reading(bound[index + 1], ctes):
+                join_sql += f" ON {render_expr(join.on)}"
         chunks.append(join_sql)
     if query.where:
         chunks.append("WHERE\n  " + "\n  AND ".join(_render_conjunct(item) for item in query.where))
@@ -506,9 +520,13 @@ def render_query(query: SqlQuery, *, flatten_ctes: bool = True) -> str:
         return render_select(query, flatten_ctes=flatten_ctes)
     if isinstance(query, SqlSetQuery):
         operator = normalize_sql_set_operator(query.operator)
-        return f"\n{operator}\n".join(
-            render_select(item, flatten_ctes=flatten_ctes) for item in query.queries
-        )
+        # A WITH rendered on the first SELECT is the whole set query's: every branch reads it.
+        first, *rest = query.queries
+        rendered = [render_select(first, flatten_ctes=flatten_ctes)]
+        ctes = _CTES.get() | {_relation_key(cte.name) for cte in first.ctes}
+        with _reading(_DERIVED.get(), ctes):
+            rendered.extend(render_select(item, flatten_ctes=flatten_ctes) for item in rest)
+        return f"\n{operator}\n".join(rendered)
     raise TypeError(f"Unsupported SQL query: {type(query)!r}")
 
 
