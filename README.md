@@ -261,6 +261,10 @@ In the current release:
 - `ask` rounds its tables, but JSON results (`query`, `ask --json`, MCP `execute` and the
   HTTP API) return the warehouse's floating-point values as they are, for example
   `486468.17999985756` for a currency total.
+- Answers trust the data as it is stored: an orphan foreign key counts in entity filters, a
+  join on columns of different types or collations can double totals, and a parent grouped by
+  a value only its children carry counts under each; see
+  [known limitations](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_CALL.md#known-limitations).
 - The text filter words refuse search text holding letters that warehouses lower
   differently, such as Greek sigma, `ß` and `İ`, and need ICU on Postgres; see
   [the text words' known limitations](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_CALL.md#known-limitations).

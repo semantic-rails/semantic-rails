@@ -56,6 +56,10 @@
     excluding web" now includes the signups with no channel, and a `not` through a lookup keeps
     the rows the lookup can't match (a "not operating" count through a lookup: 1 → 10). A dimension may declare
     `unknown_values` that read as unknown.
+  - A `LIKE` filter is refused with the text word its pattern says (`'%x%'` is `contains`, `'x%'`
+    `starts_with`, `'%x'` `ends_with`). The text words ignore case where `LIKE` matched it on
+    most warehouses, so a call moved to the word can count more rows: a search for `"shop"`
+    also matches `"Shop"`.
   - A balance on an `as_of_time` clock reads each period's closing day (its last day with a
     snapshot; with no `time`, the last day with a snapshot at all) and no longer carries an
     earlier snapshot forward (a weekly stock 1,122 → 1,022); a window total over a balance
