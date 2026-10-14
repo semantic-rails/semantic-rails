@@ -208,6 +208,8 @@ one, each entity counts once in every group it has a row in.
   key out.
 - A model with no key that reaches a link answers distinct counts only; its sums and row counts
   are refused.
+- On Postgres a one-per-key column whose key holds very many distinct values can exhaust memory;
+  such a column reads NULL.
 
 ## `where`
 

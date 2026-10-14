@@ -1404,11 +1404,11 @@ model:
   row-grain model when it can vary. A row filter on a one-per-key model's dimension and
   `variants:` on a one-per-key model are `INVALID_CONFIG` (a stored rollup isn't read one row per
   key). Its rows hold only the columns the package reads on it (its dimensions, measures and
-  joins), so an `aggregate_if` on another column of the relation is refused with a hint to declare
-  it. Its relation is read under a name starting `sr_one_per_key__` (`sr_one_per_key__shop_person`
-  for `entity.shop_person`): once a package has a one-per-key model, a table, relation or
-  pipeline string holding `sr_one_per_key__` (in any case, padded or with other punctuation) is
-  `INVALID_CONFIG`. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
+  joins), so a measure on any model, or an `aggregate_if`, reading another column of the relation
+  is refused with a hint to declare it. Its relation is read under a name starting
+  `sr_one_per_key__` (`sr_one_per_key__shop_person` for `entity.shop_person`): once a package has
+  a one-per-key model, a table, relation or pipeline string holding `sr_one_per_key` (in any
+  case, padded or with other punctuation) is `INVALID_CONFIG`. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
   under "One row per key".
 
 ### `bridge:` — link tables and junction tables

@@ -29,8 +29,9 @@ from ..schema import (
 )
 
 # Every name a one-per-key relation and its steps are read under starts with this, and no
-# authored name may hold it (check_one_per_key_names).
+# authored name may hold its stem (check_one_per_key_names).
 RESERVED = "sr_one_per_key__"
+_STEM = RESERVED.rstrip("_")
 
 
 def one_per_key_source(config: PackageConfig, entity: EntityConfig) -> str:
@@ -172,8 +173,10 @@ def check_one_per_key_names(config: PackageConfig) -> None:
 
     Each generated name (the relation's and each step's) starts with :data:`RESERVED`, which a
     warehouse's identifier shortening keeps (Postgres keeps a name's first 52 bytes). No authored
-    table, relation or pipeline string may hold it, read as :func:`_normalized` reads it, so no
-    query reading an authored name can read one-per-key rows instead, whatever the warehouse."""
+    table, relation or pipeline string may hold its stem, read as :func:`_normalized` reads it.
+    An authored pipeline's steps are read under its output name and a suffix, so none of them can
+    start with the reserved prefix either, and no query reading an authored name can read
+    one-per-key rows instead, whatever the warehouse."""
     generated = {entity.relation_id for entity in config.entities if entity.one_per_key}
     if not generated:
         return
@@ -187,12 +190,12 @@ def check_one_per_key_names(config: PackageConfig) -> None:
     authored += [row.relation for row in config.aggregate_relations]
     authored += [row.zero_through.relation for row in config.measures if row.zero_through]
     for name in authored:
-        if RESERVED in _normalized(name):
+        if _STEM in _normalized(name):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"The table or relation name '{name}' holds '{RESERVED}', but {RESERVED} is "
-                "reserved for the names one-per-key models' relations are read under: a query "
-                "could read one as the other. Rename it.",
+                f"The table or relation name '{name}' holds '{_STEM}', but {_STEM} is reserved "
+                "for the names one-per-key models' relations are read under: a query could read "
+                "one as the other. Rename it.",
                 details={"name": name},
             )
     outputs = [_normalized(row.output_name) for row in config.relations if row.id in generated]
