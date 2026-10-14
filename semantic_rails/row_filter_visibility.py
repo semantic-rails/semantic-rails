@@ -222,6 +222,18 @@ def coverage_report(config: PackageConfig) -> list[dict[str, Any]]:
     return out
 
 
+_GENERIC_HOLDS = {
+    "row_filter_coverage_unsupported": "A row filter applies to this request, and it reads a "
+    "model the filter can't be traced to by one package route, so it can't be answered under it.",
+    "row_filter_uncovered_root": "A row filter applies to this request, and it counts or lists "
+    "a model no filter reaches, so it can't be answered under it. Ask about the rows the filter "
+    "does reach.",
+    "row_filter_route_not_owned": "A row filter applies to this request, and it looks a model "
+    "up along a route that isn't how the model is owned, so rows you can see would land under "
+    "rows you can't. Ask by the route its owner is reached through instead.",
+}
+
+
 def hold_unowned_reads(
     config: PackageConfig,
     visibility: Visibility,
@@ -243,7 +255,16 @@ def hold_unowned_reads(
     def table(model: str) -> str:
         return relation_key(entities[model].table) if model in entities else ""
 
+    view = get_package_analysis(config).view
+    hidden = view.hidden if view is not None else frozenset()
+
     def hold(reason: str, message: str, **details: Any) -> SemanticLayerError:
+        named = {
+            str(details.get(key, ""))
+            for key in ("entity", "source_entity", "target_entity", "via", "owner", "model")
+        } | set(details.get("relationship_path") or ())
+        if named & hidden:  # the caller's view hides one: say only what happened
+            message, details = _GENERIC_HOLDS[reason], {}
         return SemanticLayerError(
             "POLICY_DENIED", message, details={"reason": reason, "policy_ids": policies, **details}
         )
@@ -297,6 +318,8 @@ def hold_unowned_reads(
                     source_entity=start,
                     target_entity=target,
                     relationship_path=list(route),
+                    model=current,
+                    owner=far,
                 )
             current = far
 
