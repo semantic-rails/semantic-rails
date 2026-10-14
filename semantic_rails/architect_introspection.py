@@ -764,8 +764,9 @@ def _suggest_key(
     deadline: float,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """The key suggestion (None for row grain) and how the search ended: ``confirmed``,
-    ``none_found`` (with how many sets it ``checked``), ``timed_out`` (with the sets left
-    ``unconfirmed``, which no draft writes) or ``empty_table``.
+    ``none_found`` (with how many sets it ``checked``), ``timed_out`` (with the candidate sets
+    left ``unconfirmed``, most likely first, none checked on the whole relation, which no draft
+    writes) or ``empty_table``.
 
     Each candidate (a declared PRIMARY KEY, then declared UNIQUE columns) is refuted on the
     profile's own sample, and a survivor is confirmed never null and unique on the whole
