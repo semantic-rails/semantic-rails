@@ -65,6 +65,7 @@ from .fanout import entity_label, query_route_decisions
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
+from .metadata_parts.entity_graph import entity_graph, entity_relationships
 from .metadata_parts.guidance import (
     _aggregation_guidance,
     _metric_guidance,
@@ -101,7 +102,7 @@ from .policies import policy_effects_for_object, row_filters_for_context
 from .query_call import call_from_query
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
-from .schema import MetricConfig, PackageConfig
+from .schema import MetricConfig, PackageConfig, RelationshipConfig
 from .scope import classify_question
 from .segments import _config_maps, build_segment_query, normalize_segment
 from .temporal_support import require_temporal_support, validate_temporal_support
@@ -120,6 +121,18 @@ def _query_state(query: dict[str, Any], config: PackageConfig) -> dict[str, Any]
     return state
 
 
+def _relationship_fields(rel: RelationshipConfig) -> dict[str, Any]:
+    """What a relationship joins, and how: its card's fields and a discover row's."""
+    return {
+        "source_entity": rel.source_entity,
+        "target_entity": rel.target_entity,
+        "source_columns": list(rel.source_columns or [rel.source_column]),
+        "target_columns": list(rel.target_columns or [rel.target_column]),
+        "cardinality": rel.cardinality,
+        "allowed_directions": list(rel.allowed_directions),
+    }
+
+
 def _relationship_card_payload(config: PackageConfig, relationship_id: str) -> dict[str, Any]:
     relationships = {row.id: row for row in config.relationships}
     rel = relationships.get(relationship_id)
@@ -129,15 +142,16 @@ def _relationship_card_payload(config: PackageConfig, relationship_id: str) -> d
             f"Unknown relationship '{relationship_id}'",
             details={"object_id": relationship_id},
         )
+    fields = _relationship_fields(rel)
     return {
         "root_entity": rel.source_entity,
         "source_entity": rel.source_entity,
         "target_entity": rel.target_entity,
-        "source_columns": list(rel.source_columns or [rel.source_column]),
-        "target_columns": list(rel.target_columns or [rel.target_column]),
+        "source_columns": fields["source_columns"],
+        "target_columns": fields["target_columns"],
         "cardinality": rel.cardinality,
         "safety": rel.safety,
-        "allowed_directions": list(rel.allowed_directions),
+        "allowed_directions": fields["allowed_directions"],
         "temporal_validity": dict(rel.temporal_validity or {}),
         "contract": relationship_contract_payload(rel),
     }
@@ -1785,6 +1799,8 @@ def discover_payload(
     search_terms = SearchTerms.from_text(terms)
     partial_query = dict(partial_query or {})
     validate_temporal_support(runtime._config, partial_query)
+    # Relationships are ranked only when asked for, so every other search keeps its shape.
+    ranks_relationships = "relationship" in kinds
     # When invoked from the HTTP boundary (``enforce_scope=True``), gate
     # the response on the same classifier ``validate``/``compile`` use
     # and a content-token relevance floor against the package catalog.
@@ -1805,6 +1821,7 @@ def discover_payload(
                     "selected_metric_recipe_ids": [],
                 },
                 **{bucket: [] for bucket in _DISCOVER_BUCKETS},
+                **({"relationships": []} if ranks_relationships else {}),
                 key: block,
             }
 
@@ -2037,6 +2054,35 @@ def discover_payload(
         row.update({"score": score, "match_reasons": reasons, "object_type": "entity"})
         records.append(row)
 
+    if ranks_relationships:
+        labels = {entity.id: entity.label for entity in config.entities}
+        for rel in config.relationships:
+            row = {
+                "id": rel.id,
+                "kind": "relationship",
+                "name": rel.name,
+                "label": rel.label,
+                "description": rel.description,
+                # Its entities' labels, so a search for "store" finds the store's relationships.
+                "topics": [labels.get(rel.source_entity, ""), labels.get(rel.target_entity, "")],
+                "available": True,
+                "blocked_reason": "",
+                "root_entity": rel.source_entity,
+                "default_temporal_role": "",
+                "recommended_next_actions": _recommended_actions("relationship"),
+                **_relationship_fields(rel),
+            }
+            score, reasons = _relevance_score(
+                terms,
+                row,
+                preferred_kind="relationship",
+                stage=stage,
+                token_doc_freq=token_doc_freq,
+                search_terms=search_terms,
+            )
+            row.update({"score": score, "match_reasons": reasons, "object_type": "relationship"})
+            records.append(row)
+
     dimension_values: list[dict[str, Any]] = []
     for domain in config.value_domains:
         dim = maps["dimensions"].get(domain.dimensions[0]) if domain.dimensions else None
@@ -2123,10 +2169,11 @@ def discover_payload(
     segments = _sort([row for row in records if row["kind"] == "segment"])
     dimensions = _sort([row for row in records if row["kind"] == "dimension"])
     entities = _sort([row for row in records if row["kind"] == "entity"])
+    relationships = _sort([row for row in records if row["kind"] == "relationship"])
     values = _sort(dimension_values)
     blocked = _sort([row for row in [*records, *dimension_values] if row["blocked_reason"]])
     no_matches = has_real_term and not (
-        measures or metrics or segments or dimensions or values or entities
+        measures or metrics or segments or dimensions or values or entities or relationships
     )
 
     # Token-AND fallback: when the holistic single-string match returns
@@ -2244,12 +2291,21 @@ def discover_payload(
                 segments = _sort([row for row in fallback_records if row["kind"] == "segment"])
                 dimensions = _sort([row for row in fallback_records if row["kind"] == "dimension"])
                 entities = _sort([row for row in fallback_records if row["kind"] == "entity"])
+                relationships = _sort(
+                    [row for row in fallback_records if row["kind"] == "relationship"]
+                )
                 values = _sort(fallback_dimvals)
                 blocked = _sort(
                     [row for row in [*fallback_records, *fallback_dimvals] if row["blocked_reason"]]
                 )
                 no_matches = not (
-                    measures or metrics or segments or dimensions or values or entities
+                    measures
+                    or metrics
+                    or segments
+                    or dimensions
+                    or values
+                    or entities
+                    or relationships
                 )
 
     # Ship a single ready-to-run starter_query_patch on each selectable
@@ -2265,6 +2321,10 @@ def discover_payload(
         )
     for row in dimensions:
         row["starter_query_patch"] = _query_patch_with_group_by(seed, row["id"])
+    if verbosity == "full":
+        # Reachability stays on the inspect card: it follows the package's routes.
+        for row in entities:
+            row["relationships"] = entity_relationships(config, row["id"])
 
     payload = {
         "terms": terms,
@@ -2282,6 +2342,7 @@ def discover_payload(
         "dimensions": dimensions,
         "dimension_values": values,
         "entities": entities,
+        **({"relationships": relationships} if ranks_relationships else {}),
         "blocked": blocked,
     }
     if fallback_token_match_reason is not None and not no_matches:
@@ -2333,6 +2394,14 @@ _MINIMAL_DISCOVER_RECORD_KEYS = (
     "score",
     "default_temporal_role",
     "available",
+)
+_RELATIONSHIP_ROW_KEYS = (
+    "source_entity",
+    "target_entity",
+    "cardinality",
+    "allowed_directions",
+    "source_columns",
+    "target_columns",
 )
 # Enough of a description to tell near-duplicates apart ("Revenue" vs
 # "Delivered revenue"), without shipping the whole card.
@@ -2466,6 +2535,12 @@ def _slim_discover_minimal(
     for bucket in ("measures", "metrics", "segments", "dimensions", "entities", "blocked"):
         rows = payload.get(bucket) or []
         payload[bucket] = [_slim(row) for row in rows if isinstance(row, dict)]
+    if "relationships" in payload:
+        # A relationship row is what it joins: its join fields stay at every verbosity.
+        payload["relationships"] = [
+            {**_slim(row), **{key: row[key] for key in _RELATIONSHIP_ROW_KEYS if key in row}}
+            for row in payload["relationships"]
+        ]
     payload["dimension_values"] = [
         _slim(row) for row in payload.get("dimension_values") or [] if isinstance(row, dict)
     ]
@@ -2494,6 +2569,10 @@ def inspect_payload(
         "query_state": _query_state(partial_query, runtime._config),
         "card": _object_card(runtime, object_id, partial_query),
     }
+    if payload["card"]["kind"] == "entity":
+        payload["card"].update(
+            entity_graph(runtime._config, object_id, minimal=verbosity == "minimal")
+        )
     if verbosity == "minimal":
         payload["card"] = _slim_inspect_card(payload["card"])
         if not payload["query_state"]:

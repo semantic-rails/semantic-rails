@@ -4,10 +4,10 @@
 other entity, the cardinality (this entity's rows to the other's), the ways a route may walk it
 (``to`` the other entity, ``from`` it) and the join columns as (this, other) pairs. It also lists
 the entities a query rooted on it reaches within the hop ceiling, nearest first: ``via`` the
-package's route, marked ``recorded`` when recorded route rows chose that route, or
-``route_decision_required`` when the question has to choose one. A minimal card keeps the first
-entries of each list without the routes; compact and full keep both lists whole. A discover
-entity row carries the same lists at verbosity full.
+package's route, marked ``recorded`` when recorded route rows chose that route among the
+caller's routes, or ``route_decision_required`` when the question has to choose one. A minimal
+card keeps the first entries of each list without the routes; compact and full keep both lists
+whole. A discover entity row carries its relationships at verbosity full.
 
 Everything reads the caller's visible view: a hidden relationship or entity is never listed,
 and an entity whose package route reads a hidden object is not reachable for that caller.
@@ -31,6 +31,7 @@ from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.hidden_absent import (
     ACTIONS,
     CALLER,
+    ELIGIBLE,
     absent,
     envelope,
     hidden_tokens,
@@ -212,35 +213,46 @@ def test_an_unrelated_entity_card_has_no_graph_lists(adapter):
     assert "relationships" not in _card(adapter, "entity.jaffle_fiscal_calendar", "minimal")
 
 
-def test_a_discover_entity_row_carries_the_graph_at_full_verbosity(adapter):
+def test_a_discover_entity_row_carries_its_relationships_at_full_verbosity(adapter):
     full = adapter.call_tool(
         "discover", {"terms": "store", "kinds": ["entity"], "verbosity": "full"}
     )
     (row,) = [row for row in full["entities"] if row["id"] == STORE]
-    card = _card(adapter, STORE, "compact")
-    assert row["relationships"] == card["relationships"]
-    assert row["reachable_entities"] == card["reachable_entities"]
+    assert row["relationships"] == _card(adapter, STORE, "compact")["relationships"]
+    # Reachability follows the package's routes: inspect answers it.
+    assert "reachable_entities" not in row
     minimal = adapter.call_tool("discover", {"terms": "store", "kinds": ["entity"]})
     (slim,) = [row for row in minimal["entities"] if row["id"] == STORE]
     assert "relationships" not in slim and "reachable_entities" not in slim
 
 
+# A hidden entity and an entity it relates to. The history entity's relationships are other
+# routes from an item, which recorded rows rule out: the caller's card must not say so.
+HIDDEN_NEIGHBOURS = [
+    (SUPPLY, PRODUCT, "relationship.supplies_product"),
+    (HISTORY, "entity.jaffle_item", "relationship.order_to_customer_history"),
+]
+
+
 @pytest.mark.parametrize("action", ACTIONS)
-def test_a_hidden_entity_and_its_relationships_never_appear(runtimes, package, action):
-    governed = runtimes(visibility_policy(action, SUPPLY))
+@pytest.mark.parametrize(("target", "inspected", "relationship"), HIDDEN_NEIGHBOURS)
+def test_a_hidden_entity_and_its_relationships_never_appear(
+    runtimes, action, target, inspected, relationship
+):
+    governed = runtimes(visibility_policy(action, target))
     hidden = _hidden(governed.package_config)
-    assert {SUPPLY, "relationship.supplies_product"} <= hidden
+    assert {target, relationship} <= hidden
     missing = runtimes(hide=hidden)
     tokens = hidden_tokens(governed.package_config, hidden)
     for verbosity in ("minimal", "compact", "full"):
-        request = {"object_id": PRODUCT, "verbosity": verbosity, "policy_context": CALLER}
+        request = {"object_id": inspected, "verbosity": verbosity, "policy_context": CALLER}
         response = mcp_call(governed, "inspect", request)
         assert response["ok"] is True, response
         assert not leaks(response, tokens, request=request)
         assert envelope(response) == envelope(mcp_call(missing, "inspect", request))
     for kinds in (["relationship"], ["entity"]):
         request = {
-            "terms": "product",
+            "terms": inspected.removeprefix("entity.jaffle_"),
             "kinds": kinds,
             "verbosity": "full",
             "policy_context": CALLER,
@@ -266,8 +278,9 @@ def test_a_route_through_a_hidden_relationship_is_never_rechosen(runtimes, actio
     # route through the customer's history is another question, never offered in its place.
     assert STORE not in {row["id"] for row in card["reachable_entities"]}
     assert CUSTOMER in {row["id"] for row in card["reachable_entities"]}
-    # An unrestricted caller still reaches the store.
-    plain = mcp_call(governed, "inspect", {"object_id": ORDER, "verbosity": "full"})
+    # A caller who sees the relationship still reaches the store.
+    eligible = {"object_id": ORDER, "verbosity": "full", "policy_context": ELIGIBLE}
+    plain = mcp_call(governed, "inspect", eligible)
     assert STORE in {row["id"] for row in plain["card"]["reachable_entities"]}
 
 

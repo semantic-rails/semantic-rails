@@ -224,18 +224,20 @@
         "additionalProperties": true,
         "properties": {
           "kinds": {
-            "description": "Object kinds to rank, such as measure or metric. Default: all.",
-            "oneOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "string"
-              }
-            ]
+            "description": "Default: all but relationship.",
+            "items": {
+              "enum": [
+                "dimension",
+                "dimension_value",
+                "entity",
+                "measure",
+                "metric",
+                "relationship",
+                "segment"
+              ],
+              "type": "string"
+            },
+            "type": "array"
           },
           "limit": {
             "description": "Per kind (default 10); with empty terms, ids per kind (default 100).",
