@@ -120,8 +120,8 @@ class Visibility:
     load_logs: frozenset[str] = frozenset()
     # Relation-pipeline CTE names: their bodies may not read a restricted relation.
     pipelines: frozenset[str] = frozenset()
-    # Whether the warehouse accepts a subquery in a join's ON.
-    subquery_in_join_on: bool = True
+    # Whether the warehouse accepts a subquery in a join's ON (``SqlDialect``); unproven, no.
+    subquery_in_join_on: bool = False
 
     @property
     def restricted(self) -> frozenset[str]:
