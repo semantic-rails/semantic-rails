@@ -27,15 +27,34 @@ by default.
 Loopback binding keeps other *hosts* out; it does not keep *web pages* out.
 A page loaded in a browser on the same machine can reach `127.0.0.1`, so
 cross-origin browser access is off unless you set
-`SEMANTIC_RAILS_CORS_ORIGINS`. Requests carrying an `Origin` header are
-refused until you list the origins you trust; non-browser clients (the CLI,
-MCP stdio clients, `curl`) send no `Origin` and are unaffected.
+`SEMANTIC_RAILS_CORS_ORIGINS`. Requests carrying an `Origin` header, even an
+empty one, are refused with `403` until you list the origins you trust;
+non-browser clients (the CLI, SDKs, MCP stdio clients, `curl`) send no `Origin`
+and are unaffected.
+
+A page can also point its own domain at `127.0.0.1` (DNS rebinding), so a
+request that reaches the server on a loopback address needs one well-formed
+`Host` naming a loopback host (`localhost`, `127.0.0.1`, `[::1]`, any port), or
+it is refused with `421`; so does an absolute request target. Behind a port
+mapping or a proxy, requests do not arrive on loopback: set
+`SEMANTIC_RAILS_ALLOWED_HOSTS` to the names clients use, which applies the same
+check to every request. A repeated `Host` or `Origin` is always refused, and a
+malformed header line with `400`. These checks run before any response,
+including a package-load failure, and a refusal names no package or caller.
+
+One limit applies to the ASGI server. Uvicorn's default `h11` parser passes an
+absolute-form target (`GET http://host/path`) to the app, which checks its host
+like `Host`. Uvicorn's optional `httptools` parser, installed with
+`uvicorn[standard]`, drops that host, so only `Host` is checked. Run uvicorn
+with `--http h11` to keep the check, as the Docker image does. A browser cannot use this gap for DNS rebinding: scripts cannot
+set `Host`, and browsers send ordinary requests with a path-only target.
 
 Run the Jaffle package:
 
 ```bash
 docker run --rm -p 127.0.0.1:8080:8080 \
   -e SEMANTIC_RAILS_PACKAGE=jaffle_shop \
+  -e SEMANTIC_RAILS_ALLOWED_HOSTS=localhost \
   semantic-rails:local
 ```
 
@@ -44,6 +63,7 @@ Run a mounted package:
 ```bash
 docker run --rm -p 127.0.0.1:8080:8080 \
   -e SEMANTIC_RAILS_PACKAGE_PATH=/packages/acme \
+  -e SEMANTIC_RAILS_ALLOWED_HOSTS=localhost \
   -v "$PWD/configs/semantic_rails/jaffle_shop:/packages/acme:ro" \
   semantic-rails:local
 ```
@@ -67,7 +87,8 @@ docker compose up --build
 | `SEMANTIC_RAILS_API_KEYS` | Optional comma-separated bearer/API keys. Auth is disabled when unset. |
 | `SEMANTIC_RAILS_API_KEY_FILE` | Optional file containing comma- or newline-separated API keys. |
 | `SEMANTIC_RAILS_AUDIT_LOGS` | Set to `1`, `true`, `yes`, or `on` to emit JSON audit events to stderr. |
-| `SEMANTIC_RAILS_CORS_ORIGINS` | Comma-separated allow-list of browser origins. Unset (default) allows no cross-origin browser access: no `Access-Control-Allow-Origin` is sent and Origin-bearing requests to the MCP endpoints are refused with 403. Set to `https://app.example.com,https://staging.example.com` for hosted browser-facing deployments; only matching `Origin` headers get the CORS response header. The single value `*` restores wildcard access as an explicit, auditable opt-in. |
+| `SEMANTIC_RAILS_CORS_ORIGINS` | Comma-separated allow-list of browser origins. Unset (default) allows no cross-origin browser access: no `Access-Control-Allow-Origin` is sent and Origin-bearing requests to `/api/v1/*` and `/mcp` are refused with 403. Set to `https://app.example.com,https://staging.example.com` for hosted browser-facing deployments; only matching `Origin` headers get the CORS response header. The single value `*` restores wildcard access as an explicit, auditable opt-in. |
+| `SEMANTIC_RAILS_ALLOWED_HOSTS` | Comma-separated host names, besides loopback names, a request may name in `Host` (any port), for example `api.example.com`. Unset (default), only requests that reach the server on a loopback address are checked, and they must name a loopback host. Set, every request is checked; others get 421. Set it behind a port mapping or a proxy, where requests do not arrive on loopback: `localhost` for a port published on `127.0.0.1`, or the public host name. |
 | `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS` | Set to `1` to let `package.default_db` / `package.seed.*` point outside the package root (absolute paths or `..` segments). Off by default: shared packages are untrusted input, and external paths let a package read or replace files outside its own directory. Enable only for trusted local development. |
 | `SEMANTIC_RAILS_ALLOW_DB_RESEED` | Legacy flag with no effect on runtime bootstrap. The runtime never replaces an existing DuckDB file, even when this flag is set. Build missing relations with the database owner, or back up and explicitly remove a disposable seed database before restarting. |
 | `SEMANTIC_RAILS_MAX_VALID_VALUES_LIMIT` | Ceiling for caller-supplied `valid-values` `limit`, default `1000`. Values above the ceiling are clamped on every transport. |

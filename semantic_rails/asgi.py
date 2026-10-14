@@ -27,12 +27,14 @@ from .http_core import (
     SemanticHTTPService,
     cors_origin_header,
     public_api_route,
+    rebinding_refusal,
     request_id_from_parts,
 )
 from .mcp import SemanticLayerMCPAdapter
 from .mcp_streamable_http import (
     MCP_MAX_REQUEST_BYTES,
     MCPHTTPResponse,
+    _error,
     handle_streamable_http_request,
     prepare_streamable_http_request,
 )
@@ -47,6 +49,24 @@ def _headers(scope: dict[str, Any]) -> dict[str, str]:
         key.decode("latin1"): value.decode("latin1")
         for key, value in list(scope.get("headers", []) or [])
     }
+
+
+def _rebinding_refusal(scope: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+    """The shared Host/Origin check on the raw headers, the target and the address reached.
+
+    Uvicorn's h11 parser keeps an absolute-form target (``http://host/path``) in
+    ``raw_path``, after any ``root_path``; a parser that drops its authority (uvicorn's
+    optional httptools) leaves only ``Host`` to check.
+    """
+    pairs = [
+        (bytes(key).decode("latin1"), bytes(value).decode("latin1"))
+        for key, value in scope.get("headers") or []
+    ]
+    raw_path = scope.get("raw_path")
+    target = raw_path.decode("latin1") if isinstance(raw_path, bytes) else str(scope.get("path"))
+    target = target.removeprefix(str(scope.get("root_path") or ""))
+    server_host = str((scope.get("server") or ("",))[0] or "")
+    return rebinding_refusal(pairs, server_host, target=target)
 
 
 def _query_params(scope: dict[str, Any]) -> dict[str, Any]:
@@ -133,6 +153,22 @@ class SemanticLayerASGIApp:
         started = time.perf_counter()
         request_id = request_id_from_parts(headers, query_params)
         request_origin = headers.get("origin") or headers.get("Origin")
+        refusal = _rebinding_refusal(scope)
+        if refusal is not None and raw_path.rstrip("/") == "/mcp":
+            mcp = _error(refusal[0], -32003, refusal[1]["error"]["message"])
+            return await self._send(
+                send,
+                mcp.status,
+                mcp.payload or {},
+                request_origin=request_origin,
+                request_id=request_id,
+                extra_headers=mcp.headers,
+                allow_methods="POST, OPTIONS",
+            )
+        if refusal is not None:
+            status, response = refusal[0], {**refusal[1], "request_id": request_id}
+            self._audit(method, raw_path, status, response)
+            return await self._send(send, status, response, request_origin=request_origin)
         if raw_path.rstrip("/") == "/mcp":
             return await self._handle_mcp(
                 method,
@@ -524,6 +560,16 @@ class PackageLoadFailureApp:
                     await send({"type": "lifespan.shutdown.complete"})
                     return None
         if scope_type != "http":
+            return None
+        refusal = _rebinding_refusal(scope)
+        if refusal is not None:  # no diagnostics, and no CORS header, for a refused request
+            body = json.dumps(refusal[1]).encode("utf-8")
+            headers = [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ]
+            await send({"type": "http.response.start", "status": refusal[0], "headers": headers})
+            await send({"type": "http.response.body", "body": body})
             return None
         body = json.dumps(
             {

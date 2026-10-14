@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .api_keys import api_key_auth_result
-from .http_core import MAX_REQUEST_BODY_BYTES, cors_origin_header, request_id_from_parts
+from .http_core import MAX_REQUEST_BODY_BYTES, rebinding_refusal, request_id_from_parts
 from .mcp_server import (
     MCP_PROTOCOL_VERSION,
     MCP_SUPPORTED_PROTOCOL_VERSIONS,
@@ -86,14 +86,13 @@ def handle_streamable_http_request(
     Without ``request_context``, the policy context resolver derives it from ``headers``.
     """
     method = method.upper()
-    origin = _header(headers, "Origin")
     # MCP Streamable HTTP requires Origin validation to block DNS-rebinding
     # and drive-by access from a page in the operator's own browser. With no
-    # allow-list configured `cors_origin_header` returns "", so every
-    # Origin-bearing (i.e. browser) request is rejected and non-browser
-    # clients — which send no Origin — are unaffected.
-    if origin and not cors_origin_header(origin):
-        return _error(403, -32003, "Origin is not allowed for this MCP endpoint.")
+    # allow-list configured every Origin-bearing (i.e. browser) request is
+    # rejected and non-browser clients — which send no Origin — are unaffected.
+    refusal = rebinding_refusal(headers)
+    if refusal is not None:
+        return _error(refusal[0], -32003, refusal[1]["error"]["message"])
 
     common_headers = {
         "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,

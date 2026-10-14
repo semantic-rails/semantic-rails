@@ -10,6 +10,7 @@ their public names are re-exported here until 0.3.3.
 
 from __future__ import annotations
 
+import ipaddress
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -306,8 +307,14 @@ def set_policy_context_resolver(resolver: PolicyContextResolver) -> None:
 
 
 def loopback_host(host: str) -> bool:
+    """Whether ``host`` is ``localhost`` or a loopback address (not ``127.x.example``)."""
     text = str(host or "").strip().lower().strip("[]")
-    return text in {"localhost", "::1"} or text.startswith("127.")
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return text == "localhost"
+    # Read ::ffff:127.0.0.1 as 127.0.0.1: Python 3.11.0 calls the mapped form not loopback.
+    return (getattr(address, "ipv4_mapped", None) or address).is_loopback
 
 
 def warn_if_default_policy_resolver_exposed(host: str, *, transport: str) -> bool:
