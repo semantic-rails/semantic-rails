@@ -1,7 +1,8 @@
 """Tenant-filter every supported base scan; deny unsupported shapes.
 
 One ordinary scan plus engine-tagged observation/coverage scans may read the same
-physical relation. Every scan gets the same bound predicate; joins remain denied. A declared
+physical relation. Every scan gets the same bound predicate (``= ?``, or ``IN (?, …)`` for a
+list attribute, one indexed slot per item); joins remain denied. A declared
 load log's mark (``zero_through``: a ``MAX`` over its relation, or an EXISTS against it that
 caps a measure's rows, joined to nothing) reads how far the whole load has completed, so it is
 read as it is, unless a filter applies to that relation: then the statement is refused, never
@@ -11,12 +12,12 @@ read unfiltered.
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Any, cast
 
 from .errors import SemanticLayerError
-from .policy_rules import policy_action
+from .policy_rules import policy_action, role_scope_matches
 from .schema import PackageConfig, SemanticPolicyConfig, require_base
 from .sql_ast import (
     SqlBinary,
@@ -25,13 +26,14 @@ from .sql_ast import (
     SqlCte,
     SqlExpr,
     SqlIdentifier,
+    SqlIn,
     SqlLiteral,
     SqlParameter,
     SqlSelect,
     SqlTableFunction,
     SqlTableRef,
 )
-from .sql_preparation import ParameterSlot
+from .sql_preparation import ParameterSlot, checked_slot_value, parameters_denied
 
 ROW_FILTER = "row_filter"
 _SLOT_TYPES = frozenset({"string", "integer", "boolean"})
@@ -44,6 +46,39 @@ class RowFilter:
     table: str
     column: str
     slot: ParameterSlot
+    # A list attribute's length: the column matches any item; ``slot`` binds the first.
+    size: int | None = None
+    unless_roles: tuple[str, ...] = ()
+
+    @property
+    def slots(self) -> tuple[ParameterSlot, ...]:
+        """The slots one filtered scan binds, in placeholder order. The first is ``slot``
+        itself: binding identifies an applied filter by it."""
+        return (self.slot, *(replace(self.slot, index=i) for i in range(1, self.size or 1)))
+
+    def exempts(self, roles: Iterable[str]) -> bool:
+        """Whether one of ``roles``, the roles the host verified, is in ``unless_roles``."""
+        return bool(self.unless_roles) and role_scope_matches(self.unless_roles, roles)
+
+    def for_value(self, value: Any) -> RowFilter:
+        """This filter for one request's attribute value, or a denial naming the attribute.
+
+        A list of strings or integers matches any of its items, each checked against the
+        slot's type; an empty list leaves no row to read, so it is denied, never bound."""
+        if type(value) is tuple and not value:
+            raise parameters_denied("empty_attribute_list", attribute=self.slot.attribute)
+        row = self
+        if type(value) is tuple and self.slot.type != "boolean":
+            row = replace(self, slot=replace(self.slot, index=0), size=len(value))
+        for slot in row.slots:
+            checked_slot_value(slot, value)
+        return row
+
+    def predicate(self, qualifier: Sequence[str]) -> SqlExpr:
+        column = SqlIdentifier([*qualifier, self.column])
+        if self.size is None:
+            return SqlBinary(column, "=", SqlParameter(self.slot))
+        return SqlIn(column, [SqlParameter(slot) for slot in self.slots])
 
 
 def row_filter(config: PackageConfig, policy: SemanticPolicyConfig) -> RowFilter:
@@ -79,7 +114,17 @@ def row_filter(config: PackageConfig, policy: SemanticPolicyConfig) -> RowFilter
         slot = ParameterSlot(str(policy.config.get("attribute", "")), cast(Any, slot_type))
     except ValueError as exc:
         raise invalid(str(exc)) from None
-    return RowFilter(policy.id, entity.table, dimension.column, slot)
+    unless = policy.config.get("unless_roles", ())
+    if "unless_roles" in policy.config and (
+        not isinstance(unless, list | tuple)
+        or not unless
+        or not all(isinstance(role, str) and role.strip() for role in unless)
+    ):
+        raise invalid("'unless_roles' must be a non-empty list of role names")
+    names = {role.strip().lower() for role in unless}
+    if both := sorted(names & {str(role).strip().lower() for role in policy.roles}):
+        raise invalid(f"role {both[0]!r} is in both 'roles' and 'unless_roles'")
+    return RowFilter(policy.id, entity.table, dimension.column, slot, unless_roles=tuple(unless))
 
 
 def is_row_filter(policy: SemanticPolicyConfig) -> bool:
@@ -157,19 +202,15 @@ def apply_row_filters(
         if scan is None:
             raise _unsupported(filters)
         qualifier = (ref.alias or ref.name).split(".")
-        condition = _conjunction(
-            [
-                SqlBinary(SqlIdentifier([*qualifier, row.column]), "=", SqlParameter(row.slot))
-                for row in applied
-            ]
-        )
+        condition = _conjunction([row.predicate(qualifier) for row in applied])
         if scan.where:
             # One AND node keeps the filter outside any OR in the existing conditions.
             condition = SqlBinary(condition, "AND", _conjunction(scan.where))
         filtered = _rewrite(filtered, scan, replace(scan, where=[condition]))
-    if sum(isinstance(node, SqlParameter) for node in _walk(filtered)) != len(applied) * len(scans):
+    slots = tuple(slot for row in applied for slot in row.slots)
+    if sum(isinstance(node, SqlParameter) for node in _walk(filtered)) != len(slots) * len(scans):
         raise _unsupported(filters)  # a rewrite missed a scan: never run it unfiltered
-    return filtered, tuple(row.slot for row in applied) * len(scans)
+    return filtered, slots * len(scans)
 
 
 _OBSERVING = frozenset({"MIN", "MAX", "COUNT"})

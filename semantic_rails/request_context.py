@@ -11,8 +11,9 @@ their public names are re-exported here until 0.3.3.
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from functools import partial
 from types import MappingProxyType
 from typing import Any, NoReturn, Protocol, runtime_checkable
 
@@ -38,12 +39,14 @@ _ATTRIBUTE_SCALARS = frozenset({str, int, bool})
 
 
 def _attribute_value(name: str, value: Any) -> Any:
+    # An empty list is a grant of no values: kept, so that a row filter reading it denies
+    # the request (POLICY_DENIED) instead of failing here.
     items = tuple(value) if type(value) in (list, tuple) else None
     kinds = {type(item) for item in items} if items is not None else {type(value)}
-    if len(kinds) != 1 or not kinds <= _ATTRIBUTE_SCALARS or "" in (items or (value,)):
+    if len(kinds) > 1 or not kinds <= _ATTRIBUTE_SCALARS or "" in (items or (value,)):
         raise TypeError(
             f"Trusted attribute {name!r} must be a non-empty str, an int or a bool, "
-            "or a non-empty list of one of those types."
+            "or a list of one of those types."
         )
     return items if items is not None else value
 
@@ -57,12 +60,23 @@ class TrustedAttributes:
     replace it. It is left out of the public ``request_context`` and response
     echoes. It is deliberately not a mapping or iterable, so a serializer that
     converts mappings cannot expose it, and ``repr`` shows names only.
+
+    ``roles`` are the data roles the host verified for the caller. Only these exempt a
+    request from a row filter (its ``unless_roles``); the context's ``roles``, which the
+    default resolver reads from request headers, never do.
     """
 
-    __slots__ = ("_values",)
+    __slots__ = ("_values", "_roles")
     _values: Mapping[str, AttributeValue]
+    _roles: tuple[str, ...]
 
-    def __init__(self, values: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self, values: Mapping[str, Any] | None = None, *, roles: Iterable[str] = ()
+    ) -> None:
+        names = None if isinstance(roles, str) else tuple(roles)
+        if names is None or not all(type(role) is str and role.strip() for role in names):
+            raise TypeError("Trusted roles must be a list of non-empty role names.")
+        object.__setattr__(self, "_roles", tuple(sorted({role.strip() for role in names})))
         values = {} if values is None else values
         if not isinstance(values, Mapping):
             raise TypeError("Trusted attributes must be a mapping of names to values.")
@@ -77,6 +91,10 @@ class TrustedAttributes:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._values))
 
+    @property
+    def roles(self) -> tuple[str, ...]:
+        return self._roles
+
     def get(self, name: str) -> AttributeValue | None:
         return self._values.get(name)
 
@@ -88,7 +106,7 @@ class TrustedAttributes:
 
     def _typed_items(self) -> tuple[Any, ...]:
         # Qualify each value by its types, so that 1 and True stay distinct.
-        return tuple(
+        return self._roles, tuple(
             (name, tuple(type(item).__name__ for item in (v if type(v) is tuple else (v,))), v)
             for name, v in sorted(self._values.items())
         )
@@ -105,7 +123,7 @@ class TrustedAttributes:
         return f"TrustedAttributes(names={list(self.names)!r}, values=<redacted>)"
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return (TrustedAttributes, (dict(self._values),))
+        return (partial(TrustedAttributes, roles=self._roles), (dict(self._values),))
 
     def __setattr__(self, name: str, value: Any) -> NoReturn:
         raise AttributeError("TrustedAttributes is immutable.")
@@ -146,7 +164,7 @@ class RequestContext:
             value = getattr(self, key)
             if value is not None:
                 payload[key] = list(value)
-        if self.attributes:
+        if self.attributes or self.attributes.roles:
             payload["attributes"] = self.attributes
         return payload
 

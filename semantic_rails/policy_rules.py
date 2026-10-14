@@ -32,7 +32,7 @@ POLICY_KEYS = {
         "allowed_metric_filter_metrics",
         "allowed_temporal_roles",
     },
-    "row_filter": {"dimension", "attribute", "type"},
+    "row_filter": {"dimension", "attribute", "type", "unless_roles"},
 }
 _COMMON_KEYS = {
     "id",

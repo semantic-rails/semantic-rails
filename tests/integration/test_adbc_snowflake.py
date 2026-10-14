@@ -153,5 +153,14 @@ def test_snowflake_adbc_row_filter_isolation(adbc, tmp_path):
         with pytest.raises(SemanticLayerError) as caught:
             _as(runtime.query, BY_STORE)
         assert caught.value.code == "POLICY_DENIED"
+        # Lists expand to one qmark per item; each binds a scalar, never a list.
+        both = _as(runtime.query, BY_STORE, customer_id=[A, B])
+        rows = [{key.lower(): value for key, value in row.items()} for row in typed_rows(both)]
+        assert [(r["dimension.rf_order_store_id"], r["revenue"]) for r in rows] == [
+            ("s1", 410),
+            ("s2", 20),
+            ("s3", 300),
+        ]
+        assert "IN (?, ?)" in both["rendered_sql"]
     finally:
         runtime.close()

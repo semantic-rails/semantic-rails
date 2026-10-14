@@ -26,17 +26,24 @@ class ParameterSlot:
     """One positional placeholder, bound per request from a trusted attribute.
 
     The value must have exactly the declared type: ``string``, ``integer`` or
-    ``boolean``. A compiled statement holds only slots, never their values.
+    ``boolean``. A slot with an ``index`` binds that item of a list attribute (strings
+    or integers), and only a list does. A compiled statement holds only slots, never
+    their values.
     """
 
     attribute: str
     type: Literal["string", "integer", "boolean"]
+    index: int | None = None
 
     def __post_init__(self) -> None:
         if self.type not in _SLOT_TYPES:
             raise ValueError(f"Unsupported parameter type {self.type!r}.")
         if type(self.attribute) is not str or not ATTRIBUTE_NAME.fullmatch(self.attribute):
             raise ValueError("Parameter attribute names must match [a-z][a-z0-9_]{0,63}.")
+        if self.index is not None and (
+            type(self.index) is not int or self.index < 0 or self.type == "boolean"
+        ):
+            raise ValueError("A list slot's index is an int >= 0, on a string or integer slot.")
 
 
 @dataclass(frozen=True)
@@ -69,14 +76,46 @@ def parameters_denied(reason: str, **details: str) -> SemanticLayerError:
 def checked_parameter_values(
     prepared: PreparedQuery, values: Sequence[Any]
 ) -> tuple[ParameterValue, ...]:
-    """Values matching the slots exactly: no NULL, no coercion, no extra or missing value."""
+    """The values to bind from each slot's attribute value (``checked_slot_value``). A list
+    binds only through indexed slots covering every item, so no item is dropped."""
     if len(values) != len(prepared.parameters):
         raise parameters_denied("parameter_count_mismatch")
-    return tuple(map(checked_slot_value, prepared.parameters, values))
+    bound = tuple(map(checked_slot_value, prepared.parameters, values))
+    # Each index is inside its list (checked above), so distinct indexes cover the list
+    # exactly when there are as many as items.
+    indexes: dict[str, set[int]] = {}
+    lengths: dict[str, int] = {}
+    for slot, value in zip(prepared.parameters, values, strict=True):
+        if slot.index is not None:
+            indexes.setdefault(slot.attribute, set()).add(slot.index)
+            lengths[slot.attribute] = len(value)
+    for attribute, seen in indexes.items():
+        if len(seen) != lengths[attribute]:
+            raise parameters_denied("parameter_count_mismatch", attribute=attribute)
+    return bound
+
+
+def checked_bound_values(
+    prepared: PreparedQuery, values: Sequence[Any]
+) -> tuple[ParameterValue, ...]:
+    """The values an adapter binds, one per slot: no NULL, no coercion, no extra or missing
+    value. An indexed slot takes its item itself, never the list."""
+    if len(values) != len(prepared.parameters):
+        raise parameters_denied("parameter_count_mismatch")
+    return tuple(map(_checked_item, prepared.parameters, values))
 
 
 def checked_slot_value(slot: ParameterSlot, value: Any) -> ParameterValue:
-    """The value for one slot, or a denial naming only the attribute."""
+    """The value ``slot`` binds from its attribute's value, or a denial naming only the
+    attribute: the value itself, or for an indexed slot its item of a list."""
+    if slot.index is not None and value is not None:
+        if type(value) is not tuple or slot.index >= len(value):
+            raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
+        value = value[slot.index]
+    return _checked_item(slot, value)
+
+
+def _checked_item(slot: ParameterSlot, value: Any) -> ParameterValue:
     if value is None:
         raise parameters_denied("missing_attribute", attribute=slot.attribute)
     if type(value) is not _SLOT_TYPES[slot.type]:
@@ -122,17 +161,48 @@ def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
     return tokens
 
 
+# Each warehouse's documented limit, by connection. Postgres binds at most 65,535 parameters
+# in one statement: its protocol's Bind message counts them in 16 bits
+# (https://www.postgresql.org/docs/current/protocol-message-formats.html, "Bind").
+MAX_PARAMETERS = {"postgres_native": 65_535}
+# Snowflake takes at most 200,000 expressions in one list, such as an IN list
+# (https://docs.snowflake.com/en/sql-reference/constructs/where, "Usage notes").
+# DuckDB documents neither limit.
+MAX_LIST_ITEMS = {"snowflake_adbc": 200_000}
+
+
 def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> PreparedQuery:
-    """Finalize Postgres bind syntax before handing SQL to execution."""
+    """Refuse a statement over its warehouse's documented limit, then finalize Postgres bind
+    syntax, before the statement reaches execution."""
+    statement_limit = MAX_PARAMETERS.get(connection_kind)
+    if statement_limit is not None and len(prepared.parameters) > statement_limit:
+        raise _over_limit(statement_limit, "parameters in one statement")
+    list_limit = MAX_LIST_ITEMS.get(connection_kind)
+    # A list's slots are indexed from 0, so its length is its last index plus one.
+    if list_limit is not None and any(
+        slot.index is not None and slot.index >= list_limit for slot in prepared.parameters
+    ):
+        raise _over_limit(list_limit, "values in one list")
     if connection_kind != "postgres_native" or not prepared.parameters:
         return prepared
     tokens = postgres_parameter_tokens(prepared.sql)
     if len(tokens) != len(prepared.parameters) or any(m[0] != "?" for m in tokens):
         raise parameters_denied("parameter_placeholder_mismatch")
-    sql = prepared.sql
-    for index, token in reversed(list(enumerate(tokens, 1))):
-        sql = sql[: token.start()] + f"${index}" + sql[token.end() :]
-    return replace(prepared, sql=sql)
+    pieces, position = [], 0
+    for index, token in enumerate(tokens, 1):
+        pieces += [prepared.sql[position : token.start()], f"${index}"]
+        position = token.end()
+    return replace(prepared, sql="".join([*pieces, prepared.sql[position:]]))
+
+
+def _over_limit(limit: int, unit: str) -> SemanticLayerError:
+    # Neither the size nor the values: a trusted list's length is not the caller's to read.
+    return SemanticLayerError(
+        "POLICY_DENIED",
+        f"This request binds more than the warehouse's documented limit of {limit:,} {unit}, "
+        "so its row filters can't be applied here.",
+        details={"reason": "parameter_limit_exceeded", "limit": limit},
+    )
 
 
 def check_postgres_parameters(prepared: PreparedQuery) -> None:

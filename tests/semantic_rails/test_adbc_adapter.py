@@ -11,7 +11,9 @@ import pytest
 from semantic_rails.db import Database, create_warehouse_adapter
 from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.request_context import RequestContext
 from semantic_rails.result_values import result_rows
+from semantic_rails.runtime import _adapter_query
 from semantic_rails.schema import ConnectionSpec, PackageMeta
 from semantic_rails.sql_preparation import (
     ParameterSlot,
@@ -317,6 +319,66 @@ def test_nested_comments_hide_tokens_in_both_finalization_and_execution(monkeypa
     assert adapter.query("SELECT /* outer /* inner */ $1 */ 1")
 
 
+def test_list_items_bind_one_value_per_postgres_placeholder(monkeypatch):
+    adapter, cursor = _recording_adapter(monkeypatch)
+    regions = tuple(ParameterSlot("regions", "string", index) for index in range(2))
+    tiers = tuple(ParameterSlot("tiers", "integer", index) for index in range(3))
+    prepared = finalize_parameters(
+        PreparedQuery(
+            "SELECT 1 AS n FROM t WHERE region IN (?, ?) AND tier IN (?, ?, ?) AND tenant = ?",
+            parameters=(*regions, *tiers, SLOT),
+        ),
+        "postgres_native",
+    )
+    assert prepared.sql.endswith("region IN ($1, $2) AND tier IN ($3, $4, $5) AND tenant = $6")
+    tenant = "tenant' OR true --"
+    attributes = {"regions": ["West", "East"], "tiers": [1, 2, 3], "tenant": tenant}
+    context = RequestContext(attributes=attributes).to_policy_context()
+    _adapter_query(adapter, prepared, limits={}, policy_context=context)
+    # One scalar per placeholder, in order: no placeholder ever binds a list.
+    values = ("West", "East", 1, 2, 3, tenant)
+    assert (cursor.statements[-1], cursor.parameters[-1]) == (prepared.sql, values)
+
+
+def _list(size, extra=()):
+    """A statement binding one list of ``size`` items, plus ``extra`` scalar slots."""
+    slots = (*(ParameterSlot("regions", "string", index) for index in range(size)), *extra)
+    return PreparedQuery("SELECT " + ", ".join(["?"] * len(slots)), parameters=slots)
+
+
+def _over_limit(call):
+    with pytest.raises(SemanticLayerError) as caught:
+        call()
+    assert caught.value.code == "POLICY_DENIED"
+    assert "documented limit" in str(caught.value)
+    return caught.value.details
+
+
+def test_postgres_binds_at_most_its_documented_parameters_per_statement():
+    limit = 65_535
+    at_limit = PreparedQuery("SELECT " + ", ".join(["?"] * limit), parameters=(SLOT,) * limit)
+    assert finalize_parameters(at_limit, "postgres_native").sql.endswith(f", ${limit}")
+    over = _list(2, extra=(SLOT,) * (limit - 1))
+    assert _over_limit(lambda: finalize_parameters(over, "postgres_native")) == {
+        "reason": "parameter_limit_exceeded",
+        "limit": limit,
+    }
+    assert finalize_parameters(over, "") is over  # DuckDB documents no limit
+
+
+def test_snowflake_binds_at_most_its_documented_values_per_list():
+    limit = 200_000
+    # Past any statement-wide count Postgres allows: Snowflake documents only the list limit.
+    for prepared in (_list(18_000), _list(limit), _list(30_000, extra=(SLOT,) * 70_000)):
+        assert finalize_parameters(prepared, "snowflake_adbc") is prepared
+    over = _list(limit + 1)
+    assert _over_limit(lambda: finalize_parameters(over, "snowflake_adbc")) == {
+        "reason": "parameter_limit_exceeded",
+        "limit": limit,
+    }
+    assert finalize_parameters(over, "") is over
+
+
 MISMATCH = {"reason": "parameter_placeholder_mismatch"}
 
 
@@ -343,6 +405,13 @@ MISMATCH = {"reason": "parameter_placeholder_mismatch"}
             {"reason": "attribute_type_mismatch", "attribute": "tenant"},
         ),
         ("SELECT $1", (SLOT,), ("canary", "extra"), {"reason": "parameter_count_mismatch"}),
+        # An indexed slot binds its item, never the list.
+        (
+            "SELECT $1",
+            (ParameterSlot("tenant", "string", 0),),
+            (("canary", "other"),),
+            {"reason": "attribute_type_mismatch", "attribute": "tenant"},
+        ),
     ],
 )
 def test_bad_prepared_calls_deny_before_connect(sql, slots, values, details, monkeypatch):

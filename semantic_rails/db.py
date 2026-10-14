@@ -67,7 +67,7 @@ from .sql_preparation import (
     _PARAMETER_TOKEN,
     ParameterValue,
     PreparedQuery,
-    checked_parameter_values,
+    checked_bound_values,
 )
 
 __all__ = [
@@ -286,7 +286,7 @@ class DuckDBAdapter(WarehouseAdapter):
         parameters: Sequence[Any] = (),
     ) -> list[dict[str, Any]]:
         """Send slot values through DuckDB's parameter binding, never the SQL text."""
-        values = checked_parameter_values(prepared, parameters)
+        values = checked_bound_values(prepared, parameters)
         if not values:
             return super().query_prepared(prepared, limits=limits)
         rows = self.query(prepared.sql, limits=limits, parameters=values)

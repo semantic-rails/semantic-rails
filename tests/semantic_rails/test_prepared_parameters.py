@@ -19,7 +19,7 @@ from semantic_rails.db_parts.snowflake import SnowflakeCliAdapter, SnowflakeNati
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import _adapter_query
-from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery
+from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery, checked_parameter_values
 
 INJECTION = "c-a' OR '1'='1"
 CANARY = "canary-e2-5519"
@@ -146,6 +146,61 @@ def test_missing_or_mistyped_attributes_deny_before_the_driver(
     assert CANARY not in f"{caught.value} {caught.value.details}"
 
 
+# A list attribute binds one item per indexed slot, in order.
+LISTED = PreparedQuery(
+    'SELECT COUNT(*) AS "n", SUM(amount) AS "total" FROM ledger WHERE customer_id IN (?, ?)',
+    parameters=(
+        ParameterSlot("customer_id", "string", 0),
+        ParameterSlot("customer_id", "string", 1),
+    ),
+)
+
+
+def test_indexed_slots_bind_each_item_of_a_list_attribute(ledger, monkeypatch):
+    sent = _record_driver_calls(ledger, monkeypatch)
+    context = _context(customer_id=["c-a", INJECTION])
+    assert _adapter_query(ledger, LISTED, limits={}, policy_context=context) == [
+        {"n": 3, "total": 1015}
+    ]
+    assert sent == [(LISTED.sql, ("c-a", INJECTION))]
+    # A direct adapter call takes each slot's own value.
+    assert ledger.query_prepared(LISTED, parameters=["c-b", "c-a"]) == [{"n": 3, "total": 22}]
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        ("c-a", "attribute_type_mismatch"),  # a scalar never fills an indexed slot
+        (["c-a"], "attribute_type_mismatch"),  # nor a shorter list
+        (["c-a", "c-b", "c-c"], "parameter_count_mismatch"),  # nor drops an item
+        ([1, 2], "attribute_type_mismatch"),
+    ],
+)
+def test_a_list_binds_only_through_slots_for_every_item(ledger, monkeypatch, value, reason):
+    monkeypatch.setattr(ledger._db, "query", _forbidden)
+    with pytest.raises(SemanticLayerError) as caught:
+        _adapter_query(ledger, LISTED, limits={}, policy_context=_context(customer_id=value))
+    assert caught.value.code == "POLICY_DENIED"
+    assert caught.value.details == {"reason": reason, "attribute": "customer_id"}
+
+
+def test_a_long_list_checks_each_slot_a_bounded_number_of_times():
+    reads = []
+
+    class Counted(ParameterSlot):
+        def __getattribute__(self, name):
+            if name in {"attribute", "index"}:
+                reads.append(name)
+            return super().__getattribute__(name)
+
+    size = 2_000
+    prepared = PreparedQuery("", parameters=[Counted("regions", "string", i) for i in range(size)])
+    items = tuple(f"r{index}" for index in range(size))
+    reads.clear()
+    assert checked_parameter_values(prepared, [items] * size) == items
+    assert len(reads) <= 8 * size  # linear: a per-slot rescan would read size * size
+
+
 def test_only_host_attributes_or_exact_values_can_bind(ledger, monkeypatch):
     monkeypatch.setattr(ledger._db, "query", _forbidden)
     denials = [
@@ -159,6 +214,7 @@ def test_only_host_attributes_or_exact_values_can_bind(ledger, monkeypatch):
         lambda: ledger.query_prepared(TOTALS, parameters=[None]),
         lambda: ledger.query_prepared(TOTALS, parameters=["c-a", "c-b"]),
         lambda: ledger.query_prepared(PreparedQuery("SELECT 1 AS n"), parameters=["c-a"]),
+        lambda: ledger.query_prepared(LISTED, parameters=[("c-a", "c-b"), "c-b"]),
     ]
     for deny in denials:
         with pytest.raises(SemanticLayerError) as caught:

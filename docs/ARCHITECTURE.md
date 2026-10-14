@@ -582,7 +582,8 @@ adapter concerns. Legacy direct `query(sql)` calls use the same preparation once
 A statement may carry typed parameter slots that the runtime binds per request
 from trusted attributes; only adapters that bind values separately execute it
 (see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)). Row-filter policies produce
-them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` to the one
+them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` (or
+`<column> IN (?, …)` for a list attribute) to the one
 ordinary scan and every engine-tagged observation or coverage scan of a filtered relation.
 It denies other repeated reads, joins, other relations and rollups (routing is off under
 a row filter). DuckDB binds `?` directly; Postgres preparation finalizes slots as

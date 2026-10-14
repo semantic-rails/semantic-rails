@@ -76,12 +76,15 @@ from semantic_rails.embedding import TrustedAttributes
 
 trusted = RequestContext(
     actor="authenticated-user-id",
-    attributes=TrustedAttributes({"customer_id": "c-123", "regions": ["eu"]}),
+    roles=("auditor",),
+    attributes=TrustedAttributes({"customer_id": "c-123", "regions": ["eu"]}, roles=("auditor",)),
 )
 ```
 
 Names match `[a-z][a-z0-9_]{0,63}`. A value is a non-empty string, an int or a
-bool, or a non-empty list of one of those types; anything else raises. The
+bool, or a list of one of those types; anything else, a list mixing types
+included, raises. An empty list is kept as a grant of no values: a row filter that
+reads it denies the request with `POLICY_DENIED`. The
 engine carries the attributes through its internal calls. Request bodies,
 headers and plans can't create or replace them (a caller's
 `policy_context` is refused), and they never appear in the public
@@ -90,8 +93,11 @@ and immutable: read it with `names` and `get(name)`. Attribute values partition
 the compile cache and bind to prepared-statement parameters at execution
 (DuckDB and Postgres; other adapters deny such statements). A package's `row_filter`
 policies produce those parameters: they limit a relation's rows to the
-attribute's value, and deny the request when it is missing (see
-[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)). A driver error on such a statement
+attribute's value, or to any item of a list, and deny the request when it is missing (see
+[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)). `roles=` lists the data roles the host verified
+for the caller: only these exempt a request from a row filter's `unless_roles`. The context's
+own `roles` scope policies, and the default resolver reads them from request headers, so a
+header that claims a role never lifts a row filter. A driver error on such a statement
 is raised without the driver's message, which could quote a bound value.
 
 For in-memory Snowflake credentials, implement the generic
@@ -338,7 +344,7 @@ SemanticLayerMCPAdapter(runtime, *, interface=)
 SnowflakeCliAdapter(connection_name, options=)
 SnowflakeNativeAdapter(connection_name=, options=, *, credential_provider=)
 StderrAuditSink()
-TrustedAttributes(values=)
+TrustedAttributes(values=, *, roles=)
 WarehouseAdapter()
 WarehouseConnectorSpec(name, dialect, connection_kinds=, connection_options=, requires_default_db=, requires_seed=, requires_connection_name=, adapter=)
 audit_logging_enabled()
