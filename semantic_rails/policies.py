@@ -59,7 +59,6 @@ from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_base
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
-from .sql_preparation import checked_slot_value
 
 WITHHOLD = "withhold_values"
 # A conditional aggregate's condition reads columns: each counts as the dimensions over it, and
@@ -696,7 +695,8 @@ def row_filters_for_context(
     """The row filters that apply to this request; each needs its attribute, correctly typed.
 
     Checked before binding, so every surface (validate, compile, plan, execute,
-    segment preview) denies a missing attribute instead of compiling unfiltered.
+    segment preview) denies a missing attribute or an empty list instead of compiling
+    unfiltered. A role in a filter's ``unless_roles`` exempts the request from it, after scope.
     """
     require_base(config)
     context = context_from_policy_context(policy_context)
@@ -714,9 +714,8 @@ def row_filters_for_context(
             environment=context.environment,
             audience=context.audience,
             roles=context.roles,
-        ):
-            checked_slot_value(row.slot, context.attributes.get(row.slot.attribute))
-            filters.append(row)
+        ) and not row.exempts(context.roles):
+            filters.append(row.for_value(context.attributes.get(row.slot.attribute)))
     return tuple(filters)
 
 

@@ -342,7 +342,8 @@ statement captured at the driver boundary, including alias restoration and limit
 
 **Parameterized statements.** `PreparedQuery.parameters` lists a `ParameterSlot`
 for each positional `?` placeholder: the trusted request attribute that supplies
-the value and its exact type (`string`, `integer` or `boolean`). The runtime binds
+the value and its exact type (`string`, `integer` or `boolean`); a slot with an
+`index` binds that item of a list attribute. The runtime binds
 values per request from the host's `TrustedAttributes`; a missing attribute or a
 value of another type is denied with `POLICY_DENIED`, never bound as NULL or
 coerced. Only an adapter that sets `supports_parameters = True` receives such a

@@ -56,6 +56,8 @@ def test_host_attributes_are_typed_immutable_and_opaque():
     assert TrustedAttributes({"tier": 1}) != TrustedAttributes({"tier": True})
     host_mapping = RequestContext(attributes={"customer_id": CANARY}).attributes
     assert host_mapping == TrustedAttributes({"customer_id": CANARY})
+    # A grant of no values is kept; a row filter that reads it denies the request.
+    assert TrustedAttributes({"regions": []}).get("regions") == ()
 
 
 @pytest.mark.parametrize(
@@ -68,7 +70,6 @@ def test_host_attributes_are_typed_immutable_and_opaque():
         ({"customer_id": {"id": CANARY}}, TypeError),
         ({"customer_id": {CANARY}}, TypeError),
         ({"customer_id": _Text(CANARY)}, TypeError),
-        ({"customer_id": []}, TypeError),
         ({"customer_id": [CANARY, 7]}, TypeError),
         ({"customer_id": [[CANARY]]}, TypeError),
         ({"customer_id": [CANARY, ""]}, TypeError),

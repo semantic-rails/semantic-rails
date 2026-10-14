@@ -934,14 +934,19 @@ def test_bound_clock_filters_share_the_planning_guard(
         runtime.close()
 
 
+@pytest.mark.parametrize(
+    "visible",
+    ["2026-09-15 10:00:00", ["2026-09-15 10:00:00", "2026-09-16 10:00:00"]],
+    ids=["one-value", "list"],
+)
 @pytest.mark.parametrize(("expression", "sql", "expected"), LEAF_WINDOWS)
 def test_clock_row_policy_refuses_or_keeps_its_existing_scan_refusal(
-    tmp_path: Path, expression: dict, sql: str, expected: int
+    tmp_path: Path, expression: dict, sql: str, expected: int, visible: str | list[str]
 ) -> None:
     assert _reference(sql) == [(expected,)]
     runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CLOCK_LABEL)))
     query = _query(expression, [])
-    reader = RequestContext(audience="reader", attributes={"visible": "2026-09-15 10:00:00"})
+    reader = RequestContext(audience="reader", attributes={"visible": visible})
     try:
         with pytest.raises(SemanticLayerError) as caught:
             runtime.query(query, context=reader)

@@ -26,17 +26,24 @@ class ParameterSlot:
     """One positional placeholder, bound per request from a trusted attribute.
 
     The value must have exactly the declared type: ``string``, ``integer`` or
-    ``boolean``. A compiled statement holds only slots, never their values.
+    ``boolean``. A slot with an ``index`` binds that item of a list attribute (strings
+    or integers), and only a list does. A compiled statement holds only slots, never
+    their values.
     """
 
     attribute: str
     type: Literal["string", "integer", "boolean"]
+    index: int | None = None
 
     def __post_init__(self) -> None:
         if self.type not in _SLOT_TYPES:
             raise ValueError(f"Unsupported parameter type {self.type!r}.")
         if type(self.attribute) is not str or not ATTRIBUTE_NAME.fullmatch(self.attribute):
             raise ValueError("Parameter attribute names must match [a-z][a-z0-9_]{0,63}.")
+        if self.index is not None and (
+            type(self.index) is not int or self.index < 0 or self.type == "boolean"
+        ):
+            raise ValueError("A list slot's index is an int >= 0, on a string or integer slot.")
 
 
 @dataclass(frozen=True)
@@ -69,14 +76,39 @@ def parameters_denied(reason: str, **details: str) -> SemanticLayerError:
 def checked_parameter_values(
     prepared: PreparedQuery, values: Sequence[Any]
 ) -> tuple[ParameterValue, ...]:
-    """Values matching the slots exactly: no NULL, no coercion, no extra or missing value."""
+    """The values to bind from each slot's attribute value (``checked_slot_value``). A list
+    binds only through indexed slots covering every item, so no item is dropped."""
     if len(values) != len(prepared.parameters):
         raise parameters_denied("parameter_count_mismatch")
-    return tuple(map(checked_slot_value, prepared.parameters, values))
+    bound = tuple(map(checked_slot_value, prepared.parameters, values))
+    for slot, value in zip(prepared.parameters, values, strict=True):
+        same = {each.index for each in prepared.parameters if each.attribute == slot.attribute}
+        if slot.index is not None and same != set(range(len(value))):
+            raise parameters_denied("parameter_count_mismatch", attribute=slot.attribute)
+    return bound
+
+
+def checked_bound_values(
+    prepared: PreparedQuery, values: Sequence[Any]
+) -> tuple[ParameterValue, ...]:
+    """The values an adapter binds, one per slot: no NULL, no coercion, no extra or missing
+    value. An indexed slot takes its item itself, never the list."""
+    if len(values) != len(prepared.parameters):
+        raise parameters_denied("parameter_count_mismatch")
+    return tuple(map(_checked_item, prepared.parameters, values))
 
 
 def checked_slot_value(slot: ParameterSlot, value: Any) -> ParameterValue:
-    """The value for one slot, or a denial naming only the attribute."""
+    """The value ``slot`` binds from its attribute's value, or a denial naming only the
+    attribute: the value itself, or for an indexed slot its item of a list."""
+    if slot.index is not None and value is not None:
+        if type(value) is not tuple or slot.index >= len(value):
+            raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
+        value = value[slot.index]
+    return _checked_item(slot, value)
+
+
+def _checked_item(slot: ParameterSlot, value: Any) -> ParameterValue:
     if value is None:
         raise parameters_denied("missing_attribute", attribute=slot.attribute)
     if type(value) is not _SLOT_TYPES[slot.type]:

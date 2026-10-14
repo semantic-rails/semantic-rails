@@ -19,6 +19,7 @@ from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.audit import get_audit_sink, set_audit_sink
 from semantic_rails.compiler_parts.empty_groups import LeafScope, guard_empty_groups
 from semantic_rails.config import load_package_config
+from semantic_rails.config_validation import parse_config_report, resolve_package_reference
 from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
@@ -157,9 +158,11 @@ def _package(root, policies):
                        "label": "Revenue", "measure": "measure.rf.revenue", "aggregation": "sum",
                        "temporal_role": "temporal_role.rf_order_ordered_at", "value_type": "number"},
         "rf.revenue_per_order": {"as": "metric.rf.revenue_per_order", "kind": "ratio",
+                                 "description": "Revenue per order.",
                                  "numerator": "measure.rf.revenue", "denominator": "order_count",
                                  "value_type": "number"},
         "rf.revenue_change": {"as": "metric.rf.revenue_change", "kind": "derived",
+                              "description": "Revenue change from the prior month.",
                               "temporal_role": "temporal_role.rf_order_ordered_at",
                               "value_type": "number",
                               "expression": {"kind": "arithmetic", "op": "-", "left": REVENUE,
@@ -206,6 +209,10 @@ def _denied(call):
     return caught.value.details["reason"]
 
 
+def _forbidden(*args, **kwargs):
+    raise AssertionError("the request must not reach the warehouse")
+
+
 def test_two_customers_get_their_own_aggregates_from_one_statement(runtime):
     a = _as(runtime.query, customer_id=A)
     b = _as(runtime.query, customer_id=B)
@@ -224,7 +231,10 @@ def test_two_customers_get_their_own_aggregates_from_one_statement(runtime):
     assert A not in json.dumps(b, default=str) and B not in json.dumps(a, default=str)
 
 
-@pytest.mark.parametrize("attributes", [{}, {"customer_id": 7}, {"customer_id": [A]}, {"tier": A}])
+@pytest.mark.parametrize(
+    "attributes",
+    [{}, {"customer_id": 7}, {"customer_id": [7, 8]}, {"customer_id": True}, {"tier": A}],
+)
 def test_a_missing_or_mistyped_attribute_denies_every_surface(runtime, attributes):
     context = _ctx(**attributes)
     preview = "segment.rf.in_s1"
@@ -392,6 +402,14 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
             "looks like a row filter",
         ),
         ({"kind": "object_access"}, "looks like a row filter"),  # a stray attribute
+        ({"unless_roles": []}, "'unless_roles' must be a non-empty list of role names"),
+        ({"unless_roles": "auditor"}, "'unless_roles' must be a non-empty list of role names"),
+        ({"unless_roles": ["auditor", " "]}, "'unless_roles' must be a non-empty list"),
+        ({"unless_role": ["auditor"]}, "unknown key 'unless_role'"),
+        (
+            {"roles": ["Auditor", "store"], "unless_roles": ["auditor"]},
+            "role 'auditor' is in both 'roles' and 'unless_roles'",
+        ),
     ],
 )
 def test_the_package_rejects_a_row_filter_it_cannot_enforce(tmp_path, change, problem):
@@ -445,6 +463,136 @@ def test_two_filters_on_one_relation_bind_in_placeholder_order(runtime):
     result = runtime.query(BY_STORE, context=context)
     assert [row["revenue"] for row in result["rows"]] == [400]
     assert "order_fact.customer_id = ? AND order_fact.store_id = ?" in result["rendered_sql"]
+
+
+def _stores(runtime, **attributes):
+    """Revenue by store for an internal caller whose role scopes it to ``store_id``."""
+    context = RequestContext(audience="internal", roles=("store_scoped",), attributes=attributes)
+    return runtime.query(BY_STORE, context=context)
+
+
+def _revenue(result):
+    return [(row["dimension.rf_order_store_id"], row["revenue"]) for row in result["rows"]]
+
+
+def test_a_list_attribute_reads_any_of_its_values(runtime, monkeypatch):
+    adapter, bound = runtime._get_adapter(), []
+    real = adapter.query_prepared
+
+    def record(prepared, **kwargs):
+        bound.append(tuple(kwargs.get("parameters", ())))
+        return real(prepared, **kwargs)
+
+    monkeypatch.setattr(adapter, "query_prepared", record)
+    one, other = _stores(runtime, store_id="s1"), _stores(runtime, store_id="s3")
+    both = _stores(runtime, store_id=["s1", "s3"])
+    assert _revenue(both) == sorted(_revenue(one) + _revenue(other)) == [("s1", 410), ("s3", 300)]
+    assert "order_fact.store_id = ?" in one["rendered_sql"]  # a scalar is unchanged
+    assert "(order_fact.store_id IN (?, ?))" in both["rendered_sql"]
+    assert not re.search(r"'s[13]'", both["rendered_sql"])
+    assert bound[-1] == ("s1", "s3")
+
+
+def test_two_list_filters_bind_each_value_to_its_own_placeholder(runtime):
+    context = RequestContext(audience="customer", roles=("store_scoped",),
+                             attributes={"customer_id": [B, A], "store_id": ["s2", "s1"]})  # fmt: skip
+    result = runtime.query(BY_STORE, context=context)
+    assert _revenue(result) == [("s1", 410), ("s2", 20)]
+    assert (
+        "(order_fact.customer_id IN (?, ?)) AND (order_fact.store_id IN (?, ?))"
+        in result["rendered_sql"]
+    )
+    # Every engine probe of a named window carries both lists.
+    query = {
+        "select": [{"expression": REVENUE, "as": "v"}],
+        "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
+    }
+    context = replace(context, attributes={"customer_id": [A, B], "store_id": ["s1", "s3"]})
+    result = runtime.query(query, context=context)
+    assert result["rows"][0]["v"] == 310
+    assert result["rendered_sql"].count("customer_id IN (?, ?)") == 3
+    assert result["rendered_sql"].count("store_id IN (?, ?)") == 3
+
+
+def test_list_order_and_length_never_share_a_plan(runtime):
+    asked = [["s1", "s3"], ["s3"], "s3", ["s3", "s1"], ["s1"], "s1"]
+    answers = [_revenue(_stores(runtime, store_id=value)) for value in asked]
+    s1, s3 = ("s1", 410), ("s3", 300)
+    assert answers == [[s1, s3], [s3], [s3], [s1, s3], [s1], [s1]]
+
+
+def test_an_empty_list_is_denied_at_the_request(runtime, monkeypatch):
+    monkeypatch.setattr(runtime_module, "_adapter_query", _forbidden)
+    context = _ctx(customer_id=[])  # a grant of no values is a context, not a TypeError
+    preview = context.to_policy_context()
+    with pytest.raises(SemanticLayerError) as caught:
+        runtime.compile(BY_STORE, context=context)
+    assert caught.value.details == {"reason": "empty_attribute_list", "attribute": "customer_id"}
+    reasons = {
+        _denied(lambda: runtime.query(BY_STORE, context=context)),
+        _denied(lambda: runtime.segment_preview("segment.rf.in_s1", policy_context=preview)),
+        runtime.validate(BY_STORE, context=context)["errors"][0]["details"]["reason"],
+    }
+    assert reasons == {"empty_attribute_list"}
+    # Only a filter that reads the attribute denies: an internal caller's list goes unused.
+    monkeypatch.undo()
+    internal = _as(runtime.query, audience="internal", customer_id=[])
+    assert _revenue(internal) == [("s1", 410), ("s2", 20), ("s3", 300)]
+
+
+def test_a_mixed_type_list_is_denied():
+    # A list mixes no types (1 and True included): the host's context is refused as built.
+    for mixed in ([A, 7], [1, True]):
+        with pytest.raises(TypeError):
+            _ctx(customer_id=mixed)
+    # A list of another type than the filter's is denied at the request, item by item.
+    listed = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string"))
+    assert _denied(lambda: listed.for_value((A, 7))) == "attribute_type_mismatch"
+    assert _denied(lambda: listed.for_value((7,))) == "attribute_type_mismatch"
+
+
+def test_a_scalar_slot_never_binds_a_list():
+    # A boolean filter takes one value, as before; a list never reaches its slot.
+    flag = RowFilter("p", "t", "c", ParameterSlot("active", "boolean"))
+    assert flag.for_value(True) == flag
+    assert _denied(lambda: flag.for_value((True,))) == "attribute_type_mismatch"
+    with pytest.raises(ValueError):
+        ParameterSlot("active", "boolean", index=0)
+    for index in (-1, True, "0"):
+        with pytest.raises(ValueError):
+            ParameterSlot("customer_id", "string", index=index)  # type: ignore[arg-type]
+    listed = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string")).for_value((A, B))
+    assert [slot.index for slot in listed.slots] == [0, 1]
+    filtered, slots = apply_row_filters(_scan(SqlTableRef("t")), [listed])
+    assert slots == listed.slots
+    assert render_select(filtered).endswith("WHERE\n  (t.c IN (?, ?))")
+
+
+def test_unless_roles_exempts_only_the_named_roles(tmp_path):
+    root = _package(tmp_path / "rf", [{**OWN_ORDERS, "unless_roles": ["auditor"]}])
+    with duckdb.connect(str(root / "rf.duckdb")) as connection:
+        connection.execute(SEED)
+    runtime = Runtime.from_path(str(root))
+
+    def ask(*roles, **attributes):
+        context = RequestContext(audience="customer", roles=roles, attributes=attributes)
+        return runtime.query(BY_STORE, context=context)
+
+    everyone = _revenue(_as(runtime.query, audience="internal"))
+    assert _revenue(ask("auditor")) == _revenue(ask("analyst", "auditor", customer_id=A))
+    assert _revenue(ask("auditor")) == everyone == [("s1", 410), ("s2", 20), ("s3", 300)]
+    assert "?" not in ask("auditor")["rendered_sql"]
+    assert _revenue(ask("analyst", customer_id=A)) == [("s1", 10), ("s2", 20)]
+    assert _denied(lambda: ask("analyst")) == _denied(lambda: ask()) == "missing_attribute"
+
+
+def test_validate_warns_that_a_role_scoped_filter_leaves_other_roles_unfiltered(package):
+    report, _ = parse_config_report(resolve_package_reference(path=str(package)))
+    warnings = [row for row in report["warnings"] if row["code"] == "ROW_FILTER_SCOPED_BY_ROLE"]
+    assert [row["details"] for row in warnings] == [
+        {"policy_id": "policy.rf.own_store", "roles": ["store_scoped"]}
+    ]
+    assert "unless_roles" in warnings[0]["message"]
 
 
 ROW = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string"))
@@ -622,6 +770,13 @@ def test_every_mcp_surface_shows_each_customer_only_their_rows(mcp):
     assert [row["value"] for row in b["values"]["values"]] == [3, 4]
     assert B not in json.dumps(a, default=str) and A not in json.dumps(b, default=str)
     assert A not in json.dumps(events, default=str) and B not in json.dumps(events, default=str)
+
+
+def test_mcp_denies_an_empty_list_as_a_policy_refusal(mcp):
+    call, _ = mcp
+    response = call(_ctx(customer_id=[]), "execute", RUN)
+    assert response["ok"] is False and response["error"]["code"] == "POLICY_DENIED"
+    assert response["errors"][0]["details"]["reason"] == "empty_attribute_list"
 
 
 def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
