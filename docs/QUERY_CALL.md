@@ -236,31 +236,6 @@ condition on a date dimension is legal; for a time window, use `time`.
   the words that compare a number.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
 
-#### Known limitations
-
-The text words (`contains`, `starts_with`, `ends_with` and their `not_` forms) give the same rows
-on every warehouse by refusing what the warehouses lower differently:
-
-- Search text holding one of these letters is refused, because some warehouse lowers it
-  differently from the rest: Greek sigma (`Σ σ ς`, whose lower case depends on the next
-  letter), sharp s (`ß ẞ`), dotted and dotless i (`İ ı`, and a combining dot above), the
-  Kelvin, Ångström and Ohm signs, rare Latin letters with a stroke, hook or tail, the cased
-  letters of U+2000 to U+2FFF (Roman numerals, circled letters, Glagolitic, Coptic, Georgian
-  Nuskhuri and its capitals), and letters whose case pair is newer than Unicode 13. Match such
-  values exactly with `is`.
-- A stored value holding one of these letters is lowered as its warehouse lowers it, so text
-  that lines up with that letter can match on one warehouse and not another (`is` against a
-  stored `İs`, or `k` against a stored Kelvin sign).
-- A letter that a later Unicode version gives a case pair can lower differently by warehouse
-  until the engine adds it to the list.
-- On Postgres the text words need ICU (the `und-x-icu` collation, built in wherever Postgres
-  has ICU); without it the query fails rather than answering differently.
-- On ClickHouse a `FixedString` value with a zero byte inside it, not just as trailing
-  padding, is compared only up to that first zero byte.
-- Text holding a NUL character or an unpaired surrogate is refused in the query call, but
-  not yet in package YAML: an expression literal or `unknown_values` entry holding one can
-  stop the package loading or make its queries fail.
-
 ### Unknown values
 
 "Unknown" is SQL NULL, or a value the package declares as unknown for that dimension
@@ -1067,6 +1042,46 @@ for error in jsonschema.Draft202012Validator(schema).iter_errors(call):
 `semantic-rails validate`) checks a call against the package and its policies without reading
 the warehouse. The fenced JSON calls in this page and the other query docs are validated
 against the schema and the `jaffle_shop` package by the test suite.
+
+## Known limitations
+
+The engine trusts the data as it is stored in three cases:
+
+- **Orphan foreign keys.** A child row whose parent id is missing from the parent table counts
+  in entity filters: the engine trusts the child's id.
+- **Lossy joins.** Joining columns of different types or collations (a text id to an integer
+  key, or a case-insensitive collation) can match several parent rows, so totals can double.
+  Keep join columns the same type.
+- **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
+  their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
+  children carry, so the totals across
+  groups can exceed the whole, and a parent with no child rows is left out of that grouping.
+  Combined labels ("Lab + Office") are a possible future option.
+
+### Text words
+
+The text words (`contains`, `starts_with`, `ends_with` and their `not_` forms) give the same rows
+on every warehouse by refusing what the warehouses lower differently:
+
+- Search text holding one of these letters is refused, because some warehouse lowers it
+  differently from the rest: Greek sigma (`Σ σ ς`, whose lower case depends on the next
+  letter), sharp s (`ß ẞ`), dotted and dotless i (`İ ı`, and a combining dot above), the
+  Kelvin, Ångström and Ohm signs, rare Latin letters with a stroke, hook or tail, the cased
+  letters of U+2000 to U+2FFF (Roman numerals, circled letters, Glagolitic, Coptic, Georgian
+  Nuskhuri and its capitals), and letters whose case pair is newer than Unicode 13. Match such
+  values exactly with `is`.
+- A stored value holding one of these letters is lowered as its warehouse lowers it, so text
+  that lines up with that letter can match on one warehouse and not another (`is` against a
+  stored `İs`, or `k` against a stored Kelvin sign).
+- A letter that a later Unicode version gives a case pair can lower differently by warehouse
+  until the engine adds it to the list.
+- On Postgres the text words need ICU (the `und-x-icu` collation, built in wherever Postgres
+  has ICU); without it the query fails rather than answering differently.
+- On ClickHouse a `FixedString` value with a zero byte inside it, not just as trailing
+  padding, is compared only up to that first zero byte.
+- Text holding a NUL character or an unpaired surrogate is refused in the query call, but
+  not yet in package YAML: an expression literal or `unknown_values` entry holding one can
+  stop the package loading or make its queries fail.
 
 ---
 
