@@ -41,6 +41,9 @@ SWITCHED = {
     ("config_parts/one_per_key.py", "one_per_key_relation"),
     ("config_parts/one_per_key.py", "with_one_per_key.link"),
     ("contracts/producer.py", "_resources_from_normalized"),
+    # Refusal context only: a row-grain target is named, and has no shared key columns.
+    ("diagnostics.py", "_isolated_start"),
+    ("diagnostics.py", "enrich_path_not_found"),
     ("fanout.py", "pass_through_disclosure"),
     ("interop/ossie/export.py", "_Exporter.datasets"),
     ("interop/package_writer.py", "_Writer.dimensions"),
@@ -85,10 +88,12 @@ REFUSES = {
     ("schema.py", "EntityConfig.primary_key"),
     ("segments.py", "member_key_dimensions"),
 }
-# `.key` or `.primary_key` on something else: CLI arguments and a visibility key.
+# `.key` or `.primary_key` on something else: CLI arguments and visibility keys.
 NOT_AN_ENTITY = {
     ("cli/commands/project.py", "cmd_init_project"),
     ("cli/commands/project.py", "cmd_project_new"),
+    # ParentHop.key is the join's single owner column, not EntityConfig.key.
+    ("row_filters.py", "Visibility._predicate"),
     ("visible_view.py", "request_view"),
 }
 # Reads and projections of `key_columns` by field name (a string), not by attribute: each
