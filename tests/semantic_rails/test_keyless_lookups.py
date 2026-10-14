@@ -231,7 +231,7 @@ def test_a_boolean_column_reads_its_one_value_on_every_warehouse(tmp_path, wareh
     "edits",
     [
         [],  # the boolean is a dimension
-        [  # only a measure reads it (Sol round 1, finding 4)
+        [  # only a measure reads it, so no dimension declares its type
             _rooms(lambda model: model["dimensions"].pop("accessible")),
             _rooms(
                 lambda model: model["measures"].update(
@@ -260,7 +260,7 @@ def test_a_boolean_column_reads_its_one_value_on_every_warehouse(tmp_path, wareh
 )
 def test_postgres_reads_every_one_per_key_column_without_min_or_max(tmp_path, edits):
     """Any type, booleans included, and only its distinct values held: never a sorted array of
-    every row (Sol round 2, finding 4)."""
+    every row."""
     config = _on("postgres", *edits, tmp_path=tmp_path)
     sql = _single_value_sql(config, {"select": [ROOM_COUNT]})
     assert "MIN(" not in sql.upper() and "MAX(" not in sql.upper() and "ORDER BY" not in sql
@@ -272,7 +272,7 @@ def test_postgres_reads_every_one_per_key_column_without_min_or_max(tmp_path, ed
 
 
 def test_a_parent_count_across_a_link_keeps_the_link_rules(tmp_path):
-    """Sol round 1, finding 1: a distinct count of the room key, with the link declared safe to
+    """A distinct count of the room key, with the link declared safe to
     count in reverse, still overlaps across departments: its share refuses, and its rows count
     each room once in every department."""
     distinct = {"kind": "entity_count", "entity_key": "room_id", "accumulation": {"kind": "flow"}}
@@ -321,13 +321,13 @@ GENERATED = "sr_one_per_key__shop_room"  # the name rooms' one-per-key relation 
         GENERATED.replace("_", "-", 3),  # a name a warehouse would make legal by underscores
         f"{GENERATED}__2_where",  # one of its steps
         _shortened_identifier("sr_one_per_key__" + "r" * 64),  # as Postgres shortens one
-        "sr_one_per_key",  # whose steps would be sr_one_per_key__2_where (Sol round 3)
+        "sr_one_per_key",  # whose steps would be read under sr_one_per_key__2_where
         "Sr-One-Per-Key-Rows",
     ],
 )
 def test_a_name_one_per_key_relations_are_read_under_can_t_be_authored(tmp_path, table):
-    """Sol rounds 1 and 2, finding 2 and findings 1-2: an authored table or relation read under a
-    generated name would read the one-per-key rows instead. Every generated name starts with the
+    """An authored table or relation read under a generated name would read the one-per-key rows
+    instead. Every generated name starts with the
     reserved prefix, shortened or not, and every authored name holding it is refused."""
     renamed = ("models/people.yml", lambda doc: doc["model"].update(relation=table))
     with pytest.raises(SemanticLayerError) as raised:
@@ -338,7 +338,7 @@ def test_a_name_one_per_key_relations_are_read_under_can_t_be_authored(tmp_path,
 
 
 def test_a_pipeline_source_padded_to_a_generated_name_is_refused(tmp_path):
-    """Sol round 2, finding 1: a pipeline's source is stripped where it is read."""
+    """A pipeline's source is stripped where it is read, so a padded one counts as unpadded."""
     staff = {
         "source": f" {GENERATED} ",
         "columns": ["person_id", "room_id", "title", "salary", "started_on"],
@@ -355,7 +355,7 @@ def test_a_pipeline_source_padded_to_a_generated_name_is_refused(tmp_path):
 
 
 def test_a_pipeline_whose_steps_are_read_under_a_generated_name_is_refused(tmp_path):
-    """Sol round 3, finding 1: a pipeline output named sr_one_per_key has a step read under
+    """A pipeline output named sr_one_per_key has a step read under
     sr_one_per_key__2_where, the name of a room relation for an entity id ending 2_where."""
     staff = {
         "output_name": "sr_one_per_key",
@@ -380,7 +380,7 @@ def test_a_pipeline_whose_steps_are_read_under_a_generated_name_is_refused(tmp_p
 
 
 def test_every_generated_name_keeps_the_reserved_prefix_once_shortened(tmp_path):
-    """Sol round 2, finding 2: a 64-character entity id's generated names, shortened as Postgres
+    """A 64-character entity id's generated names, shortened as Postgres
     shortens an identifier, still start with the reserved prefix; the old shortened name is an
     ordinary table and reads as one."""
     long_id = "entity." + "r" * 64
@@ -415,7 +415,8 @@ def test_every_generated_name_keeps_the_reserved_prefix_once_shortened(tmp_path)
 
 
 def test_a_table_under_the_old_generated_name_is_an_ordinary_table(tmp_path):
-    """Sol round 1, finding 2's table now reads as itself: seven people, five rooms."""
+    """A table named as generated relations once were reads as itself: seven people, five
+    rooms."""
     seed_package = _shop(tmp_path)
     seed = seed_package / "data" / "seed.sql"
     seed.write_text(
@@ -457,7 +458,7 @@ def _aggregate_if(value: str) -> dict[str, Any]:
 
 
 def test_an_aggregate_if_reads_only_the_columns_a_one_per_key_model_declares(tmp_path):
-    """Sol round 2, finding 3: a column the model declares nothing on isn't in its rows, so the
+    """A column the model declares nothing on isn't in its rows, so the
     call is refused while binding, naming the declaration that adds it."""
     package = _shop(tmp_path)
     seed = package / "data" / "seed.sql"
@@ -483,7 +484,7 @@ def test_an_aggregate_if_reads_only_the_columns_a_one_per_key_model_declares(tmp
 
 
 def test_a_measure_on_another_model_reads_only_declared_one_per_key_columns(tmp_path):
-    """Sol round 3, finding 2: any measure, on any model, reading a column a one-per-key model
+    """Any measure, on any model, reading a column a one-per-key model
     doesn't project is refused while planning, with the same hint; a declared one reads."""
     people_measures = {
         "room_bonus": {
@@ -524,7 +525,7 @@ def test_a_measure_on_another_model_reads_only_declared_one_per_key_columns(tmp_
 
 
 def test_a_lookup_into_a_one_per_key_model_on_another_column_reads_it(tmp_path):
-    """Sol round 1, finding 3: a lookup on a column the model declares no dimension for."""
+    """A lookup into a one-per-key model on a column it declares no dimension for."""
     package = _shop(
         tmp_path,
         (

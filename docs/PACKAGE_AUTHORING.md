@@ -1408,7 +1408,9 @@ model:
   is refused with a hint to declare it. Its relation is read under a name starting
   `sr_one_per_key__` (`sr_one_per_key__shop_person` for `entity.shop_person`): once a package has
   a one-per-key model, a table, relation or pipeline string holding `sr_one_per_key` (in any
-  case, padded or with other punctuation) is `INVALID_CONFIG`. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
+  case, padded or with other punctuation) is `INVALID_CONFIG`. On Postgres, a key with very many
+  distinct values in a one-per-key column can fail the query (out of memory or array size)
+  instead of reading NULL. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
   under "One row per key".
 
 ### `bridge:` — link tables and junction tables
