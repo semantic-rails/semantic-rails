@@ -367,19 +367,22 @@ def test_rollups_are_not_routed_under_a_row_filter(runtime):
     assert sorted(row["revenue"] for row in filtered["rows"]) == [300, 400]
 
 
-def test_zero_rows_skip_the_whole_relation_coverage_probe(runtime, monkeypatch):
-    probes = []
-    monkeypatch.setattr(
-        runtime_module, "_data_coverage_probe", lambda *a, **k: probes.append(1) or {}
-    )
+def test_zero_rows_report_only_the_callers_own_coverage(runtime):
     # An open window after the data: no row (a named one would answer its periods, NULL).
     window = {"select": [{"expression": REVENUE, "as": "revenue"}],
               "time": {**MONTH, "start": "2027-01-01"}}  # fmt: skip
-    filtered = _as(runtime.query, window, customer_id=A)
-    assert filtered["row_count"] == 0 and probes == []
-    assert filtered["data_diagnostics"]["actual_data_coverage"] == {}
-    _as(runtime.query, window, audience="internal")
-    assert probes == [1]
+    coverage = {
+        tenant: _as(runtime.query, window, customer_id=tenant)["data_diagnostics"][
+            "actual_data_coverage"
+        ]
+        for tenant in (A, B)
+    }
+    assert {tenant: (row["min"][:10], row["max"][:10]) for tenant, row in coverage.items()} == {
+        A: ("2026-01-10", "2026-02-10"),
+        B: ("2026-01-20", "2026-02-20"),
+    }
+    everyone = _as(runtime.query, window, audience="internal")["data_diagnostics"]
+    assert everyone["actual_data_coverage"]["min"][:10] == "2026-01-10"
 
 
 def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
