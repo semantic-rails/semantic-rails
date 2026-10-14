@@ -17,7 +17,9 @@ from semantic_rails.config_validation import parse_config_report, resolve_packag
 from semantic_rails.db import create_warehouse_adapter
 from semantic_rails.db_parts.adbc import SNOWFLAKE_PROFILE, AdbcAdapter
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.request_context import RequestContext
 from semantic_rails.result_values import result_rows
+from semantic_rails.runtime import _adapter_query
 from semantic_rails.schema import ConnectionSpec, PackageMeta
 from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery
 from tests.semantic_rails.test_adbc_adapter import Batch, Reader
@@ -639,6 +641,7 @@ def test_no_overrides_preserve_inherited_timeout_and_zone():
         ("SELECT ?", (SLOT,), ()),
         ("SELECT ?", (SLOT,), (True,)),
         ("SELECT ?", None, None),  # a plain query with an unbound placeholder
+        ("SELECT ?", (ParameterSlot("tenant", "string", 0),), (("a", "b"),)),  # never a list
     ],
 )
 def test_unbound_placeholders_deny_before_connection(sql, slots, values, monkeypatch):
@@ -663,6 +666,23 @@ def test_all_authored_slot_types_bind_separately():
     _connected(calls).query_prepared(prepared, parameters=("tenant' OR true --", 42, False))
     assert (prepared.sql, ("tenant' OR true --", 42, False)) in calls
     assert all("tenant" not in sql for sql, _ in calls)
+
+
+def test_list_items_bind_one_value_per_qmark():
+    # Snowflake's server-side (qmark) binding takes no list for IN, so a list attribute
+    # expands to one placeholder per item and each binds one scalar.
+    calls = []
+    regions = tuple(ParameterSlot("regions", "string", index) for index in range(2))
+    tiers = tuple(ParameterSlot("tiers", "integer", index) for index in range(2))
+    prepared = PreparedQuery(
+        "SELECT 1 AS n FROM t WHERE region IN (?, ?) AND tier IN (?, ?) AND tenant = ?",
+        parameters=(*regions, *tiers, SLOT),
+    )
+    attributes = {"regions": ["West", "East"], "tiers": [1, 2], "tenant": "tenant' OR true --"}
+    context = RequestContext(attributes=attributes).to_policy_context()
+    _adapter_query(_connected(calls), prepared, limits={}, policy_context=context)
+    assert (prepared.sql, ("West", "East", 1, 2, "tenant' OR true --")) in calls
+    assert all("West" not in call[0] for call in calls if isinstance(call, tuple))
 
 
 @pytest.mark.parametrize(

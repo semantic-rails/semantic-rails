@@ -131,6 +131,8 @@ def compilation_cache_key(
                 k: v for k, v in policy_context.items() if k not in {"attributes", "now"}
             },
             "attributes": {name: attributes.get(name) for name in attributes.names},
+            # Host-verified roles decide row-filter exemptions; header roles are in the context.
+            "trusted_roles": list(attributes.roles),
             "aggregate_routing": aggregate_routing,
             "visibility": stable_json_hash(sorted(visibility)),
         }

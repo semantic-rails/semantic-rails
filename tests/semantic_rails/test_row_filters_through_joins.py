@@ -24,6 +24,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.renderer import render_with_slots
+from semantic_rails.request_context import TrustedAttributes
 from semantic_rails.row_filter_visibility import visibility_for
 from semantic_rails.row_filters import RowFilter, enforce_row_filters, verify_row_filters
 from semantic_rails.runtime import Runtime
@@ -262,8 +263,11 @@ def test_a_child_with_two_filtered_parents_needs_both(runtime):
 def test_a_list_attribute_and_an_exempt_role(runtime):
     both = _context(("West", "East"))
     assert _rows(runtime.query(_query({"revenue": REVENUE}), context=both)) == [(960,)]
-    auditor = _context("West", roles=["auditor"])
+    verified = TrustedAttributes({"region": "West"}, roles=["auditor"])
+    auditor = RequestContext(audience="regional", attributes=verified)
     assert _rows(runtime.query(_query({"revenue": REVENUE}), context=auditor)) == [(975,)]
+    claimed = _context("West", roles=["auditor"])  # a role only claimed exempts no one
+    assert _rows(runtime.query(_query({"revenue": REVENUE}), context=claimed)) == [(60,)]
 
 
 def test_a_caller_with_no_visible_store_reads_null(runtime):

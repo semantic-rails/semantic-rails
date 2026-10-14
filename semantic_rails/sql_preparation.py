@@ -81,10 +81,17 @@ def checked_parameter_values(
     if len(values) != len(prepared.parameters):
         raise parameters_denied("parameter_count_mismatch")
     bound = tuple(map(checked_slot_value, prepared.parameters, values))
+    # Each index is inside its list (checked above), so distinct indexes cover the list
+    # exactly when there are as many as items.
+    indexes: dict[str, set[int]] = {}
+    lengths: dict[str, int] = {}
     for slot, value in zip(prepared.parameters, values, strict=True):
-        same = {each.index for each in prepared.parameters if each.attribute == slot.attribute}
-        if slot.index is not None and same != set(range(len(value))):
-            raise parameters_denied("parameter_count_mismatch", attribute=slot.attribute)
+        if slot.index is not None:
+            indexes.setdefault(slot.attribute, set()).add(slot.index)
+            lengths[slot.attribute] = len(value)
+    for attribute, seen in indexes.items():
+        if len(seen) != lengths[attribute]:
+            raise parameters_denied("parameter_count_mismatch", attribute=attribute)
     return bound
 
 
@@ -154,17 +161,35 @@ def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
     return tokens
 
 
+# The most values one statement binds, by connection. Postgres's wire protocol counts a
+# statement's parameters in 16 bits (libpq refuses more than 65,535). Snowflake's server
+# refuses an expression list longer than 16,384 values; holding a statement's total to that
+# keeps every IN list under it. DuckDB states no limit.
+MAX_PARAMETERS = {"postgres_native": 65_535, "snowflake_adbc": 16_384}
+
+
 def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> PreparedQuery:
-    """Finalize Postgres bind syntax before handing SQL to execution."""
+    """Refuse more parameters than the connection binds, then finalize Postgres bind syntax,
+    before the statement reaches execution."""
+    limit = MAX_PARAMETERS.get(connection_kind)
+    if limit is not None and len(prepared.parameters) > limit:
+        # Neither the count nor the values: a trusted list's length is not the caller's to read.
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            f"This request binds more query parameters than one statement on this warehouse "
+            f"accepts ({limit:,}), so its row filters can't be applied here.",
+            details={"reason": "parameter_limit_exceeded", "limit": limit},
+        )
     if connection_kind != "postgres_native" or not prepared.parameters:
         return prepared
     tokens = postgres_parameter_tokens(prepared.sql)
     if len(tokens) != len(prepared.parameters) or any(m[0] != "?" for m in tokens):
         raise parameters_denied("parameter_placeholder_mismatch")
-    sql = prepared.sql
-    for index, token in reversed(list(enumerate(tokens, 1))):
-        sql = sql[: token.start()] + f"${index}" + sql[token.end() :]
-    return replace(prepared, sql=sql)
+    pieces, position = [], 0
+    for index, token in enumerate(tokens, 1):
+        pieces += [prepared.sql[position : token.start()], f"${index}"]
+        position = token.end()
+    return replace(prepared, sql="".join([*pieces, prepared.sql[position:]]))
 
 
 def check_postgres_parameters(prepared: PreparedQuery) -> None:

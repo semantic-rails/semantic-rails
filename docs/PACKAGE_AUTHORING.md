@@ -788,6 +788,7 @@ kind names must match exactly.
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.
   Grouping by a role's dimension remains subject to `allowed_group_by`.
+<<<<<<< HEAD
 - **`row_filter`** — limits the rows a caller can see to one customer, region or other
   principal, by comparing a `dimension` with a trusted request `attribute` that the
   embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The compiler compares
@@ -854,15 +855,43 @@ kind names must match exactly.
   them, and Snowflake also refuses an optional (`LEFT`) lookup into a covered model until
   its tests prove the subquery that condition needs. Postgres finalizes the placeholders as
   `$1`, `$2`, … before execution and binds trusted values through ADBC.
+=======
+- **`row_filter`** — limits a relation's rows to one customer (or other
+  principal) by comparing a `dimension` with a trusted request `attribute`
+  that the embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The
+  compiler adds `<column> = ?` to the relation's scan and the runtime binds the
+  attribute's value as a parameter; values never enter SQL text. A list value
+  (strings or integers, for example a manager's regions) adds
+  `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the rows
+  of any of them; a statement that would bind more parameters than its warehouse
+  accepts (Postgres 65,535, Snowflake 16,384) is refused before it runs. The
+  dimension must be a plain `string`, `integer` or `boolean`
+  column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value.
+  The policy takes no `object_ids`, `action` or operator. A request it applies to is
+  denied (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty
+  list (a grant of nothing), and so is any query outside the qualified family: the
+  compiled statement must read one ordinary scan of the filtered relation, as its only
+  relation. Engine-generated
+  observation and coverage scans may repeat that relation; each receives the same policy
+  filter. Joins, entity filters, calendar spines (prior-period comparisons, fill) and
+  other second scans are refused, and rollups are not routed to. The zero-row
+  data-coverage probe is skipped. Such a policy loads for any warehouse, but only
+  DuckDB and Postgres execute these statements today; every other adapter
+  refuses them. Postgres finalizes the placeholders as `$1`, `$2`, … before
+  execution and binds trusted values through ADBC.
+>>>>>>> oss/row-filter-value-lists
   An unscoped row filter applies to every request. A scoped one applies only
   when the request context carries the listed audience, environment or role,
   so a request without it is not filtered: scope by them only when the host
   always sets them from verified identity for end-user requests. `validate` warns
   about a filter scoped by `roles:`, since every other role reads every row. To
   let named roles read every row instead, list them in `unless_roles:` (for example
-  `[auditor]`): a request carrying one of them is not filtered, and every other request
-  is filtered, or denied without the attribute. `unless_roles` is a non-empty list
-  and shares no role with `roles:`. A policy of
+  `[auditor]`): a request is not filtered when the embedding host verified one of them
+  for the caller (`TrustedAttributes(..., roles=...)`, see [EMBEDDING.md](EMBEDDING.md)),
+  and every other request is filtered, or denied without the attribute. A role that a
+  request header or the context's `roles` claims never exempts a request, so under the
+  default header resolver `unless_roles` exempts no one. `unless_roles` is a non-empty
+  list and shares no role with `roles:`. A policy of
   another kind that carries `attribute:`, or a kind that is a near miss of
   `row_filter` (`row-filter`, `row_filters`, ...), fails to load rather than
   being ignored.

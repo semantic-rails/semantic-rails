@@ -15,6 +15,7 @@ import yaml
 
 from semantic_rails import row_filters as row_filters_module
 from semantic_rails import runtime as runtime_module
+from semantic_rails import sql_preparation
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.audit import get_audit_sink, set_audit_sink
 from semantic_rails.compiler_parts.empty_groups import LeafScope, guard_empty_groups
@@ -26,7 +27,13 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp_server import MCP_PROTOCOL_VERSION
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.renderer import render_select, render_with_slots
-from semantic_rails.request_context import get_policy_context_resolver, set_policy_context_resolver
+from semantic_rails.request_context import (
+    HeaderPolicyContextResolver,
+    TrustedAttributes,
+    context_from_headers,
+    get_policy_context_resolver,
+    set_policy_context_resolver,
+)
 from semantic_rails.row_filter_visibility import Visibility
 from semantic_rails.row_filters import RowFilter, apply_row_filters
 from semantic_rails.runtime import Runtime
@@ -97,6 +104,7 @@ MISTYPED["dimension"] = "dimension.rf_order_order_ref"
 # A second filter on the same relation for callers with this role; id dimensions declare a type.
 OWN_STORE = {**OWN_ORDERS, "id": "policy.rf.own_store", "attribute": "store_id", "type": "string"}
 OWN_STORE.update(dimension="dimension.rf_order_store_id", audiences=[], roles=["store_scoped"])
+OWN_STORE["unless_roles"] = ["store_auditor"]  # exempt only when the host verified the role
 DROP = object()  # a key a test case removes
 
 
@@ -521,11 +529,35 @@ def test_two_list_filters_bind_each_value_to_its_own_placeholder(runtime):
     assert result["rendered_sql"].count("store_id IN (?, ?)") == 3
 
 
-def test_list_order_and_length_never_share_a_plan(runtime):
-    asked = [["s1", "s3"], ["s3"], "s3", ["s3", "s1"], ["s1"], "s1"]
-    answers = [_revenue(_stores(runtime, store_id=value)) for value in asked]
-    s1, s3 = ("s1", 410), ("s3", 300)
-    assert answers == [[s1, s3], [s3], [s3], [s1, s3], [s1], [s1]]
+def test_list_order_and_length_never_share_a_plan(runtime, monkeypatch):
+    adapter, bound = runtime._get_adapter(), []
+    real = adapter.query_prepared
+
+    def record(prepared, **kwargs):
+        bound.append(tuple(kwargs.get("parameters", ())))
+        return real(prepared, **kwargs)
+
+    monkeypatch.setattr(adapter, "query_prepared", record)
+
+    def ask(value, *verified):
+        attributes = TrustedAttributes({"store_id": value}, roles=verified)
+        context = RequestContext(
+            audience="internal", roles=("store_scoped",), attributes=attributes
+        )
+        result = runtime.query(BY_STORE, context=context, verbosity="full")
+        return _revenue(result), result["compile_stats"]["cache_hit"], bound[-1]
+
+    s1, s2, s3 = ("s1", 410), ("s2", 20), ("s3", 300)
+    asked = [
+        (["s1", "s3"], (), [s1, s3], ("s1", "s3")),
+        ("s1", (), [s1], ("s1",)),
+        (["s3", "s1"], (), [s1, s3], ("s3", "s1")),
+        (["s1"], (), [s1], ("s1",)),
+        (["s1", "s3"], ("store_auditor",), [s1, s2, s3], ()),  # exempt: no filter at all
+    ]
+    for warm in (False, True):  # the second round repeats each request after the others
+        for value, verified, rows, values in asked:
+            assert ask(value, *verified) == (rows, warm, values), (value, verified, warm)
 
 
 def test_an_empty_list_is_denied_at_the_request(runtime, monkeypatch):
@@ -581,16 +613,108 @@ def test_unless_roles_exempts_only_the_named_roles(tmp_path):
         connection.execute(SEED)
     runtime = Runtime.from_path(str(root))
 
-    def ask(*roles, **attributes):
-        context = RequestContext(audience="customer", roles=roles, attributes=attributes)
+    def ask(*roles, verified=(), **attributes):
+        """``roles`` as the context claims them; ``verified`` as the host verified them."""
+        trusted = TrustedAttributes(attributes, roles=verified)
+        context = RequestContext(audience="customer", roles=roles, attributes=trusted)
         return runtime.query(BY_STORE, context=context)
 
-    everyone = _revenue(_as(runtime.query, audience="internal"))
-    assert _revenue(ask("auditor")) == _revenue(ask("analyst", "auditor", customer_id=A))
-    assert _revenue(ask("auditor")) == everyone == [("s1", 410), ("s2", 20), ("s3", 300)]
-    assert "?" not in ask("auditor")["rendered_sql"]
-    assert _revenue(ask("analyst", customer_id=A)) == [("s1", 10), ("s2", 20)]
-    assert _denied(lambda: ask("analyst")) == _denied(lambda: ask()) == "missing_attribute"
+    everyone = [("s1", 410), ("s2", 20), ("s3", 300)]
+    assert _revenue(ask(verified=["auditor"])) == everyone
+    assert _revenue(ask("analyst", verified=["analyst", "Auditor"], customer_id=A)) == everyone
+    assert "?" not in ask(verified=["auditor"])["rendered_sql"]
+    # A role the context only claims, as a request header would, exempts no one.
+    assert _revenue(ask("auditor", customer_id=A)) == [("s1", 10), ("s2", 20)]
+    assert _revenue(ask(verified=["analyst"], customer_id=A)) == [("s1", 10), ("s2", 20)]
+    assert _denied(lambda: ask("auditor")) == _denied(lambda: ask()) == "missing_attribute"
+
+
+class _HostResolver:
+    """An embedding host: audience and roles as request headers claim them, attributes (and
+    any verified roles) from the caller's verified identity."""
+
+    def __init__(self, attributes):
+        self.attributes = attributes
+
+    def resolve(self, headers, *, payload=None, request_id=""):
+        claimed = context_from_headers(headers, request_id=request_id)
+        return replace(claimed, attributes=self.attributes)
+
+
+@pytest.fixture
+def exempt_app(tmp_path, monkeypatch):
+    """A row filter that exempts auditors, served over REST and MCP behind an API key."""
+    root = _package(tmp_path / "rf", [{**OWN_ORDERS, "unless_roles": ["auditor"]}])
+    with duckdb.connect(str(root / "rf.duckdb")) as connection:
+        connection.execute(SEED)
+    monkeypatch.setenv("SEMANTIC_RAILS_API_KEYS", "test-row-filter-key")
+    previous = get_policy_context_resolver()
+    app = SemanticLayerASGIApp(path=str(root), max_workers=1)
+
+    def call(resolver, transport):
+        set_policy_context_resolver(resolver)
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Authorization": "Bearer test-row-filter-key",
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+            "X-Semantic-Audience": "customer",
+            "X-Semantic-Roles": "auditor",
+        }
+        path, body = "/api/v1/query", {"query": RUN["query"]}
+        if transport == "mcp":
+            params = {"name": "execute", "arguments": RUN}
+            path, body = (
+                "/mcp",
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params},
+            )
+
+        async def request():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                return (await client.post(path, json=body, headers=headers)).json()
+
+        response = asyncio.run(request())
+        return response["result"]["structuredContent"] if transport == "mcp" else response
+
+    yield call
+    asyncio.run(app.aclose())
+    set_policy_context_resolver(previous)
+
+
+@pytest.mark.parametrize("transport", ["rest", "mcp"])
+def test_a_role_a_request_header_claims_never_lifts_a_row_filter(exempt_app, transport):
+    claimed = exempt_app(HeaderPolicyContextResolver(), transport)
+    assert claimed["ok"] is False and "rows" not in claimed
+    assert claimed["errors"][0]["details"]["reason"] == "missing_attribute"
+    # A host that passes the header's roles through, without verifying them: still filtered.
+    own = exempt_app(_HostResolver(TrustedAttributes({"customer_id": A})), transport)
+    assert sorted(_revenue(own)) == [("s1", 10), ("s2", 20)]
+    # The host verified the role: the same request, now exempt (and never the cached plan).
+    verified = TrustedAttributes({"customer_id": A}, roles=["auditor"])
+    exempt = exempt_app(_HostResolver(verified), transport)
+    assert sorted(_revenue(exempt)) == [("s1", 410), ("s2", 20), ("s3", 300)]
+
+
+def test_parameters_beyond_the_warehouse_limit_refuse_before_execution(runtime, monkeypatch):
+    class Untouchable:
+        def __enter__(self):
+            raise AssertionError("the request reached the query lock")
+
+        def __exit__(self, *exc):
+            return False
+
+    connection_kind = runtime._config.package.connection.kind
+    monkeypatch.setitem(sql_preparation.MAX_PARAMETERS, connection_kind, 3)
+    monkeypatch.setattr(runtime, "_query_lock", Untouchable())
+    regions = [f"s{index}" for index in range(4)]
+    for method in (runtime.compile, runtime.query):
+        context = RequestContext(roles=("store_scoped",), attributes={"store_id": regions})
+        with pytest.raises(SemanticLayerError) as caught:
+            method(BY_STORE, context=context)
+        assert caught.value.code == "POLICY_DENIED"
+        assert caught.value.details == {"reason": "parameter_limit_exceeded", "limit": 3}
+        assert "s3" not in str(caught.value) and "4" not in str(caught.value)
 
 
 def test_validate_warns_that_a_role_scoped_filter_leaves_other_roles_unfiltered(package):

@@ -63,7 +63,7 @@ class RowFilter:
         return (self.slot, *(replace(self.slot, index=i) for i in range(1, self.size or 1)))
 
     def exempts(self, roles: Iterable[str]) -> bool:
-        """Whether the request carries a role the package names in ``unless_roles``."""
+        """Whether one of ``roles``, the roles the host verified, is in ``unless_roles``."""
         return bool(self.unless_roles) and role_scope_matches(self.unless_roles, roles)
 
     def for_value(self, value: Any) -> RowFilter:
