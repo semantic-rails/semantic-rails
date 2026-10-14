@@ -746,12 +746,20 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
         if key in payload:
             probe[key] = payload[key]
 
+    held: set[str] = set()
+
     def values(field: str, where: list[dict[str, Any]], limit: int) -> list[str] | None:
         try:
             result = runtime.query_internal(
                 {**probe, "group_by": [field], "where": where, "limit": limit}
             )
-        except SemanticLayerError:
+        except SemanticLayerError as exc:
+            if exc.code == "POLICY_DENIED" and str(exc.details.get("reason", "")).startswith(
+                "row_filter_"
+            ):
+                # A row filter holds the listing (the model no filter reaches): the answered
+                # query says nothing about the value rather than call it unverified.
+                held.add(field)
             return None
         return [str(row[field]) for row in result["rows"] if row.get(field) is not None]
 
@@ -774,7 +782,8 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
                 else None
             )
             if found is None:
-                unverified.append({"dimension": field, "value": literal})
+                if field not in held:
+                    unverified.append({"dimension": field, "value": literal})
             elif not found:
                 misses.append({"dimension": field, "value": literal})
     limit = max_valid_values_limit()

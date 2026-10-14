@@ -868,6 +868,10 @@ kind names must match exactly.
   decides the order inside that `SELECT`, so such an overflow can refuse a filtered
   question with an execution error (it never returns a hidden value).
 
+  A filter value on a model no filter reaches (`where` on a customer's segment, say) isn't
+  checked against the data for a filtered caller, since listing that model is held: such a
+  query gets no `FILTER_VALUE_NOT_FOUND` warning, where an unfiltered caller could.
+
   Known limitation: the SQL a row-filtered caller can see (`mode: sql`, `rendered_sql`)
   shows the names of the filter's tables and columns, and of the tables it reaches, never
   their values. A host that hides those from a caller should not grant that caller SQL
