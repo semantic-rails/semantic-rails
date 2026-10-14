@@ -379,15 +379,15 @@ def _bind_with_row_filters(
         for row in row_filters
     ]
     visibility = visibility_for(config, row_filters)
+    sql_ast = apply_row_filters(bound.sql_ast, visibility)
     if row_filters:
-        # Holds only: a refusal here never authorizes anything the pass below doesn't prove.
+        # Holds only: a refusal here never authorizes anything the pass doesn't prove.
         hold_unowned_reads(
             config,
             visibility,
             roots=_row_roots(bound),
             routes=read_routes(bound.plan, bound.route_choices),
         )
-    sql_ast = apply_row_filters(bound.sql_ast, visibility)
 
     def filtered(statement: Any) -> SqlSelect:
         return apply_row_filters(statement, visibility)

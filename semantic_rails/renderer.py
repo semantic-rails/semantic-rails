@@ -516,20 +516,38 @@ def render_select_for_profile(
         return rendered
 
 
+class _Slots:
+    """The parameters one render emits: each renders as a marker unique to the render."""
+
+    def __init__(self) -> None:
+        self.nonce = f"__slot_{secrets.token_hex(8)}__"
+        self.emitted: list[ParameterSlot] = []
+
+    def read(self, sql: str) -> tuple[str, tuple[ParameterSlot, ...]]:
+        """``sql`` with each marker back to ``?``, and their slots in the order the text holds
+        them: the order a driver binds them, whatever the render hoisted or nested."""
+        pattern = f"{self.nonce}([0-9]+){self.nonce}"
+        order = [int(index) for index in re.findall(pattern, sql)]
+        if sorted(order) != list(range(len(self.emitted))):
+            raise ValueError("A rendered parameter marker was lost or repeated.")
+        return re.sub(pattern, "?", sql), tuple(self.emitted[index] for index in order)
+
+
+@contextmanager
+def collecting_slots() -> Iterator[_Slots]:
+    """Collect the slots of every parameter rendered inside, for ``_Slots.read``."""
+    slots = _Slots()
+    token = _EMITTED_SLOTS.set((slots.nonce, slots.emitted))
+    try:
+        yield slots
+    finally:
+        _EMITTED_SLOTS.reset(token)
+
+
 def render_with_slots(
     query: SqlSelect, profile: str | None = None, *, dialect: SqlDialect | None = None
 ) -> tuple[str, tuple[ParameterSlot, ...]]:
-    """``render_select_for_profile``, with the slot of each ``?`` in the order the text holds
-    them, which is the order a driver binds them, whatever the profile hoists or nests: each
-    parameter renders as a marker unique to this call, read back in text order."""
-    nonce = f"__slot_{secrets.token_hex(8)}__"
-    emitted: list[ParameterSlot] = []
-    token = _EMITTED_SLOTS.set((nonce, emitted))
-    try:
+    """``render_select_for_profile``, with the slot of each ``?`` in text order."""
+    with collecting_slots() as slots:
         sql = render_select_for_profile(query, profile, dialect=dialect)
-    finally:
-        _EMITTED_SLOTS.reset(token)
-    order = [int(index) for index in re.findall(f"{nonce}([0-9]+){nonce}", sql)]
-    if sorted(order) != list(range(len(emitted))):
-        raise ValueError("A rendered parameter marker was lost or repeated.")
-    return re.sub(f"{nonce}[0-9]+{nonce}", "?", sql), tuple(emitted[index] for index in order)
+    return slots.read(sql)

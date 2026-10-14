@@ -12,9 +12,9 @@ it is read as it is, unless a filter restricts that relation: then the statement
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable, Iterator, Sequence
-from dataclasses import dataclass, fields, is_dataclass, replace
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from typing import Any, cast
 
 from .errors import SemanticLayerError
 from .policy_rules import policy_action, role_scope_matches
@@ -25,6 +25,7 @@ from .sql_ast import (
     SqlCast,
     SqlCte,
     SqlExpr,
+    SqlField,
     SqlIdentifier,
     SqlIn,
     SqlInQuery,
@@ -35,9 +36,6 @@ from .sql_ast import (
     SqlTableRef,
 )
 from .sql_preparation import ParameterSlot, checked_slot_value, parameters_denied
-
-if TYPE_CHECKING:
-    from .row_filter_visibility import Visibility
 
 ROW_FILTER = "row_filter"
 _SLOT_TYPES = frozenset({"string", "integer", "boolean"})
@@ -87,6 +85,68 @@ class RowFilter:
         if self.size is None:
             return SqlBinary(column, "=", SqlParameter(self.slot))
         return SqlIn(column, [SqlParameter(slot) for slot in self.slots])
+
+
+# The alias of an owner read inside a visibility predicate. Every column the subquery reads is
+# qualified by it, and it names the subquery's only relation, so no outer name is captured.
+OWNER = "rf_owner"
+
+
+def relation_key(name: str) -> str:
+    return str(name).casefold()
+
+
+@dataclass(frozen=True, order=True)
+class ParentHop:
+    """A covered relation's foreign key into its owner's relation and that owner's key."""
+
+    fk: str
+    parent: str
+    key: str
+
+
+@dataclass(frozen=True)
+class Visibility:
+    """What a statement may read under ``filters``: relations are keyed by ``relation_key``."""
+
+    filters: tuple[RowFilter, ...]
+    # Each covered relation's parent hops, under these filters.
+    parents: Mapping[str, tuple[ParentHop, ...]] = field(default_factory=dict)
+    # Relations no statement may read under these filters, with why.
+    refused: Mapping[str, str] = field(default_factory=dict)
+    # Relations a model reads (unrestricted ones may be read as they are).
+    modeled: frozenset[str] = frozenset()
+    # Load logs whose mark (zero_through) a measure reads.
+    load_logs: frozenset[str] = frozenset()
+    # Relation-pipeline CTE names: their bodies may not read a restricted relation.
+    pipelines: frozenset[str] = frozenset()
+    # Whether the warehouse accepts a subquery in a join's ON.
+    subquery_in_join_on: bool = True
+
+    @property
+    def restricted(self) -> frozenset[str]:
+        return frozenset(relation_key(row.table) for row in self.filters) | frozenset(self.parents)
+
+    def predicate(self, table: str, qualifier: Sequence[str]) -> SqlExpr:
+        """``V_T`` for an occurrence of ``table`` named by ``qualifier``."""
+        return self._predicate(relation_key(table), list(qualifier), ())
+
+    def _predicate(self, table: str, qualifier: list[str], seen: tuple[str, ...]) -> SqlExpr:
+        if table in seen or len(seen) > 16:
+            raise unsupported(self.filters)  # owners that own each other define nothing
+        parts: list[SqlExpr] = [
+            row.predicate(qualifier) for row in self.filters if relation_key(row.table) == table
+        ]
+        for hop in self.parents.get(table, ()):
+            owners = SqlSelect(
+                [SqlField(SqlIdentifier([OWNER, hop.key]), hop.key)],
+                SqlTableRef(hop.parent, OWNER),
+                where=[self._predicate(relation_key(hop.parent), [OWNER], (*seen, table))],
+            )
+            parts.append(SqlInQuery(SqlIdentifier([*qualifier, hop.fk]), owners))
+        if not parts:
+            raise unsupported(self.filters)
+        return conjunction(parts)
 
 
 def row_filter(config: PackageConfig, policy: SemanticPolicyConfig) -> RowFilter:
@@ -166,19 +226,9 @@ def is_row_filter(policy: SemanticPolicyConfig) -> bool:
 
 
 def validate_row_filters(config: PackageConfig) -> None:
-    from .row_filter_visibility import coverage
-
     for policy in config.semantic_policies:
         if is_row_filter(policy):
-            row = row_filter(config, policy)
-            reach = coverage(config, row.entity) if row.shared else None
-            restricted = [m for m in row.shared if reach and m not in reach.uncovered]
-            if restricted:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"row_filter policy '{policy.id}': 'shared' lists '{restricted[0]}', which "
-                    "this filter restricts; 'shared' names only models it doesn't reach",
-                )
+            row_filter(config, policy)
 
 
 _RIGHT_OR_FULL = frozenset({"RIGHT", "RIGHT OUTER", "FULL", "FULL OUTER"})

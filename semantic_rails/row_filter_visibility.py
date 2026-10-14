@@ -16,77 +16,15 @@ its own filters AND, per parent hop, ``fk IN (SELECT key FROM parent WHERE V_par
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import _reaches_at_most_one
 from .errors import SemanticLayerError
 from .fanout import package_route
-from .row_filters import RowFilter, conjunction, unsupported
+from .row_filters import ParentHop, RowFilter, Visibility, relation_key
 from .schema import PackageConfig, base_of
-from .sql_ast import SqlExpr, SqlField, SqlIdentifier, SqlInQuery, SqlSelect, SqlTableRef
-
-# The alias of an owner read inside a visibility predicate. Every column the subquery reads is
-# qualified by it, and it names the subquery's only relation, so no outer name is captured.
-OWNER = "rf_owner"
-
-
-def relation_key(name: str) -> str:
-    return str(name).casefold()
-
-
-@dataclass(frozen=True, order=True)
-class ParentHop:
-    """A covered relation's foreign key into its owner's relation and that owner's key."""
-
-    fk: str
-    parent: str
-    key: str
-
-
-@dataclass(frozen=True)
-class Visibility:
-    """What a statement may read under ``filters``: relations are keyed by ``relation_key``."""
-
-    filters: tuple[RowFilter, ...]
-    # Each covered relation's parent hops, under these filters.
-    parents: Mapping[str, tuple[ParentHop, ...]] = field(default_factory=dict)
-    # Relations no statement may read under these filters, with why.
-    refused: Mapping[str, str] = field(default_factory=dict)
-    # Relations a model reads (unrestricted ones may be read as they are).
-    modeled: frozenset[str] = frozenset()
-    # Load logs whose mark (zero_through) a measure reads.
-    load_logs: frozenset[str] = frozenset()
-    # Relation-pipeline CTE names: their bodies may not read a restricted relation.
-    pipelines: frozenset[str] = frozenset()
-    # Whether the warehouse accepts a subquery in a join's ON.
-    subquery_in_join_on: bool = True
-
-    @property
-    def restricted(self) -> frozenset[str]:
-        return frozenset(relation_key(row.table) for row in self.filters) | frozenset(self.parents)
-
-    def predicate(self, table: str, qualifier: Sequence[str]) -> SqlExpr:
-        """``V_T`` for an occurrence of ``table`` named by ``qualifier``."""
-        return self._predicate(relation_key(table), list(qualifier), ())
-
-    def _predicate(self, table: str, qualifier: list[str], seen: tuple[str, ...]) -> SqlExpr:
-        if table in seen or len(seen) > 16:
-            raise unsupported(self.filters)  # owners that own each other define nothing
-        parts: list[SqlExpr] = [
-            row.predicate(qualifier) for row in self.filters if relation_key(row.table) == table
-        ]
-        for hop in self.parents.get(table, ()):
-            owners = SqlSelect(
-                [SqlField(SqlIdentifier([OWNER, hop.key]), hop.key)],
-                SqlTableRef(hop.parent, OWNER),
-                where=[self._predicate(relation_key(hop.parent), [OWNER], (*seen, table))],
-            )
-            parts.append(SqlInQuery(SqlIdentifier([*qualifier, hop.fk]), owners))
-        if not parts:
-            raise unsupported(self.filters)
-        return conjunction(parts)
 
 
 @dataclass(frozen=True)

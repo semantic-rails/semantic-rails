@@ -787,13 +787,14 @@ def test_a_row_filter_on_the_one_side_applies_as_it_does_to_a_where_filter(tmp_p
     package = _write_package(tmp_path, policies={"semantic_policies": [policy]})
     runtime = Runtime.from_path(str(package))
     context = RequestContext(actor="end-user", audience="customer", attributes={"segment": "SME"})
-    where_eur = {"where": [ONE_HOP["sum"][3]]}
+    sme = {"field": SEGMENT, "op": "is", "value": "SME"}
+    eur = ONE_HOP["sum"][3]
     try:
-        for expression, extra in ((SUM_EUR, {}), (_measure("amount"), where_eur)):
-            with pytest.raises(SemanticLayerError) as raised:
-                _ask(runtime, expression, context=context, **extra)
-            assert raised.value.code == "POLICY_DENIED"
-            assert raised.value.details["reason"] == "row_filter_unsupported_query"
+        # A customer's consumption rows follow their customer: the filter reads as the same
+        # where filter would, whether or not a condition looks the customer up.
+        for expression, where in ((SUM_EUR, []), (_measure("amount"), [eur])):
+            filtered = _ask(runtime, expression, context=context, where=where)
+            assert filtered == _ask(runtime, expression, where=[*where, sme])
         # An aggregate_if on the filtered entity alone reads only its own rows (C1, C4).
         customers = _ask(runtime, _aggif("count", NO_CURRENCY), context=context)
     finally:

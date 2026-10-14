@@ -393,12 +393,13 @@ def test_policies_hide_it_and_filter_its_rows(tmp_path):
         assert runtime.query({"select": [SCAN_COUNT]}, context=carrier)["rows"] == [
             {"scan_count": 7}
         ]
-        with pytest.raises(SemanticLayerError) as raised:  # a joined statement can't be filtered
-            runtime.query(
-                {"select": [SCAN_COUNT], "group_by": ["dimension.shop_order_store_id"]},
-                context=carrier,
-            )
-        assert raised.value.code == "POLICY_DENIED"
+        # Orders are reference data the filter doesn't reach: a scan looks its order up.
+        by_store = {"select": [SCAN_COUNT], "group_by": ["dimension.shop_order_store_id"]}
+        pickup = {"field": SCAN_TYPE, "op": "is", "value": "pickup"}
+        assert (
+            runtime.query(by_store, context=carrier)["rows"]
+            == runtime.query({**by_store, "where": [pickup]})["rows"]
+        )
     finally:
         runtime.close()
 

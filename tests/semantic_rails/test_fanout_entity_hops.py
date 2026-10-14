@@ -858,15 +858,26 @@ def _under_row_policy(
     ],
     ids=["order_count", "revenue", "conditional_sum", "conditional_ratio"],
 )
-def test_child_filters_stay_denied_under_a_row_policy(
+def test_child_filters_under_a_row_policy(
     package: Path, policy: dict[str, Any], attributes: dict[str, Any], expression: dict[str, Any]
 ) -> None:
-    """A row policy qualifies only a query that reads its one relation; EXISTS reads two."""
+    """A filter on items reaches no order (an order owns its items), so counting orders under
+    it is held; a filter on orders reaches their items, so the child filter answers as the
+    same where filter does for an unfiltered caller."""
     query = _conditional(expression, where=[BEVERAGE])
-    with pytest.raises(SemanticLayerError) as caught:
-        _under_row_policy(package, policy, attributes, query)
-    assert caught.value.code == "POLICY_DENIED"
-    assert caught.value.details["reason"] == "row_filter_unsupported_query"
+    if policy is HOT_ITEMS:
+        with pytest.raises(SemanticLayerError) as caught:
+            _under_row_policy(package, policy, attributes, query)
+        assert caught.value.code == "POLICY_DENIED"
+        assert caught.value.details["reason"] == "row_filter_uncovered_root"
+        return
+    prepared = _under_row_policy(package, policy, attributes, query)["prepared_query"]
+    own = {**query, "where": [BEVERAGE, _is("dimension.hop_order_customer_id", 10)]}
+    config = load_package_config(str(package))
+    unfiltered = compile_query(config, Registry(config), {"version": 1, **own})["sql"]
+    assert _reference(package, prepared.sql, [10] * len(prepared.parameters)) == _reference(
+        package, unfiltered
+    )
 
 
 def test_a_parent_row_policy_still_answers_without_a_child_filter(package: Path) -> None:

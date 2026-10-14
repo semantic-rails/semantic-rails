@@ -62,7 +62,7 @@ from .dialects import dialect_for_warehouse
 from .ir import ExplainArtifact, LogicalPlan
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
-from .renderer import render_with_slots
+from .renderer import collecting_slots, render_select_for_profile
 from .row_filters import RowFilter, verify_row_filters
 from .schema import PackageConfig
 from .sql_ast import SqlSelect
@@ -171,8 +171,10 @@ def compile_query(
         if bound.visibility is not None:
             verify_row_filters(select, bound.visibility)
         # The slots of the very render that is executed, in the order its text holds them.
-        rendered, slots = render_with_slots(select, sql_profile, dialect=dialect)
-        prepared = replace(dialect.prepare_query(rendered), parameters=slots)
+        with collecting_slots() as slots:
+            rendered = render_select_for_profile(select, sql_profile, dialect=dialect)
+        rendered, parameters = slots.read(rendered)
+        prepared = replace(dialect.prepare_query(rendered), parameters=parameters)
         return finalize_parameters(prepared, config.package.connection.kind)
 
     prepared = prepare(sql_ast)
