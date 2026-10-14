@@ -42,6 +42,13 @@ check to every request. A repeated `Host` or `Origin` is always refused, and a
 malformed header line with `400`. These checks run before any response,
 including a package-load failure, and a refusal names no package or caller.
 
+One limit applies to the ASGI server. Uvicorn's default `h11` parser passes an
+absolute-form target (`GET http://host/path`) to the app, which checks its host
+like `Host`. Uvicorn's optional `httptools` parser, installed with
+`uvicorn[standard]`, drops that host, so only `Host` is checked. Run uvicorn
+with `--http h11` to keep the check, as the Docker image does. A browser cannot use this gap for DNS rebinding: scripts cannot
+set `Host`, and browsers send ordinary requests with a path-only target.
+
 Run the Jaffle package:
 
 ```bash

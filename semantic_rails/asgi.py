@@ -55,7 +55,8 @@ def _rebinding_refusal(scope: dict[str, Any]) -> tuple[int, dict[str, Any]] | No
     """The shared Host/Origin check on the raw headers, the target and the address reached.
 
     Uvicorn's h11 parser keeps an absolute-form target (``http://host/path``) in
-    ``raw_path``; a parser that drops its authority leaves only ``Host`` to check.
+    ``raw_path``, after any ``root_path``; a parser that drops its authority (uvicorn's
+    optional httptools) leaves only ``Host`` to check.
     """
     pairs = [
         (bytes(key).decode("latin1"), bytes(value).decode("latin1"))
@@ -63,6 +64,7 @@ def _rebinding_refusal(scope: dict[str, Any]) -> tuple[int, dict[str, Any]] | No
     ]
     raw_path = scope.get("raw_path")
     target = raw_path.decode("latin1") if isinstance(raw_path, bytes) else str(scope.get("path"))
+    target = target.removeprefix(str(scope.get("root_path") or ""))
     server_host = str((scope.get("server") or ("",))[0] or "")
     return rebinding_refusal(pairs, server_host, target=target)
 

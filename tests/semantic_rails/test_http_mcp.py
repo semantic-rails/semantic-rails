@@ -55,7 +55,7 @@ class _BodyReads:
 
 
 @contextmanager
-def _uvicorn(app):
+def _uvicorn(app, *, root_path=""):
     """Serve ``app`` with uvicorn's h11 parser on loopback; yield its address and body reads."""
     reads = []
 
@@ -68,7 +68,9 @@ def _uvicorn(app):
 
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
-    config = uvicorn.Config(recording, http="h11", lifespan="off", log_level="warning")
+    config = uvicorn.Config(
+        recording, http="h11", lifespan="off", log_level="warning", root_path=root_path
+    )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
@@ -673,3 +675,38 @@ def test_package_load_failure_refuses_an_absolute_target_before_its_diagnostics(
     assert got == 421
     assert b"/private/path" not in body and b"broken" not in body
     assert reads == []
+
+
+@pytest.mark.parametrize("which", ["app", "package load failure"])
+def test_a_root_path_does_not_hide_an_absolute_target(frontends, which):
+    # Uvicorn prefixes the target with the root path: /enginehttp://evil.example:8090/...
+    app = frontends.app
+    if which == "package load failure":
+        app = PackageLoadFailureApp(package_id="broken", error=RuntimeError("/private/path failed"))
+    with _uvicorn(app, root_path="/engine") as (address, reads):
+        for target in [b"http://evil.example:8090/api/v1/catalog", b"http://evil.example/mcp"]:
+            request = b"GET %s HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" % target
+            got, body = _raw(address, request)
+            assert got == 421
+            assert b"broken" not in body and b"jaffle" not in body
+    assert reads == []
+
+
+@pytest.mark.parametrize("target", ["/api/v1/catalog?next=http://evil.example/", "/x/http:/y"])
+def test_a_url_in_the_query_is_not_an_absolute_target(frontends, target):
+    for backend in ("serve", "asgi"):
+        assert frontends(backend, method="GET", path=target, raw=b"")[0] in {200, 404}
+
+
+@pytest.mark.parametrize("backend", ["serve", "asgi"])
+@pytest.mark.parametrize("pad", ["\xa0", "\x85"])
+def test_origin_padding_beyond_http_whitespace_is_refused(frontends, monkeypatch, backend, pad):
+    monkeypatch.setenv("SEMANTIC_RAILS_CORS_ORIGINS", "https://app.example.com")
+    padded = {"Origin": f"{pad}https://app.example.com{pad}"}
+    assert (
+        frontends(backend, method="GET", path="/api/v1/catalog", headers=padded, raw=b"")[0] == 403
+    )
+    allowed = {"Origin": " https://app.example.com\t"}
+    assert (
+        frontends(backend, method="GET", path="/api/v1/catalog", headers=allowed, raw=b"")[0] == 200
+    )

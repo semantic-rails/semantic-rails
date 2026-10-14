@@ -21,7 +21,6 @@ import re
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any
-from urllib.parse import urlsplit
 
 from . import operations
 from .api_keys import api_key_auth_result
@@ -150,7 +149,7 @@ def cors_origin_header(request_origin: str | None) -> str:
         return ""
     if "*" in allowed:
         return "*"
-    origin = (request_origin or "").strip()
+    origin = (request_origin or "").strip(" \t")  # HTTP whitespace only
     if origin and origin in allowed:
         return origin
     return ""
@@ -198,11 +197,9 @@ def rebinding_refusal(
             found[str(name).lower()].append(str(value).strip(" \t"))
     hosts, origins = found["host"], found["origin"]
     listed = allowed_hosts()
-    try:
-        authority = urlsplit(target).netloc
-    except ValueError:  # an unparsable target, such as an unclosed "[", names no host
-        authority = "["
-    authorities = [*hosts, authority] if authority else hosts
+    # An absolute-form target names a host, even behind a path prefix; it must pass like Host.
+    _, absolute, rest = re.split(r"[?#]", target, maxsplit=1)[0].partition("://")
+    authorities = [*hosts, rest.partition("/")[0]] if absolute else hosts
     if len(hosts) > 1 or (
         (listed or loopback_host(server_host or ""))
         and not (hosts and all(_allowed_authority(a, listed) for a in authorities))
