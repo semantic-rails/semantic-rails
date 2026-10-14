@@ -17,7 +17,7 @@ from semantic_rails.cli.commands import query as cli_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.http_request import HTTPInputError, coerce_string_list
-from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import discover_payload
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.request_context import context_from_policy_context
@@ -66,6 +66,7 @@ def _ids(response: dict[str, Any]) -> list[str]:
             "dimensions",
             "dimension_values",
             "entities",
+            "relationships",
         )
         for card in response.get(bucket) or []
     ]
@@ -448,3 +449,96 @@ def test_cli_refuses_a_kinds_value_that_does_not_parse(monkeypatch: pytest.Monke
         _cli_discover(monkeypatch, '["metric"')
     assert raised.value.code == "INVALID_MCP_ARGUMENTS"
     assert raised.value.details["field"] == "kinds"
+
+
+PLURALS = [
+    (["measures"], ["measure"]),
+    ("metrics,dimensions", ["metric", "dimension"]),
+    ('["entities"]', ["entity"]),
+    (["dimension_values", "segments"], ["dimension_value", "segment"]),
+    (["relationships"], ["relationship"]),
+]
+
+
+@pytest.mark.parametrize(("plural", "singular"), PLURALS)
+def test_a_plural_kind_means_its_singular(
+    adapter: SemanticLayerMCPAdapter, plural: Any, singular: list[str]
+) -> None:
+    terms = "food store revenue"
+    named = adapter.call_tool("discover", {"terms": terms, "kinds": plural})
+    expected = adapter.call_tool("discover", {"terms": terms, "kinds": singular})
+    assert named["ok"] is True, named
+    assert _ids(named) == _ids(expected) and _ids(named)
+
+
+@pytest.mark.parametrize(
+    ("plural", "singular"),
+    [(["segments"], ["segment"]), ('["relationships", "metrics"]', ["relationship", "metric"])],
+)
+def test_a_plural_kind_filters_the_empty_terms_listing(
+    adapter: SemanticLayerMCPAdapter, plural: Any, singular: list[str]
+) -> None:
+    listed = adapter.call_tool("discover", {"terms": "", "kinds": plural})["catalog"]
+    assert listed == adapter.call_tool("discover", {"terms": "", "kinds": singular})["catalog"]
+    assert {f"{kind}_ids" for kind in singular} <= set(listed)
+
+
+def test_a_plural_kind_means_its_singular_on_http_and_under_a_grant(
+    runtime: Any, granted: Any
+) -> None:
+    service = SemanticHTTPService(runtime)
+    out, status = service.handle("POST", "/discover", {"terms": "revenue", "kinds": ["metrics"]})
+    assert status == 200 and out["metrics"] and not out["measures"]
+    out, status = service.handle(
+        "POST", "/discover", {"terms": "revenue", "kinds": ["metrics"]}, context=granted
+    )
+    assert status == 200 and out["metrics"]
+
+
+RELATIONSHIP_FIELDS = (
+    "source_entity",
+    "target_entity",
+    "cardinality",
+    "allowed_directions",
+    "source_columns",
+    "target_columns",
+)
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_discover_ranks_relationships_with_their_join_fields(
+    adapter: SemanticLayerMCPAdapter, verbosity: str
+) -> None:
+    out = adapter.call_tool(
+        "discover", {"terms": "store", "kinds": ["relationship"], "verbosity": verbosity}
+    )
+    assert out["ok"] is True, out
+    rows = {row["id"]: row for row in out["relationships"]}
+    assert "relationship.orders_store" in rows
+    for relationship_id, row in rows.items():
+        card = adapter.call_tool("inspect", {"object_id": relationship_id, "verbosity": "compact"})
+        for field in RELATIONSHIP_FIELDS:
+            assert row[field] == card["card"][field], (relationship_id, field)
+    for bucket in ("measures", "metrics", "dimensions", "entities", "segments"):
+        assert not out.get(bucket), bucket
+    assert NO_MATCH not in _hints_text(out)
+
+
+def test_relationships_are_ranked_only_when_kinds_names_them(
+    adapter: SemanticLayerMCPAdapter, runtime: Any
+) -> None:
+    assert "relationships" not in adapter.call_tool("discover", {"terms": "store"})
+    assert "relationships" not in discover_payload(runtime, terms="store")
+    found = discover_payload(runtime, terms="store", kinds=["relationship"])
+    assert "relationship.orders_store" in {row["id"] for row in found["relationships"]}
+    miss = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["relationship"]})
+    assert miss["ok"] is True and not miss["relationships"]
+    assert "No semantic objects of kind ['relationship'] matched" in _hints_text(miss)
+
+
+def test_the_discover_schema_lists_every_kind_it_ranks() -> None:
+    (tool,) = [row for row in list_tool_definitions() if row["name"] == "discover"]
+    kinds = tool["inputSchema"]["properties"]["kinds"]
+    assert kinds["type"] == "array"
+    assert kinds["items"]["enum"] == sorted(DISCOVER_RANKED_KINDS)
+    assert "relationship" in DISCOVER_RANKED_KINDS

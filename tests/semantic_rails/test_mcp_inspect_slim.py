@@ -72,6 +72,11 @@ def test_minimal_card_keeps_every_fact_once(
                         assert slim_row[field] == item
                     else:
                         assert field not in slim_row
+        elif key == "reachable_entities":
+            # A minimal entity card leaves the routes out; inspect at compact has them.
+            assert slim[key] == [
+                {field: item for field, item in row.items() if field != "via"} for row in value
+            ]
         elif key == "accumulation":
             assert slim[key]["kind"] == value["kind"]
             assert "snapshot" not in slim[key]

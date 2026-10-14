@@ -272,6 +272,23 @@ def test_live_values_retry_keeps_the_callers_call(adapter):
     assert "private-owner" not in json.dumps(out)
 
 
+def test_a_needs_live_query_response_names_the_argument_that_returns_the_values(adapter):
+    out = adapter.call_tool("valid-values", {"dimension_id": DIMENSION})
+    assert out["status"] == "needs_live_query" and not out["ok"], out
+    (warning,) = out["warnings"]
+    (hint,) = out["recovery_hints"]
+    for message in (warning["message"], hint["message"]):
+        assert DIMENSION in message
+        assert "allow_live_query: true" in message
+        assert "no values were read" in message
+    assert hint["patch"] == {"allow_live_query": True}
+    followed = adapter.call_tool(out["next_call"]["tool"], out["next_call"]["arguments"])
+    assert followed["ok"] is True and followed["values"], followed
+    # Passing the argument the first time returns the values in one call.
+    first = adapter.call_tool("valid-values", {"dimension_id": DIMENSION, "allow_live_query": True})
+    assert first["values"] == followed["values"]
+
+
 def test_declared_empty_domain_is_a_successful_empty_lookup(adapter, monkeypatch):
     from dataclasses import replace
 
