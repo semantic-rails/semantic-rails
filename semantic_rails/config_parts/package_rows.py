@@ -44,7 +44,14 @@ from .measure_rows import (
     _suggested_aggregations,
 )
 from .metric_rows import _parse_metric_expression, _translate_metric_direct_fields
-from .model_rows import _key_columns_and_role, _map_dimension_kind, _parse_relations, _with_displays
+from .model_rows import (
+    _held_key_role,
+    _inferred_source_role,
+    _key_columns_and_role,
+    _map_dimension_kind,
+    _parse_relations,
+    _with_displays,
+)
 from .policy_rows import (
     _parse_caveats,
     _parse_path_policy,
@@ -600,13 +607,15 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "INVALID_CONFIG",
                     f"{path}: join '{model_id}.{edge_key}' key width does not match target key",
                 )
-            # An inferred cardinality rests on keys: off the target's key a target row can
-            # repeat, and part of a composite source key repeats across source rows.
+            # An inferred cardinality rests on keys: a side is unique only where its columns
+            # hold a whole key declared primary or unique, and off the target's key a target
+            # row can repeat.
             target_key = target_cfg.key or [target_cfg.primary_key]
+            held_target_role = _held_key_role(target_cols, target_key, target_cfg.key_roles)
             if (
                 "cardinality" not in join_spec
                 and not join_spec.get("target_key_role")
-                and not set(target_key) <= set(target_cols)
+                and not held_target_role
             ):
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
@@ -618,10 +627,12 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 join_spec.get("source_key_role", foreign_key_roles.get(str(edge_key), "")) or ""
             ).lower()
             if not local_role:
-                source_key = set(entity_cfg.key or [entity_cfg.primary_key])
-                local_role = "primary" if set(local_cols) == source_key else "foreign"
+                source_key = entity_cfg.key or [entity_cfg.primary_key]
+                local_role = _inferred_source_role(local_cols, source_key, entity_cfg.key_roles)
             target_role = str(join_spec.get("target_key_role", "") or "").lower()
             if not target_role:
+                target_role = held_target_role
+            if not target_role:  # off the key under an authored cardinality, which decides
                 target_roles = {
                     target_cfg.key_roles.get(column, "primary") for column in target_cols
                 }

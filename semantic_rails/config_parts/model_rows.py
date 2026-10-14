@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Any
 
 from ..errors import SemanticLayerError
+from ..renderer import column_identity
 from ..schema import DimensionConfig, EntityConfig, RelationConfig, RelationPipelineStep
 from .row_values import _ensure_list, _normalize_meta, _slug, _titleize
 
@@ -23,6 +25,27 @@ def _key_columns_and_role(value: Any, *, default_role: str) -> tuple[list[str], 
             "INVALID_CONFIG", f"key role must be one of {sorted(allowed_roles)}"
         )
     return columns, role
+
+
+def _held_key_role(columns: Iterable[str], key: list[str], key_roles: Mapping[str, str]) -> str:
+    """The role of ``key`` when ``columns`` hold every column of it, else "".
+
+    Columns compare as the warehouse reads them, in any order and with extra columns allowed. A
+    key whose columns carry different roles reads as "natural".
+    """
+    held = {column_identity(column) for column in columns}
+    if not key or any(column_identity(column) not in held for column in key):
+        return ""
+    roles = {str(key_roles.get(column, "primary")).lower() for column in key}
+    return roles.pop() if len(roles) == 1 else "natural"
+
+
+def _inferred_source_role(
+    columns: Iterable[str], key: list[str], key_roles: Mapping[str, str]
+) -> str:
+    """A source side holds one row per value only on a whole key declared primary or unique."""
+    role = _held_key_role(columns, key, key_roles)
+    return role if role in {"primary", "unique"} else "foreign"
 
 
 _RELATION_STEP_KEYS = {
