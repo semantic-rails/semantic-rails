@@ -11,15 +11,18 @@ latest snapshot. Each path runs both lowerings (an aggregate joined back, and QU
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pytest
 
+from semantic_rails.compiler_parts.bind import _parse_public_expr
 from semantic_rails.dialects import DuckDbDialect
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import MetricConfig, SemanticPolicyConfig
 from tests.semantic_rails.conftest import opened
 
 CLOSING = "BALANCE_CLOSING_DAY"
@@ -30,7 +33,9 @@ FEE = {"kind": "scoped_aggregate", "measure": BALANCE, "aggregation": "sum"}
 OVER_50 = {"entity": "entity.x_account", "input": BALANCE, "op": "gt", "value": 50}
 
 
-def _package(root: Path, rows: str = ROWS, clock: str = "") -> Path:
+def _package(
+    root: Path, rows: str = ROWS, clock: str = "", *, relation: str = "snap", ts: str = "TIMESTAMP"
+) -> Path:
     (root / "models").mkdir(parents=True)
     (root / "metrics").mkdir()
     (root / "package.yml").write_text(
@@ -45,7 +50,7 @@ def _package(root: Path, rows: str = ROWS, clock: str = "") -> Path:
     )
     stock = "accumulation: {kind: stock, snapshot: end_of_period}, value_type: number"
     (root / "models" / "snap.yml").write_text(
-        "model:\n  id: snap\n  relation: snap\n  entities: {snap: {}, account: {}}\n"
+        f"model:\n  id: snap\n  relation: {relation}\n  entities: {{snap: {{}}, account: {{}}}}\n"
         "  dimensions: {id: {kind: categorical}}\n"
         f"  times:\n    ts: {{column: ts, kind: timestamp, class: as_of_time, default: true{clock}}}\n"
         "  measures:\n"
@@ -61,9 +66,9 @@ def _package(root: Path, rows: str = ROWS, clock: str = "") -> Path:
         "metrics:\n  report: {kind: aggregate, measure: balance, value_type: number}\n"
     )
     with duckdb.connect(str(root / "x.duckdb")) as con:
-        con.execute(f"CREATE TABLE snap (id VARCHAR, ts TIMESTAMP, value INTEGER); "
-                    f"INSERT INTO snap VALUES {rows}; "
-                    "CREATE TABLE accounts AS SELECT DISTINCT id FROM snap")  # fmt: skip
+        con.execute(f"CREATE TABLE {relation} (id VARCHAR, ts {ts}, value INTEGER); "
+                    f"INSERT INTO {relation} VALUES {rows}; "
+                    f"CREATE TABLE accounts AS SELECT DISTINCT id FROM {relation}")  # fmt: skip
     return root
 
 
@@ -205,5 +210,159 @@ def test_a_row_without_a_clock_is_never_a_latest_snapshot(lowering, tmp_path: Pa
         result = runtime.query({"select": [{"expression": BALANCE, "as": "v"}]})
         assert _values(result) == [200.0]
         assert _disclosed(result) == [(BALANCE, "2020-01-20", 1)]
+    finally:
+        runtime.close()
+
+
+# Round 3: each operand's own scope, the clock's day bucket, ownership, names, duplicates.
+LA = ", timezone: America/Los_Angeles"
+
+
+def test_an_entity_set_ratio_closes_within_each_operands_scope(x: Runtime) -> None:
+    """Both operands keep only accounts whose flow is 100 (X): each closes on X's January 5
+    and reads 100, so their ratio is 1.0, not a ratio of two empty closing days."""
+    is_100 = {"entity": "entity.x_account", "input": "measure.x.flow", "op": "is", "value": 100,
+              "over": "all_time"}  # fmt: skip
+    over_50 = {**is_100, "op": "gt", "value": 50}
+    for operand in ({**FEE, "predicates": [is_100]}, {**FEE, "predicates": [is_100, over_50]}):
+        assert _values(x.query({"select": [{"expression": operand, "as": "v"}]})) == [100.0]
+    ratio = {"kind": "ratio", "numerator": {**FEE, "predicates": [is_100, over_50]},
+             "denominator": {**FEE, "predicates": [is_100]}}  # fmt: skip
+    result = x.query({"select": [{"expression": ratio, "as": "v"}]})
+    assert _values(result) == [1.0]
+    assert (BALANCE, "2020-01-05", 0) in _disclosed(result)
+
+
+@pytest.mark.parametrize(
+    "time",
+    [
+        {},
+        {"start": "2020-03-08", "end": "2020-03-09"},
+        {"start": "2020-03-08", "end": "2020-03-10", "grain": "day"},
+    ],
+    ids=["untimed", "window", "by_day"],
+)
+@pytest.mark.parametrize(
+    ("ts", "zone", "rows"),
+    [
+        # Naive UTC wall times, declared as such.
+        ("TIMESTAMP", ", column_timezone: UTC",
+         "('X', TIMESTAMP '2020-03-09 06:30', 100), ('Y', TIMESTAMP '2020-03-08 09:30', 200)"),
+        # Instants, read in the session's zone.
+        ("TIMESTAMPTZ", "",
+         "('X', TIMESTAMPTZ '2020-03-09 06:30:00+00', 100), ('Y', TIMESTAMPTZ '2020-03-08 09:30:00+00', 200)"),
+    ],
+    ids=["naive", "aware"],
+)  # fmt: skip
+def test_the_closing_day_is_the_clocks_day_bucket_across_dst(
+    lowering, tmp_path: Path, time: dict, ts: str, zone: str, rows: str
+) -> None:
+    """March 8, 2020 is 23 hours long in Los Angeles: Y at 01:30 PST and X at 23:30 PDT are
+    both that day, though X is March 9 in UTC. The closing day is the day the clock's own
+    day grain puts each snapshot in, so both are read, untimed too."""
+    runtime = _runtime(_package(tmp_path / "x", rows, LA + zone, ts=ts))
+    try:
+        call: dict = {"select": [{"expression": BALANCE, "as": "v"}]}
+        if time:
+            call["time"] = {"temporal_role": "temporal_role.x_snap_ts", **time}
+        result = runtime.query(call)
+        assert [v for v in _values(result) if v is not None] == [300.0]
+        assert _disclosed(result) == [(BALANCE, "2020-03-08", 0)]
+    finally:
+        runtime.close()
+
+
+def test_a_zone_aware_clock_declared_in_utc_closes_on_its_day_bucket(
+    lowering, tmp_path: Path
+) -> None:
+    """A TIMESTAMP WITH TIME ZONE column with column_timezone: UTC: X at 20:00Z and Y at
+    10:00Z, January 2, close on January 2 and both count."""
+    rows = "('X', TIMESTAMPTZ '2020-01-02 20:00:00+00', 100), ('Y', TIMESTAMPTZ '2020-01-02 10:00:00+00', 200)"  # fmt: skip
+    runtime = _runtime(
+        _package(tmp_path / "x", rows, LA + ", column_timezone: UTC", ts="TIMESTAMPTZ")
+    )
+    try:
+        result = runtime.query({"select": [{"expression": BALANCE, "as": "v"}]})
+        assert _values(result) == [300.0]
+        assert _disclosed(result) == [(BALANCE, "2020-01-02", 0)]
+    finally:
+        runtime.close()
+
+
+def _withheld_report(root: Path, lowering: str) -> Runtime:
+    """report withheld from role support, beside an average flow per account (a branch)."""
+    base = Runtime.from_path(str(_package(root)))
+    config = base.config
+    distribution = {"kind": "distribution", "function": "avg",
+                    "over": {"kind": "entity_value", "entity": "entity.x_account",
+                             "input": "measure.x.flow"}}  # fmt: skip
+    payload = base.engine_payload({"select": [{"expression": distribution, "as": "d"}]})
+    base.close()
+    average = MetricConfig(
+        id="metric.x.flow_average",
+        kind="derived",
+        expression=_parse_public_expr(payload["select"][0]["expression"]),
+    )
+    policy = SemanticPolicyConfig(id="policy.x.hide", kind="object_access", action="withhold_values",
+                                  roles=["support"], object_ids=["metric.x.report"],
+                                  config={"max_rank": 3})  # fmt: skip
+    config = replace(config, metric_recipes=[*config.metric_recipes, average],
+                     semantic_policies=[policy])  # fmt: skip
+    return opened(Runtime.from_config(config, source_path=str(root)))
+
+
+RANKED = {
+    "select": [{"expression": "metric.x.report", "as": "v"},
+               {"expression": "metric.x.flow_average", "as": "d"}],
+    "group_by": ["dimension.x_snap_id"],
+    "order_by": [{"field": "v", "direction": "desc"},
+                 {"field": "dimension.x_snap_id", "direction": "desc"}],
+    "limit": 3,
+}  # fmt: skip
+
+
+def test_a_withheld_stock_beside_a_branch_says_nothing_of_its_day(lowering, tmp_path: Path) -> None:
+    """The balance is read for the withheld report only, in a branch beside a distribution:
+    its closing day and counts are withheld with it, granted or not, and never attributed to
+    the flow average or the grouping."""
+    runtime = _withheld_report(tmp_path / "x", lowering)
+    try:
+        plain = runtime.query(RANKED)
+        # Unrestricted, the branch's read belongs to the report's column.
+        outputs = [row["outputs"] for row in _by_code(plain, "assumptions", CLOSING)]
+        assert outputs == [["v"]]
+        support = RequestContext(roles=("support",))
+        granted = RequestContext(roles=("support",), metric_allowlist=("metric.x.report", "metric.x.flow_average"),
+                                 dimension_allowlist=("dimension.x_snap_id",))  # fmt: skip
+        for context in (support, granted):
+            result = runtime.query(RANKED, context=context)
+            assert "v" not in result["rows"][0]
+            assert not _by_code(result, "assumptions", CLOSING)
+            assert not _by_code(result, "warnings", MISSING)
+            assert "2020-01-20" not in str([result.get("assumptions"), result.get("warnings")])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("relation", ["snapshot_rows", "snapshot_base", "closing_rows"])
+def test_a_relation_named_like_an_internal_step_still_reads(
+    lowering, tmp_path: Path, relation: str
+) -> None:
+    runtime = _runtime(_package(tmp_path / "x", relation=relation))
+    try:
+        result = runtime.query({"select": [{"expression": BALANCE, "as": "v"}]})
+        assert _values(result) == [200.0]
+        assert _disclosed(result) == [(BALANCE, "2020-01-20", 1)]
+    finally:
+        runtime.close()
+
+
+def test_duplicate_snapshots_on_the_closing_day_are_all_read(lowering, tmp_path: Path) -> None:
+    """Two identical rows for X on its closing day are two rows of data: both lowerings read
+    them both (100 + 100 + 200)."""
+    rows = "('X', TIMESTAMP '2020-01-20', 100), ('X', TIMESTAMP '2020-01-20', 100), ('Y', TIMESTAMP '2020-01-20', 200)"  # fmt: skip
+    runtime = _runtime(_package(tmp_path / "x", rows))
+    try:
+        assert _values(runtime.query({"select": [{"expression": BALANCE, "as": "v"}]})) == [400.0]
     finally:
         runtime.close()
