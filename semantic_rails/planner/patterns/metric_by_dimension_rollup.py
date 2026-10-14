@@ -240,7 +240,6 @@ def _whose_rows_why(config: Any, word: str, query: Call, entities: list[Any]) ->
             f"display name ({labels}), so plan doesn't pick whose rows to list."
         ),
         expected={"answer": "rows", "entities": [row.id for row in entities]},
-        actual={"group_by": list(query.group_by)},
         recovery_hint={
             "kind": "ask_whose_rows",
             "message": "Ask the user which they mean, then send that option's call, or plan "

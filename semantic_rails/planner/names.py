@@ -48,12 +48,18 @@ class NamedRow:
     said: str
     entity: Any
     key_dimension: str
-    key: Any
+    # The row's value of its key dimension.
+    value: Any
     display_dimension: str
     display: str
 
     def shown(self) -> str:
-        return f"{self.entity.label or self.entity.id} {self.display} ({self.key})"
+        return f"{self.entity.label or self.entity.id} {self.display} ({self.value})"
+
+    def read(self, config: Any, query: Call) -> QueryBuilder:
+        """``query`` filtered to this row by its key and grouped by its display."""
+        builder = QueryBuilder(config, query).where(self.key_dimension, "is", self.value)
+        return builder.group(self.display_dimension)
 
 
 # A lookup's (key, display) rows holding the name, and whether the read was whole; None failed.
@@ -161,26 +167,18 @@ def _lookup(
     """The (key, display) rows whose display holds the words, and whether the read was whole
     (it came back short of its limit); None when it failed."""
 
-    call = {
-        "select": [],
-        "group_by": [display_dimension, key_dimension],
-        # Each word, in any case: a superset of the rows holding them side by side as words.
-        "where": [
-            {"field": display_dimension, "op": "contains", "value": word}
-            for word in dict.fromkeys(words)
-        ],
-        "order_by": [
-            {"field": display_dimension, "direction": "asc"},
-            {"field": key_dimension, "direction": "asc"},
-        ],
-        "limit": _LOOKUP_ROWS,
-    }
     try:
         # The caller plan answers; without one, no row filter could apply, so nothing is read.
         pinned = visible_view.pinned_view(runtime)
         if pinned is None:
             return None
-        rows = runtime.query(call, context=dict(pinned.policy_context))["rows"]
+        # A select-less call lists the rows: each word, in any case, is a superset of the rows
+        # holding the words side by side as words.
+        builder = QueryBuilder(runtime._config).groups([display_dimension, key_dimension])
+        for word in dict.fromkeys(words):
+            builder.where(display_dimension, "contains", word)
+        call = builder.order(display_dimension).order(key_dimension).limit(_LOOKUP_ROWS).build()
+        rows = runtime.query(call.to_call(), context=dict(pinned.policy_context))["rows"]
     except Exception:  # noqa: BLE001 — a lookup that fails (no adapter, a denial) is the hold
         return None
     found = [
@@ -239,20 +237,19 @@ def name_filters(
             elif matches and whole:
                 named.extend(matches)
     if asks:
-        return query, _ask_why(asks)
-    rows = {(row.key_dimension, repr(row.key)) for row in named}
+        return query, _ask_why(runtime._config, query, asks)
+    rows = {(row.key_dimension, repr(row.value)) for row in named}
     if not named or len(rows) > len({row.key_dimension for row in named}):
         return query, None
-    builder = QueryBuilder(runtime._config, query)
     for row in named:
-        builder.where(row.key_dimension, "is", row.key)
-    builder.group(*(row.display_dimension for row in named))
+        query = row.read(runtime._config, query).build()
     state.named[question.lower()] = tuple(named)
-    return builder.build(), None
+    return query, None
 
 
-def _ask_why(asks: list[tuple[list[NamedRow], bool]]) -> dict[str, Any]:
-    """Why plan asks which row a name means, listing each row it found."""
+def _ask_why(config: Any, query: Call, asks: list[tuple[list[NamedRow], bool]]) -> dict[str, Any]:
+    """Why plan asks which row a name means, listing each row it found with the draft that
+    reads it, a whole call."""
 
     gaps = [
         CoverageGap(
@@ -267,9 +264,8 @@ def _ask_why(asks: list[tuple[list[NamedRow], bool]]) -> dict[str, Any]:
                     {
                         "entity": match.entity.id,
                         "display": match.display,
-                        "key": match.key,
-                        "where": {"field": match.key_dimension, "op": "is", "value": match.key},
-                        "group_by": match.display_dimension,
+                        "key": match.value,
+                        "call": match.read(config, query).build().to_call(),
                     }
                     for match in matches
                 ],
@@ -278,9 +274,8 @@ def _ask_why(asks: list[tuple[list[NamedRow], bool]]) -> dict[str, Any]:
             recovery_hint={
                 "kind": "name_one_row",
                 "message": (
-                    "Ask the user which one they mean, then add its where filter to best.query "
-                    "and its display to group_by, and validate; or plan again with its full "
-                    "name."
+                    "Ask the user which one they mean, then send that match's call; or plan "
+                    "again with its full name."
                 ),
             },
         )
@@ -306,7 +301,7 @@ def honored_names(question: str, query: Call) -> tuple[NamedRow, ...]:
         row
         for row in state.named.get(str(question or "").lower(), ())
         if row.display_dimension in query.group_by
-        and condition(row.key_dimension, "is", row.key) in query.conditions
+        and condition(row.key_dimension, "is", row.value) in query.conditions
     )
 
 

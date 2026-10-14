@@ -664,9 +664,9 @@ answer. A row whose display holds the name as whole words side by side, in any c
   groups by its display, so the answer names it; the words are consumed, and an assumption line
   says "'Acme' is read as Account 'Acme Data Co'.";
 - several: `status="needs_clarification"`, `next.action="clarify"`, with a `name_ambiguous` gap
-  whose `expected.matches` lists each row's `entity`, `display`, `key`, its `where` filter and
-  its `group_by` display (`complete: false` when the read was full), and
-  `why.details.clarification.question` asking which one;
+  whose `expected.matches` lists each row's `entity`, `display`, `key` and `call`, the draft
+  filtered to that row and grouped by its display (`complete: false` when the read was full),
+  and `why.details.clarification.question` asking which one;
 - none, a full read with one match, a failed lookup, or names giving two rows of one entity
   ("Acme and Globex"): the hold above. A caller's `partial_query` with a `where` or `group_by`
   turns the lookup off.
