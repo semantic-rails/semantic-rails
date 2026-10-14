@@ -608,9 +608,9 @@ April together), never the sum of its days. A period after the last snapshot rea
 defaults to `asc` and is lowercase. `period` is the time axis (`"time"` is refused with
 `period`). NULLs sort last in both directions. A field that names no column is refused with
 `INVALID_ORDER_BY`, whose details list the columns it can name.
-A selected measure or metric id orders by the one select item that reads it as itself (with no
-`aggregation`, `temporal_role` or `parameters`); read so twice, or only with an override, it is
-refused with those items' columns in `closest_matches`.
+A selected measure or metric id orders by the one select item that reads it as itself (no
+`temporal_role` or `parameters`, and no `aggregation` but its own); read so twice, or only with an
+override, it is refused with those items' columns in `closest_matches`.
 
 A ranking is `group_by` + `order_by` + `limit`. "Top 3 customers by revenue last month":
 
