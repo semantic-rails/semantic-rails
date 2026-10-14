@@ -38,12 +38,14 @@ _ATTRIBUTE_SCALARS = frozenset({str, int, bool})
 
 
 def _attribute_value(name: str, value: Any) -> Any:
+    # An empty list is a grant of no values: kept, so that a row filter reading it denies
+    # the request (POLICY_DENIED) instead of failing here.
     items = tuple(value) if type(value) in (list, tuple) else None
     kinds = {type(item) for item in items} if items is not None else {type(value)}
-    if len(kinds) != 1 or not kinds <= _ATTRIBUTE_SCALARS or "" in (items or (value,)):
+    if len(kinds) > 1 or not kinds <= _ATTRIBUTE_SCALARS or "" in (items or (value,)):
         raise TypeError(
             f"Trusted attribute {name!r} must be a non-empty str, an int or a bool, "
-            "or a non-empty list of one of those types."
+            "or a list of one of those types."
         )
     return items if items is not None else value
 

@@ -961,6 +961,18 @@ def _compiled_package_warnings(
                 )
             )
     warnings.extend(semantic_collision_warnings(config, source_path))
+    warnings.extend(
+        _error_payload(
+            "ROW_FILTER_SCOPED_BY_ROLE",
+            f"{source_path}: row filter {policy.id} applies only to requests with one of the "
+            f"roles {list(policy.roles)}, so every other request reads all of its relation's "
+            "rows. Drop roles: to filter every request, and list the roles that may read every "
+            "row in unless_roles.",
+            details={"policy_id": policy.id, "roles": list(policy.roles)},
+        )
+        for policy in config.semantic_policies
+        if policy.kind == "row_filter" and policy.roles
+    )
     if undecided := _undecided_routes_warning(census, source_path):
         warnings.append(undecided)
     warnings.extend(

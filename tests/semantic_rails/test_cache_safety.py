@@ -115,6 +115,9 @@ def test_compile_cache_key_is_partitioned_by_trusted_attribute_values():
     # The attributes' repr names keys only; the key must still see each typed value.
     variants = [{}, {"customer_id": "1"}, {"customer_id": "2"}, {"customer_id": 1}]
     variants += [{"customer_id": True}, {"customer_id": ["1"]}, {"account_id": "1"}]
+    # A list's order and length compile apart: each binds its own slots.
+    variants += [{"customer_id": ["1", "2"]}, {"customer_id": ["2", "1"]}, {"customer_id": [1]}]
+    variants += [{"customer_id": []}]
     keys = [_key(_host_context(**attributes)) for attributes in variants]
     assert len(set(keys)) == len(variants)
     assert _key(_host_context(a="x", b=2)) == _key(_host_context(b=2, a="x"))

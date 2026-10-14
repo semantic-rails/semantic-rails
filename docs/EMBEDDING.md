@@ -81,7 +81,9 @@ trusted = RequestContext(
 ```
 
 Names match `[a-z][a-z0-9_]{0,63}`. A value is a non-empty string, an int or a
-bool, or a non-empty list of one of those types; anything else raises. The
+bool, or a list of one of those types; anything else, a list mixing types
+included, raises. An empty list is kept as a grant of no values: a row filter that
+reads it denies the request with `POLICY_DENIED`. The
 engine carries the attributes through its internal calls. Request bodies,
 headers and plans can't create or replace them (a caller's
 `policy_context` is refused), and they never appear in the public
@@ -90,7 +92,7 @@ and immutable: read it with `names` and `get(name)`. Attribute values partition
 the compile cache and bind to prepared-statement parameters at execution
 (DuckDB and Postgres; other adapters deny such statements). A package's `row_filter`
 policies produce those parameters: they limit a relation's rows to the
-attribute's value, and deny the request when it is missing (see
+attribute's value, or to any item of a list, and deny the request when it is missing (see
 [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)). A driver error on such a statement
 is raised without the driver's message, which could quote a bound value.
 
