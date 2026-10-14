@@ -8,10 +8,12 @@ means the same as the array, and a value that names no real kind is refused.
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from semantic_rails.cli.commands import query as cli_query
 from semantic_rails.errors import SemanticLayerError
@@ -21,7 +23,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import discover_payload
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.request_context import context_from_policy_context
-from semantic_rails.request_payload import DISCOVER_RANKED_KINDS, parse_string_list
+from semantic_rails.request_payload import parse_string_list
 from semantic_rails.resource_access import GRANT_DISCOVER_KINDS
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
@@ -536,9 +538,50 @@ def test_relationships_are_ranked_only_when_kinds_names_them(
     assert "No semantic objects of kind ['relationship'] matched" in _hints_text(miss)
 
 
-def test_the_discover_schema_lists_every_kind_it_ranks() -> None:
-    (tool,) = [row for row in list_tool_definitions() if row["name"] == "discover"]
-    kinds = tool["inputSchema"]["properties"]["kinds"]
-    assert kinds["type"] == "array"
-    assert kinds["items"]["enum"] == sorted(DISCOVER_RANKED_KINDS)
-    assert "relationship" in DISCOVER_RANKED_KINDS
+@pytest.mark.parametrize(
+    ("terms", "kind", "plural"),
+    [
+        ("revenue", "measure", "measures"),
+        ("revenue", "metric", "metrics"),
+        ("store", "dimension", "dimensions"),
+        ("store", "entity", "entities"),
+        ("customer", "segment", "segments"),
+        ("store", "dimension_value", "dimension_values"),
+        ("store", "relationship", "relationships"),
+        ("", "temporal_role", "temporal_roles"),
+        ("", "value_domain", "value_domains"),
+        ("", "relationship", "relationships"),
+        ("", "metric", "metrics"),
+    ],
+)
+@pytest.mark.parametrize("plural_form", [False, True], ids=["singular", "plural"])
+@pytest.mark.parametrize("encoding", ["array", "string", "json-string"])
+def test_advertised_discover_schema_accepts_supported_kinds(
+    adapter: SemanticLayerMCPAdapter,
+    terms: str,
+    kind: str,
+    plural: str,
+    plural_form: bool,
+    encoding: str,
+) -> None:
+    name = plural if plural_form else kind
+    kinds = (
+        [name] if encoding == "array" else json.dumps([name]) if encoding == "json-string" else name
+    )
+    arguments = {"terms": terms, "kinds": kinds}
+    tool = next(row for row in list_tool_definitions() if row["name"] == "discover")
+    Draft202012Validator(tool["inputSchema"]).validate(arguments)
+    response = adapter.call_tool("discover", arguments)
+    assert response["ok"] is True, response
+    if not terms:
+        assert f"{kind}_ids" in response["catalog"]
+
+
+def test_advertised_discover_schema_accepts_comma_separated_kinds(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    arguments = {"terms": "revenue by store", "kinds": "metrics, dimensions"}
+    tool = next(row for row in list_tool_definitions() if row["name"] == "discover")
+    Draft202012Validator(tool["inputSchema"]).validate(arguments)
+    response = adapter.call_tool("discover", arguments)
+    assert response["ok"] is True and response["metrics"] and response["dimensions"]
