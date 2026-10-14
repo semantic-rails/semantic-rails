@@ -8601,7 +8601,6 @@ tests:
     cites: &row_filter_revenue_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter]
     context: &west {roles: [regional], attributes: {region: West}}
-    known_wrong: &through_joins {engine: "A row filter applies only to the one relation a query scans, so a filter on stores refuses every query that reads orders (row_filter_unsupported_query)."}
     query:
       select: &row_filter_revenue [measure.shop.revenue]
     expected_rows: [{revenue: 43}]
@@ -8627,7 +8626,6 @@ tests:
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/stores.yml#model.dimensions.name, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter]
     context: *west
-    known_wrong: *through_joins
     query: &revenue_by_store_name
       select: *row_filter_revenue
       group_by: [dimension.shop_store_name]
@@ -8662,7 +8660,6 @@ tests:
     cites: *row_filter_revenue_cites
     tags: [row-filter]
     context: *west
-    known_wrong: *through_joins
     query: &revenue_by_region
       select: *row_filter_revenue
       group_by: [dimension.shop_store_region]
@@ -8697,7 +8694,6 @@ tests:
     cites: &row_filter_refund_cites [tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter]
     context: *west
-    known_wrong: *through_joins
     query:
       select: &refund_count [measure.shop.refund_count]
     expected_rows: [{refund_count: 4}]
@@ -8724,7 +8720,6 @@ tests:
     cites: *row_filter_refund_cites
     tags: [row-filter]
     context: *west
-    known_wrong: *through_joins
     query: &refunds_by_region
       select: *refund_count
       group_by: [dimension.shop_store_region]
@@ -8763,7 +8758,6 @@ tests:
     cites: &row_filter_channel_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter]
     context: *west
-    known_wrong: *through_joins
     query: &revenue_by_channel
       select: *row_filter_revenue
       group_by: [dimension.shop_customer_channel]
@@ -8800,7 +8794,6 @@ tests:
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_CALL.md#inline-expression-kinds, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter]
     context: *west
-    known_wrong: *through_joins
     query: &revenue_share_by_channel
       select:
         - {expression: measure.shop.revenue, as: revenue}
@@ -8841,7 +8834,6 @@ tests:
     cites: &row_filter_scan_cites [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter, row-grain]
     context: *west
-    known_wrong: *through_joins
     query: &scan_totals
       select: [measure.shop.scan_count, measure.shop.scan_weight]
     expected_rows: [{scan_count: 6, scan_weight: 11.75}]
@@ -8867,7 +8859,6 @@ tests:
     cites: &row_filter_tag_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/tags.yml#model.dimensions.tag_name, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter, row-grain]
     context: *west
-    known_wrong: *through_joins
     query: &orders_by_tag
       select: &row_filter_order_count [measure.shop.order_count]
       group_by: [dimension.shop_tag_tag_name]
@@ -8905,7 +8896,6 @@ tests:
     cites: &row_filter_scan_type_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/shipment_scans.yml#model.dimensions.scan_type, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter, row-grain]
     context: *west
-    known_wrong: *through_joins
     query: &orders_by_scan_type
       select: *row_filter_order_count
       group_by: [dimension.shop_shipment_scans_scan_type]
@@ -8941,7 +8931,6 @@ tests:
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#empty-groups-null-or-0, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter, null-vs-zero, time-window]
     context: *west
-    known_wrong: *through_joins
     now: '2024-09-01T00:00:00Z'
     query: &june_revenue
       select: *row_filter_revenue
@@ -8972,7 +8961,6 @@ tests:
     cites: *row_filter_revenue_cites
     tags: [row-filter]
     context: {roles: [regional], attributes: {region: [West, East]}}
-    known_wrong: {engine: "A row filter applies only to the one relation a query scans (row_filter_unsupported_query), and a list attribute is refused (attribute_type_mismatch)."}
     query:
       select: *row_filter_revenue
     expected_rows: [{revenue: 68}]
@@ -8987,7 +8975,6 @@ tests:
     cites: &row_filter_buyer_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.buying_customers, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter]
     context: *west
-    known_wrong: *through_joins
     query:
       select: &buying_customers [measure.shop.buying_customers]
     expected_rows: [{buying_customers: 5}]
@@ -9013,7 +9000,6 @@ tests:
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/stores.yml#model.dimensions.name, docs/QUERY_CALL.md#empty-groups-null-or-0, docs/PACKAGE_AUTHORING.md#policiesyml]
     tags: [row-filter, null-vs-zero]
     context: *west
-    known_wrong: *through_joins
     query:
       select: *row_filter_revenue
       where: [{field: dimension.shop_store_name, op: is, value: Fir}]

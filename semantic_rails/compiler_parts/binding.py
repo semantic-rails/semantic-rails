@@ -502,6 +502,8 @@ def query_route_rows(
                     "refusal offered.",
                 },
             )
+        if row_filters:
+            _hold_decided_route(config, pair, list(row.relationship_path), row_filters, where)
         _guard_route_row_filters(base, pair, row_filters, where, config)
         decided[pair] = (index, row)
     return decided
@@ -537,6 +539,30 @@ def _via_candidates(config: PackageConfig, source: str, target: str) -> dict[str
         f"not column names or entity ids; {listed}."
     )
     return {**found, "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": message}]}
+
+
+def _hold_decided_route(
+    config: PackageConfig,
+    pair: tuple[str, str],
+    route: list[str],
+    row_filters: Sequence[RowFilter],
+    where: str,
+) -> None:
+    """A decided route the plan hold refuses is refused at its row (``where``), naming only
+    the policies the caller's view shows."""
+    shown = {row.id for row in config.semantic_policies}
+    filters = [
+        row if row.policy_id in shown else replace(row, policy_id="row_filter")
+        for row in row_filters
+    ]
+    try:
+        hold_unowned_reads(
+            config, visibility_for(config, filters), roots=(), routes=[(*pair, route)]
+        )
+    except SemanticLayerError as exc:
+        raise SemanticLayerError(
+            exc.code, f"{where}: {exc}", details={**exc.details, "path": where}
+        ) from None
 
 
 def _guard_route_row_filters(
