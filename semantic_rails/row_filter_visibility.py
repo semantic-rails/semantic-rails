@@ -205,18 +205,24 @@ def coverage_report(config: PackageConfig) -> list[dict[str, Any]]:
             continue
         row = row_filter(base, policy)
         reach = coverage(base, row.entity)
+        # A model over a relation refused as a whole (models that disagree, two spellings).
+        refused = {
+            model: reach.refused[relation_key(entity.table)]
+            for model, entity in analysis.entities.items()
+            if entity.table and relation_key(entity.table) in reach.refused
+        }
         out.append(
             {
                 "policy_id": policy.id,
                 "filtered": list(reach.filtered),
-                "covered": sorted(reach.covered),
+                "covered": sorted(set(reach.covered) - set(refused)),
                 "uncovered": [
                     model
                     for model in reach.uncovered
                     if model not in row.shared and analysis.entities[model].allowed_as_root
                 ],
                 "shared": list(row.shared),
-                "unsupported": dict(sorted(reach.unsupported.items())),
+                "unsupported": dict(sorted({**reach.unsupported, **refused}.items())),
             }
         )
     return out

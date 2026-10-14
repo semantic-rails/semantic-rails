@@ -578,7 +578,7 @@ def test_a_restricted_models_declared_values_are_read_live_under_the_filter(runt
 def home_stores(tmp_path):
     """Customers have a home store too (c1 Pine, c2 Elm, c3 Pine), so the region filter
     reaches customers through their home store, which isn't how an order is owned."""
-    root = _package(tmp_path / "rj")
+    root = _package(tmp_path / "rj_home")
     graph = yaml.safe_load((root / "graph.yml").read_text())
     graph["graph"]["relationships"]["customers_home_store"] = {
         "id": "relationship.customers_home_store",
@@ -667,3 +667,111 @@ def test_shared_naming_a_model_the_filter_reaches_is_invalid_config(tmp_path, mo
     report, _ = parse_config_report(resolve_package_reference(path=str(root)))
     assert [row["code"] for row in report["errors"]] == ["INVALID_CONFIG"]
     assert "shared" in report["errors"][0]["message"]
+
+
+def _lines_order(config, **changes):
+    return [
+        replace(row, **changes) if row.id == "relationship.lines_order" else row
+        for row in config.relationships
+    ]
+
+
+def _another_order_model(table):
+    from semantic_rails.schema import EntityConfig
+
+    return EntityConfig(id="entity.rj_order_copy", table=table, key_columns=["order_id"])
+
+
+@pytest.mark.parametrize(
+    ("change", "model", "measure"),
+    [
+        (
+            lambda c: {"relationships": _lines_order(
+                c, source_columns=["order_id", "line_id"], target_columns=["order_id", "order_id"]
+            )},
+            "entity.rj_line",
+            QTY,
+        ),
+        (
+            lambda c: {"relationships": _lines_order(c, temporal_validity={"start": "s", "end": "e"})},
+            "entity.rj_line",
+            QTY,
+        ),
+        (
+            lambda c: {"entities": [*c.entities, _another_order_model("order_fact")]},
+            "entity.rj_order",
+            REVENUE,
+        ),
+        (
+            lambda c: {"entities": [*c.entities, _another_order_model("main.order_fact")]},
+            "entity.rj_order",
+            REVENUE,
+        ),
+    ],
+    ids=["composite_key", "temporal_validity_hop", "models_disagree", "two_spellings"],
+)  # fmt: skip
+def test_a_model_the_filter_cant_be_traced_through_is_refused_never_read(
+    package, change, model, measure
+):
+    """Refused under the filter, never read as if no filter reached it; validate says why."""
+    from semantic_rails.row_filter_visibility import coverage_report
+
+    base = Runtime.from_path(str(package)).package_config
+    config = replace(base, **change(base))
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        reason = _denied(lambda: runtime.query(_query({"v": measure}), context=WEST))
+    finally:
+        runtime.close()
+    assert reason == "row_filter_coverage_unsupported"
+    (region,) = [row for row in coverage_report(config) if row["policy_id"] == REGION["id"]]
+    assert model in region["unsupported"] and model not in region["covered"]
+
+
+def test_an_undecided_ownership_route_is_refused_and_listed(home_stores):
+    """Lines reach stores through their order or through their order's customer's home
+    store: which owns them is undecided, so lines are refused under the filter."""
+    from semantic_rails.row_filter_visibility import coverage_report
+
+    assert _denied(lambda: home_stores.query(_query({"qty": QTY}), context=WEST)) == (
+        "row_filter_coverage_unsupported"
+    )
+    (region,) = [
+        row
+        for row in coverage_report(home_stores.package_config)
+        if row["policy_id"] == REGION["id"]
+    ]
+    assert "entity.rj_line" in region["unsupported"]
+
+
+@pytest.mark.parametrize("hidden", [frozenset(), frozenset({"entity.rj_customer"})])
+def test_a_hold_names_nothing_the_callers_view_hides(runtime, home_stores, hidden):
+    """A hold names the models and relationships it read only when the caller's view shows
+    them; otherwise it says only what happened."""
+    from semantic_rails.row_filter_visibility import hold_unowned_reads
+    from semantic_rails.visible_view import build_view
+
+    route = ["relationship.orders_customer"]
+
+    def hold(base, **reads):
+        filters = row_filters_for_context(base, WEST.to_policy_context())
+        with pytest.raises(SemanticLayerError) as caught:
+            hold_unowned_reads(build_view(base, hidden), visibility_for(base, filters), **reads)
+        return caught.value
+
+    not_owned = hold(
+        home_stores.package_config,
+        roots=(),
+        routes=[("entity.rj_order", "entity.rj_customer", route)],
+    )
+    uncovered = hold(runtime.package_config, roots=["entity.rj_customer"], routes=[])
+    for error, reason in (
+        (not_owned, "row_filter_route_not_owned"),
+        (uncovered, "row_filter_uncovered_root"),
+    ):
+        assert (error.code, error.details["reason"]) == ("POLICY_DENIED", reason)
+        if hidden:
+            assert "objects" not in error.details
+            assert "rj_customer" not in f"{error} {error.details}"
+        else:
+            assert "entity.rj_customer" in error.details["objects"]
