@@ -165,12 +165,17 @@ never create, seed or change it.
   and a survivor is confirmed never null and unique on the whole relation, grouped by its
   columns as joins compare them (so a case-insensitive collation's `a` and `A` repeat, even
   under a declared primary key); a rejection moves on to the next. The sample is a temporary
-  table, dropped afterwards. One 60-second deadline covers sampling, profiling and the search;
-  out of time, the draft has no key. `key_search.status` says how it ended:
+  table, dropped afterwards. One 60-second deadline covers sampling, profiling and the search.
+  The deadline is checked between statements, so one long statement may run past it; a search
+  that ends past it has no key, though one whose proof ended in time may finish its cleanup
+  after the deadline and still report `confirmed`. `key_search.status` says how it ended:
   `confirmed`, `none_found` (with the number `checked`), `timed_out` (with the `unconfirmed`
-  sets, which you may declare yourself) or `empty_table`. Only a confirmed key is suggested;
-  otherwise the draft is a [row-grain model](PACKAGE_AUTHORING.md#row-grain-models)
-  (`primary_key: []`) with a `<entity>_rows` count of its rows. A declared foreign key is
+  candidate key sets, most likely first, none of them checked against the whole relation: check
+  a set is never null and unique before you declare it) or `empty_table` (no rows and no
+  declared primary key; no row contradicts a declared one, so an empty table keeps it). Only a
+  confirmed key is suggested; otherwise the draft is a
+  [row-grain model](PACKAGE_AUTHORING.md#row-grain-models) (`primary_key: []`) with a
+  `<entity>_rows` count of its rows. A declared foreign key is
   authoritative. Otherwise a key-like column (`id`, or ending in `_id`, `_key`, `_code`, `_sk`)
   links to each other relation whose declared single-column primary key has the same name and a
   compatible type; values are not compared, so such a link is `medium`, or `low` when several
