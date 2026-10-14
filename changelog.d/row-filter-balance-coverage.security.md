@@ -3,3 +3,5 @@
   coverage read a row filter can't be applied to refuses the request. A policy refusal while
   reading a balance's coverage or closing day now refuses the answer instead of dropping
   that disclosure.
+- A row-filter refusal's `policy_ids` name only the policies the caller can see; a row
+  filter hidden from the caller is listed as `row_filter`.
