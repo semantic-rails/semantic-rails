@@ -1221,6 +1221,7 @@ def expression_field(
 def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> SemanticExpr:
     """``raw`` parsed; a malformed-shape error names the innermost kind that holds it and,
     from the top call, the ``path`` the expression came from."""
+    operators.check_strings(raw, path or "expression")
     try:
         return _parse_semantic_expression(raw, context=context, path=path)
     except SemanticLayerError as exc:

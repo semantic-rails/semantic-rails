@@ -298,6 +298,7 @@ def check_value(word: str, value: Any, *, path: str = "where.value") -> Any:
 
     A one-element list is the same value as its scalar for ``is``/``not``.
     """
+    check_strings(value, path)
     shape = OPERATORS[word].value_shape
     if shape == "boolean":
         if not isinstance(value, bool):
@@ -352,20 +353,61 @@ def check_value(word: str, value: Any, *, path: str = "where.value") -> Any:
     return value
 
 
-# Letters a text word refuses: Greek sigma, whose lowercase depends on the next letter (final ς),
-# and letters whose lowercase, or whose other case's, changes length in code points or UTF-8
-# bytes, so warehouses fold them apart (ClickHouse leaves a length-changing letter as it is):
-# sharp s, dotted and dotless i and the dot above, the Kelvin, Angstrom and Ohm signs, and the
-# rare Latin letters with a stroke, hook or tail whose capitals are three bytes and small two.
-# Derived from Unicode 16's case mappings (SpecialCasing and UnicodeData); a letter whose only
-# expansion is to upper case (fi ligature) folds alike everywhere, so it stays readable.
-UNSTABLE_CASE_LETTERS = (
-    "\u03a3\u03c3\u03c2\u00df\u1e9e\u0130\u0131\u0307\u212a\u212b\u2126"
-    "\u023a\u2c65\u023e\u2c66\u2c62\u026b\u2c64\u027d\u2c6d\u0251\u2c6e\u0271"
-    "\u2c6f\u0250\u2c70\u0252\u2c7e\u023f\u2c7f\u0240\ua78d\u0265\ua7aa\u0266"
-    "\ua7ab\u025c\ua7ac\u0261\ua7ad\u026c\ua7ae\u026a\ua7b0\u029e\ua7b1\u0287"
-    "\ua7b2\u029d\ua7c5\u0282\ua7cb\u0264\ua7dc\u019b"
+# Letters a text word refuses, because some supported warehouse lowers them differently from
+# the rest, so no text word could give one answer on all of them:
+# - Greek sigma, whose lowercase depends on the next letter (final ς);
+# - letters whose lowercase, or whose other case's, changes length in code points or UTF-8 bytes
+#   (sharp s, dotted and dotless i and the dot above, the Kelvin, Angstrom and Ohm signs, rare
+#   Latin letters with a stroke, hook or tail);
+# - every cased letter in U+2000-U+2FFF, or whose other case is there (Roman numerals, circled
+#   letters, Glagolitic, Latin Extended-C, Coptic, Georgian Nuskhuri and Asomtavruli), which
+#   ClickHouse 24.8's lowerUTF8 leaves as it is;
+# - case pairs added after Unicode 13.0 (Java 17's tables), up to Unicode 16.0.
+# Generated from unicodedata by that rule (a test holds it); common letters such as k, å and ω,
+# whose odd capitals are refused, stay readable, as does a letter whose only expansion is to
+# upper case (fi ligature), which every warehouse lowers alike.
+_UNSTABLE_CASE_RANGES = (
+    (0x00DF, 0x00DF), (0x0130, 0x0131), (0x019B, 0x019B), (0x023A, 0x023A), (0x023E, 0x0240),
+    (0x0250, 0x0252), (0x025C, 0x025C), (0x0261, 0x0261), (0x0264, 0x0266), (0x026A, 0x026C),
+    (0x0271, 0x0271), (0x027D, 0x027D), (0x0282, 0x0282), (0x0287, 0x0287), (0x029D, 0x029E),
+    (0x0307, 0x0307), (0x03A3, 0x03A3), (0x03C2, 0x03C3), (0x10A0, 0x10C5), (0x10C7, 0x10C7),
+    (0x10CD, 0x10CD), (0x1C89, 0x1C8A), (0x1D7D, 0x1D7D), (0x1E9E, 0x1E9E), (0x2126, 0x2126),
+    (0x212A, 0x212B), (0x2132, 0x2132), (0x214E, 0x214E), (0x2160, 0x217F), (0x2183, 0x2184),
+    (0x24B6, 0x24E9), (0x2C00, 0x2C70), (0x2C72, 0x2C73), (0x2C75, 0x2C76), (0x2C7E, 0x2CE3),
+    (0x2CEB, 0x2CEE), (0x2CF2, 0x2CF3), (0x2D00, 0x2D25), (0x2D27, 0x2D27), (0x2D2D, 0x2D2D),
+    (0xA78D, 0xA78D), (0xA7AA, 0xA7AE), (0xA7B0, 0xA7B2), (0xA7C0, 0xA7C1), (0xA7C5, 0xA7C5),
+    (0xA7CB, 0xA7CD), (0xA7D0, 0xA7D1), (0xA7D6, 0xA7DC), (0x10570, 0x1057A), (0x1057C, 0x1058A),
+    (0x1058C, 0x10592), (0x10594, 0x10595), (0x10597, 0x105A1), (0x105A3, 0x105B1),
+    (0x105B3, 0x105B9), (0x105BB, 0x105BC), (0x10D50, 0x10D65), (0x10D70, 0x10D85),
+)  # fmt: skip
+UNSTABLE_CASE_LETTERS = frozenset(
+    chr(point) for low, high in _UNSTABLE_CASE_RANGES for point in range(low, high + 1)
 )
+
+
+def check_strings(value: Any, path: str) -> None:
+    """Refuse, at its path, a string anywhere in ``value`` that holds NUL or a lone surrogate:
+    no warehouse reads either as text, and a lone surrogate is not UTF-8."""
+    if isinstance(value, str):
+        bad = next((ch for ch in value if ch == "\x00" or "\ud800" <= ch <= "\udfff"), None)
+        if bad is not None:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{path}: holds U+{ord(bad):04X}, which no warehouse reads as text",
+                details={
+                    "path": path,
+                    "code_point": f"U+{ord(bad):04X}",
+                    "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": "Remove it."}],
+                },
+            )
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            at = f"{path}.{key}" if path else str(key)
+            check_strings(key, at)
+            check_strings(item, at)
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            check_strings(item, f"{path}[{index}]")
 
 
 def check_text_letters(text: str, path: str) -> None:

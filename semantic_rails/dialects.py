@@ -439,6 +439,8 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     name: str = "snowflake"
     reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
+    # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
+    case_fold = "LOWER(COLLATE({}, ''))"
     date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
 
     def prepare_query(self, sql: str) -> PreparedQuery:
@@ -834,6 +836,8 @@ class BigQueryDialect(SqlDialect):
     like_escape_clause = False
     reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
+    # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
+    case_fold = "LOWER(COLLATE({}, ''))"
     date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
     decimal_cast = False
 
@@ -1054,6 +1058,8 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     name: str = "databricks"
     reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
+    # A column's own collation (UNICODE, UTF8_LCASE) is set aside: LIKE reads binary text.
+    case_fold = "LOWER(({}) COLLATE UTF8_BINARY)"
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day by default.
@@ -1329,8 +1335,12 @@ class ClickHouseDialect(SqlDialect):
 
     like_escape_clause = False
     # LOWER folds ASCII only, and lowerUTF8 refuses FixedString and Enum: toString reads any type
-    # as String (NULL stays NULL) and toStringCutToZero drops a FixedString's zero padding.
-    case_fold = "lowerUTF8(toStringCutToZero(toString({})))"
+    # as String (NULL stays NULL), and only a FixedString loses its zero padding; a String keeps
+    # every byte. The letters lowerUTF8 leaves as they are are refused on every warehouse.
+    case_fold = (
+        "lowerUTF8(if(position(toTypeName({0}), 'FixedString') > 0, "
+        "toStringCutToZero(toString({0})), toString({0})))"
+    )
     identifiers_case_sensitive = True
     null_boolean_type = "Nullable(Bool)"
     correlated_exists = False  # 24.8 has none

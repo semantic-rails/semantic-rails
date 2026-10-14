@@ -94,7 +94,7 @@ def test_contains_renders_an_escaped_case_folded_pattern_that_matches_literally(
 # %, ends_with the trailing one, and each not_ form is NOT LIKE that keeps unknown rows, as `not`.
 SHAPES = {
     "contains": lambda sql: sql,
-    "starts_with": lambda sql: sql.replace("'%", "'", 1),
+    "starts_with": lambda sql: sql.replace("'%50", "'50"),
     "ends_with": lambda sql: sql.replace("y%'", "y'"),
 }
 

@@ -218,24 +218,43 @@ condition on a date dimension is legal; for a time window, use `time`.
   (`NOT LIKE` takes the `not_` form), each ignoring case. A pattern with `_` or an inner `%`
   has no word; the hint is `is` (or `not`) with the exact values, which `valid-values` lists.
   A package's own `comparison` (a measure's `expr`) refuses `LIKE` the same way.
-- A text word ignores case by lowering the value and the text with the same Unicode-aware
-  function on every warehouse: Postgres lowers both under its ICU root collation
-  (`und-x-icu`, which a Postgres built with ICU has), and ClickHouse reads the value as plain
-  text first, so a FixedString or Enum column works. `É` matches `é`; lowering never expands a
-  letter, so `ss` never matches `ß`.
-- Text holding a letter whose lower case depends on the next letter, or changes length, is
-  refused at its path, with the hint to match exact values with `is` (`valid-values` lists
-  them): Greek sigma (`Σ σ ς`), sharp s (`ß ẞ`), dotted and dotless i (`İ ı`, and a combining
-  dot above), the Kelvin, Ångström and Ohm signs, and a few rare Latin letters with a stroke,
-  hook or tail. Warehouses lower these differently, so no text word could give one answer. A
-  stored value holding one of them is lowered as its warehouse lowers it: text that lines up
-  with that letter (`is` against a stored `İs`) can match on one warehouse and not another.
+- A text word ignores case by lowering the value and the text with the same function, so it
+  gives the same rows on every warehouse. A column's own collation is set aside first: Postgres
+  lowers both under its ICU root collation (`und-x-icu`), and Snowflake, BigQuery and
+  Databricks drop the column's collation. ClickHouse reads the value as plain text first, so a
+  FixedString or Enum column works. `É` matches `é`; lowering never expands a letter, so `ss`
+  never matches `ß`.
+- Text holding a letter that some warehouse lowers differently is refused at its path, on every
+  warehouse, with the hint to match exact values with `is` (`valid-values` lists them). See
+  [Known limitations](#known-limitations).
+- A string in a call never holds NUL or a lone surrogate (`\ud800`): no warehouse reads them as
+  text, so they are refused at their path, naming the code point.
 - A text word reads text: on an id, number, date, timestamp or boolean dimension it is refused
   at its path with the words that compare one (`is` or `not` with the exact ids, the ranges for
   a number, `time` or the ranges for a date). A result (`having`), an entity filter's `having`
   and a per-entity value compare a number, so a text word or a `LIKE` there is refused with
   the words that compare a number.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
+
+#### Known limitations
+
+The text words (`contains`, `starts_with`, `ends_with` and their `not_` forms) give the same rows
+on every warehouse by refusing what the warehouses lower differently:
+
+- Search text holding one of these letters is refused, because some warehouse lowers it
+  differently from the rest: Greek sigma (`Σ σ ς`, whose lower case depends on the next
+  letter), sharp s (`ß ẞ`), dotted and dotless i (`İ ı`, and a combining dot above), the
+  Kelvin, Ångström and Ohm signs, rare Latin letters with a stroke, hook or tail, the cased
+  letters of U+2000 to U+2FFF (Roman numerals, circled letters, Glagolitic, Coptic, Georgian
+  Nuskhuri and its capitals), and letters whose case pair is newer than Unicode 13. Match such
+  values exactly with `is`.
+- A stored value holding one of these letters is lowered as its warehouse lowers it, so text
+  that lines up with that letter can match on one warehouse and not another (`is` against a
+  stored `İs`, or `k` against a stored Kelvin sign).
+- A letter that a later Unicode version gives a case pair can lower differently by warehouse
+  until the engine adds it to the list.
+- On Postgres the text words need ICU (the `und-x-icu` collation, built in wherever Postgres
+  has ICU); without it the query fails rather than answering differently.
 
 ### Unknown values
 

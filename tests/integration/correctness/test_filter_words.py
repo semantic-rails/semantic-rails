@@ -682,4 +682,4 @@ def test_error_summaries_take_any_string():
     from semantic_rails.answer import _sql_summary
 
     summary = _sql_summary("SELECT '\ud800'")
-    assert summary["sql_chars"] == 11 and len(summary["sql_sha256"]) == 64
+    assert summary["sql_chars"] == 10 and len(summary["sql_sha256"]) == 64

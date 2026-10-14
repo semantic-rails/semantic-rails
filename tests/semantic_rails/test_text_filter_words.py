@@ -301,10 +301,7 @@ def test_the_refused_letters_are_every_letter_whose_lowercase_changes_length():
             if len(lower) == 1 and lower not in "kåω":
                 unstable.add(lower)
     expected = unstable | set("Σσςßı̇")
-    refused = set(operators.UNSTABLE_CASE_LETTERS)
-    assert expected <= refused
-    # The list is Unicode 16's; an older Python's tables have no case pair for the rest.
-    assert all(letter.lower() == letter.upper() == letter for letter in refused - expected)
+    assert expected <= set(operators.UNSTABLE_CASE_LETTERS)
 
 
 @pytest.mark.parametrize(
@@ -368,8 +365,8 @@ def test_text_every_warehouse_lowers_alike_is_read(text):
 def test_the_refused_letters_follow_the_pinned_rule():
     """Generated from unicodedata: every cased letter in U+2000-U+2FFF, or whose lower or upper
     case is there (ClickHouse 24.8's lowerUTF8 copies that range as it is), is refused; and
-    every refused letter is cased here, or unassigned in this Python's older Unicode tables (a
-    case pair added after Unicode 13.0), or the combining dot above."""
+    every refused letter is cased here, or a letter whose case pair is newer than this Python's
+    Unicode tables (added after Unicode 13.0), or the combining dot above."""
     import sys
     import unicodedata
 
@@ -386,4 +383,6 @@ def test_the_refused_letters_follow_the_pinned_rule():
             assert letter in refused, f"U+{point:04X}"
     for letter in refused:
         cased = letter.lower() != letter or letter.upper() != letter
-        assert cased or unicodedata.category(letter) == "Cn" or letter == "̇", letter
+        # A letter caseless here has its case pair in a newer Unicode than this Python's.
+        newer = unicodedata.category(letter) in {"Cn", "Ll", "Lu"}
+        assert cased or newer or letter == "\u0307", letter

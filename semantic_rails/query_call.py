@@ -405,6 +405,7 @@ def read_call(
             fix=V2_POINTER,
             received=type(payload).__name__,
         )
+    operators.check_strings(payload, "")
     _check_top_level(payload)
     group_by = _group_by(payload.get("group_by"))
     raw_time = payload.get("time")
