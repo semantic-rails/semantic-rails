@@ -24,6 +24,7 @@ from typing import Any
 from . import operations
 from .api_keys import api_key_auth_result
 from .diagnostics import (
+    enrich_column_expression,
     enrich_expression_ast_error,
     enrich_object_not_found,
     enrich_path_not_found,
@@ -254,6 +255,7 @@ class SemanticHTTPService:
             if config is not None:
                 enriched = enrich_object_not_found(enriched, config)
                 enriched = enrich_expression_ast_error(enriched, config)
+                enriched = enrich_column_expression(enriched, config)
                 enriched = enrich_path_not_found(enriched, config)
             error_issue = exception_issue(enriched, stage=stage)
             return {

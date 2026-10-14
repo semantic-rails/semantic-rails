@@ -429,7 +429,7 @@ def read_call(
     if time is not None:
         internal["time"] = time
     if "order_by" in payload:
-        internal["order_by"] = _order_by(payload.get("order_by"))
+        internal["order_by"] = _order_by(payload.get("order_by"), select)
     if "limit" in payload:
         internal["limit"] = _limit(payload.get("limit"))
     if payload.get("routes") is not None:
@@ -1375,7 +1375,7 @@ def _role_timezone(role: str, config: PackageConfig | None) -> str:
     return str(getattr(row, "timezone", "") or "UTC")
 
 
-def _order_by(raw: Any) -> list[dict[str, Any]]:
+def _order_by(raw: Any, select: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raise refusal(
             "order_by", "is a list", fix='Write [{"field": "<alias>", "direction": "desc"}].'
@@ -1409,8 +1409,31 @@ def _order_by(raw: Any) -> list[dict[str, Any]]:
                 if str(direction).lower() in DIRECTIONS
                 else "Use asc or desc.",
             )
-        out.append({"field": field_id.strip(), "direction": direction.upper()})
+        field_id = _ordered_column(field_id.strip(), f"{path}.field", select)
+        out.append({"field": field_id, "direction": direction.upper()})
     return out
+
+
+def _ordered_column(field_id: str, path: str, select: list[dict[str, Any]]) -> str:
+    """The column an order_by field names: a measure or metric id that is no select alias names
+    the one select item reading it (with any override); any other field passes as written."""
+    if not field_id.startswith(REFERENCE_PREFIXES) or any(row["as"] == field_id for row in select):
+        return field_id
+    columns = [
+        row["as"]
+        for row in select
+        if row["expression"].get("kind") in ("measure", "metric")
+        and row["expression"].get(row["expression"]["kind"]) == field_id
+    ]
+    if len(columns) > 1:
+        raise refusal(
+            path,
+            f"'{field_id}' is selected {len(columns)} times",
+            fix=f"Order by one of its columns: {columns}.",
+            code="INVALID_ORDER_BY",
+            closest_matches=columns,
+        )
+    return columns[0] if columns else field_id
 
 
 def _limit(raw: Any) -> int:

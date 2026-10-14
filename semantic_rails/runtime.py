@@ -96,6 +96,7 @@ from .db import (
 from .db_parts.base import query_with_limits, reject_parameters
 from .db_parts.duckdb_confinement import confinement_directory, require_inside
 from .diagnostics import (
+    enrich_column_expression,
     enrich_expression_ast_error,
     enrich_object_not_found,
     enrich_path_not_found,
@@ -197,6 +198,7 @@ def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayer
         exc = _named_key_refusal(exc, config)
     exc = enrich_object_not_found(exc, config)
     exc = enrich_expression_ast_error(exc, config)
+    exc = enrich_column_expression(exc, config)
     exc = enrich_path_not_found(exc, config)
     return exc
 

@@ -21,6 +21,7 @@ from ..ast import (
 from ..clock import parse_now
 from ..config_parts.route_rows import (
     RouteRowError,
+    UnknownRelationshipError,
     check_route_row,
     entity_references,
     walk_entities,
@@ -426,11 +427,10 @@ def query_route_rows(
                 asdict(raw), entities=entities, relationships=config.relationships
             )
         except RouteRowError as exc:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                f"{where} {exc}",
-                details={"path": where, "reason": "invalid_route_decision"},
-            ) from None
+            details: dict[str, Any] = {"path": where, "reason": "invalid_route_decision"}
+            if isinstance(exc, UnknownRelationshipError):
+                details.update(_via_candidates(config, *exc.pair))
+            raise SemanticLayerError("INVALID_QUERY", f"{where} {exc}", details=details) from None
         pair = (row.source_entity, row.target_entity)
         if pair in decided:
             raise SemanticLayerError(
@@ -455,6 +455,27 @@ def query_route_rows(
         _guard_route_row_filters(base, pair, row_filters, where, config)
         decided[pair] = (index, row)
     return decided
+
+
+def _via_candidates(config: PackageConfig, source: str, target: str) -> dict[str, Any]:
+    """The relationship ids a route's ``via`` can name, as ``closest_matches``: those walking
+    from its source to its target in one hop (the pair's one-hop routes), else those touching
+    either entity."""
+    joining = sorted({path[0] for path in pair_routes(config, source, target) if len(path) == 1})
+    touching = sorted(
+        rel.id
+        for rel in config.relationships
+        if {source, target} & {rel.source_entity, rel.target_entity}
+    )
+    found = "join `from` to `to` in one hop" if joining else "touch either entity"
+    message = (
+        '`via` lists relationship ids ("relationship.<id>"), one per hop from `from` to `to`, '
+        f"not column names or entity ids; closest_matches lists the relationships that {found}."
+    )
+    return {
+        "closest_matches": joining or touching,
+        "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": message}],
+    }
 
 
 def _guard_route_row_filters(

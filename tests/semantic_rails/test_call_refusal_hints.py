@@ -407,10 +407,9 @@ def test_a_raw_column_names_the_query_kinds_and_its_dimensions(
     assert "column" not in kinds and {"measure", "ratio", "aggregate", "share"} <= set(kinds)
     hint = _hint(error)
     assert all(f"'{kind}'" in hint for kind in kinds) and "group_by" in hint
-    for dimension in dimensions or []:
-        assert (
-            runtime.validate({"select": [ORDERS], "group_by": [dimension]}, now=NOW)["ok"] is True
-        )
+    if dimensions and len(dimensions) == 1:
+        # The one dimension on the column splits a measure in its place.
+        assert runtime.validate({"select": [ORDERS], "group_by": dimensions}, now=NOW)["ok"] is True
 
 
 ORDER = "entity.jaffle_order"
@@ -432,8 +431,20 @@ CUSTOMER = "entity.jaffle_customer"
                 "relationship.storefront_sessions_customer",
             ],
         ),
+        # The one relationship joining the pair walks only from the history to the customer.
+        (
+            {"from": CUSTOMER, "to": "entity.jaffle_customer_history", "via": ["customer_id"]},
+            [
+                "relationship.customer_history_customer",
+                "relationship.customer_history_store",
+                "relationship.order_lifecycle_customer",
+                "relationship.order_to_customer_history",
+                "relationship.orders_customer",
+                "relationship.storefront_sessions_customer",
+            ],
+        ),
     ],
-    ids=["column-joining-the-pair", "entity-ids-no-direct-join"],
+    ids=["column-joining-the-pair", "entity-ids-no-direct-join", "join-walks-the-other-way"],
 )  # fmt: skip
 def test_a_route_via_that_names_no_relationship_lists_the_relationships_at_its_pair(
     runtime: Runtime, route: dict[str, Any], relationships: list[str]

@@ -21,6 +21,7 @@ from .expressions import (
     BooleanExpr,
     CallExpr,
     CaseExpr,
+    ColumnRefExpr,
     ComparisonExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
@@ -379,8 +380,28 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         # The rewrite phase validates the inner subtrees via
         # ``_conditional_aggregate_entity``.
         return
-    raise SemanticLayerError(
-        "INVALID_QUERY", f"Unsupported query expression kind '{expr_to_dict(expr)['kind']}'"
+    raise _unsupported_query_kind(expr)
+
+
+# Kinds that read one row's values, which ``_validate_query_expr`` refuses as a query value.
+_ROW_KINDS = frozenset({"column", "date_add", "in", "not_in"})
+
+
+def _unsupported_query_kind(expr: SemanticExpr) -> SemanticLayerError:
+    """The refusal of a row-level kind as a query value, with the kinds a call takes (the hint
+    lists them); a raw column keeps what it names, so the caller's view can offer its
+    dimensions."""
+    from .query_call import call_kinds
+
+    kind = str(expr_to_dict(expr)["kind"])
+    details: dict[str, Any] = {
+        "expression_kind": kind,
+        "supported_kinds": sorted(set(call_kinds()) - _ROW_KINDS),
+    }
+    if isinstance(expr, ColumnRefExpr):
+        details.update({key: value for key, value in asdict(expr).items() if value})
+    return SemanticLayerError(
+        "INVALID_QUERY", f"Unsupported query expression kind '{kind}'", details=details
     )
 
 
