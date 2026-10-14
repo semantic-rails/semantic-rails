@@ -44,7 +44,15 @@ from .measure_rows import (
     _suggested_aggregations,
 )
 from .metric_rows import _parse_metric_expression, _translate_metric_direct_fields
-from .model_rows import _key_columns_and_role, _map_dimension_kind, _parse_relations, _with_displays
+from .model_rows import (
+    _case_only_misspelling,
+    _held_key_role,
+    _inferred_source_role,
+    _key_columns_and_role,
+    _map_dimension_kind,
+    _parse_relations,
+    _with_displays,
+)
 from .policy_rows import (
     _parse_caveats,
     _parse_path_policy,
@@ -601,20 +609,41 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "INVALID_CONFIG",
                     f"{path}: join '{model_id}.{edge_key}' key width does not match target key",
                 )
+            # An inferred cardinality rests on keys: a side is unique only where its columns
+            # hold a whole key declared primary or unique, and off the target's key a target
+            # row can repeat. Columns compare as written.
+            source_key = entity_cfg.key or [entity_cfg.primary_key]
+            target_key = target_cfg.key or [target_cfg.primary_key]
+            for columns, key in ((local_cols, source_key), (target_cols, target_key)):
+                misspelled = _case_only_misspelling(columns, key)
+                if misspelled:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"{path}: join '{model_id}.{edge_key}' names column '{misspelled[0]}' "
+                        f"but the key is spelled '{misspelled[1]}': spell it exactly as the key "
+                        "(column names are compared as written)",
+                    )
+            held_target_role = _held_key_role(target_cols, target_key, target_cfg.key_roles)
+            if (
+                "cardinality" not in join_spec
+                and not join_spec.get("target_key_role")
+                and not held_target_role
+            ):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: join '{model_id}.{edge_key}' joins {target_ref} on "
+                    f"[{', '.join(target_cols)}], not its key [{', '.join(target_key)}]: join on "
+                    "the key, or declare `cardinality:` (many_to_many when the values repeat)",
+                )
             local_role = str(
                 join_spec.get("source_key_role", foreign_key_roles.get(str(edge_key), "")) or ""
             ).lower()
             if not local_role:
-                local_role = (
-                    "primary"
-                    if all(
-                        column in set(entity_cfg.key or [entity_cfg.primary_key])
-                        for column in local_cols
-                    )
-                    else "foreign"
-                )
+                local_role = _inferred_source_role(local_cols, source_key, entity_cfg.key_roles)
             target_role = str(join_spec.get("target_key_role", "") or "").lower()
             if not target_role:
+                target_role = held_target_role
+            if not target_role:  # off the key under an authored cardinality, which decides
                 target_roles = {
                     target_cfg.key_roles.get(column, "primary") for column in target_cols
                 }

@@ -1215,6 +1215,16 @@ non-default rule:
 - Custom `cardinality:` override
 - `allowed_directions:` restriction
 
+Without `cardinality:`, a relationship infers it from keys, so it must join on the key. A side
+is unique only when its columns hold its entity's whole key (in any order, extra columns
+allowed) and that key is declared `primary` (the default) or `unique`. A `target:` off the
+target entity's key fails loading with `INVALID_CONFIG` (declare `cardinality:`,
+`many_to_many` when the values repeat); a `via:` on part of a composite source key, or on a key
+declared `natural` or `foreign`, is a foreign key. Column names compare as written: a `via:` or
+`target:` column that differs from a key column only in case fails loading, so spell it as the
+key does. Join columns must have the same type on both sides: a warehouse that coerces text to
+a number can match distinct keys, such as `'01'` and `'1'`.
+
 ## Models
 
 A model declares one warehouse table or mart, the entities it exposes, the

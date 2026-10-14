@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -23,6 +24,64 @@ def _key_columns_and_role(value: Any, *, default_role: str) -> tuple[list[str], 
             "INVALID_CONFIG", f"key role must be one of {sorted(allowed_roles)}"
         )
     return columns, role
+
+
+def _held_key_role(columns: Iterable[str], key: list[str], key_roles: Mapping[str, str]) -> str:
+    """The role of ``key`` when ``columns`` hold every column of it, else "".
+
+    Columns compare as written, in any order and with extra columns allowed. A key whose columns
+    carry different roles reads as "natural".
+    """
+    held = set(columns)
+    if not key or any(column not in held for column in key):
+        return ""
+    roles = {str(key_roles.get(column, "primary")).lower() for column in key}
+    return roles.pop() if len(roles) == 1 else "natural"
+
+
+def _simple_cases(char: str) -> tuple[str, str]:
+    """``char`` in lower and upper case where each is one character; else ``char`` itself."""
+    lower, upper = char.lower(), char.upper()
+    return (lower if len(lower) == 1 else char, upper if len(upper) == 1 else char)
+
+
+def _differ_only_in_case(name: str, other: str) -> bool:
+    """Whether two names differ only by a one-to-one change of case in some characters.
+
+    A full case fold would also expand a character (``ﬀ`` to ``ff``, ``ß`` to ``ss``) and so
+    match two names a warehouse keeps apart; this compares character by character instead.
+    """
+    if name == other or len(name) != len(other):
+        return False
+    for char, other_char in zip(name, other, strict=True):
+        lower, upper = _simple_cases(char)
+        other_lower, other_upper = _simple_cases(other_char)
+        if char != other_char and lower != other_lower and upper != other_upper:
+            return False
+    return True
+
+
+def _case_only_misspelling(columns: Iterable[str], key: list[str]) -> tuple[str, str] | None:
+    """A column that differs from a column of ``key`` only in case, and that key column.
+
+    Warehouses disagree on whether such names, quoted or not, are one column, so the loader
+    compares names as written and refuses the ambiguity rather than guess.
+    """
+    for column in columns:
+        if column in key:
+            continue
+        for key_column in key:
+            if _differ_only_in_case(column, key_column):
+                return column, key_column
+    return None
+
+
+def _inferred_source_role(
+    columns: Iterable[str], key: list[str], key_roles: Mapping[str, str]
+) -> str:
+    """A source side holds one row per value only on a whole key declared primary or unique."""
+    role = _held_key_role(columns, key, key_roles)
+    return role if role in {"primary", "unique"} else "foreign"
 
 
 _RELATION_STEP_KEYS = {

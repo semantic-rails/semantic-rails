@@ -26,6 +26,7 @@ from ...config import (
     load_package_snapshot,
 )
 from ...config_parts.measure_governance import with_published_flags
+from ...config_parts.model_rows import _inferred_source_role
 from ...errors import SemanticLayerError
 from ...expressions import (
     AggregateExpr,
@@ -349,9 +350,11 @@ class _Importer:
             document.update(source_column=columns[0][0], source_columns=columns[0])
             document.update(target_column=columns[1][0], target_columns=columns[1])
             document.update(cardinality="N:1", safety="safe")
-            # The key roles the loader derives: a join on the source's own key is primary.
-            key = self.rows["entities"][ends[0]]["key"]
-            source_role = "primary" if set(columns[0]) <= set(key) else "foreign"
+            # The key roles the loader derives: a join holding the source's key is primary.
+            source = self.rows["entities"][ends[0]]
+            source_role = _inferred_source_role(
+                columns[0], source["key"], source.get("key_roles") or {}
+            )
             defaults = {"name": name, "label": _titleize(name), "source_key_role": source_role}
             self.row("relationships", rel_id, document, **defaults, target_key_role="primary")
 
