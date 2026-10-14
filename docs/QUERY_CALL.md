@@ -255,6 +255,11 @@ on every warehouse by refusing what the warehouses lower differently:
   until the engine adds it to the list.
 - On Postgres the text words need ICU (the `und-x-icu` collation, built in wherever Postgres
   has ICU); without it the query fails rather than answering differently.
+- On ClickHouse a `FixedString` value with a zero byte inside it, not just as trailing
+  padding, is compared only up to that first zero byte.
+- Text holding a NUL character or an unpaired surrogate is refused in the query call, but
+  not yet in package YAML: an expression literal or `unknown_values` entry holding one can
+  stop the package loading or make its queries fail.
 
 ### Unknown values
 
