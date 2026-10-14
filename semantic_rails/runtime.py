@@ -15,6 +15,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shlex
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -188,14 +189,50 @@ def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveR
     )
 
 
-def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayerError:
-    """Run every applicable diagnostics enricher over a runtime error, on the caller's view.
+_SELECT_PATH = re.compile(r"\bselect\[(\d+)\]")
+
+
+def _caller_select_paths(exc: SemanticLayerError, notes: Any) -> SemanticLayerError:
+    """The error with each ``select[i]`` the engine wrote as the caller's index: a dimension
+    the call lifted from select into group_by (a call note) is not in the engine's select."""
+    lifted = sorted(
+        int(match.group(1))
+        for note in notes or []
+        if "group_by" in (note.get("canonical") or {})
+        and (match := re.fullmatch(r"select\[(\d+)\]", str(note.get("path", ""))))
+    )
+    if not lifted:
+        return exc
+
+    def caller(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        for at in lifted:
+            index += at <= index
+        return f"select[{index}]"
+
+    def remap(value: Any) -> Any:
+        if isinstance(value, str):
+            return _SELECT_PATH.sub(caller, value)
+        if isinstance(value, list):
+            return [remap(item) for item in value]
+        if isinstance(value, dict):
+            return {key: remap(item) for key, item in value.items()}
+        return value
+
+    return SemanticLayerError(exc.code, remap(str(exc)), details=remap(dict(exc.details or {})))
+
+
+def _enrich_runtime_error(
+    exc: SemanticLayerError, config: Any, notes: Any = ()
+) -> SemanticLayerError:
+    """Run every applicable diagnostics enricher over a runtime error, on the caller's view,
+    with its select paths at the caller's indexes (``notes``, the call's).
 
     Each enricher is a no-op when its code doesn't match, so we can
     chain them safely. Keeping this in one place means new enrichers
     only need to be added here, not at every catch site.
     """
-    exc = visible_view.public_error(exc, config)
+    exc = _caller_select_paths(visible_view.public_error(exc, config), notes)
     if isinstance(exc, NonAdditiveRefusal):
         exc = _named_key_refusal(exc, config)
     exc = enrich_object_not_found(exc, config)
@@ -1791,7 +1828,7 @@ class Runtime:
                 kind="validate",
             )
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config)
+            exc = _enrich_runtime_error(exc, self._config, payload.get("_call_notes"))
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
                 version=2,
@@ -1836,7 +1873,7 @@ class Runtime:
         try:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         public_effects = visible_view.public_effects(policy_effects, self._config)
         out = {
@@ -1890,7 +1927,7 @@ class Runtime:
         try:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         public_effects = visible_view.public_effects(policy_effects, self._config)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
