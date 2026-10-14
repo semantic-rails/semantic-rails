@@ -1092,9 +1092,12 @@ def create_architect_mcp_server(
             "an existing model. An existing dimension, time or measure given only label, "
             "description, synonyms or meta keeps its other fields; given anything else it is "
             "rewritten, and dropped_fields lists what that drops. replace: true rewrites the "
-            "model from the arguments, keeping only its id, entities, calendar_id and "
-            "zero_through (how far its tables are loaded), and lists "
-            "what it drops in dropped_fields. Relationships go through upsert_relationship."
+            "model from the arguments, keeping only its id, entities, calendar_id, "
+            "zero_through (how far its tables are loaded) and one_per_key, and lists "
+            "what it drops in dropped_fields. one_per_key: true reads a relation whose rows "
+            "repeat the key as one row per primary_key, each column the key's one value (NULL "
+            "where its rows disagree); keep the columns that vary on a row-grain model of the "
+            "same relation. Relationships go through upsert_relationship."
         ),
     )
     def upsert_model(
@@ -1114,6 +1117,7 @@ def create_architect_mcp_server(
         calendar: bool | None = None,
         calendar_id: str = "",
         replace: bool = False,
+        one_per_key: bool | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
         try:
@@ -1133,6 +1137,7 @@ def create_architect_mcp_server(
                     calendar=calendar,
                     calendar_id=calendar_id,
                     replace=replace,
+                    one_per_key=one_per_key,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,

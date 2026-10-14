@@ -26,6 +26,7 @@ from ..config import (
     _suggested_aggregations,
     load_package_snapshot,
 )
+from ..config_parts.one_per_key import one_per_key_source
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
 from ..naming import slug as _slug
@@ -52,7 +53,13 @@ _CARDINALITY = {
     "M:N": "many_to_many",
 }
 _ROLLUPS = {"rollup_safe_aggregations_reverse": "reverse"}
-_MODEL_FIELDS = {"calendar_id", "freshness_source", "freshness_sla_seconds", "freshness_as_of"}
+_MODEL_FIELDS = {
+    "calendar_id",
+    "freshness_source",
+    "freshness_sla_seconds",
+    "freshness_as_of",
+    "one_per_key",
+}
 _MEMBERSHIP = ("where", "metric_filters", "time", "temporal_role_overrides")
 
 
@@ -97,7 +104,9 @@ class _Writer:
         entity, key = self.entities[entity_id], self.keys[entity_id][0]
         # A row-grain model lists only its parents: no graph entity is homed on it.
         own = {} if entity.is_row_grain else {key: None}
-        spec: dict[str, Any] = {"relation": entity.table, "entities": own}
+        # A one-per-key model names the relation its pipeline reads, not the pipeline.
+        relation = one_per_key_source(self.config, entity) or entity.table
+        spec: dict[str, Any] = {"relation": relation, "entities": own}
         return key, self.models.setdefault(key, spec)
 
     def graph(self) -> dict[str, Any]:
@@ -208,6 +217,7 @@ class _Writer:
 
     def relationship(self, row: Any) -> tuple[str, dict[str, Any]]:
         ends = {"source_entity", "target_entity", "source_column", "target_column", *_ROLLUPS}
+        ends.add("link")  # derived from the two models
         spec = {
             "id": row.id,
             "entities": [self.keys[row.source_entity][0], self.keys[row.target_entity][0]],

@@ -101,6 +101,9 @@ class EntityConfig:
     display: str = ""
     # A row-grain entity's model (its rows have no key, so it names nothing else).
     model: str = ""
+    # The model authors `one_per_key: true`: its relation is read as one row per key, each
+    # column the key's one value (NULL where its rows disagree). ``table`` is that reading.
+    one_per_key: bool = False
 
     @property
     def is_row_grain(self) -> bool:
@@ -184,6 +187,10 @@ class RelationshipConfig:
     target_key_type: str = "primary"
     join_semantics: str = ""
     rollup_safe_aggregations_reverse: list[str] = field(default_factory=list)
+    # Derived, never authored: a row-grain model's foreign key to the one-per-key model over the
+    # same relation, on its key. Walked in reverse, it reaches the columns that can hold several
+    # values per key, each key counting once in every group it has a row in.
+    link: bool = False
 
 
 @dataclass(frozen=True)

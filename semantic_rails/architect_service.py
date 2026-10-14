@@ -73,7 +73,7 @@ _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 
 # What upsert_model(replace=True) keeps from the model it rewrites: its identity and how
 # its tables are bound (a calendar, and how far they are loaded).
-_KEPT_ON_REPLACE = ("id", "entities", "calendar_id", "zero_through")
+_KEPT_ON_REPLACE = ("id", "entities", "calendar_id", "zero_through", "one_per_key")
 # Model blocks of named objects: dropped_fields names each object a replace drops.
 _MODEL_BLOCKS = ("dimensions", "times", "measures")
 
@@ -763,6 +763,7 @@ class ArchitectProject:
         calendar: bool | None = None,
         calendar_id: str = "",
         replace: bool = False,
+        one_per_key: bool | None = None,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -771,14 +772,18 @@ class ArchitectProject:
         """Create or update a model and its primary graph entity.
 
         Fields merge into an existing model; ``replace=True`` rewrites it from
-        the arguments, keeping only its ``id``, ``entities`` block, ``calendar_id`` and
-        ``zero_through``, and reports what it dropped as ``dropped_fields``.
+        the arguments, keeping only its ``id``, ``entities`` block, ``calendar_id``,
+        ``zero_through`` and ``one_per_key``, and reports what it dropped as ``dropped_fields``.
 
         ``calendar=True`` makes the entity the package calendar for
         ``calendar_id`` (default ``"default"``): ``kind: time``, not a query
         root. ``calendar=False`` makes a calendar a regular entity again;
         ``None`` leaves it as it is. On a regular model, ``calendar_id`` binds
         its times to that calendar.
+
+        ``one_per_key=True`` reads ``relation`` as one row per ``primary_key``
+        (a relation whose stored rows repeat the key), each column the key's one
+        value; ``False`` removes it; ``None`` leaves it as it is.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         documents: dict[Path, dict[str, Any]] = {}
@@ -799,6 +804,7 @@ class ArchitectProject:
             calendar=calendar,
             calendar_id=calendar_id,
             replace=replace,
+            one_per_key=one_per_key,
         )
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
@@ -831,6 +837,7 @@ class ArchitectProject:
                 "calendar": calendar,
                 "calendar_id": calendar_id,
                 "replace": replace,
+                "one_per_key": one_per_key,
             },
             extra={"entity": staged["entity"], **_field_reports(staged)},
         )
@@ -1012,6 +1019,7 @@ class ArchitectProject:
         calendar_id: str = "",
         replace: bool = False,
         keep_existing: bool = False,
+        one_per_key: bool | None = None,
     ) -> dict[str, Any]:
         """Apply one model upsert to ``documents`` (files load on first use).
 
@@ -1062,6 +1070,13 @@ class ArchitectProject:
                 f"{entity_slug!r} exists; remove it first, or give its key",
                 details={"model": model_slug, "entity": entity_slug},
             )
+        if one_per_key and not keys:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"one_per_key reads {model_slug!r} as one row per its key, so it needs a "
+                "primary_key",
+                details={"model": model_slug},
+            )
         previous = model
         if replace:
             model = {field: model[field] for field in _KEPT_ON_REPLACE if field in model}
@@ -1079,6 +1094,10 @@ class ArchitectProject:
         )
         if label:
             model["label"] = label
+        if one_per_key:
+            model["one_per_key"] = True
+        elif one_per_key is False:
+            model.pop("one_per_key", None)
         requested_calendar = str(calendar_id or "").strip()
         if requested_calendar and not _CALENDAR_ID.fullmatch(requested_calendar):
             raise SemanticLayerError(

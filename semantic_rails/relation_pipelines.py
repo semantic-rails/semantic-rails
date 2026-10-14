@@ -280,7 +280,9 @@ def _temporal_tables(config: PackageConfig) -> dict[str, frozenset[str]]:
 
 
 # Functions whose result has their argument's type: MIN(day) is a date when day is.
-_TYPE_PRESERVING = frozenset({"MIN", "MAX", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE"})
+_TYPE_PRESERVING = frozenset(
+    {"MIN", "MAX", "SINGLE_VALUE", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE"}
+)
 
 
 # A table alias's lookup from a column it reads to that column's lineage (None if unknown).
@@ -542,6 +544,10 @@ def _aggregate_expr(spec: Any, *, warehouse: str) -> SqlExpr:
     if not function:
         raise SemanticLayerError("INVALID_CONFIG", "group_by aggregate requires function")
     expr_raw = config.get("expr", config.get("expression", "*"))
+    if function == "SINGLE_VALUE":  # the group's one value, NULL where it holds two
+        value = _expr(expr_raw, warehouse=warehouse)
+        least, most = SqlCall("MIN", [value]), SqlCall("MAX", [value])
+        return SqlCase([SqlCaseWhen(SqlBinary(least, "=", most), most)])
     if expr_raw == "*":
         return SqlCall(function, [SqlLiteral(1)], distinct=bool(config.get("distinct", False)))
     return SqlCall(

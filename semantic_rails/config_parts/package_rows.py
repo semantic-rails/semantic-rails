@@ -53,6 +53,7 @@ from .model_rows import (
     _parse_relations,
     _with_displays,
 )
+from .one_per_key import with_one_per_key
 from .policy_rows import (
     _parse_caveats,
     _parse_path_policy,
@@ -98,6 +99,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     entities: list[EntityConfig] = []
     entity_lookup: dict[str, str] = {}
     model_to_entity: dict[str, str] = {}
+    one_per_key: dict[str, tuple[str, str]] = {}  # entity id -> its model and relation
     model_rows = {str(k): dict(v or {}) for k, v in model_rows.items()}
     time_calendar_ids_seen: set[str] = set()
 
@@ -133,6 +135,13 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         if not key and not entity_spec.get("_row_grain"):
             raise SemanticLayerError(
                 "INVALID_CONFIG", f"{path}: graph entity '{entity_key}' must declare key"
+            )
+        if model.get("one_per_key") is True and not key:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: model '{model_id}' is one_per_key, which reads its relation as one row "
+                "per its entity's key, but no graph entity is homed on it: list its entity under "
+                "entities: and declare that entity's key in graph.entities",
             )
         if entity_kind == "time":
             time_calendar_id = str(model.get("calendar_id", "") or "default")
@@ -200,11 +209,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 ],
                 bridge=model.get("_bridge_declared") is True,
                 model=model_id if entity_spec.get("_row_grain") else "",
+                one_per_key=model.get("one_per_key") is True,
             )
         )
         entity_lookup[str(entity_key)] = entity_id
         entity_lookup[entity_name] = entity_id
         model_to_entity[model_id] = entity_id
+        if model.get("one_per_key") is True:
+            one_per_key[entity_id] = (model_id, relation_table)
 
     dimensions: list[DimensionConfig] = []
     temporal_roles: list[TemporalRoleConfig] = []
@@ -556,7 +568,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     f"{rel_id} joins into '{target_ref}', a row-grain model (no key), so one row "
                     f"can't be looked up there. Fix: write it from {target_ref}'s side (entities: "
                     f"[{target_ref}, {source}], cardinality: many_to_one, via: "
-                    f"[{', '.join(via)}]), or declare a key on {target_ref} if its rows have one.",
+                    f"[{', '.join(via)}]), or declare a key on {target_ref} if its rows have one. "
+                    "To look up what is fixed per key, model its relation again with "
+                    "one_per_key: true.",
                     details={"relationship": rel_id, "model": target_ref},
                 )
             target_cols = _ensure_list(join_spec.get("target") or target_cfg.key)
@@ -653,6 +667,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             )
     entities = _with_displays(
         entities, graph_entities, model_rows, dimension_lookup, dimensions, path=path
+    )
+    entities, relationships, relations = with_one_per_key(
+        entities, one_per_key, dimensions, measures, relationships, relations
     )
     path_preferences = _parse_path_preferences(
         raw,
