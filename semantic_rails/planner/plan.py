@@ -1048,16 +1048,17 @@ def _valid_values_next_steps(query: Call) -> list[dict[str, Any]]:
 def _no_draft_payload(
     intent: str, intent_ir: dict[str, Any], why: dict[str, Any]
 ) -> dict[str, Any]:
-    """A held plan that offers no draft (``no_draft``): ``unrealizable`` when nothing in the
-    catalog matches what the question asks about, else ``low_confidence``."""
+    """A held plan that offers no draft (``no_draft``): ``unrealizable`` when the package can't
+    answer as asked (pieces that don't connect, or nothing in the catalog matches what the
+    question asks about), else ``low_confidence`` (catalog objects mention its words)."""
 
     terms = list(why["details"].get("terms") or [])
-    unmatched = why["code"] == "PLAN_SUBJECT_UNMATCHED" and not why["details"]["candidates"]
+    candidates = why["code"] == "PLAN_SUBJECT_UNMATCHED" and why["details"]["candidates"]
     return {
         "plan_version": _VERSION,
         "intent": intent,
         "intent_ir": intent_ir,
-        "status": "unrealizable" if unmatched else "low_confidence",
+        "status": "low_confidence" if candidates else "unrealizable",
         "best": None,
         "why": why,
         "next": {"discover": {"terms": " ".join(terms)}} if terms else {},

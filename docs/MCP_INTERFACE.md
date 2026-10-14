@@ -688,7 +688,7 @@ the named pattern's draft, which fails validation, and `why.details.primary_erro
 A held plan offers no draft (`best: null`, no alternatives) in two cases, since neither draft
 is one to fix:
 - **The draft's measure can't reach a dimension it reads** (`PLAN_UNCONNECTED`,
-  `low_confidence`): validation refuses it with `PATH_NOT_FOUND` or `MIXED_GRAIN_INVALID`.
+  `unrealizable`: the package can't answer as asked): validation refuses it with `PATH_NOT_FOUND` or `MIXED_GRAIN_INVALID`.
   `why.details` names the `subjects`, the `dimensions` on the entity they can't reach, that
   `entity`, and the engine's `error` ("Orders can't reach Membership status on Customer segment
   membership"). Group by a dimension the measure reaches, or pick a measure that reaches the
