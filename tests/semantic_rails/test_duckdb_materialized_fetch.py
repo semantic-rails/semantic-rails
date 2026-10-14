@@ -63,6 +63,9 @@ class RecordingConnection:
     def extract_statements(self, sql):
         return self.raw.extract_statements(sql)
 
+    def interrupt(self):  # the key search's deadline
+        self.raw.interrupt()
+
     @property
     def description(self):
         raise AssertionError("read the materialized relation's description")
@@ -285,7 +288,7 @@ def test_introspection_materializes_catalog_profile_sample_and_composite_key_rea
         assert len(helper_calls) > 1
         assert len(queries) == len([entry for entry in log if entry[0] == "relation.fetchall"])
         assert any("SELECT DISTINCT" in entry[1] for entry in queries)
-        assert any("count(DISTINCT system.main.row(" in entry[1] for entry in queries)
+        assert any("HAVING system.main.count(*) > 1" in entry[1] for entry in queries)  # key checks
         assert not any(entry[0] == "cursor.execute" for entry in log)
     finally:
         connection.close()
