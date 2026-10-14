@@ -730,16 +730,45 @@ def _refuse_duplicate_columns(
 _KINDLESS_FIX = 'A reference is the id string itself, e.g. "metric.<id>" or "measure.<id>".'
 
 
+def _dimension_in_measure_slot(raw: Any, path: str, context: CallContext) -> None:
+    """Refuse a dimension id where a measure or metric goes, naming the measures that count
+    its column's distinct values on its entity, and group_by to split by it."""
+    if context.config is None or not isinstance(raw, str):
+        return
+    dimension = next((row for row in context.config.dimensions if row.id == raw.strip()), None)
+    if dimension is None:
+        return
+    from .expressions import ColumnRefExpr
+
+    counts = [
+        row.id
+        for row in context.config.measures
+        if row.entity == dimension.entity
+        and row.default_aggregation == "count_distinct"
+        and isinstance(row.expr, ColumnRefExpr)
+        and row.expr.column == dimension.column
+    ]
+    count = f"To count its distinct values, select {' or '.join(counts)}; t" if counts else "T"
+    raise refusal(
+        path,
+        f"'{dimension.id}' is a dimension, not a measure or metric",
+        fix=f"{count}o split the answer by it, add it to group_by.",
+        closest_matches=counts,
+    )
+
+
 def _operand(raw: Any, path: str, context: CallContext) -> Any:
     """An operand inside a kind: a reference or kind is read; a literal passes to the parser."""
     if isinstance(raw, Mapping) or (isinstance(raw, str) and raw.startswith(REFERENCE_PREFIXES)):
         return _expression(raw, path, context)
+    _dimension_in_measure_slot(raw, path, context)
     return raw
 
 
 def _expression(raw: Any, path: str, context: CallContext) -> Any:
     """An inline expression with its references expanded to the engine's ref objects."""
     if isinstance(raw, str):
+        _dimension_in_measure_slot(raw, path, context)
         return _reference(raw, path)
     if not isinstance(raw, Mapping):
         raise refusal(path, "is an id string or an object with 'kind'", fix=_KINDLESS_FIX)
@@ -784,6 +813,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
                 )
     if kind == "share":
         _check_share(raw, path, context)
+    _dimension_in_measure_slot(raw.get("measure"), f"{path}.measure", context)
     node: dict[str, Any] = {}
     for key, value in raw.items():
         child = f"{path}.{key}"
