@@ -12,11 +12,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import closing
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
+from semantic_rails.config import load_package_config
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.period_completeness import compares_periods, incomplete_period_why
 from semantic_rails.planner import examples as examples_module
 from semantic_rails.planner import intent_holds
@@ -299,6 +302,7 @@ def test_a_draft_that_compares_nothing_plans_as_before(
 # against May is 0% growth, and any cut of June reads -90%.
 GROWTH_NOW = "2018-07-15T12:00:00Z"
 GROWTH_CLOCK = "temporal_role.shop_order_ordered_at"
+GROWTH_DIMENSION = "dimension.shop_order_ordered_at"
 GROWTH_SEED = """
 CREATE OR REPLACE TABLE shop_customer AS
 SELECT 'customer_1' AS customer_id, 'new' AS customer_type, TIMESTAMP '2018-01-01 00:00:00' AS first_ordered_at;
@@ -519,3 +523,47 @@ def test_a_bound_with_a_utc_offset_is_held(
 def test_a_bound_with_a_comma_fraction_is_held(growth: Runtime) -> None:
     call = _growth_call(growth, "2018-06-01T00:00:00,0000001")
     _held_with_no_option(_plan_example(growth, call, GROWTH_NOW))
+
+
+# ---------------------------------------------------------------- rows cut before the measure
+def test_a_relation_that_cuts_the_clock_date_is_held(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The orders model reads a relation keeping only orders before June 15: June reads -90%."""
+
+    target = tmp_path_factory.mktemp("relation")
+    with closing(_growth_package(target)) as runtime:
+        source = Path(runtime.source_path)
+    doc = safe_load(source.read_bytes())
+    steps = [
+        {"source": "shop_order"},
+        {"where": [{"field": "ordered_at", "op": "lt", "value": "2018-06-15"}]},
+    ]
+    columns = ["order_id", "customer_id", "channel", "order_total_cents", "ordered_at"]
+    doc["relations"] = {"orders_cut": {"columns": columns, "steps": steps}}
+    doc["models"]["orders"]["relation"] = "orders_cut"
+    source.write_text(yaml.safe_dump(doc, sort_keys=False), "utf-8")
+    with closing(opened(Runtime.from_path(str(source)))) as runtime:
+        call = _growth_call(runtime, "2018-07-01")
+        assert _growth_rows(runtime, call)["2018-06-01"] == pytest.approx(-0.9)
+        _held_with_no_option(_plan_example(runtime, call, GROWTH_NOW))
+
+
+def test_a_row_filter_never_cuts_a_date(growth: Runtime, tmp_path: Path) -> None:
+    """A row_filter policy compares one plain column with a request attribute, so no active
+    row policy can cut a period: one on a date column is refused at load."""
+
+    source = Path(growth.source_path)
+    doc = safe_load(source.read_bytes())
+    policy = {
+        "id": "policy.shop.own_rows",
+        "kind": "row_filter",
+        "attribute": "customer_id",
+        "dimension": GROWTH_DIMENSION,
+    }
+    dated = tmp_path / "dated" / "package.yml"
+    dated.parent.mkdir()
+    (tmp_path / "dated" / "data").symlink_to(source.parent / "data")
+    dated.write_text(yaml.safe_dump({**doc, "semantic_policies": [policy]}, sort_keys=False))
+    with pytest.raises(SemanticLayerError, match="a row filter compares a string, integer or"):
+        load_package_config(str(dated))
